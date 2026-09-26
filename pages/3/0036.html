@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>混沌章鱼 · 洛伦兹触手缠绕</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    background: #020005; overflow: hidden; touch-action: none;
+  }
+  canvas { display: block; position: fixed; inset: 0; }
+
+  .hud {
+    position: fixed; left: 22px; bottom: 20px;
+    font: 11.5px/1.85 ui-monospace, Menlo, Consolas, monospace;
+    color: rgba(200, 140, 255, 0.34);
+    letter-spacing: 0.10em;
+    pointer-events: none; user-select: none;
+  }
+  .hud b { color: rgba(235, 190, 255, 0.88); font-weight: 500; letter-spacing: 0.20em; }
+  .hud i { color: rgba(210, 170, 255, 0.55); font-style: normal; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud">
+  <div><b>CHAOS OCTOPUS</b></div>
+  <div><i>洛伦兹方程</i> &nbsp;ẋ=σ(y−x) &nbsp;ẏ=x(ρ−z)−y &nbsp;ż=xy−βz</div>
+  <div><i>8 条触手</i> &nbsp;独立参数 &nbsp;·&nbsp; 混沌 RK4 迭代</div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ================= 画布 ================= */
+  const cvs = document.getElementById('c');
+  const ctx = cvs.getContext('2d', { alpha: false });
+
+  let W = 0, H = 0, DPR = 1, cx = 0, cy = 0, S = 0, headR = 0;
+  let bgGrad = null, vignette = null;
+
+  /* ================= 配置 ================= */
+  const TENT_N  = 8;    // 触手数量
+  const SEGS    = 48;   // 每条触手的节段数
+  const BLOCKS  = 8;    // 渲染分块数（性能优化）
+  const SUBSTEPS = 3;   // 每帧混沌子步数
+  const CHAOS_DT = 0.004;
+
+  /* ================= 环境粒子 ================= */
+  const particles = [];
+  (function () {
+    for (let i = 0; i < 130; i++) {
+      particles.push({
+        x: Math.random(), y: Math.random(),
+        r: Math.random() * 1.5 + 0.3,
+        ph: Math.random() * Math.PI * 2,
+        sp: 0.18 + Math.random() * 0.45,
+        hue: 255 + Math.random() * 95
+      });
+    }
+  })();
+
+  /* ================= 尺寸 ================= */
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth;
+    H = window.innerHeight;
+    cvs.width  = Math.round(W * DPR);
+    cvs.height = Math.round(H * DPR);
+    cvs.style.width  = W + 'px';
+    cvs.style.height = H + 'px';
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+    cx = W * 0.5;
+    cy = H * 0.28;
+    S = Math.min(W, H);
+    headR = S * 0.105;
+
+    bgGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, S * 0.95);
+    bgGrad.addColorStop(0.00, '#0d0518');
+    bgGrad.addColorStop(0.40, '#060210');
+    bgGrad.addColorStop(0.78, '#020008');
+    bgGrad.addColorStop(1.00, '#000002');
+
+    vignette = ctx.createRadialGradient(cx, cy, S * 0.30, cx, cy, S * 0.92);
+    vignette.addColorStop(0.00, 'rgba(0,0,0,0)');
+    vignette.addColorStop(0.65, 'rgba(2,0,8,0.20)');
+    vignette.addColorStop(1.00, 'rgba(0,0,0,0.62)');
+  }
+  window.addEventListener('resize', function () {
+    resize();
+    initTentacles();
+  });
+
+  /* ================= 触手类 ================= */
+  function Tentacle(rootX, rootY, baseAngle, length, idx) {
+    this.rootX = rootX;
+    this.rootY = rootY;
+    this.baseAngle = baseAngle;
+    this.length = length;
+    this.idx = idx;
+
+    /* ---- 洛伦兹混沌状态（每条触手参数独立扰动）---- */
+    this.sigma = 10   + (Math.random() - 0.5) * 2.6;
+    this.rho   = 28   + (Math.random() - 0.5) * 5.0;
+    this.beta  = 8/3  + (Math.random() - 0.5) * 0.7;
+
+    this.lx = 0.1 + Math.random() * 9;
+    this.ly = 0.1 + Math.random() * 9;
+    this.lz = 0.1 + Math.random() * 9;
+
+    /* 平滑后的混沌驱动信号 */
+    this.d1 = 0;
+    this.d2 = 0;
+    this.d3 = 0;
+
+    /* ---- 运动参数 ---- */
+    this.phase      = Math.random() * Math.PI * 2;
+    this.waveK      = 3.2 + Math.random() * 3.6;    // 波数
+    this.waveSpeed  = 1.0 + Math.random() * 0.9;    // 波速
+    this.waveAmp    = 0.55 + Math.random() * 0.55;  // 波幅
+    this.curlBias   = (Math.random() - 0.5) * 2.8;  // 基础卷曲倾向
+    this.chaosAmp   = 0.65 + Math.random() * 0.65;  // 混沌调制强度
+    this.chaosAmp2  = 0.40 + Math.random() * 0.50;
+
+    /* 几何缓存 */
+    this.px = new Float32Array(SEGS + 1);
+    this.py = new Float32Array(SEGS + 1);
+  }
+
+  /* ---- 洛伦兹 RK4 单步 ---- */
+  Tentacle.prototype.stepChaos = function (dt) {
+    const s = this.sigma, r = this.rho, b = this.beta;
+    const x = this.lx, y = this.ly, z = this.lz;
+
+    const k1x = s * (y - x);
+    const k1y = x * (r - z) - y;
+    const k1z = x * y - b * z;
+
+    const xa = x + k1x * dt * 0.5;
+    const ya = y + k1y * dt * 0.5;
+    const za = z + k1z * dt * 0.5;
+    const k2x = s * (ya - xa);
+    const k2y = xa * (r - za) - ya;
+    const k2z = xa * ya - b * za;
+
+    const xb = x + k2x * dt * 0.5;
+    const yb = y + k2y * dt * 0.5;
+    const zb = z + k2z * dt * 0.5;
+    const k3x = s * (yb - xb);
+    const k3y = xb * (r - zb) - yb;
+    const k3z = xb * yb - b * zb;
+
+    const xc = x + k3x * dt;
+    const yc = y + k3y * dt;
+    const zc = z + k3z * dt;
+    const k4x = s * (yc - xc);
+    const k4y = xc * (r - zc) - yc;
+    const k4z = xc * yc - b * zc;
+
+    this.lx = x + (dt / 6) * (k1x + 2 * k2x + 2 * k3x + k4x);
+    this.ly = y + (dt / 6) * (k1y + 2 * k2y + 2 * k3y + k4y);
+    this.lz = z + (dt / 6) * (k1z + 2 * k2z + 2 * k3z + k4z);
+
+    /* 归一化 + 低通滤波，得到平缓但持续变化的驱动量 */
+    const n1 = this.lx / 18;
+    const n2 = this.ly / 22;
+    const n3 = (this.lz - 25) / 22;
+
+    this.d1 += (n1 - this.d1) * 0.075;
+    this.d2 += (n2 - this.d2) * 0.075;
+    this.d3 += (n3 - this.d3) * 0.075;
+  };
+
+  /* ---- 构建曲线几何 ---- */
+  Tentacle.prototype.build = function (time, offX, offY) {
+    const px = this.px, py = this.py;
+    const segLen = this.length / SEGS;
+
+    let x = this.rootX + offX;
+    let y = this.rootY + offY;
+    let ang = this.baseAngle;
+
+    const d1 = this.d1, d2 = this.d2, d3 = this.d3;
+
+    for (let i = 0; i <= SEGS; i++) {
+      px[i] = x;
+      py[i] = y;
+      if (i === SEGS) break;
+
+      const u = i / SEGS;
+
+      /* 两组不同频率的行波叠加 */
+      const w1 = Math.sin(u * this.waveK - time * this.waveSpeed + this.phase);
+      const w2 = Math.sin(u * this.waveK * 1.65 + time * this.waveSpeed * 0.62
+                          + this.phase * 1.45) * 0.42;
+
+      /* 每段曲率（弧度）—— 多组混沌信号叠加 */
+      const curv = (
+          this.curlBias * (0.30 + u * 0.70)
+        + (w1 + w2) * this.waveAmp * u
+        + d1 * this.chaosAmp * 2.10 * u
+        + d2 * this.chaosAmp2 * 1.05
+        + d3 * 0.55 * u * u
+      ) * 0.048;
+
+      ang += curv;
+      x += Math.cos(ang) * segLen;
+      y += Math.sin(ang) * segLen;
+    }
+  };
+
+  /* ---- 绘制触手 ---- */
+  Tentacle.prototype.draw = function (time) {
+    const px = this.px, py = this.py;
+    const n = SEGS + 1;
+    const perBlock = Math.ceil(SEGS / BLOCKS);
+
+    /* ---- Pass 1: 生物荧光光晕 ---- */
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    for (let b = 0; b < BLOCKS; b++) {
+      const i0 = b * perBlock;
+      const i1 = Math.min(n - 1, i0 + perBlock);
+      if (i0 >= n - 1) break;
+
+      const uMid = (i0 + i1) / (2 * SEGS);
+      const wGlow = S * 0.020 * Math.pow(1 - uMid, 1.4) + S * 0.0012;
+      const hue = 262 + uMid * 78;
+
+      ctx.beginPath();
+      ctx.moveTo(px[i0], py[i0]);
+      for (let i = i0 + 1; i <= i1; i++) ctx.lineTo(px[i], py[i]);
+
+      ctx.strokeStyle = 'hsla(' + hue + ', 100%, 62%, '
+                       + (0.085 * (1 - uMid * 0.55)) + ')';
+      ctx.lineWidth = wGlow * 4.2;
+      ctx.stroke();
+    }
+
+    /* ---- Pass 2: 触手本体 ---- */
+    ctx.globalCompositeOperation = 'source-over';
+
+    for (let b = 0; b < BLOCKS; b++) {
+      const i0 = b * perBlock;
+      const i1 = Math.min(n - 1, i0 + perBlock);
+      if (i0 >= n - 1) break;
+
+      const uMid = (i0 + i1) / (2 * SEGS);
+      const wBase = S * 0.020 * Math.pow(1 - uMid, 1.4) + S * 0.0012;
+      const hue  = 262 + uMid * 78;
+      const sat  = 62 + uMid * 34;
+      const lig  = 22 + uMid * 42;
+
+      ctx.beginPath();
+      ctx.moveTo(px[i0], py[i0]);
+      for (let i = i0 + 1; i <= i1; i++) ctx.lineTo(px[i], py[i]);
+
+      ctx.strokeStyle = 'hsl(' + hue + ', ' + sat + '%, ' + lig + '%)';
+      ctx.lineWidth = wBase;
+      ctx.stroke();
+    }
+
+    /* ---- Pass 3: 高光细线 ---- */
+    ctx.globalCompositeOperation = 'lighter';
+    for (let b = 0; b < BLOCKS; b++) {
+      const i0 = b * perBlock;
+      const i1 = Math.min(n - 1, i0 + perBlock);
+      if (i0 >= n - 1) break;
+
+      const uMid = (i0 + i1) / (2 * SEGS);
+      const wBase = S * 0.020 * Math.pow(1 - uMid, 1.4) + S * 0.0012;
+
+      ctx.beginPath();
+      ctx.moveTo(px[i0], py[i0]);
+      for (let i = i0 + 1; i <= i1; i++) ctx.lineTo(px[i], py[i]);
+
+      ctx.strokeStyle = 'hsla(' + (275 + uMid * 62) + ', 100%, 86%, '
+                       + (0.11 * (1 - uMid * 0.5)) + ')';
+      ctx.lineWidth = wBase * 0.38;
+      ctx.stroke();
+    }
+
+    /* ---- 末端光点 ---- */
+    const tx = px[n - 1], ty = py[n - 1];
+    const twinkle = 0.55 + 0.45 * Math.sin(time * 2.6 + this.phase * 2.2);
+    const rr = S * 0.010 * twinkle + S * 0.003;
+
+    const g = ctx.createRadialGradient(tx, ty, 0, tx, ty, rr * 5);
+    g.addColorStop(0.00, 'hsla(320, 100%, 90%, ' + (0.75 * twinkle) + ')');
+    g.addColorStop(0.30, 'hsla(310, 100%, 72%, ' + (0.28 * twinkle) + ')');
+    g.addColorStop(1.00, 'hsla(300, 100%, 60%, 0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(tx, ty, rr * 5, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.globalCompositeOperation = 'source-over';
+  };
+
+  /* ================= 触手初始化 ================= */
+  const tentacles = [];
+
+  function initTentacles() {
+    tentacles.length = 0;
+
+    for (let i = 0; i < TENT_N; i++) {
+      const t = i / (TENT_N - 1);
+
+      /* 沿身体底部弧线分布 */
+      const a = Math.PI * (0.14 + 0.72 * t);
+
+      const rx = headR * 1.00;
+      const ry = headR * 0.95;
+      const rootX = cx + Math.cos(a) * rx;
+      const rootY = cy + Math.sin(a) * ry * 0.82;
+
+      /* 长度变化 —— 中间稍长，两侧稍短 */
+      const lenFactor = 0.85 + Math.sin(t * Math.PI) * 0.40
+                      + (Math.random() - 0.5) * 0.18;
+      const len = S * 0.42 * lenFactor;
+
+      tentacles.push(new Tentacle(rootX, rootY, a, len, i));
+    }
+  }
+
+  /* ================= 头部绘制 ================= */
+  function drawHead(time) {
+    const rx = headR * 1.06;
+    const ry = headR * 1.06;
+    const breathe = 1 + Math.sin(time * 0.75) * 0.024;
+
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.scale(breathe, 1 / breathe);
+
+    /* ---- 洋葱形身体 ---- */
+    ctx.beginPath();
+    ctx.moveTo(-rx, ry * 0.55);
+    ctx.bezierCurveTo(-rx * 1.08, -ry * 0.28, -rx * 0.66, -ry * 1.06, 0, -ry * 1.02);
+    ctx.bezierCurveTo( rx * 0.66, -ry * 1.06,  rx * 1.08, -ry * 0.28,  rx, ry * 0.55);
+    ctx.bezierCurveTo( rx * 0.72,  ry * 0.98, -rx * 0.72,  ry * 0.98, -rx, ry * 0.55);
+    ctx.closePath();
+
+    const bg = ctx.createRadialGradient(-rx * 0.28, -ry * 0.40, rx * 0.06, 0, 0, rx * 1.45);
+    bg.addColorStop(0.00, 'hsl(288, 60%, 40%)');
+    bg.addColorStop(0.32, 'hsl(280, 64%, 28%)');
+    bg.addColorStop(0.68, 'hsl(270, 62%, 17%)');
+    bg.addColorStop(1.00, 'hsl(262, 60%, 10%)');
+    ctx.fillStyle = bg;
+    ctx.fill();
+
+    /* 轮廓柔光 */
+    ctx.strokeStyle = 'hsla(298, 85%, 68%, 0.34)';
+    ctx.lineWidth = Math.max(1, S * 0.0022);
+    ctx.stroke();
+
+    /* 顶部高光 */
+    const hg = ctx.createRadialGradient(-rx * 0.34, -ry * 0.52, 0, -rx * 0.34, -ry * 0.52, rx * 0.95);
+    hg.addColorStop(0.00, 'hsla(305, 95%, 78%, 0.30)');
+    hg.addColorStop(0.55, 'hsla(300, 90%, 68%, 0.07)');
+    hg.addColorStop(1.00, 'hsla(295, 90%, 60%, 0)');
+    ctx.fillStyle = hg;
+    ctx.beginPath();
+    ctx.ellipse(-rx * 0.28, -ry * 0.42, rx * 0.80, ry * 0.70, -0.28, 0, Math.PI * 2);
+    ctx.fill();
+
+    /* 表面纹理斑纹 */
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < 7; i++) {
+      const a  = (i / 7) * Math.PI * 2 + time * 0.06;
+      const rr = rx * (0.28 + 0.34 * ((i * 37) % 100) / 100);
+      const px = Math.cos(a) * rr * 0.85;
+      const py = Math.sin(a) * rr * 0.68 - ry * 0.15;
+      const sr = rx * 0.09 * (0.6 + 0.4 * Math.sin(time * 1.1 + i * 2.1));
+
+      const sg = ctx.createRadialGradient(px, py, 0, px, py, sr * 2.6);
+      sg.addColorStop(0.00, 'hsla(310, 100%, 74%, 0.13)');
+      sg.addColorStop(1.00, 'hsla(300, 100%, 62%, 0)');
+      ctx.fillStyle = sg;
+      ctx.beginPath();
+      ctx.arc(px, py, sr * 2.6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+
+    ctx.restore();
+
+    /* ---- 眼睛 ---- */
+    const eyeR  = headR * 0.235;
+    const eyeY  = cy + headR * 0.06;
+    const eyeDX = headR * 0.46;
+
+    drawEye(cx - eyeDX, eyeY, eyeR, time);
+    drawEye(cx + eyeDX, eyeY, eyeR, time);
+  }
+
+  function drawEye(ex, ey, er, time) {
+    /* 眼眶深底 */
+    ctx.fillStyle = '#06010e';
+    ctx.beginPath();
+    ctx.arc(ex, ey, er * 1.16, 0, Math.PI * 2);
+    ctx.fill();
+
+    /* 眼球基底 */
+    const bg = ctx.createRadialGradient(ex - er * 0.25, ey - er * 0.25, 0, ex, ey, er);
+    bg.addColorStop(0.00, 'hsl(40, 95%, 72%)');
+    bg.addColorStop(0.45, 'hsl(32, 92%, 52%)');
+    bg.addColorStop(0.85, 'hsl(24, 88%, 30%)');
+    bg.addColorStop(1.00, 'hsl(18, 80%, 16%)');
+    ctx.fillStyle = bg;
+    ctx.beginPath();
+    ctx.arc(ex, ey, er * 0.80, 0, Math.PI * 2);
+    ctx.fill();
+
+    /* 瞳孔（微微随时间缩放，模拟“注视”感） */
+    const pupilW = er * 0.20 * (1 + 0.10 * Math.sin(time * 1.8));
+    const pupilH = er * 0.44;
+    ctx.fillStyle = '#040008';
+    ctx.beginPath();
+    ctx.ellipse(ex, ey, pupilW, pupilH, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    /* 瞳孔辉光 */
+    const pg = ctx.createRadialGradient(ex, ey, 0, ex, ey, er * 0.85);
+    pg.addColorStop(0.00, 'hsla(30, 100%, 70%, 0.22)');
+    pg.addColorStop(0.55, 'hsla(20, 100%, 55%, 0.05)');
+    pg.addColorStop(1.00, 'hsla(10, 100%, 50%, 0)');
+    ctx.fillStyle = pg;
+    ctx.beginPath();
+    ctx.arc(ex, ey, er * 0.85, 0, Math.PI * 2);
+    ctx.fill();
+
+    /* 主高光 */
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.88)';
+    ctx.beginPath();
+    ctx.arc(ex - er * 0.26, ey - er * 0.30, er * 0.155, 0, Math.PI * 2);
+    ctx.fill();
+
+    /* 次高光 */
+    ctx.fillStyle = 'rgba(255, 245, 230, 0.35)';
+    ctx.beginPath();
+    ctx.arc(ex + er * 0.18, ey + er * 0.24, er * 0.075, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  /* ================= 环境粒子 ================= */
+  function drawParticles(time) {
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < particles.length; i++) {
+      const p = particles[i];
+      const x = p.x * W + Math.sin(time * p.sp + p.ph) * 24;
+      const y = p.y * H + Math.cos(time * p.sp * 0.68 + p.ph * 1.35) * 28;
+      const a = 0.05 + 0.16 * (0.5 + 0.5 * Math.sin(time * 0.62 + p.ph * 2.1));
+
+      ctx.fillStyle = 'hsla(' + p.hue + ', 90%, 72%, ' + a + ')';
+      ctx.beginPath();
+      ctx.arc(x, y, p.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  /* ================= 主循环 ================= */
+  function frame(now) {
+    const time = now * 0.001;
+
+    /* ---- 头部轻微浮动 ---- */
+    const bobX = Math.sin(time * 0.42) * S * 0.007;
+    const bobY = Math.sin(time * 0.56 + 1.2) * S * 0.011;
+
+    /* ---- 更新混沌 & 构建几何 ---- */
+    for (let i = 0; i < tentacles.length; i++) {
+      const t = tentacles[i];
+      for (let s = 0; s < SUBSTEPS; s++) t.stepChaos(CHAOS_DT);
+      t.build(time, bobX, bobY);
+    }
+
+    /* ---- 绘制 ---- */
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = bgGrad;
+    ctx.fillRect(0, 0, W, H);
+
+    drawParticles(time);
+
+    for (let i = 0; i < tentacles.length; i++) {
+      tentacles[i].draw(time);
+    }
+
+    drawHead(time);
+
+    /* ---- 暗角 ---- */
+    ctx.fillStyle = vignette;
+    ctx.fillRect(0, 0, W, H);
+
+    requestAnimationFrame(frame);
+  }
+
+  /* ================= 启动 ================= */
+  resize();
+  initTentacles();
+  requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

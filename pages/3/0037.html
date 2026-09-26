@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>斐波那契向日葵 · 黄金角螺旋绽放</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    background: #020100; overflow: hidden; touch-action: none;
+  }
+  canvas { display: block; position: fixed; inset: 0; }
+
+  .hud {
+    position: fixed; left: 22px; bottom: 20px;
+    font: 11.5px/1.85 ui-monospace, Menlo, Consolas, monospace;
+    color: rgba(255, 200, 120, 0.32);
+    letter-spacing: 0.10em;
+    pointer-events: none; user-select: none;
+  }
+  .hud b { color: rgba(255, 225, 160, 0.88); font-weight: 500; letter-spacing: 0.20em; }
+  .hud i { color: rgba(255, 210, 140, 0.55); font-style: normal; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud">
+  <div><b>FIBONACCI SUNFLOWER</b></div>
+  <div><i>黄金角</i> &nbsp;θ = n × 137.507° &nbsp;&nbsp;<i>半径</i> &nbsp;r = c·√n</div>
+  <div><i>种子数</i> &nbsp;1400 &nbsp;·&nbsp; 螺旋臂 &nbsp;34 / 55 / 89</div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ================= 画布 ================= */
+  const cvs = document.getElementById('c');
+  const ctx = cvs.getContext('2d', { alpha: false });
+
+  let W = 0, H = 0, DPR = 1, cx = 0, cy = 0, S = 0;
+  let R_screen = 0, seedRadius = 0, bgGrad = null;
+
+  /* ================= 数学常数 ================= */
+  const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));   // ≈ 2.399963 rad = 137.507°
+  const N = 1400;                                       // 种子总数
+  const MAX_R = Math.sqrt(N);                           // 归一化最大半径
+
+  /* ================= 种子数据 ================= */
+  const seeds = new Array(N);
+
+  function initSeeds() {
+    for (let i = 0; i < N; i++) {
+      const rNorm = Math.sqrt(i) / MAX_R;               // 0 → 1 均匀面积分布
+      const theta = i * GOLDEN_ANGLE;
+      const t = rNorm;                                   // 颜色随半径渐变
+
+      // 深琥珀（中心）→ 亮金（边缘）
+      const hue = 15 + t * 38;                           // 15° → 53°
+      const sat = 85 + t * 15;                           // 85% → 100%
+      const lig = 26 + t * 46;                           // 26% → 72%
+
+      seeds[i] = {
+        rNorm: rNorm,
+        cosT: Math.cos(theta),
+        sinT: Math.sin(theta),
+        color: 'hsl(' + hue + ',' + sat + '%,' + lig + '%)',
+        glow: 'hsla(' + hue + ',' + sat + '%,' + Math.min(92, lig + 22) + '%,0.22)'
+      };
+    }
+  }
+
+  /* ================= 尺寸 ================= */
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth;
+    H = window.innerHeight;
+    cvs.width = Math.round(W * DPR);
+    cvs.height = Math.round(H * DPR);
+    cvs.style.width = W + 'px';
+    cvs.style.height = H + 'px';
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+    cx = W * 0.5;
+    cy = H * 0.5;
+    S = Math.min(W, H);
+    R_screen = S * 0.42;
+
+    // 种子半径：保证花盘覆盖约 72% 面积
+    seedRadius = R_screen * Math.sqrt(0.72 / N);
+
+    bgGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, S * 0.78);
+    bgGrad.addColorStop(0.00, '#150a02');
+    bgGrad.addColorStop(0.40, '#0b0401');
+    bgGrad.addColorStop(1.00, '#020100');
+  }
+  window.addEventListener('resize', resize);
+
+  /* ================= 动画参数 ================= */
+  const GROW = 8.0;      // 生长时长（秒）
+  const HOLD = 4.5;      // 完全绽放停留
+  const FADE = 1.5;      // 淡出重置
+  const CYCLE = GROW + HOLD + FADE;
+
+  /* ================= 主循环 ================= */
+  function frame(now) {
+    const time = now * 0.001;
+    const cycle = time % CYCLE;
+
+    let progress, globalAlpha;
+    if (cycle < GROW) {
+      progress = cycle / GROW;
+      globalAlpha = 1;
+    } else if (cycle < GROW + HOLD) {
+      progress = 1;
+      globalAlpha = 1;
+    } else {
+      progress = 1;
+      globalAlpha = 1 - (cycle - GROW - HOLD) / FADE;
+    }
+    if (globalAlpha < 0) globalAlpha = 0;
+
+    // 生长缓动（慢起快收）
+    const eased = 1 - Math.pow(1 - progress, 1.4);
+    const frontier = eased * N * 1.02;
+
+    const rotation = time * 0.05;   // 整体极缓旋转
+
+    /* ---------- 背景 ---------- */
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = bgGrad;
+    ctx.fillRect(0, 0, W, H);
+
+    /* ---------- 加色光晕层 ---------- */
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = globalAlpha;
+
+    // 花盘中心辉光
+    const haloA = 0.42 * globalAlpha * (0.30 + 0.70 * eased);
+    const halo = ctx.createRadialGradient(cx, cy, 0, cx, cy, R_screen * 1.28);
+    halo.addColorStop(0.00, 'rgba(255,195,85,' + (haloA * 0.45) + ')');
+    halo.addColorStop(0.22, 'rgba(255,155,45,' + (haloA * 0.18) + ')');
+    halo.addColorStop(0.58, 'rgba(255,115,20,' + (haloA * 0.055) + ')');
+    halo.addColorStop(1.00, 'rgba(255,80,0,0)');
+    ctx.fillStyle = halo;
+    ctx.fillRect(0, 0, W, H);
+
+    // 生长前沿的柔光环
+    if (progress > 0.02 && progress < 0.99) {
+      const fr = Math.sqrt(frontier) / MAX_R * R_screen;
+      const ringA = (1 - progress) * 0.55 * globalAlpha;
+
+      const ring = ctx.createRadialGradient(cx, cy, fr * 0.80, cx, cy, fr * 1.20);
+      ring.addColorStop(0.00, 'rgba(255,230,150,0)');
+      ring.addColorStop(0.42, 'rgba(255,220,120,' + (ringA * 0.26) + ')');
+      ring.addColorStop(0.50, 'rgba(255,242,190,' + (ringA * 0.44) + ')');
+      ring.addColorStop(0.58, 'rgba(255,220,120,' + (ringA * 0.26) + ')');
+      ring.addColorStop(1.00, 'rgba(255,200,80,0)');
+
+      ctx.fillStyle = ring;
+      ctx.beginPath();
+      ctx.arc(cx, cy, fr * 1.20, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    /* ---------- 种子 ---------- */
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = globalAlpha;
+
+    const cosR = Math.cos(rotation);
+    const sinR = Math.sin(rotation);
+
+    for (let i = 0; i < N; i++) {
+      const growth = frontier - i;
+      if (growth <= 0) continue;
+
+      const g  = growth > 1 ? 1 : growth;
+      const eg = 1 - Math.pow(1 - g, 2.2);     // easeOutQuad 的柔化版
+
+      const s = seeds[i];
+      const r = s.rNorm * R_screen;
+
+      // 手动旋转
+      const x = cx + r * (s.cosT * cosR - s.sinT * sinR);
+      const y = cy + r * (s.cosT * sinR + s.sinT * cosR);
+
+      const sr = seedRadius * eg;
+      if (sr < 0.22) continue;
+
+      // 柔光（外围种子略强）
+      if (sr > 2.4) {
+        ctx.fillStyle = s.glow;
+        ctx.beginPath();
+        ctx.arc(x, y, sr * 1.55, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // 种子本体
+      ctx.fillStyle = s.color;
+      ctx.beginPath();
+      ctx.arc(x, y, sr, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    requestAnimationFrame(frame);
+  }
+
+  /* ================= 启动 ================= */
+  resize();
+  initSeeds();
+  requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>
