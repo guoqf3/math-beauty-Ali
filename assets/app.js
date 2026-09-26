@@ -3,10 +3,12 @@
 let _mf = null;
 async function manifest(){
   if (_mf) return _mf;
-  const r = await fetch('manifest.json', {cache:'no-store'});
-  if (!r.ok) throw new Error('manifest.json 未找到，请先运行 build_site.py');
-  _mf = await r.json();
-  return _mf;
+  if (window.__SITE__) { _mf = window.__SITE__; return _mf; }   // 内联数据(file:// 也可用)
+  try{                                                          // 兜底：老站点仍可 fetch
+    const r = await fetch('manifest.json', {cache:'no-store'});
+    if (r.ok) { _mf = await r.json(); return _mf; }
+  }catch(e){}
+  throw new Error('站点数据缺失（assets/data.js 未生成）。请重新运行 build_site.py。');
 }
 function q(name){ return new URLSearchParams(location.search).get(name); }
 function esc(s){ return String(s).replace(/[&<>"']/g, c =>
