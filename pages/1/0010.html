@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>外摆线空间曲线 · 花瓣绽放</title>
+    <style>
+        :root {
+            --bg: #050513;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'Noto Serif SC', 'STSong', 'KaiTi', '楷体', '华文楷体', '宋体', serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            height: 100vh;
+            width: 100vw;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+        #canvas-container {
+            position: fixed;
+            inset: 0;
+            z-index: 1;
+        }
+        canvas {
+            display: block;
+        }
+        .overlay {
+            position: fixed;
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+        #title-overlay {
+            top: clamp(12px, 3.5vh, 36px);
+        }
+        #title-overlay .title {
+            font-size: clamp(1.0rem, 2.0vw, 1.45rem);
+            font-weight: 400;
+            letter-spacing: 0.10em;
+            color: rgba(235, 228, 220, 0.92);
+            text-shadow: 0 0 24px rgba(190, 165, 140, 0.5), 0 0 6px rgba(170, 148, 125, 0.35);
+            line-height: 1.4;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.60rem, 1.10vw, 0.76rem);
+            font-weight: 300;
+            letter-spacing: 0.06em;
+            color: rgba(200, 192, 180, 0.7);
+            margin-top: 0.2em;
+            text-shadow: 0 0 13px rgba(155, 140, 120, 0.3);
+        }
+        #formula-overlay {
+            bottom: clamp(14px, 3.5vh, 40px);
+        }
+        #formula-overlay .formula {
+            font-size: clamp(0.46rem, 0.80vw, 0.64rem);
+            font-style: italic;
+            letter-spacing: 0.03em;
+            color: rgba(222, 214, 204, 0.84);
+            text-shadow: 0 0 20px rgba(155, 140, 125, 0.42), 0 0 5px rgba(165, 148, 130, 0.28);
+            line-height: 1.55;
+            background: rgba(10, 9, 16, 0.46);
+            padding: 0.30em 1.0em;
+            border-radius: 2em;
+            backdrop-filter: blur(5px);
+            -webkit-backdrop-filter: blur(5px);
+            border: 1px solid rgba(145, 125, 105, 0.20);
+        }
+        @media (max-width: 600px) {
+            #formula-overlay .formula {
+                padding: 0.18em 0.45em;
+                letter-spacing: 0.02em;
+                font-size: 0.36rem;
+            }
+            #title-overlay .title {
+                letter-spacing: 0.06em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+
+    <div class="overlay" id="title-overlay">
+        <div class="title">外摆线空间曲线 · 花瓣绽放</div>
+        <div class="subtitle">Spatial Epitrochoid — A Geometric Blossom</div>
+    </div>
+
+    <div class="overlay" id="formula-overlay">
+        <div class="formula">
+            γ(t) = ( (R+r)cos t − d cos((R+r)/r t) , (R+r)sin t − d sin((R+r)/r t) , H sin(m t) )
+            &emsp;|&emsp; t ∈ [0, 2π]
+        </div>
+    </div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 时间配置 ====================
+        const DRAW_DURATION = 15.0;
+        const HOLD_DURATION = 1.5;
+        const ERASE_DURATION = 15.0;
+        const CYCLE_DURATION = DRAW_DURATION + HOLD_DURATION + ERASE_DURATION;
+        const DRAW_END = DRAW_DURATION;
+        const ERASE_START = DRAW_END + HOLD_DURATION;
+        const FADE_IN_DURATION = 2.5;
+        const FADE_OUT_START = CYCLE_DURATION - 3.0;
+        const CURVE_SEGMENTS = 800;
+        const TOTAL_VERTICES = CURVE_SEGMENTS + 1;
+
+        // ==================== 三种颜色 ====================
+        const COLOR_WARM_GOLD = new THREE.Color('#e8b86d');
+        const COLOR_ROSE = new THREE.Color('#e8a0b8');
+        const COLOR_CYAN = new THREE.Color('#7ec8e3');
+        const THREE_COLORS = [COLOR_WARM_GOLD, COLOR_ROSE, COLOR_CYAN];
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x050513, 0.00007);
+
+        const camera = new THREE.PerspectiveCamera(46, container.clientWidth / container.clientHeight, 0.4, 16);
+        camera.position.set(0.5, 0.6, 3.8);
+        camera.lookAt(0, 0.0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.16;
+        renderer.outputColorSpace = THREE.SRGBColorSpace;
+        container.appendChild(renderer.domElement);
+
+        const mainGroup = new THREE.Group();
+        scene.add(mainGroup);
+
+        // ==================== 星空背景粒子 ====================
+        const starsGroup = new THREE.Group();
+        mainGroup.add(starsGroup);
+        const starCount = 200;
+        const starPosArr = new Float32Array(starCount * 3);
+        for (let i = 0; i < starCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const r = 3.5 + Math.random() * 5.0;
+            starPosArr[i * 3] = Math.sin(phi) * Math.cos(theta) * r;
+            starPosArr[i * 3 + 1] = Math.sin(phi) * Math.sin(theta) * r;
+            starPosArr[i * 3 + 2] = Math.cos(phi) * r;
+        }
+        const starGeom = new THREE.BufferGeometry();
+        starGeom.setAttribute('position', new THREE.BufferAttribute(starPosArr, 3));
+        const starMat = new THREE.PointsMaterial({
+            color: 0xb5aec5,
+            size: 0.009,
+            transparent: true,
+            opacity: 0.26,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending,
+        });
+        starsGroup.add(new THREE.Points(starGeom, starMat));
+
+        // ==================== 漂浮光点 ====================
+        const glowGroup = new THREE.Group();
+        mainGroup.add(glowGroup);
+        const glowCount = 80;
+        const glowArr = new Float32Array(glowCount * 3);
+        const phiG = Math.PI * (3 - Math.sqrt(5));
+        for (let i = 0; i < glowCount; i++) {
+            const y = 1 - (i / (glowCount - 1)) * 2;
+            const rAtY = Math.sqrt(1 - y * y);
+            const theta = phiG * i;
+            glowArr[i * 3] = Math.cos(theta) * rAtY * 1.7;
+            glowArr[i * 3 + 1] = y * 1.7;
+            glowArr[i * 3 + 2] = Math.sin(theta) * rAtY * 1.7;
+        }
+        const glowGeom = new THREE.BufferGeometry();
+        glowGeom.setAttribute('position', new THREE.BufferAttribute(glowArr, 3));
+        const glowMat = new THREE.PointsMaterial({
+            color: 0xf0e4cc,
+            size: 0.020,
+            transparent: true,
+            opacity: 0.42,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending,
+        });
+        glowGroup.add(new THREE.Points(glowGeom, glowMat));
+
+        // ==================== 参考球体线框 ====================
+        const sphereWireGroup = new THREE.Group();
+        mainGroup.add(sphereWireGroup);
+        const sphereWireMats = [];
+        function createLatLine(phi) {
+            const pts = [];
+            const r = Math.sin(phi) * 1.55;
+            const y = Math.cos(phi) * 1.55;
+            for (let i = 0; i <= 240; i++) {
+                const th = (i / 240) * Math.PI * 2;
+                pts.push(new THREE.Vector3(r * Math.cos(th), y, r * Math.sin(th)));
+            }
+            const g = new THREE.BufferGeometry().setFromPoints(pts);
+            const m = new THREE.LineBasicMaterial({
+                color: 0x3a3650,
+                transparent: true,
+                opacity: 0.12,
+                depthWrite: false,
+            });
+            sphereWireMats.push(m);
+            return new THREE.Line(g, m);
+        }
+        function createLongLine(theta) {
+            const pts = [];
+            for (let i = 0; i <= 200; i++) {
+                const phi = (i / 200) * Math.PI;
+                pts.push(new THREE.Vector3(
+                    Math.sin(phi) * Math.cos(theta) * 1.55,
+                    Math.cos(phi) * 1.55,
+                    Math.sin(phi) * Math.sin(theta) * 1.55
+                ));
+            }
+            const g = new THREE.BufferGeometry().setFromPoints(pts);
+            const m = new THREE.LineBasicMaterial({
+                color: 0x3a3650,
+                transparent: true,
+                opacity: 0.12,
+                depthWrite: false,
+            });
+            sphereWireMats.push(m);
+            return new THREE.Line(g, m);
+        }
+        for (let i = 1; i <= 9; i++) sphereWireGroup.add(createLatLine((i / 10) * Math.PI));
+        for (let i = 0; i < 18; i++) sphereWireGroup.add(createLongLine((i / 18) * Math.PI * 2));
+        {
+            const eqPts = [];
+            for (let i = 0; i <= 280; i++) {
+                const th = (i / 280) * Math.PI * 2;
+                eqPts.push(new THREE.Vector3(Math.cos(th) * 1.55, 0, Math.sin(th) * 1.55));
+            }
+            const eqG = new THREE.BufferGeometry().setFromPoints(eqPts);
+            const eqM = new THREE.LineBasicMaterial({
+                color: 0x58527a,
+                transparent: true,
+                opacity: 0.17,
+                depthWrite: false,
+            });
+            sphereWireMats.push(eqM);
+            sphereWireGroup.add(new THREE.Line(eqG, eqM));
+        }
+
+        // ==================== 外摆线空间曲线生成 ====================
+        const curvesGroup = new THREE.Group();
+        mainGroup.add(curvesGroup);
+        const allCurveData = [];
+
+        /**
+         * 创建外摆线空间曲线
+         * @param {number} R - 定圆半径
+         * @param {number} r - 滚动圆半径
+         * @param {number} d - 描点距离滚动圆心的距离
+         * @param {number} m - z方向频率
+         * @param {number} H - z方向振幅
+         * @param {THREE.Color} color
+         */
+        function createEpitrochoidCurve(R, r, d, m, H, color) {
+            const positions = new Float32Array(TOTAL_VERTICES * 3);
+            const ratio = (R + r) / r; // 滚动圆转动的圈数相对于t
+            for (let i = 0; i <= CURVE_SEGMENTS; i++) {
+                const t = (i / CURVE_SEGMENTS) * Math.PI * 2;
+                const x = (R + r) * Math.cos(t) - d * Math.cos(ratio * t);
+                const y = (R + r) * Math.sin(t) - d * Math.sin(ratio * t);
+                const z = H * Math.sin(m * t);
+                positions[i * 3] = x;
+                positions[i * 3 + 1] = y;
+                positions[i * 3 + 2] = z;
+            }
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            geometry.setDrawRange(0, 0);
+            const material = new THREE.LineBasicMaterial({
+                color: color,
+                transparent: true,
+                opacity: 0.84,
+                depthWrite: false,
+            });
+            const line = new THREE.Line(geometry, material);
+            allCurveData.push({ geometry, totalVertices: TOTAL_VERTICES });
+            return line;
+        }
+
+        // 参数组：R=1，调整 r 和 d，H，m
+        const paramSets = [
+            // 金色组 (6条)
+            { R: 1, r: 0.5, d: 0.45, m: 5, H: 0.35 },
+            { R: 1, r: 0.333, d: 0.55, m: 7, H: 0.28 },
+            { R: 1, r: 0.25, d: 0.40, m: 9, H: 0.32 },
+            { R: 1, r: 0.5, d: 0.20, m: 8, H: 0.40 },
+            { R: 1, r: 0.333, d: 0.30, m: 6, H: 0.38 },
+            { R: 1, r: 0.25, d: 0.50, m: 11, H: 0.25 },
+            // 玫瑰粉组 (6条)
+            { R: 1, r: 0.5, d: 0.55, m: 4, H: 0.30 },
+            { R: 1, r: 0.333, d: 0.25, m: 8, H: 0.35 },
+            { R: 1, r: 0.25, d: 0.35, m: 7, H: 0.45 },
+            { R: 1, r: 0.5, d: 0.38, m: 6, H: 0.33 },
+            { R: 1, r: 0.333, d: 0.48, m: 10, H: 0.28 },
+            { R: 1, r: 0.25, d: 0.22, m: 12, H: 0.38 },
+            // 青蓝组 (6条)
+            { R: 1, r: 0.5, d: 0.28, m: 7, H: 0.42 },
+            { R: 1, r: 0.333, d: 0.42, m: 5, H: 0.30 },
+            { R: 1, r: 0.25, d: 0.58, m: 10, H: 0.22 },
+            { R: 1, r: 0.5, d: 0.48, m: 9, H: 0.28 },
+            { R: 1, r: 0.333, d: 0.20, m: 11, H: 0.36 },
+            { R: 1, r: 0.25, d: 0.30, m: 8, H: 0.40 },
+        ];
+
+        const colors = [
+            ...Array(6).fill(COLOR_WARM_GOLD),
+            ...Array(6).fill(COLOR_ROSE),
+            ...Array(6).fill(COLOR_CYAN),
+        ];
+
+        paramSets.forEach((ps, idx) => {
+            curvesGroup.add(createEpitrochoidCurve(ps.R, ps.r, ps.d, ps.m, ps.H, colors[idx]));
+        });
+
+        const totalCurves = allCurveData.length;
+
+        // ==================== 动画循环 ====================
+        const clock = new THREE.Clock();
+        let animationStartTime = performance.now() / 1000;
+        clock.getDelta();
+
+        function getCycleTime() {
+            return (performance.now() / 1000 - animationStartTime) % CYCLE_DURATION;
+        }
+
+        function easeInOutCubic(t) {
+            return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const cycleTime = getCycleTime();
+            const dt = Math.min(clock.getDelta(), 0.1);
+
+            mainGroup.rotation.y += 0.23 * dt;
+            mainGroup.rotation.x += 0.055 * dt;
+            mainGroup.rotation.z += 0.013 * Math.sin(cycleTime * 0.56) * dt;
+
+            const sway = 0.08 * Math.sin(cycleTime * (Math.PI * 2 / 33));
+            camera.position.y = 0.6 + sway;
+            camera.lookAt(0, 0.0, 0);
+
+            let fraction;
+            if (cycleTime < DRAW_END) {
+                fraction = easeInOutCubic(cycleTime / DRAW_DURATION);
+            } else if (cycleTime < ERASE_START) {
+                fraction = 1.0;
+            } else if (cycleTime < CYCLE_DURATION) {
+                const elapsed = cycleTime - ERASE_START;
+                fraction = 1.0 - easeInOutCubic(elapsed / ERASE_DURATION);
+                fraction = Math.max(0, fraction);
+            } else {
+                fraction = 0;
+            }
+
+            for (const data of allCurveData) {
+                const count = Math.round(fraction * data.totalVertices);
+                data.geometry.setDrawRange(0, Math.max(0, Math.min(data.totalVertices, count)));
+            }
+
+            let bgOp;
+            if (cycleTime < FADE_IN_DURATION) {
+                bgOp = cycleTime / FADE_IN_DURATION;
+            } else if (cycleTime < FADE_OUT_START) {
+                bgOp = 1.0;
+            } else if (cycleTime < CYCLE_DURATION) {
+                bgOp = 1.0 - (cycleTime - FADE_OUT_START) / (CYCLE_DURATION - FADE_OUT_START);
+            } else {
+                bgOp = 0;
+            }
+            bgOp = Math.max(0, Math.min(1, bgOp));
+
+            starMat.opacity = 0.26 * bgOp;
+            glowMat.opacity = 0.42 * bgOp;
+            for (const mat of sphereWireMats) {
+                mat.opacity = (mat.opacity ?? 0.12) * bgOp;
+            }
+
+            glowGroup.position.y = Math.sin(cycleTime * 1.1) * 0.04;
+            starsGroup.rotation.y += dt * 0.016;
+            starsGroup.rotation.x += dt * 0.012;
+
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = container.clientWidth / container.clientHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        });
+
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'r' || e.key === 'R') {
+                animationStartTime = performance.now() / 1000;
+                for (const data of allCurveData) {
+                    data.geometry.setDrawRange(0, 0);
+                }
+                mainGroup.rotation.set(0, 0, 0);
+            }
+        });
+
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+
+        console.log('🌸 外摆线空间曲线动画已启动');
+        console.log(`   - ${totalCurves} 条闭合曲线，3种颜色各${totalCurves/3}条`);
+        console.log('   - 公式：x=(R+r)cos t − d cos((R+r)/r t), y类似, z=H sin(m t)');
+        console.log(`   - 周期：${CYCLE_DURATION.toFixed(1)}秒`);
+        console.log('   - 按 R 键可重置');
+    </script>
+</body>
+</html>

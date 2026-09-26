@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>INK · 水墨晕染</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #0d0d1a;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            right: 32px;
+            z-index: 2;
+            text-align: right;
+            pointer-events: none;
+            opacity: 0.55;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+
+        .overlay:hover {
+            opacity: 0.9;
+        }
+
+        .title {
+            color: rgba(230, 225, 240, 0.75);
+            font-size: 11px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 18px rgba(130, 120, 200, 0.4);
+        }
+
+        .hint {
+            color: rgba(180, 170, 200, 0.45);
+            font-size: 8px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+
+        @media (max-width: 768px) {
+            .overlay {
+                bottom: 18px;
+                right: 20px;
+            }
+            .title {
+                font-size: 9px;
+                letter-spacing: 0.45em;
+            }
+            .hint {
+                font-size: 7px;
+                letter-spacing: 0.25em;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="canvas"></canvas>
+
+    <div class="overlay">
+        <div class="title">Ink</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script>
+        (function() {
+            // ─── 画布初始化 ───────────────────────────────────────────────
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            let particles = [];
+            let mouse = { x: -9999, y: -9999, active: false };
+            let time = 0;
+            let colorShift = 0;          // 色彩偏移量
+            let burstParticles = [];     // 点击爆发的额外粒子
+            let paletteIndex = 0;        // 当前调色板索引
+            const maxParticles = 260;    // 粒子总数上限
+
+            // 预定义调色板（HSLA 基础色相）
+            const palettes = [
+                { baseHue: 200, sat: 80, light: 65 },   // 冰蓝
+                { baseHue: 280, sat: 75, light: 65 },   // 紫罗兰
+                { baseHue: 150, sat: 70, light: 65 },   // 薄荷
+                { baseHue: 30, sat: 80, light: 65 },    // 琥珀
+                { baseHue: 0, sat: 75, light: 65 },     // 绯红
+            ];
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                // 深色背景，避免白屏
+                ctx.fillStyle = '#0d0d1a';
+                ctx.fillRect(0, 0, W, H);
+                // 使用 lighter 混合模式，让墨水叠加发光
+                ctx.globalCompositeOperation = 'lighter';
+            }
+
+            // ─── 墨滴粒子类 ─────────────────────────────────────────────
+            class InkParticle {
+                constructor(x, y, hue, sat, light, size, vx, vy, life) {
+                    this.x = x;
+                    this.y = y;
+                    this.hue = hue;
+                    this.sat = sat;
+                    this.light = light;
+                    this.size = size || 1.5 + Math.random() * 3.5;
+                    this.vx = vx || (Math.random() - 0.5) * 0.8;
+                    this.vy = vy || (Math.random() - 0.5) * 0.8;
+                    this.life = life || 0.8 + Math.random() * 0.5;
+                    this.maxLife = this.life;
+                    this.alpha = 0.4 + Math.random() * 0.5;
+                    this.damping = 0.96 + Math.random() * 0.02;
+                }
+
+                update(dt) {
+                    // 随机布朗运动
+                    this.vx += (Math.random() - 0.5) * 0.15;
+                    this.vy += (Math.random() - 0.5) * 0.15;
+
+                    // 鼠标轻微吸引，模拟墨水被引导
+                    if (mouse.active) {
+                        const dx = mouse.x - this.x;
+                        const dy = mouse.y - this.y;
+                        const distSq = dx * dx + dy * dy;
+                        const influenceRadius = 180;
+                        const infSq = influenceRadius * influenceRadius;
+                        if (distSq < infSq && distSq > 1) {
+                            const dist = Math.sqrt(distSq);
+                            const force = (1 - dist / influenceRadius) * 0.12;
+                            this.vx += (dx / dist) * force;
+                            this.vy += (dy / dist) * force;
+                        }
+                    }
+
+                    // 阻尼
+                    this.vx *= this.damping;
+                    this.vy *= this.damping;
+
+                    // 更新位置
+                    this.x += this.vx * dt;
+                    this.y += this.vy * dt;
+
+                    // 边界柔和反弹
+                    const margin = 20;
+                    if (this.x < margin) { this.vx += 0.3; }
+                    if (this.x > W - margin) { this.vx -= 0.3; }
+                    if (this.y < margin) { this.vy += 0.3; }
+                    if (this.y > H - margin) { this.vy -= 0.3; }
+
+                    // 生命周期衰减
+                    this.life -= 0.0015 * dt;
+                    if (this.life <= 0) this.life = 0;
+                }
+
+                draw(ctx) {
+                    if (this.life <= 0) return;
+                    const alpha = this.alpha * (this.life / this.maxLife);
+                    const size = this.size * (0.5 + 0.5 * (this.life / this.maxLife));
+                    const hue = this.hue + Math.sin(time * 0.3 + this.size) * 15;
+                    const sat = this.sat;
+                    const light = this.light + 15 * (this.life / this.maxLife);
+
+                    // 径向渐变，模拟墨滴边缘柔和
+                    const gradient = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, size * 2);
+                    gradient.addColorStop(0, `hsla(${hue}, ${sat}%, ${light}%, ${alpha})`);
+                    gradient.addColorStop(0.5, `hsla(${hue}, ${sat}%, ${light - 5}%, ${alpha * 0.7})`);
+                    gradient.addColorStop(1, 'transparent');
+                    ctx.fillStyle = gradient;
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, size * 2, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            // ─── 连接线绘制（水墨纤维） ─────────────────────────────────
+            function drawConnections(ctx) {
+                const maxDist = 70;
+                const maxDistSq = maxDist * maxDist;
+                const connectionAlphaBase = 0.12;
+                let drawn = 0;
+                const maxLines = 800;
+
+                for (let i = 0; i < particles.length; i++) {
+                    const p1 = particles[i];
+                    if (p1.life <= 0.05) continue;
+                    for (let j = i + 1; j < particles.length; j++) {
+                        if (drawn > maxLines) return;
+                        const p2 = particles[j];
+                        if (p2.life <= 0.05) continue;
+                        const dx = p1.x - p2.x;
+                        const dy = p1.y - p2.y;
+                        if (Math.abs(dx) > maxDist || Math.abs(dy) > maxDist) continue;
+                        const distSq = dx * dx + dy * dy;
+                        if (distSq < maxDistSq) {
+                            const dist = Math.sqrt(distSq);
+                            const alpha = connectionAlphaBase * (1 - dist / maxDist) * 
+                                          ((p1.life + p2.life) / 2);
+                            if (alpha < 0.01) continue;
+                            const hue = (p1.hue + p2.hue) / 2;
+                            const light = (p1.light + p2.light) / 2 + 10;
+                            ctx.strokeStyle = `hsla(${hue}, 60%, ${light}%, ${alpha})`;
+                            ctx.lineWidth = 0.5;
+                            ctx.beginPath();
+                            ctx.moveTo(p1.x, p1.y);
+                            ctx.lineTo(p2.x, p2.y);
+                            ctx.stroke();
+                            drawn++;
+                        }
+                    }
+                }
+            }
+
+            // ─── 生成新墨滴 ─────────────────────────────────────────────
+            function spawnInk(x, y, count, speedScale = 1) {
+                const palette = palettes[paletteIndex];
+                for (let i = 0; i < count; i++) {
+                    if (particles.length >= maxParticles) {
+                        // 替换最老的粒子
+                        particles.shift();
+                    }
+                    const angle = Math.random() * Math.PI * 2;
+                    const speed = (0.5 + Math.random() * 1.5) * speedScale;
+                    const hue = palette.baseHue + Math.random() * 40 - 20;
+                    const sat = palette.sat - Math.random() * 20;
+                    const light = palette.light - Math.random() * 15;
+                    const size = 1.5 + Math.random() * 3.0;
+                    const vx = Math.cos(angle) * speed;
+                    const vy = Math.sin(angle) * speed;
+                    const life = 0.6 + Math.random() * 0.8;
+                    particles.push(new InkParticle(x + (Math.random() - 0.5) * 10, 
+                                                  y + (Math.random() - 0.5) * 10, 
+                                                  hue, sat, light, size, vx, vy, life));
+                }
+            }
+
+            // ─── 点击爆发粒子 ───────────────────────────────────────────
+            function createBurst(x, y) {
+                const count = 30 + Math.floor(Math.random() * 25);
+                const palette = palettes[paletteIndex];
+                for (let i = 0; i < count; i++) {
+                    const angle = Math.random() * Math.PI * 2;
+                    const speed = 2 + Math.random() * 5;
+                    const hue = palette.baseHue + Math.random() * 50 - 25;
+                    burstParticles.push({
+                        x, y,
+                        vx: Math.cos(angle) * speed,
+                        vy: Math.sin(angle) * speed,
+                        life: 0.7 + Math.random() * 0.5,
+                        maxLife: 1.2,
+                        size: 2 + Math.random() * 4,
+                        hue: hue,
+                        sat: palette.sat,
+                        light: palette.light + 10,
+                        alpha: 0.8,
+                    });
+                }
+                if (burstParticles.length > 150) burstParticles.splice(0, burstParticles.length - 150);
+            }
+
+            function updateBurstParticles(dt) {
+                for (let i = burstParticles.length - 1; i >= 0; i--) {
+                    const p = burstParticles[i];
+                    p.x += p.vx * dt;
+                    p.y += p.vy * dt;
+                    p.vx *= 0.95;
+                    p.vy *= 0.95;
+                    p.life -= 0.02 * dt;
+                    if (p.life <= 0) burstParticles.splice(i, 1);
+                }
+            }
+
+            function drawBurstParticles(ctx) {
+                for (const p of burstParticles) {
+                    const alpha = p.life * p.alpha * 0.7;
+                    const size = p.size * p.life;
+                    const gradient = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, size);
+                    gradient.addColorStop(0, `hsla(${p.hue}, ${p.sat}%, ${p.light}%, ${alpha})`);
+                    gradient.addColorStop(1, 'transparent');
+                    ctx.fillStyle = gradient;
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, size, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            // ─── 鼠标光晕 ───────────────────────────────────────────────
+            function drawCursorGlow(ctx) {
+                if (!mouse.active) return;
+                const radius = 80;
+                const palette = palettes[paletteIndex];
+                const hue = palette.baseHue + colorShift;
+                const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                gradient.addColorStop(0, `hsla(${hue}, 65%, 75%, 0.05)`);
+                gradient.addColorStop(0.7, `hsla(${hue}, 55%, 70%, 0.02)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // ─── 主循环 ─────────────────────────────────────────────────
+            let lastTime = 0;
+            let accumulator = 0;
+            const fixedStep = 1000 / 60;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+
+                accumulator += dt;
+                const steps = Math.min(Math.floor(accumulator / fixedStep), 3);
+                accumulator -= steps * fixedStep;
+
+                for (let s = 0; s < steps; s++) {
+                    time += 0.015;
+                    const dtNorm = fixedStep / 1000 * 60;
+                    // 更新粒子
+                    for (const p of particles) {
+                        p.update(dtNorm);
+                    }
+                    // 移除死亡粒子
+                    particles = particles.filter(p => p.life > 0.01);
+                    updateBurstParticles(dtNorm);
+                }
+
+                // 拖尾效果：半透明清除
+                ctx.globalCompositeOperation = 'source-over';
+                ctx.fillStyle = 'rgba(13, 13, 26, 0.16)';
+                ctx.fillRect(0, 0, W, H);
+                ctx.globalCompositeOperation = 'lighter';
+
+                // 绘制连接线
+                drawConnections(ctx);
+
+                // 绘制粒子
+                for (const p of particles) {
+                    p.draw(ctx);
+                }
+
+                // 绘制爆发粒子
+                drawBurstParticles(ctx);
+
+                // 绘制鼠标光晕
+                drawCursorGlow(ctx);
+
+                requestAnimationFrame(animate);
+            }
+
+            // ─── 交互事件 ───────────────────────────────────────────────
+            function onMouseMove(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                // 移动时生成少量墨滴
+                if (Math.random() < 0.7) {
+                    spawnInk(mouse.x, mouse.y, 1 + Math.floor(Math.random() * 2), 0.6);
+                }
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                createBurst(mouse.x, mouse.y);
+                // 切换调色板
+                paletteIndex = (paletteIndex + 1) % palettes.length;
+                colorShift += 20 + Math.random() * 20;
+                if (colorShift > 60) colorShift = -20;
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    if (Math.random() < 0.7) {
+                        spawnInk(mouse.x, mouse.y, 1 + Math.floor(Math.random() * 2), 0.6);
+                    }
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    createBurst(mouse.x, mouse.y);
+                    paletteIndex = (paletteIndex + 1) % palettes.length;
+                    colorShift += 20 + Math.random() * 20;
+                    if (colorShift > 60) colorShift = -20;
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onResize() {
+                setupCanvas();
+                // 保留部分粒子，调整位置比例
+                const scaleX = W / (W - 0) ; // 此处W已经更新，需要旧值？简化处理：清空并重新初始化
+                particles = [];
+                burstParticles = [];
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+                // 生成一些初始粒子
+                for (let i = 0; i < 40; i++) {
+                    spawnInk(Math.random() * W, Math.random() * H, 1, 0.5);
+                }
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+                // 初始墨滴
+                for (let i = 0; i < 60; i++) {
+                    spawnInk(Math.random() * W, Math.random() * H, 1, 0.5);
+                }
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            // 确保初始背景填充
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.globalCompositeOperation = 'source-over';
+                    ctx.fillStyle = '#0d0d1a';
+                    ctx.fillRect(0, 0, W, H);
+                    ctx.globalCompositeOperation = 'lighter';
+                }
+            });
+
+        })();
+    </script>
+</body>
+</html>

@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ARBOR · 分形树</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #0c0c18;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            right: 32px;
+            z-index: 2;
+            text-align: right;
+            pointer-events: none;
+            opacity: 0.55;
+            transition: opacity 0.8s ease;
+            mix-blend-mode: screen;
+        }
+
+        .overlay:hover {
+            opacity: 0.9;
+        }
+
+        .title {
+            color: rgba(230, 220, 255, 0.8);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 18px rgba(140, 120, 220, 0.5);
+        }
+
+        .hint {
+            color: rgba(180, 170, 210, 0.5);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.35em;
+            text-transform: uppercase;
+        }
+
+        @media (max-width: 768px) {
+            .overlay {
+                bottom: 18px;
+                right: 20px;
+            }
+            .title {
+                font-size: 8px;
+                letter-spacing: 0.5em;
+            }
+            .hint {
+                font-size: 6px;
+                letter-spacing: 0.25em;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="canvas"></canvas>
+
+    <div class="overlay">
+        <div class="title">Arbor</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script>
+        (function() {
+            // ─── 画布初始化 ───────────────────────────────────────────────
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            let mouse = { x: -9999, y: -9999, active: false, lastX: -9999, lastY: -9999 };
+            let time = 0;
+            let colorScheme = 0; // 0: 青绿, 1: 暖橙, 2: 紫罗兰, 3: 粉红
+            let growthPhase = 0;  // 用于树生长动画
+            let targetGrowth = 1; // 生长目标
+            let growth = 1;       // 当前生长值（0-1）
+            let windForce = 0;    // 风力
+
+            // 颜色方案
+            const palettes = [
+                { baseHue: 170, sat: 70, light: 65 },   // 青绿
+                { baseHue: 30, sat: 85, light: 65 },    // 暖橙
+                { baseHue: 260, sat: 70, light: 70 },   // 紫罗兰
+                { baseHue: 330, sat: 75, light: 70 },   // 粉红
+            ];
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                // 深色背景，避免白屏
+                ctx.fillStyle = '#0c0c18';
+                ctx.fillRect(0, 0, W, H);
+            }
+
+            // ─── 递归绘制分形树 ─────────────────────────────────────────
+            function drawTree(ctx, x, y, angle, length, depth, maxDepth, wind, t) {
+                if (depth > maxDepth || length < 2) return;
+
+                // 风吹导致的弯曲，随深度增加而增加
+                const windEffect = wind * (depth / maxDepth) * 15;
+                const currentAngle = angle + windEffect * Math.sin(t * 0.8 + depth * 0.5);
+                const currentLength = length * (0.7 + 0.3 * Math.sin(t * 1.2 + depth * 0.7));
+                const endX = x + Math.cos(currentAngle) * currentLength;
+                const endY = y + Math.sin(currentAngle) * currentLength;
+
+                // 生长动画：根据growth值裁剪长度
+                const growthFactor = Math.min(1, growth + (depth / maxDepth) * 0.3);
+                const drawLength = currentLength * growthFactor;
+                const drawnEndX = x + Math.cos(currentAngle) * drawLength;
+                const drawnEndY = y + Math.sin(currentAngle) * drawLength;
+
+                // 颜色计算：越末端颜色越亮
+                const palette = palettes[colorScheme];
+                const lightness = palette.light + (1 - depth / maxDepth) * 30;
+                const hue = palette.baseHue + depth * 3 + Math.sin(t * 0.5 + depth) * 10;
+                const alpha = 0.5 + (1 - depth / maxDepth) * 0.4;
+                const lineWidth = Math.max(0.5, (maxDepth - depth) * 0.8 + 0.4);
+
+                ctx.strokeStyle = `hsla(${hue}, ${palette.sat}%, ${lightness}%, ${alpha})`;
+                ctx.lineWidth = lineWidth;
+                ctx.lineCap = 'round';
+
+                // 绘制当前分支（使用生长后的端点）
+                ctx.beginPath();
+                ctx.moveTo(x, y);
+                ctx.lineTo(drawnEndX, drawnEndY);
+                ctx.stroke();
+
+                // 在分支节点画一个发光点（当depth较小时）
+                if (depth < maxDepth - 1) {
+                    const glowAlpha = 0.15 + (1 - depth / maxDepth) * 0.15;
+                    ctx.fillStyle = `hsla(${hue}, 90%, 80%, ${glowAlpha})`;
+                    ctx.beginPath();
+                    ctx.arc(drawnEndX, drawnEndY, lineWidth * 0.8, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+
+                // 递归调用左右分支
+                const branchAngle1 = currentAngle + 0.45 + Math.sin(t * 0.6 + depth) * 0.15;
+                const branchAngle2 = currentAngle - 0.45 + Math.cos(t * 0.7 + depth) * 0.15;
+                const childLength = length * 0.72;
+
+                // 如果有生长动画，传递生长值
+                drawTree(ctx, drawnEndX, drawnEndY, branchAngle1, childLength, depth + 1, maxDepth, wind, t);
+                drawTree(ctx, drawnEndX, drawnEndY, branchAngle2, childLength, depth + 1, maxDepth, wind, t);
+            }
+
+            // ─── 绘制地面光晕 ───────────────────────────────────────────
+            function drawGroundGlow(ctx) {
+                const palette = palettes[colorScheme];
+                const gradient = ctx.createRadialGradient(W / 2, H * 0.9, 0, W / 2, H * 0.9, Math.max(W, H) * 0.3);
+                gradient.addColorStop(0, `hsla(${palette.baseHue}, 60%, 50%, 0.12)`);
+                gradient.addColorStop(0.7, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.fillRect(0, 0, W, H);
+            }
+
+            // ─── 鼠标光晕 ───────────────────────────────────────────────
+            function drawCursorGlow(ctx) {
+                if (!mouse.active) return;
+                const radius = 60;
+                const palette = palettes[colorScheme];
+                const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                gradient.addColorStop(0, `hsla(${palette.baseHue}, 70%, 75%, 0.08)`);
+                gradient.addColorStop(0.7, `hsla(${palette.baseHue}, 60%, 65%, 0.02)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // ─── 主循环 ─────────────────────────────────────────────────
+            let lastTime = 0;
+            let accumulator = 0;
+            const fixedStep = 1000 / 60;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+
+                accumulator += dt;
+                const steps = Math.min(Math.floor(accumulator / fixedStep), 3);
+                accumulator -= steps * fixedStep;
+
+                for (let s = 0; s < steps; s++) {
+                    time += 0.015;
+                    // 生长动画：逐渐趋向targetGrowth
+                    if (growth < targetGrowth) {
+                        growth = Math.min(targetGrowth, growth + 0.005);
+                    } else if (growth > targetGrowth) {
+                        growth = Math.max(targetGrowth, growth - 0.005);
+                    }
+                    // 风力平滑
+                    const targetWind = mouse.active ? (mouse.x - W / 2) / (W / 2) * 0.8 : 0;
+                    windForce += (targetWind - windForce) * 0.05;
+                }
+
+                // 清除画布
+                ctx.fillStyle = '#0c0c18';
+                ctx.fillRect(0, 0, W, H);
+
+                // 地面光晕
+                drawGroundGlow(ctx);
+
+                // 绘制分形树（树干从底部中央开始）
+                const treeBaseX = W / 2;
+                const treeBaseY = H * 0.85;
+                const treeLength = Math.min(H * 0.5, W * 0.35);
+                const maxDepth = 7;
+
+                // 树干角度：轻微受风影响
+                const trunkAngle = -Math.PI / 2 + windForce * 0.05;
+                drawTree(ctx, treeBaseX, treeBaseY, trunkAngle, treeLength, 0, maxDepth, windForce, time);
+
+                // 第二棵树，稍小，位置偏移，增加视觉丰富度
+                const tree2X = W * 0.2;
+                const tree2Y = H * 0.82;
+                const tree2Length = treeLength * 0.7;
+                drawTree(ctx, tree2X, tree2Y, -Math.PI / 2 - 0.2 + windForce * 0.04, tree2Length, 0, 6, windForce, time);
+
+                const tree3X = W * 0.8;
+                const tree3Y = H * 0.82;
+                const tree3Length = treeLength * 0.75;
+                drawTree(ctx, tree3X, tree3Y, -Math.PI / 2 + 0.15 + windForce * 0.04, tree3Length, 0, 6, windForce, time);
+
+                // 鼠标光晕
+                drawCursorGlow(ctx);
+
+                requestAnimationFrame(animate);
+            }
+
+            // ─── 交互事件 ───────────────────────────────────────────────
+            function onMouseMove(e) {
+                mouse.lastX = mouse.x;
+                mouse.lastY = mouse.y;
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+                mouse.lastX = -9999;
+                mouse.lastY = -9999;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                // 切换色彩方案
+                colorScheme = (colorScheme + 1) % palettes.length;
+                // 触发生长动画：重置生长值，使树重新生长
+                growth = 0.2;
+                targetGrowth = 1;
+                // 产生一个微小的风力脉冲
+                windForce += (Math.random() - 0.5) * 0.5;
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.lastX = mouse.x;
+                    mouse.lastY = mouse.y;
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    colorScheme = (colorScheme + 1) % palettes.length;
+                    growth = 0.2;
+                    targetGrowth = 1;
+                    windForce += (Math.random() - 0.5) * 0.5;
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+                mouse.lastX = -9999;
+                mouse.lastY = -9999;
+            }
+
+            function onResize() {
+                setupCanvas();
+                // 生长重置
+                growth = 0.5;
+                targetGrowth = 1;
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            // 初始背景
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#0c0c18';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+
+        })();
+    </script>
+</body>
+</html>

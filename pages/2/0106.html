@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CELLS · 浮游细胞</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #0c0c18;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2;
+            text-align: center;
+            pointer-events: none;
+            opacity: 0.55;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+
+        .overlay:hover {
+            opacity: 0.9;
+        }
+
+        .title {
+            color: rgba(220, 230, 250, 0.8);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.55em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 18px rgba(130, 140, 220, 0.4);
+        }
+
+        .hint {
+            color: rgba(180, 190, 220, 0.5);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+
+        @media (max-width: 768px) {
+            .overlay {
+                bottom: 18px;
+            }
+            .title {
+                font-size: 8px;
+                letter-spacing: 0.4em;
+            }
+            .hint {
+                font-size: 6px;
+                letter-spacing: 0.22em;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="canvas"></canvas>
+
+    <div class="overlay">
+        <div class="title">Cells</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script>
+        (function() {
+            // ─── 画布初始化 ───────────────────────────────────────────────
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            let cells = [];
+            let mouse = { x: -9999, y: -9999, active: false };
+            let time = 0;
+            let colorShift = 0;           // 颜色偏移
+            let spawnParticles = [];      // 点击产生的小粒子效果
+
+            // ─── 性能参数 ───────────────────────────────────────────────
+            const MAX_CELLS = 55;
+            const INITIAL_CELLS = 35;
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                // 深色背景，避免白屏
+                ctx.fillStyle = '#0c0c18';
+                ctx.fillRect(0, 0, W, H);
+            }
+
+            // ─── 细胞类 ─────────────────────────────────────────────────
+            class Cell {
+                constructor(x, y) {
+                    this.x = x || Math.random() * W;
+                    this.y = y || Math.random() * H;
+                    this.vx = (Math.random() - 0.5) * 0.5;
+                    this.vy = (Math.random() - 0.5) * 0.5;
+                    this.radius = 14 + Math.random() * 32;          // 半径范围14-46
+                    this.baseRadius = this.radius;
+                    this.hue = Math.random() * 360;
+                    this.saturation = 45 + Math.random() * 40;
+                    this.lightness = 55 + Math.random() * 25;
+                    this.alpha = 0.12 + Math.random() * 0.18;      // 整体透明度低，叠加后显色
+                    this.pulsePhase = Math.random() * Math.PI * 2;
+                    this.pulseSpeed = 0.4 + Math.random() * 0.8;
+                    this.maxSpeed = 1.8;
+                }
+
+                update(dt, mouse, cells, index) {
+                    // 脉冲
+                    this.radius = this.baseRadius * (0.85 + 0.25 * Math.sin(time * this.pulseSpeed + this.pulsePhase));
+
+                    // 鼠标吸引
+                    if (mouse.active) {
+                        const dx = mouse.x - this.x;
+                        const dy = mouse.y - this.y;
+                        const distSq = dx * dx + dy * dy;
+                        const attractRadius = 220;
+                        const attractSq = attractRadius * attractRadius;
+                        if (distSq < attractSq && distSq > 0.001) {
+                            const dist = Math.sqrt(distSq);
+                            const force = (1 - dist / attractRadius) * 0.28;
+                            this.vx += (dx / dist) * force;
+                            this.vy += (dy / dist) * force;
+                        }
+                    }
+
+                    // 细胞间排斥力（避免重叠）
+                    for (let j = 0; j < cells.length; j++) {
+                        if (j === index) continue;
+                        const other = cells[j];
+                        const dx = this.x - other.x;
+                        const dy = this.y - other.y;
+                        const minDist = this.radius + other.radius;
+                        const distSq = dx * dx + dy * dy;
+                        if (distSq < minDist * minDist && distSq > 0.001) {
+                            const dist = Math.sqrt(distSq);
+                            const overlap = minDist - dist;
+                            const pushForce = overlap * 0.02;
+                            const normX = dx / dist;
+                            const normY = dy / dist;
+                            this.vx += normX * pushForce;
+                            this.vy += normY * pushForce;
+                        }
+                    }
+
+                    // 边界斥力
+                    const margin = 30;
+                    if (this.x < margin) this.vx += 0.2;
+                    if (this.x > W - margin) this.vx -= 0.2;
+                    if (this.y < margin) this.vy += 0.2;
+                    if (this.y > H - margin) this.vy -= 0.2;
+
+                    // 阻尼
+                    this.vx *= 0.975;
+                    this.vy *= 0.975;
+
+                    // 速度限制
+                    const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
+                    if (speed > this.maxSpeed) {
+                        this.vx = (this.vx / speed) * this.maxSpeed;
+                        this.vy = (this.vy / speed) * this.maxSpeed;
+                    }
+
+                    // 更新位置
+                    this.x += this.vx * dt;
+                    this.y += this.vy * dt;
+                }
+
+                draw(ctx) {
+                    const r = this.radius;
+                    const hue = (this.hue + colorShift) % 360;
+                    const sat = this.saturation;
+                    const light = this.lightness;
+                    const alpha = this.alpha;
+
+                    // 主体径向渐变
+                    const gradient = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, r);
+                    gradient.addColorStop(0, `hsla(${hue}, ${sat}%, ${light + 20}%, ${alpha * 1.5})`);
+                    gradient.addColorStop(0.5, `hsla(${hue}, ${sat}%, ${light}%, ${alpha})`);
+                    gradient.addColorStop(0.85, `hsla(${hue}, ${sat}%, ${light - 10}%, ${alpha * 0.7})`);
+                    gradient.addColorStop(1, 'transparent');
+
+                    ctx.fillStyle = gradient;
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, r, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // 高光（模拟气泡质感）
+                    const highlightX = this.x - r * 0.25;
+                    const highlightY = this.y - r * 0.3;
+                    const highlightRadius = r * 0.28;
+                    const highlightGradient = ctx.createRadialGradient(highlightX, highlightY, 0, highlightX, highlightY, highlightRadius);
+                    highlightGradient.addColorStop(0, `hsla(0, 0%, 95%, ${alpha * 1.2})`);
+                    highlightGradient.addColorStop(0.4, `hsla(0, 0%, 85%, ${alpha * 0.6})`);
+                    highlightGradient.addColorStop(1, 'transparent');
+                    ctx.fillStyle = highlightGradient;
+                    ctx.beginPath();
+                    ctx.arc(highlightX, highlightY, highlightRadius, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // 边缘微弱光晕
+                    if (r > 20) {
+                        ctx.strokeStyle = `hsla(${hue}, ${sat}%, ${light + 10}%, ${alpha * 0.4})`;
+                        ctx.lineWidth = 0.8;
+                        ctx.beginPath();
+                        ctx.arc(this.x, this.y, r * 0.9, 0, Math.PI * 2);
+                        ctx.stroke();
+                    }
+                }
+            }
+
+            // ─── 初始化细胞 ─────────────────────────────────────────────
+            function initCells() {
+                cells = [];
+                for (let i = 0; i < INITIAL_CELLS; i++) {
+                    cells.push(new Cell());
+                }
+            }
+
+            // ─── 创建新细胞（点击） ─────────────────────────────────────
+            function spawnCell(x, y) {
+                if (cells.length >= MAX_CELLS) {
+                    // 移除最旧的一个细胞
+                    cells.shift();
+                }
+                const cell = new Cell(x, y);
+                cell.radius = 10 + Math.random() * 20; // 新细胞较小
+                cell.baseRadius = cell.radius;
+                cells.push(cell);
+
+                // 产生粒子爆发效果
+                const burstCount = 10 + Math.floor(Math.random() * 8);
+                for (let i = 0; i < burstCount; i++) {
+                    const angle = Math.random() * Math.PI * 2;
+                    const speed = 2 + Math.random() * 3;
+                    spawnParticles.push({
+                        x, y,
+                        vx: Math.cos(angle) * speed,
+                        vy: Math.sin(angle) * speed,
+                        life: 0.5 + Math.random() * 0.4,
+                        maxLife: 0.9,
+                        size: 2 + Math.random() * 3,
+                        hue: (Math.random() * 360 + colorShift) % 360,
+                    });
+                }
+                if (spawnParticles.length > 80) spawnParticles.splice(0, spawnParticles.length - 80);
+            }
+
+            function updateSpawnParticles(dt) {
+                for (let i = spawnParticles.length - 1; i >= 0; i--) {
+                    const p = spawnParticles[i];
+                    p.x += p.vx * dt;
+                    p.y += p.vy * dt;
+                    p.vx *= 0.96;
+                    p.vy *= 0.96;
+                    p.life -= 0.025 * dt;
+                    if (p.life <= 0) spawnParticles.splice(i, 1);
+                }
+            }
+
+            function drawSpawnParticles(ctx) {
+                for (const p of spawnParticles) {
+                    const alpha = p.life * 0.8;
+                    const size = p.size * p.life;
+                    ctx.fillStyle = `hsla(${p.hue}, 70%, 70%, ${alpha})`;
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, size, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            // ─── 鼠标光晕 ───────────────────────────────────────────────
+            function drawCursorGlow(ctx) {
+                if (!mouse.active) return;
+                const radius = 120;
+                const hue = 220 + colorShift;
+                const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                gradient.addColorStop(0, `hsla(${hue}, 60%, 75%, 0.05)`);
+                gradient.addColorStop(0.6, `hsla(${hue}, 55%, 70%, 0.02)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // ─── 主循环 ─────────────────────────────────────────────────
+            let lastTime = 0;
+            let accumulator = 0;
+            const fixedStep = 1000 / 60;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+
+                accumulator += dt;
+                const steps = Math.min(Math.floor(accumulator / fixedStep), 3);
+                accumulator -= steps * fixedStep;
+
+                for (let s = 0; s < steps; s++) {
+                    time += 0.016;
+                    const dtNorm = fixedStep / 1000 * 60;
+                    for (let i = 0; i < cells.length; i++) {
+                        cells[i].update(dtNorm, mouse, cells, i);
+                    }
+                    updateSpawnParticles(dtNorm);
+                }
+
+                // 半透明覆盖实现拖尾
+                ctx.fillStyle = 'rgba(12, 12, 24, 0.18)';
+                ctx.fillRect(0, 0, W, H);
+
+                // 绘制细胞
+                for (const cell of cells) {
+                    cell.draw(ctx);
+                }
+
+                // 绘制粒子
+                drawSpawnParticles(ctx);
+
+                // 绘制鼠标光晕
+                drawCursorGlow(ctx);
+
+                requestAnimationFrame(animate);
+            }
+
+            // ─── 交互事件 ───────────────────────────────────────────────
+            function onMouseMove(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                spawnCell(mouse.x, mouse.y);
+                colorShift += 25 + Math.random() * 35;
+                if (colorShift > 140) colorShift = -30;
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    spawnCell(mouse.x, mouse.y);
+                    colorShift += 25 + Math.random() * 35;
+                    if (colorShift > 140) colorShift = -30;
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onResize() {
+                setupCanvas();
+                // 调整细胞位置比例
+                const scaleX = W / (W || 1);
+                const scaleY = H / (H || 1);
+                for (const cell of cells) {
+                    cell.x *= scaleX;
+                    cell.y *= scaleY;
+                }
+                spawnParticles = [];
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+                initCells();
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            // 确保初始背景填充
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#0c0c18';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+
+        })();
+    </script>
+</body>
+</html>

@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>流体漩涡 · Navier-Stokes Vortex</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{
+    height:100%;overflow:hidden;background:#03050f;
+    font-family:"Helvetica Neue",Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  canvas{display:block;position:fixed;inset:0;}
+
+  /* ---------- 暗角 ---------- */
+  .vignette{
+    position:fixed;inset:0;pointer-events:none;z-index:3;
+    background:radial-gradient(ellipse at 50% 50%,
+      transparent 26%,
+      rgba(3,5,15,.34) 62%,
+      rgba(1,2,8,.88) 100%);
+  }
+
+  /* ---------- 界面 ---------- */
+  #ui{position:fixed;inset:0;pointer-events:none;z-index:5;}
+
+  #title{
+    position:absolute;top:0;left:0;
+    padding:38px 46px;
+    opacity:0;animation:fade 2.0s .4s ease forwards;
+  }
+  #title h1{
+    font-size:clamp(18px,2.4vw,30px);
+    font-weight:200;
+    letter-spacing:.44em;text-indent:.44em;
+    background:linear-gradient(96deg,#5ee8ff 0%,#8ea8ff 36%,#c490ff 64%,#ff9ad4 100%);
+    -webkit-background-clip:text;background-clip:text;
+    color:transparent;
+    margin-bottom:14px;
+    filter:drop-shadow(0 0 28px rgba(110,200,255,.42));
+  }
+  #title .en{
+    font-size:9px;letter-spacing:.52em;text-indent:.52em;
+    color:rgba(140,210,255,.32);
+    margin-bottom:14px;
+  }
+  #title .sub{
+    font-size:10.5px;letter-spacing:.20em;line-height:1.9;
+    color:rgba(150,190,235,.26);font-weight:300;
+  }
+
+  /* ---------- 左下：方程 ---------- */
+  #formula{
+    position:absolute;bottom:0;left:0;
+    padding:0 46px 34px;
+    opacity:0;animation:fade 2.0s 1.1s ease forwards;
+    font-family:"SF Mono",Consolas,Monaco,"Courier New",monospace;
+    font-size:clamp(9px,1.0vw,11.5px);
+    line-height:2.05;
+    letter-spacing:.02em;
+    color:rgba(150,185,230,.28);
+    max-width:min(800px,88vw);
+  }
+  #formula .lab{
+    display:block;font-size:8px;
+    letter-spacing:.44em;text-indent:.44em;
+    color:rgba(120,165,220,.20);
+    margin-bottom:10px;
+  }
+  #formula .kw{color:rgba(95,230,255,.58);}
+  #formula .fn{color:rgba(180,175,255,.52);}
+  #formula .nm{color:rgba(255,205,140,.60);}
+  #formula .op{color:rgba(140,180,225,.26);}
+  #formula .cm{color:rgba(105,145,195,.20);font-style:italic;}
+
+  /* ---------- 右下 ---------- */
+  #hint{
+    position:absolute;bottom:0;right:0;
+    padding:0 46px 34px;
+    text-align:right;
+    opacity:0;animation:fade 2.0s 1.4s ease forwards;
+  }
+  #hint .big{
+    font-size:clamp(9.5px,1.0vw,12px);
+    letter-spacing:.32em;text-indent:.32em;
+    color:rgba(255,190,220,.40);
+    margin-bottom:10px;font-weight:300;
+  }
+  #hint .small{
+    font-family:"SF Mono",Consolas,Monaco,monospace;
+    font-size:8.5px;letter-spacing:.20em;
+    color:rgba(135,175,225,.22);
+    line-height:1.9;
+  }
+  #hint .key{
+    display:inline-block;
+    padding:1px 6px;margin:0 2px;
+    border:1px solid rgba(135,175,225,.18);
+    border-radius:3px;
+    color:rgba(200,225,255,.42);
+  }
+
+  /* ---------- 右上：涡旋计数 ---------- */
+  #stats{
+    position:absolute;top:0;right:0;
+    padding:38px 46px;
+    text-align:right;
+    opacity:0;animation:fade 2.0s 1.0s ease forwards;
+    font-family:"SF Mono",Consolas,Monaco,monospace;
+    font-size:9px;letter-spacing:.24em;line-height:2.0;
+    color:rgba(135,175,225,.24);
+  }
+  #stats .lab{
+    display:block;font-size:8px;
+    letter-spacing:.44em;text-indent:.44em;
+    color:rgba(120,165,220,.20);
+    margin-bottom:9px;
+  }
+  #stats .v{color:rgba(180,225,255,.52);}
+  #stats .g{color:rgba(255,200,140,.52);}
+
+  @keyframes fade{to{opacity:1;}}
+
+  @media (max-width:680px){
+    #title{padding:20px 20px;}
+    #formula{padding:0 20px 18px;font-size:8px;}
+    #hint{padding:0 20px 18px;}
+    #hint .small{display:none;}
+    #stats{padding:20px 20px;font-size:8px;}
+  }
+</style>
+</head>
+<body>
+
+<canvas id="c"></canvas>
+<div class="vignette"></div>
+
+<div id="ui">
+  <div id="title">
+    <h1>流体漩涡</h1>
+    <div class="en">NAVIER–STOKES VORTEX</div>
+    <div class="sub">点涡模型 · 涡量相互作用 · Biot–Savart 诱导速度</div>
+  </div>
+
+  <div id="stats">
+    <span class="lab">VORTEX FIELD</span>
+    <div><span>涡旋 </span><span class="v" id="nVort">0</span></div>
+    <div><span>粒子 </span><span class="v" id="nPart">0</span></div>
+    <div><span>总环量 </span><span class="g" id="gSum">0.00</span></div>
+  </div>
+
+  <div id="formula">
+    <span class="lab">NAVIER–STOKES · VORTICITY FORM</span>
+    <span class="kw">∂u</span><span class="op">/</span><span class="kw">∂t</span>
+    <span class="op">+</span> (<span class="kw">u</span><span class="op">·∇</span>)<span class="kw">u</span>
+    <span class="op">=</span> <span class="op">−</span><span class="fn">∇p/ρ</span>
+    <span class="op">+</span> <span class="fn">ν∇²u</span>
+    <span class="cm">&nbsp;&nbsp;// 动量方程</span><br>
+    <span class="kw">ω</span> <span class="op">=</span> <span class="fn">∇×u</span>
+    <span class="op">,&nbsp;&nbsp;</span>
+    <span class="kw">∂ω</span><span class="op">/</span><span class="kw">∂t</span>
+    <span class="op">+</span> (<span class="kw">u</span><span class="op">·∇</span>)<span class="kw">ω</span>
+    <span class="op">=</span> <span class="fn">ν∇²ω</span>
+    <span class="cm">&nbsp;&nbsp;// 涡量输运</span><br>
+    <span class="fn">u</span>(<span class="nm">r</span>) <span class="op">=</span>
+    <span class="nm">Γ</span><span class="op">/</span><span class="nm">2πr</span>
+    <span class="op">·</span> <span class="fn">θ̂</span>
+    <span class="cm">&nbsp;&nbsp;// 点涡诱导速度</span>
+  </div>
+
+  <div id="hint">
+    <div class="big">湍流中的数学秩序</div>
+    <div class="small">
+      <span class="key">按住</span> 注入新涡旋<br>
+      <span class="key">空格</span> 重置流场
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+'use strict';
+
+/* =========================================================
+   0. 基础
+   ========================================================= */
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d', { alpha:false });
+const TAU    = Math.PI * 2;
+
+let W = 0, H = 0, DPR = 1;
+let CX = 0, CY = 0;
+
+const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) ||
+                 window.innerWidth < 720;
+
+/* =========================================================
+   1. 参数
+   ========================================================= */
+const PARTICLE_COUNT     = isMobile ? 2400 : 5200;
+const VORTEX_COUNT       = isMobile ? 6 : 9;
+
+const PARTICLE_SOFT_R2   = 80 * 80;      // 粒子速度软化
+const VORTEX_SOFT_R2     = 150 * 150;    // 涡旋相互作用软化
+
+const MAX_VORTEX_SPEED   = 720;          // px/s
+const MAX_PARTICLE_SPEED = 1300;         // px/s
+
+const FADE_ALPHA         = 0.135;        // 拖尾衰减
+const PARTICLE_ALPHA     = 0.26;         // 单次绘制透明度
+
+const BUCKET_COUNT       = 40;           // 色相分桶数
+
+/* =========================================================
+   2. 状态
+   ========================================================= */
+let particles = [];
+let vortices  = [];
+
+/* 色相分桶 —— 扁平数组 [x0, y0, x1, y1, ...] */
+let buckets = new Array(BUCKET_COUNT);
+let bucketCounts = new Int32Array(BUCKET_COUNT);
+
+let time = 0;
+let lastTS = 0;
+
+/* 鼠标涡旋 */
+let mouseVortex = null;
+
+/* =========================================================
+   3. 尺寸
+   ========================================================= */
+function resize(){
+  DPR = Math.min(window.devicePixelRatio || 1, 1.75);
+  W = window.innerWidth;
+  H = window.innerHeight;
+
+  canvas.width  = Math.round(W * DPR);
+  canvas.height = Math.round(H * DPR);
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  CX = W * 0.5;
+  CY = H * 0.5;
+
+  init();
+}
+
+window.addEventListener('resize', resize);
+
+/* =========================================================
+   4. 初始化
+   ========================================================= */
+function initVortices(){
+  vortices = [];
+  const minDim = Math.min(W, H);
+
+  for (let i = 0; i < VORTEX_COUNT; i++){
+    const a = (i / VORTEX_COUNT) * TAU + Math.random() * 0.9;
+    const r = minDim * (0.08 + Math.random() * 0.24);
+
+    const sign  = Math.random() < 0.5 ? 1 : -1;
+    const mag   = 0.22 + Math.random() * 0.42;   // 相对 minDim² 系数
+
+    vortices.push({
+      x: CX + Math.cos(a) * r,
+      y: CY + Math.sin(a) * r,
+      vx: 0, vy: 0,
+      gamma: sign * mag * minDim * minDim,
+      phase: Math.random() * TAU,
+      pulse: 0.12 + Math.random() * 0.26,
+      baseGamma: sign * mag * minDim * minDim
+    });
+  }
+}
+
+function initParticles(){
+  particles = [];
+  for (let i = 0; i < PARTICLE_COUNT; i++){
+    particles.push({
+      x: Math.random() * W,
+      y: Math.random() * H,
+      vx: 0, vy: 0
+    });
+  }
+}
+
+/* 分桶预分配 */
+function initBuckets(){
+  buckets = new Array(BUCKET_COUNT);
+  for (let i = 0; i < BUCKET_COUNT; i++) buckets[i] = new Float32Array(2 * 600);
+  bucketCounts = new Int32Array(BUCKET_COUNT);
+}
+
+function init(){
+  initVortices();
+  initParticles();
+  initBuckets();
+
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = '#03050f';
+  ctx.fillRect(0, 0, W, H);
+
+  updateStats();
+}
+
+/* =========================================================
+   5. 物理 —— 涡旋相互作用（点涡模型）
+   ========================================================= */
+function updateVortices(dt){
+  const n = vortices.length;
+
+  /* ---- 计算相互诱导速度 ---- */
+  for (let i = 0; i < n; i++){
+    const vi = vortices[i];
+    let vx = 0, vy = 0;
+
+    for (let j = 0; j < n; j++){
+      if (i === j) continue;
+      const vj = vortices[j];
+
+      const dx = vi.x - vj.x;
+      const dy = vi.y - vj.y;
+      const r2 = dx * dx + dy * dy + VORTEX_SOFT_R2;
+
+      /* Γ/(2πr²) × (−dy, dx) */
+      const k = vj.gamma / (TAU * r2);
+
+      vx += -dy * k;
+      vy +=  dx * k;
+    }
+
+    vi.vx = vx;
+    vi.vy = vy;
+  }
+
+  /* ---- 积分位置 + 限速 ---- */
+  for (let i = 0; i < n; i++){
+    const v = vortices[i];
+
+    const sp = Math.hypot(v.vx, v.vy);
+    if (sp > MAX_VORTEX_SPEED){
+      v.vx = v.vx / sp * MAX_VORTEX_SPEED;
+      v.vy = v.vy / sp * MAX_VORTEX_SPEED;
+    }
+
+    v.x += v.vx * dt;
+    v.y += v.vy * dt;
+
+    /* ---- 边界柔性回拉 ---- */
+    const dx = v.x - CX;
+    const dy = v.y - CY;
+    const r  = Math.hypot(dx, dy);
+    const limit = Math.min(W, H) * 0.44;
+
+    if (r > limit){
+      const push = (r - limit) * 0.045;
+      v.x -= dx / r * push;
+      v.y -= dy / r * push;
+    }
+
+    /* ---- 强度呼吸：模拟涡量的生成与耗散 ---- */
+    v.phase += dt * (0.4 + Math.abs(v.gamma) * 1e-7);
+    v.gamma = v.baseGamma * (1 + v.pulse * Math.sin(v.phase));
+  }
+}
+
+/* =========================================================
+   6. 物理 —— 粒子平流
+   ========================================================= */
+function updateParticles(dt){
+  const nv = vortices.length;
+
+  for (let i = 0; i < particles.length; i++){
+    const p = particles[i];
+
+    /* ---- Biot–Savart 叠加 ---- */
+    let vx = 0, vy = 0;
+
+    for (let k = 0; k < nv; k++){
+      const v = vortices[k];
+
+      const dx = p.x - v.x;
+      const dy = p.y - v.y;
+      const r2 = dx * dx + dy * dy + PARTICLE_SOFT_R2;
+
+      const kf = v.gamma / (TAU * r2);
+
+      vx += -dy * kf;
+      vy +=  dx * kf;
+    }
+
+    /* ---- 鼠标涡旋叠加 ---- */
+    if (mouseVortex){
+      const dx = p.x - mouseVortex.x;
+      const dy = p.y - mouseVortex.y;
+      const r2 = dx * dx + dy * dy + PARTICLE_SOFT_R2;
+      const kf = mouseVortex.gamma / (TAU * r2);
+      vx += -dy * kf;
+      vy +=  dx * kf;
+    }
+
+    /* ---- 惯性平滑 ---- */
+    p.vx += (vx - p.vx) * 0.26;
+    p.vy += (vy - p.vy) * 0.26;
+
+    /* ---- 限速 ---- */
+    const sp = Math.hypot(p.vx, p.vy);
+    if (sp > MAX_PARTICLE_SPEED){
+      p.vx = p.vx / sp * MAX_PARTICLE_SPEED;
+      p.vy = p.vy / sp * MAX_PARTICLE_SPEED;
+    }
+
+    /* ---- 积分 ---- */
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+
+    /* ---- 环回 ---- */
+    if (p.x < -12)      p.x = W + 12;
+    else if (p.x > W + 12) p.x = -12;
+    if (p.y < -12)      p.y = H + 12;
+    else if (p.y > H + 12) p.y = -12;
+  }
+}
+
+/* =========================================================
+   7. 渲染
+   ========================================================= */
+function render(){
+  /* ---- 拖尾衰减 ---- */
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = 'rgba(3, 5, 15, ' + FADE_ALPHA + ')';
+  ctx.fillRect(0, 0, W, H);
+
+  /* ---- 色相分桶 ---- */
+  for (let b = 0; b < BUCKET_COUNT; b++) bucketCounts[b] = 0;
+
+  const tShift = time * 16;
+  const invCx = 1 / CX, invCy = 1 / CY;
+
+  for (let i = 0; i < particles.length; i++){
+    const p = particles[i];
+
+    /* 角度 → 色相，随时间旋转 */
+    const ang = Math.atan2(p.y - CY, p.x - CX);
+    let hue = ang * 57.2957795 + tShift;
+    hue = hue % 360;
+    if (hue < 0) hue += 360;
+
+    const b = (hue * 0.1111111) | 0;   // /3.6 → /360 × 40
+
+    let arr = buckets[b];
+    let c   = bucketCounts[b];
+
+    /* 容量保护 */
+    if (c + 2 >= arr.length){
+      const bigger = new Float32Array(arr.length * 2);
+      bigger.set(arr);
+      buckets[b] = bigger;
+      arr = bigger;
+    }
+
+    arr[c]     = p.x;
+    arr[c + 1] = p.y;
+    bucketCounts[b] = c + 2;
+  }
+
+  /* ---- 加法混合绘制 ---- */
+  ctx.globalCompositeOperation = 'lighter';
+
+  for (let b = 0; b < BUCKET_COUNT; b++){
+    const c = bucketCounts[b];
+    if (c === 0) continue;
+
+    const hue = (b + 0.5) * 9;
+    ctx.fillStyle = 'hsla(' + hue.toFixed(1) + ',92%,62%,' + PARTICLE_ALPHA + ')';
+
+    const arr = buckets[b];
+    ctx.beginPath();
+
+    for (let i = 0; i < c; i += 2){
+      const x = arr[i];
+      const y = arr[i + 1];
+      ctx.moveTo(x + 1.35, y);
+      ctx.arc(x, y, 1.35, 0, TAU);
+    }
+
+    ctx.fill();
+  }
+
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* =========================================================
+   8. HUD
+   ========================================================= */
+const nVortEl = document.getElementById('nVort');
+const nPartEl = document.getElementById('nPart');
+const gSumEl  = document.getElementById('gSum');
+
+let lastStatsUpdate = 0;
+
+function updateStats(){
+  let gsum = 0;
+  for (const v of vortices) gsum += v.gamma;
+
+  const minDim = Math.min(W, H);
+  const norm = gsum / (minDim * minDim);
+
+  nVortEl.textContent = vortices.length;
+  nPartEl.textContent = particles.length;
+  gSumEl.textContent  = (norm >= 0 ? '+' : '') + norm.toFixed(2);
+}
+
+/* =========================================================
+   9. 主循环
+   ========================================================= */
+function loop(now){
+  requestAnimationFrame(loop);
+
+  if (!lastTS){ lastTS = now; return; }
+
+  let dt = (now - lastTS) / 1000;
+  lastTS = now;
+
+  if (dt > 0.05) dt = 0.05;
+  if (dt < 0)    dt = 0;
+
+  time += dt;
+
+  /* ---- 物理 ---- */
+  updateVortices(dt);
+  updateParticles(dt);
+
+  /* ---- 渲染 ---- */
+  render();
+
+  /* ---- HUD 限频更新 ---- */
+  if (now - lastStatsUpdate > 300){
+    lastStatsUpdate = now;
+    updateStats();
+  }
+}
+
+/* =========================================================
+   10. 交互
+   ========================================================= */
+/* 按住鼠标 → 注入涡旋 */
+canvas.addEventListener('pointerdown', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+
+  const minDim = Math.min(W, H);
+
+  mouseVortex = {
+    x, y,
+    gamma: (Math.random() < 0.5 ? 1 : -1) * minDim * minDim * 0.50
+  };
+});
+
+canvas.addEventListener('pointermove', (e) => {
+  if (!mouseVortex) return;
+  const rect = canvas.getBoundingClientRect();
+  mouseVortex.x = e.clientX - rect.left;
+  mouseVortex.y = e.clientY - rect.top;
+});
+
+window.addEventListener('pointerup', () => { mouseVortex = null; });
+canvas.addEventListener('pointerleave', () => { mouseVortex = null; });
+
+/* 空格重置 */
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space'){
+    e.preventDefault();
+    init();
+  }
+});
+
+/* =========================================================
+   11. 启动
+   ========================================================= */
+resize();
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>

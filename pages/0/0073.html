@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>多项式根轨迹 · 参数空间编织</title>
+    <style>
+        :root {
+            --bg: #06060c;
+            --gold: #d4a843;
+            --cyan: #45b7aa;
+            --magenta: #d4708a;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'SimSun', serif;
+            -webkit-font-smoothing: antialiased;
+            user-select: none;
+        }
+        #canvas-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+        }
+        canvas {
+            display: block;
+        }
+        .overlay-title {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 22px 20px 8px;
+            text-align: center;
+            background: linear-gradient(180deg, rgba(6, 6, 12, 0.95) 0%, rgba(6, 6, 12, 0.8) 55%, rgba(6, 6, 12, 0) 100%);
+        }
+        .overlay-title h2 {
+            font-size: clamp(1.1rem, 2.2vw, 1.8rem);
+            font-weight: 400;
+            letter-spacing: 0.13em;
+            color: #e8d5b0;
+            text-shadow: 0 0 30px rgba(212, 168, 67, 0.45), 0 0 60px rgba(212, 168, 67, 0.18);
+            margin: 0 0 2px;
+            line-height: 1.3;
+        }
+        .overlay-title .sub {
+            font-size: clamp(0.65rem, 1.1vw, 0.85rem);
+            letter-spacing: 0.22em;
+            color: rgba(200, 180, 150, 0.65);
+        }
+        .overlay-formula {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 8px 20px 18px;
+            text-align: center;
+            background: linear-gradient(0deg, rgba(6, 6, 12, 0.95) 0%, rgba(6, 6, 12, 0.82) 55%, rgba(6, 6, 12, 0) 100%);
+        }
+        .formula-text {
+            font-size: clamp(0.6rem, 1.0vw, 0.8rem);
+            color: rgba(210, 200, 185, 0.8);
+            letter-spacing: 0.03em;
+            line-height: 1.7;
+        }
+        .clr-gold { color: #d4a843; font-weight: bold; }
+        .clr-cyan { color: #45b7aa; font-weight: bold; }
+        .clr-magenta { color: #d4708a; font-weight: bold; }
+        .formula-sep {
+            display: inline-block;
+            margin: 0 14px;
+            color: rgba(150, 140, 130, 0.35);
+        }
+    </style>
+</head>
+<body>
+    <div class="overlay-title">
+        <h2>多项式根轨迹 · 参数空间编织</h2>
+        <div class="sub">Root trajectories of z³ + a(t)z + b(t) · Stereographic projection</div>
+    </div>
+    <div class="overlay-formula">
+        <div class="formula-text">
+            <span class="clr-gold">a₁=1.5cos(ω₁t), b₁=0.8sin(ω₂t)</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-cyan">a₂=2.0sin(ν₁t), b₂=1.1cos(ν₂t)</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-magenta">a₃=1.8cos(μ₁t), b₃=1.3sin(μ₂t)</span>
+        </div>
+    </div>
+    <div id="canvas-container"></div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ---------- 场景初始化 ----------
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(46, container.clientWidth / container.clientHeight, 0.5, 22);
+        camera.position.set(3.2, 2.0, 7.2);
+        camera.lookAt(0, 0, 0);
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x06060c, 1);
+        container.appendChild(renderer.domElement);
+
+        // 手动时钟——杜绝暂停
+        let startTime = performance.now();
+        const getElapsed = () => (performance.now() - startTime) * 0.001;
+
+        const COLOR_GOLD = 0xd4a843;
+        const COLOR_CYAN = 0x45b7aa;
+        const COLOR_MAGENTA = 0xd4708a;
+        const SPHERE_R = 2.6;
+        const PROJ_D = 2.1;
+
+        // 球极投影
+        function stereographic(px, py) {
+            const denom = px * px + py * py + PROJ_D * PROJ_D;
+            return new THREE.Vector3(
+                2 * PROJ_D * px / denom,
+                2 * PROJ_D * py / denom,
+                (px * px + py * py - PROJ_D * PROJ_D) / denom
+            ).multiplyScalar(SPHERE_R);
+        }
+
+        // 卡尔达诺公式计算 z³ + pz + q = 0 的所有根
+        function cardanoRoots(p, q) {
+            const roots = [];
+            const p3 = p / 3;
+            const q2 = q / 2;
+            const delta = q2 * q2 + p3 * p3 * p3; // 判别式
+
+            if (Math.abs(delta) < 1e-12) {
+                // 有重根
+                const u = Math.cbrt(-q2);
+                roots.push({ re: 2 * u, im: 0 });
+                roots.push({ re: -u, im: 0 });
+                roots.push({ re: -u, im: 0 });
+            } else if (delta > 0) {
+                // 一个实根，两个共轭复根
+                const sqrtD = Math.sqrt(delta);
+                const u = Math.cbrt(-q2 + sqrtD);
+                const v = Math.cbrt(-q2 - sqrtD);
+                const re1 = u + v;
+                const re2 = -(u + v) / 2;
+                const im2 = (Math.sqrt(3) / 2) * (u - v);
+                roots.push({ re: re1, im: 0 });
+                roots.push({ re: re2, im: im2 });
+                roots.push({ re: re2, im: -im2 });
+            } else {
+                // 三个实根（三角函数形式）
+                const r = Math.sqrt(-p3 * p3 * p3);
+                const phi = Math.acos(-q2 / r);
+                const rCbrt = 2 * Math.sqrt(-p3);
+                for (let k = 0; k < 3; k++) {
+                    const angle = (phi + 2 * Math.PI * k) / 3;
+                    roots.push({ re: rCbrt * Math.cos(angle), im: 0 });
+                }
+            }
+            return roots;
+        }
+
+        // 牛顿法一步
+        function newtonStep(zRe, zIm, a, b) {
+            const x2 = zRe * zRe;
+            const y2 = zIm * zIm;
+            const xy = zRe * zIm;
+            const z3Re = zRe * (x2 - 3 * y2);
+            const z3Im = zIm * (3 * x2 - y2);
+            const fRe = z3Re + a * zRe + b;
+            const fIm = z3Im + a * zIm;
+            const derivRe = 3 * (x2 - y2) + a;
+            const derivIm = 6 * xy;
+            const denom = derivRe * derivRe + derivIm * derivIm;
+            if (denom < 1e-14) return { re: zRe, im: zIm, converged: true };
+            const corrRe = (fRe * derivRe + fIm * derivIm) / denom;
+            const corrIm = (fIm * derivRe - fRe * derivIm) / denom;
+            return {
+                re: zRe - corrRe,
+                im: zIm - corrIm,
+                converged: Math.abs(corrRe) < 1e-10 && Math.abs(corrIm) < 1e-10
+            };
+        }
+
+        // 追踪一条根轨迹：给定参数函数a(t),b(t)，追踪初始根在时间范围内的变化
+        function traceRoot(initialRoot, aFn, bFn, tMin, tMax, steps) {
+            const pts = [];
+            const dt = (tMax - tMin) / steps;
+            let zRe = initialRoot.re;
+            let zIm = initialRoot.im;
+
+            for (let i = 0; i <= steps; i++) {
+                const t = tMin + i * dt;
+                const aVal = aFn(t);
+                const bVal = bFn(t);
+                // 牛顿法校正（通常1-2次迭代足够）
+                for (let iter = 0; iter < 4; iter++) {
+                    const result = newtonStep(zRe, zIm, aVal, bVal);
+                    zRe = result.re;
+                    zIm = result.im;
+                    if (result.converged) break;
+                }
+                if (Math.abs(zRe) < 6 && Math.abs(zIm) < 6 && isFinite(zRe) && isFinite(zIm)) {
+                    pts.push({ re: zRe, im: zIm });
+                }
+            }
+            return pts;
+        }
+
+        // 生成一组参数路径下的所有根轨迹
+        function createParametricTrajectories(aFn, bFn, tMin, tMax, steps, colors) {
+            const group = new THREE.Group();
+            // 在tMin处计算初始根
+            const a0 = aFn(tMin);
+            const b0 = bFn(tMin);
+            const initialRoots = cardanoRoots(a0, b0);
+
+            for (let r = 0; r < 3; r++) {
+                const pts = traceRoot(initialRoots[r], aFn, bFn, tMin, tMax, steps);
+                if (pts.length < 2) continue;
+                const spherePts = pts
+                    .map(p => stereographic(p.re, p.im))
+                    .filter(p => p !== null);
+                if (spherePts.length < 2) continue;
+                const geom = new THREE.BufferGeometry().setFromPoints(spherePts);
+                const mat = new THREE.LineBasicMaterial({
+                    color: colors[r],
+                    transparent: true,
+                    opacity: 0.58,
+                    depthWrite: true,
+                    depthTest: true,
+                });
+                group.add(new THREE.Line(geom, mat));
+            }
+            return group;
+        }
+
+        // 主组
+        const rootGroup = new THREE.Group();
+        rootGroup.name = 'root-trajectories';
+        scene.add(rootGroup);
+
+        const tMax = 10 * Math.PI;
+        const steps = 550;
+        const rootColors = [COLOR_GOLD, COLOR_CYAN, COLOR_MAGENTA];
+
+        // 定义多组参数路径
+        const paramPaths = [
+            { aFn: t => 1.5 * Math.cos(1.0 * t), bFn: t => 0.8 * Math.sin(0.7 * t) },
+            { aFn: t => 2.0 * Math.sin(0.8 * t), bFn: t => 1.1 * Math.cos(1.2 * t) },
+            { aFn: t => 1.8 * Math.cos(1.3 * t + 0.5), bFn: t => 1.3 * Math.sin(0.9 * t + 0.3) },
+            { aFn: t => 1.2 * Math.sin(1.5 * t), bFn: t => 1.6 * Math.cos(0.6 * t + 1.0) },
+            { aFn: t => 2.2 * Math.cos(0.55 * t + 0.8), bFn: t => 0.9 * Math.sin(1.4 * t) },
+            { aFn: t => 1.4 * Math.sin(1.1 * t + 0.6), bFn: t => 1.7 * Math.cos(0.75 * t + 0.4) },
+            { aFn: t => 1.9 * Math.cos(0.9 * t + 1.2), bFn: t => 1.2 * Math.sin(1.05 * t + 0.7) },
+            { aFn: t => 1.6 * Math.sin(0.65 * t), bFn: t => 2.0 * Math.cos(1.15 * t + 0.9) },
+            { aFn: t => 2.4 * Math.cos(1.25 * t + 0.35), bFn: t => 0.7 * Math.sin(0.85 * t + 1.1) },
+            { aFn: t => 1.1 * Math.sin(1.6 * t + 0.25), bFn: t => 1.9 * Math.cos(0.5 * t + 0.55) },
+            { aFn: t => 2.1 * Math.cos(0.7 * t + 1.5), bFn: t => 1.5 * Math.sin(1.35 * t) },
+            { aFn: t => 1.3 * Math.sin(0.95 * t + 0.85), bFn: t => 2.3 * Math.cos(0.8 * t + 1.25) },
+        ];
+
+        // 为每条参数路径生成轨迹
+        paramPaths.forEach(({ aFn, bFn }) => {
+            rootGroup.add(createParametricTrajectories(aFn, bFn, 0, tMax, steps, rootColors));
+        });
+
+        // 额外：反向时间扫描以增加密度
+        paramPaths.slice(0, 6).forEach(({ aFn, bFn }) => {
+            const reversedAFn = t => aFn(tMax - t);
+            const reversedBFn = t => bFn(tMax - t);
+            rootGroup.add(createParametricTrajectories(reversedAFn, reversedBFn, 0, tMax, steps, rootColors));
+        });
+
+        // 辅助球面参考线
+        const refCircleCount = 8;
+        for (let i = 0; i < refCircleCount; i++) {
+            const lat = (i + 0.5) * Math.PI / refCircleCount;
+            const r = SPHERE_R * Math.sin(lat);
+            const z = SPHERE_R * Math.cos(lat);
+            const pts = [];
+            const dPhi = 2 * Math.PI / 240;
+            for (let j = 0; j <= 240; j++) {
+                const phi = j * dPhi;
+                pts.push(new THREE.Vector3(r * Math.cos(phi), z, r * Math.sin(phi)));
+            }
+            const geom = new THREE.BufferGeometry().setFromPoints(pts);
+            rootGroup.add(new THREE.Line(geom, new THREE.LineBasicMaterial({
+                color: 0x403830, transparent: true, opacity: 0.12, depthWrite: true, depthTest: true
+            })));
+        }
+        for (let k = 0; k < 6; k++) {
+            const phi = k * Math.PI / 3;
+            const pts = [];
+            const dTheta = Math.PI / 240;
+            for (let j = 0; j <= 240; j++) {
+                const theta = 0.02 + j * dTheta;
+                const st = Math.sin(theta);
+                pts.push(new THREE.Vector3(SPHERE_R * st * Math.cos(phi), SPHERE_R * Math.cos(theta), SPHERE_R * st * Math.sin(phi)));
+            }
+            const geom = new THREE.BufferGeometry().setFromPoints(pts);
+            rootGroup.add(new THREE.Line(geom, new THREE.LineBasicMaterial({
+                color: 0x303840, transparent: true, opacity: 0.10, depthWrite: true, depthTest: true
+            })));
+        }
+
+        console.log('根轨迹线条总数:', rootGroup.children.length);
+
+        // 背景星点
+        const starsGroup = new THREE.Group();
+        const starsGeom = new THREE.BufferGeometry();
+        const starsCount = 500;
+        const starsPos = new Float32Array(starsCount * 3);
+        for (let i = 0; i < starsCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const dist = 6.5 + Math.random() * 10;
+            starsPos[i * 3] = dist * Math.sin(phi) * Math.cos(theta);
+            starsPos[i * 3 + 1] = dist * Math.sin(phi) * Math.sin(theta);
+            starsPos[i * 3 + 2] = dist * Math.cos(phi);
+        }
+        starsGeom.setAttribute('position', new THREE.BufferAttribute(starsPos, 3));
+        const starsMat = new THREE.PointsMaterial({
+            color: 0x908878,
+            size: 0.018,
+            transparent: true,
+            opacity: 0.55,
+            depthWrite: false,
+        });
+        starsGroup.add(new THREE.Points(starsGeom, starsMat));
+        scene.add(starsGroup);
+
+        // ---- 双保险动画循环 ----
+        function mainLoop() {
+            const t = getElapsed();
+            rootGroup.rotation.x = t * 0.14;
+            rootGroup.rotation.y = t * 0.23;
+            rootGroup.rotation.z = t * 0.10;
+            starsGroup.rotation.y = t * 0.04;
+            starsGroup.rotation.x = t * 0.025;
+
+            const camRadius = 7.3;
+            const camAngle = t * 0.08;
+            const camHeight = 2.1 + Math.sin(t * 0.15) * 0.7;
+            camera.position.x = Math.cos(camAngle) * camRadius;
+            camera.position.z = Math.sin(camAngle) * camRadius;
+            camera.position.y = camHeight;
+            camera.lookAt(0, 0, 0);
+            renderer.render(scene, camera);
+        }
+
+        function scheduleFrame() {
+            requestAnimationFrame(() => {
+                try { mainLoop(); } catch (e) { console.warn('动画异常:', e); }
+                scheduleFrame();
+            });
+        }
+
+        // 预渲染首帧确保立即显示
+        renderer.render(scene, camera);
+        scheduleFrame();
+
+        // 响应式
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth, h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth, h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 120));
+
+        console.log('✅ 多项式根轨迹参数空间编织动画已稳定运行');
+    </script>
+</body>
+</html>

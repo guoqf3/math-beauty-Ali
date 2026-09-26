@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>INK · 水墨晕染</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #0a0a10;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2;
+            text-align: center;
+            pointer-events: none;
+            opacity: 0.55;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+
+        .overlay:hover {
+            opacity: 0.9;
+        }
+
+        .title {
+            color: rgba(220, 230, 240, 0.75);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 20px rgba(140, 170, 220, 0.4);
+        }
+
+        .hint {
+            color: rgba(170, 180, 200, 0.45);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+
+        @media (max-width: 768px) {
+            .overlay {
+                bottom: 18px;
+            }
+            .title {
+                font-size: 8px;
+                letter-spacing: 0.45em;
+            }
+            .hint {
+                font-size: 6px;
+                letter-spacing: 0.22em;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="canvas"></canvas>
+
+    <div class="overlay">
+        <div class="title">Ink</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script>
+        (function() {
+            // ─── 画布初始化 ───────────────────────────────────────────────
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            let offscreenCanvas, offscreenCtx;
+            let offW, offH;      // 离屏画布尺寸
+            let mouse = { x: -9999, y: -9999, active: false, lastDropX: -9999, lastDropY: -9999 };
+            let time = 0;
+            let colorShift = 0;
+            let inkDrops = [];    // 用于物理扩散的墨滴数据（简化：直接绘制到离屏）
+            let maxInkAge = 60;   // 墨迹保留帧数
+
+            // ─── 性能参数 ───────────────────────────────────────────────
+            const OFFSCREEN_SCALE = 0.62;   // 离屏画布缩放比例，提升性能
+            const DROP_INTERVAL = 22;        // 鼠标移动产生墨滴的距离间隔（像素）
+            const MAX_INK_DROPS = 600;       // 每帧最大绘制墨滴数（用于性能保护）
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+                // 创建离屏画布（较低分辨率）
+                offW = Math.floor(W * OFFSCREEN_SCALE);
+                offH = Math.floor(H * OFFSCREEN_SCALE);
+                offscreenCanvas = document.createElement('canvas');
+                offscreenCanvas.width = offW;
+                offscreenCanvas.height = offH;
+                offscreenCtx = offscreenCanvas.getContext('2d', { alpha: false });
+
+                // 立即填充背景，杜绝黑屏
+                ctx.fillStyle = '#0a0a10';
+                ctx.fillRect(0, 0, W, H);
+                offscreenCtx.fillStyle = '#0a0a10';
+                offscreenCtx.fillRect(0, 0, offW, offH);
+            }
+
+            // ─── 颜色方案（水彩质感） ──────────────────────────────────
+            function getInkColor() {
+                const palette = [
+                    { h: 190 + colorShift * 0.3, s: 70, l: 55 },   // 青色
+                    { h: 280 + colorShift * 0.2, s: 65, l: 55 },   // 紫色
+                    { h: 330 + colorShift * 0.4, s: 70, l: 55 },   // 粉红
+                    { h: 35 + colorShift * 0.5, s: 75, l: 55 },    // 橙色
+                    { h: 155 + colorShift * 0.25, s: 65, l: 55 },  // 翠绿
+                    { h: 0, s: 0, l: 75 },                          // 白色（用于高光）
+                ];
+                const choice = palette[Math.floor(Math.random() * palette.length)];
+                const hue = (choice.h + Math.random() * 30 - 15) % 360;
+                const sat = choice.s + Math.random() * 25;
+                const light = choice.l + Math.random() * 20;
+                return { hue, sat, light };
+            }
+
+            // ─── 在离屏画布上绘制墨滴 ──────────────────────────────────
+            function drawInkDrop(x, y, radius, alpha) {
+                if (x < -20 || x > offW + 20 || y < -20 || y > offH + 20) return;
+                const color = getInkColor();
+
+                // 使用径向渐变模拟墨水扩散
+                const gradient = offscreenCtx.createRadialGradient(x, y, 0, x, y, radius);
+                const alpha1 = alpha * 0.35;
+                const alpha2 = alpha * 0.12;
+                const alpha3 = alpha * 0.05;
+
+                gradient.addColorStop(0, `hsla(${color.hue}, ${color.sat}%, ${color.light + 20}%, ${alpha1})`);
+                gradient.addColorStop(0.4, `hsla(${color.hue}, ${color.sat}%, ${color.light}%, ${alpha2})`);
+                gradient.addColorStop(0.75, `hsla(${color.hue}, ${color.sat}%, ${color.light - 5}%, ${alpha3})`);
+                gradient.addColorStop(1, 'transparent');
+
+                offscreenCtx.fillStyle = gradient;
+                offscreenCtx.beginPath();
+                offscreenCtx.arc(x, y, radius, 0, Math.PI * 2);
+                offscreenCtx.fill();
+
+                // 中心高亮
+                if (Math.random() < 0.3) {
+                    const highlightRadius = radius * 0.3;
+                    const highlightGradient = offscreenCtx.createRadialGradient(x, y, 0, x, y, highlightRadius);
+                    highlightGradient.addColorStop(0, `hsla(0, 0%, 90%, ${alpha * 0.4})`);
+                    highlightGradient.addColorStop(1, 'transparent');
+                    offscreenCtx.fillStyle = highlightGradient;
+                    offscreenCtx.beginPath();
+                    offscreenCtx.arc(x, y, highlightRadius, 0, Math.PI * 2);
+                    offscreenCtx.fill();
+                }
+            }
+
+            // ─── 鼠标移动产生墨滴 ──────────────────────────────────────
+            function handleMouseDrops() {
+                if (!mouse.active) return;
+                const scaleFactor = OFFSCREEN_SCALE;
+                const mx = mouse.x * scaleFactor;
+                const my = mouse.y * scaleFactor;
+                const lastX = mouse.lastDropX * scaleFactor;
+                const lastY = mouse.lastDropY * scaleFactor;
+
+                if (mouse.lastDropX < 0 || mouse.lastDropY < 0) {
+                    // 首次进入，直接滴一滴
+                    const radius = 4 + Math.random() * 14;
+                    const alpha = 0.5 + Math.random() * 0.4;
+                    drawInkDrop(mx, my, radius, alpha);
+                    mouse.lastDropX = mouse.x;
+                    mouse.lastDropY = mouse.y;
+                    return;
+                }
+
+                const dx = mx - lastX;
+                const dy = my - lastY;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist < DROP_INTERVAL * 0.8) return;
+
+                // 在路径上插值绘制多个墨滴
+                const steps = Math.max(1, Math.floor(dist / (DROP_INTERVAL * 0.7)));
+                for (let i = 0; i < steps; i++) {
+                    const t = (i + 1) / steps;
+                    const ix = lastX + dx * t + (Math.random() - 0.5) * 10;
+                    const iy = lastY + dy * t + (Math.random() - 0.5) * 10;
+                    const radius = 3 + Math.random() * 18;
+                    const alpha = 0.4 + Math.random() * 0.5;
+                    drawInkDrop(ix, iy, radius, alpha);
+                }
+
+                mouse.lastDropX = mouse.x;
+                mouse.lastDropY = mouse.y;
+            }
+
+            // ─── 点击大爆发 ─────────────────────────────────────────────
+            function createInkBurst(x, y) {
+                const scaleFactor = OFFSCREEN_SCALE;
+                const burstX = x * scaleFactor;
+                const burstY = y * scaleFactor;
+                const count = 25 + Math.floor(Math.random() * 20);
+
+                for (let i = 0; i < count; i++) {
+                    const angle = Math.random() * Math.PI * 2;
+                    const dist = 10 + Math.random() * 60;
+                    const ix = burstX + Math.cos(angle) * dist;
+                    const iy = burstY + Math.sin(angle) * dist;
+                    const radius = 8 + Math.random() * 28;
+                    const alpha = 0.55 + Math.random() * 0.35;
+                    drawInkDrop(ix, iy, radius, alpha);
+                }
+            }
+
+            // ─── 主循环 ─────────────────────────────────────────────────
+            let lastTime = 0;
+            let accumulator = 0;
+            const fixedStep = 1000 / 60;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+
+                accumulator += dt;
+                const steps = Math.min(Math.floor(accumulator / fixedStep), 3);
+                accumulator -= steps * fixedStep;
+
+                for (let s = 0; s < steps; s++) {
+                    time += 0.016;
+                    // 墨滴由鼠标移动触发，这里不需要额外模拟
+                    handleMouseDrops();
+                }
+
+                // ─── 墨水衰减（让旧墨迹慢慢淡出） ──────────────────────
+                // 使用极低透明度的背景色覆盖离屏画布
+                offscreenCtx.fillStyle = 'rgba(10, 10, 16, 0.018)';
+                offscreenCtx.fillRect(0, 0, offW, offH);
+
+                // 将离屏画布绘制到主画布
+                ctx.fillStyle = '#0a0a10';
+                ctx.fillRect(0, 0, W, H);
+                ctx.imageSmoothingEnabled = true;
+                ctx.imageSmoothingQuality = 'high';
+                ctx.drawImage(offscreenCanvas, 0, 0, offW, offH, 0, 0, W, H);
+
+                requestAnimationFrame(animate);
+            }
+
+            // ─── 交互事件 ───────────────────────────────────────────────
+            function onMouseMove(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+                mouse.lastDropX = -9999;
+                mouse.lastDropY = -9999;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                createInkBurst(mouse.x, mouse.y);
+                // 切换色彩偏移
+                colorShift += 40 + Math.random() * 40;
+                if (colorShift > 160) colorShift = -30;
+                // 重置墨滴位置，让后续移动从新位置开始
+                mouse.lastDropX = mouse.x;
+                mouse.lastDropY = mouse.y;
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    createInkBurst(mouse.x, mouse.y);
+                    colorShift += 40 + Math.random() * 40;
+                    if (colorShift > 160) colorShift = -30;
+                    mouse.lastDropX = mouse.x;
+                    mouse.lastDropY = mouse.y;
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+                mouse.lastDropX = -9999;
+                mouse.lastDropY = -9999;
+            }
+
+            function onResize() {
+                setupCanvas();
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+                mouse.lastDropX = -9999;
+                mouse.lastDropY = -9999;
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#0a0a10';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+        })();
+    </script>
+</body>
+</html>

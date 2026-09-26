@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NEONRAIN · 光轨涟漪</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #0a0a14;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2;
+            text-align: center;
+            pointer-events: none;
+            opacity: 0.5;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+        .overlay:hover {
+            opacity: 0.85;
+        }
+        .title {
+            color: rgba(240, 220, 255, 0.7);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 20px rgba(180, 120, 250, 0.5);
+        }
+        .hint {
+            color: rgba(180, 160, 220, 0.45);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+        @media (max-width: 768px) {
+            .overlay { bottom: 18px; }
+            .title { font-size: 8px; letter-spacing: 0.45em; }
+            .hint { font-size: 6px; letter-spacing: 0.22em; }
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <div class="overlay">
+        <div class="title">Neonrain</div>
+        <div class="hint">move · click</div>
+    </div>
+    <script>
+        (function() {
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            let drops = [];
+            let ripples = [];
+            let mouse = { x: -9999, y: -9999, active: false, prevX: -9999, prevY: -9999 };
+            let time = 0;
+            let colorShift = 0;
+            let flashParticles = [];
+
+            // ─── 性能自适应 ───────────────────────────────────────────────
+            const DROP_COUNT = () => Math.max(50, Math.min(130, Math.floor(W * H / 8000)));
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                ctx.fillStyle = '#0a0a14';
+                ctx.fillRect(0, 0, W, H);
+            }
+
+            // ─── 光轨（垂直下落的光线） ─────────────────────────────────
+            class NeonDrop {
+                constructor() {
+                    this.x = Math.random() * W;
+                    this.y = Math.random() * H;
+                    this.length = 25 + Math.random() * 55;
+                    this.speed = 1.5 + Math.random() * 3.5;
+                    this.width = 0.6 + Math.random() * 1.4;
+                    this.hue = 190 + Math.random() * 80;
+                    this.saturation = 60 + Math.random() * 35;
+                    this.lightness = 50 + Math.random() * 30;
+                    this.alpha = 0.25 + Math.random() * 0.45;
+                    this.flickerSpeed = 0.5 + Math.random() * 1.5;
+                    this.flickerPhase = Math.random() * Math.PI * 2;
+                    this.tailLength = 8 + Math.random() * 18;
+                }
+
+                update(dt, mouse, t) {
+                    // 下落
+                    this.y += this.speed * dt * (1 + Math.sin(t * this.flickerSpeed + this.flickerPhase) * 0.15);
+
+                    // 鼠标影响：光线弯曲
+                    if (mouse.active) {
+                        const dx = mouse.x - this.x;
+                        const dy = mouse.y - this.y;
+                        const distSq = dx * dx + dy * dy;
+                        const radius = 200;
+                        const radiusSq = radius * radius;
+                        if (distSq < radiusSq && distSq > 0.01) {
+                            const dist = Math.sqrt(distSq);
+                            const falloff = 1 - dist / radius;
+                            this.x += dx / dist * falloff * 1.8;
+                            // 弯曲时增亮
+                            this.alpha = Math.min(0.85, this.alpha + 0.03);
+                        }
+                    }
+
+                    // 轻微水平漂移
+                    this.x += Math.sin(t * 0.3 + this.flickerPhase) * 0.15;
+
+                    // 边界重置
+                    if (this.y > H + 30) {
+                        this.y = -30;
+                        this.x = Math.random() * W;
+                    }
+                    if (this.x < -30) this.x = W + 30;
+                    if (this.x > W + 30) this.x = -30;
+                }
+
+                draw(ctx, t) {
+                    const flicker = 0.7 + 0.3 * Math.sin(t * this.flickerSpeed + this.flickerPhase);
+                    const alpha = this.alpha * flicker;
+                    const hue = this.hue + colorShift + Math.sin(t * 0.5 + this.flickerPhase) * 15;
+                    const gradient = ctx.createLinearGradient(this.x, this.y - this.length, this.x, this.y);
+                    gradient.addColorStop(0, 'transparent');
+                    gradient.addColorStop(0.5, `hsla(${hue}, ${this.saturation}%, ${this.lightness}%, ${alpha * 0.5})`);
+                    gradient.addColorStop(1, `hsla(${hue}, ${this.saturation}%, ${this.lightness + 15}%, ${alpha})`);
+
+                    ctx.strokeStyle = gradient;
+                    ctx.lineWidth = this.width;
+                    ctx.lineCap = 'round';
+                    ctx.beginPath();
+                    ctx.moveTo(this.x, this.y - this.length);
+                    ctx.lineTo(this.x, this.y);
+                    ctx.stroke();
+
+                    // 末端光点
+                    const dotAlpha = alpha * 0.9;
+                    ctx.fillStyle = `hsla(${hue}, ${this.saturation}%, ${this.lightness + 25}%, ${dotAlpha})`;
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, this.width * 1.8, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            // ─── 水面涟漪（光轨落点处扩散） ─────────────────────────────
+            function createRipple(x, y, strength) {
+                if (ripples.length > 30) ripples.shift();
+                ripples.push({
+                    x, y,
+                    radius: 2,
+                    maxRadius: Math.max(W, H) * 0.5,
+                    strength: strength || 0.5,
+                    decay: 0.008 + Math.random() * 0.005,
+                    growth: 3.5 + Math.random() * 2.5,
+                    hue: 200 + colorShift + Math.random() * 60 - 30,
+                    width: 1.2 + Math.random() * 2,
+                    phase: Math.random() * Math.PI * 2,
+                });
+            }
+
+            function updateRipples(dt) {
+                for (let i = ripples.length - 1; i >= 0; i--) {
+                    const r = ripples[i];
+                    r.radius += r.growth * dt;
+                    r.strength -= r.decay * dt;
+                    r.phase += 0.04 * dt;
+                    if (r.strength <= 0.01 || r.radius > r.maxRadius) {
+                        ripples.splice(i, 1);
+                    }
+                }
+            }
+
+            function drawRipples(ctx) {
+                for (const r of ripples) {
+                    const alpha = Math.min(0.4, r.strength * 0.5);
+                    if (alpha <= 0.01) continue;
+                    const hue = r.hue + Math.sin(r.phase) * 15;
+                    ctx.strokeStyle = `hsla(${hue}, 65%, 70%, ${alpha})`;
+                    ctx.lineWidth = r.width * r.strength;
+                    ctx.beginPath();
+                    ctx.arc(r.x, r.y, r.radius, 0, Math.PI * 2);
+                    ctx.stroke();
+
+                    if (r.radius > 15) {
+                        const innerR = r.radius * 0.7;
+                        ctx.strokeStyle = `hsla(${hue + 20}, 60%, 75%, ${alpha * 0.5})`;
+                        ctx.lineWidth = r.width * r.strength * 0.5;
+                        ctx.beginPath();
+                        ctx.arc(r.x, r.y, innerR, 0, Math.PI * 2);
+                        ctx.stroke();
+                    }
+                }
+            }
+
+            // ─── 闪光粒子（点击爆发） ───────────────────────────────────
+            function createFlash(x, y) {
+                const count = 35 + Math.floor(Math.random() * 25);
+                for (let i = 0; i < count; i++) {
+                    const angle = Math.random() * Math.PI * 2;
+                    const speed = 2 + Math.random() * 8;
+                    const hue = 200 + colorShift + Math.random() * 80 - 40;
+                    flashParticles.push({
+                        x, y,
+                        vx: Math.cos(angle) * speed,
+                        vy: Math.sin(angle) * speed - 2,
+                        life: 0.8 + Math.random() * 0.8,
+                        maxLife: 1.6,
+                        size: 1.5 + Math.random() * 3.5,
+                        hue: hue,
+                        sat: 70 + Math.random() * 25,
+                        light: 60 + Math.random() * 25,
+                        alpha: 0.85,
+                    });
+                }
+                if (flashParticles.length > 200) {
+                    flashParticles.splice(0, flashParticles.length - 200);
+                }
+            }
+
+            function updateFlashParticles(dt) {
+                for (let i = flashParticles.length - 1; i >= 0; i--) {
+                    const p = flashParticles[i];
+                    p.x += p.vx * dt;
+                    p.y += p.vy * dt;
+                    p.vx *= 0.95;
+                    p.vy *= 0.95;
+                    p.life -= 0.02 * dt;
+                    if (p.life <= 0) {
+                        flashParticles.splice(i, 1);
+                    }
+                }
+            }
+
+            function drawFlashParticles(ctx) {
+                for (const p of flashParticles) {
+                    const alpha = p.life * p.alpha;
+                    const size = p.size * p.life;
+                    const gradient = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, size * 2.5);
+                    gradient.addColorStop(0, `hsla(${p.hue}, ${p.sat}%, ${p.light}%, ${alpha})`);
+                    gradient.addColorStop(0.5, `hsla(${p.hue}, ${p.sat}%, ${p.light - 10}%, ${alpha * 0.4})`);
+                    gradient.addColorStop(1, 'transparent');
+                    ctx.fillStyle = gradient;
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, size * 2.5, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            // ─── 鼠标光晕 ───────────────────────────────────────────────
+            function drawCursorGlow(ctx) {
+                if (!mouse.active) return;
+                const radius = 65;
+                const hue = 210 + colorShift;
+                const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                gradient.addColorStop(0, `hsla(${hue}, 60%, 75%, 0.06)`);
+                gradient.addColorStop(0.7, `hsla(${hue}, 50%, 70%, 0.02)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // ─── 主循环 ─────────────────────────────────────────────────
+            let lastTime = 0;
+            let accumulator = 0;
+            const fixedStep = 1000 / 60;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+
+                accumulator += dt;
+                const steps = Math.min(Math.floor(accumulator / fixedStep), 3);
+                accumulator -= steps * fixedStep;
+
+                for (let s = 0; s < steps; s++) {
+                    time += 0.016;
+                    const dtNorm = fixedStep / 1000 * 60;
+                    // 光轨自动产生涟漪（随机）
+                    for (const d of drops) {
+                        d.update(dtNorm, mouse, time);
+                        // 随机产生涟漪
+                        if (Math.random() < 0.004) {
+                            createRipple(d.x, d.y, 0.2);
+                        }
+                    }
+                    updateRipples(dtNorm);
+                    updateFlashParticles(dtNorm);
+                }
+
+                // 半透明清除，形成余辉
+                ctx.fillStyle = 'rgba(10, 10, 20, 0.22)';
+                ctx.fillRect(0, 0, W, H);
+
+                // 绘制光轨
+                for (const d of drops) {
+                    d.draw(ctx, time);
+                }
+
+                // 绘制涟漪
+                drawRipples(ctx);
+
+                // 绘制闪光粒子
+                drawFlashParticles(ctx);
+
+                // 鼠标光晕
+                drawCursorGlow(ctx);
+
+                requestAnimationFrame(animate);
+            }
+
+            // ─── 交互事件 ───────────────────────────────────────────────
+            function onMouseMove(e) {
+                mouse.prevX = mouse.x;
+                mouse.prevY = mouse.y;
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                // 移动时偶尔产生小涟漪
+                if (Math.random() < 0.05) {
+                    createRipple(mouse.x, mouse.y, 0.15);
+                }
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+                mouse.prevX = -9999;
+                mouse.prevY = -9999;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                createRipple(mouse.x, mouse.y, 1.2);
+                createRipple(mouse.x, mouse.y, 0.7);
+                createFlash(mouse.x, mouse.y);
+                colorShift += 25 + Math.random() * 30;
+                if (colorShift > 130) colorShift = -25;
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.prevX = mouse.x;
+                    mouse.prevY = mouse.y;
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    if (Math.random() < 0.05) {
+                        createRipple(mouse.x, mouse.y, 0.15);
+                    }
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    createRipple(mouse.x, mouse.y, 1.2);
+                    createRipple(mouse.x, mouse.y, 0.7);
+                    createFlash(mouse.x, mouse.y);
+                    colorShift += 25 + Math.random() * 30;
+                    if (colorShift > 130) colorShift = -25;
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+                mouse.prevX = -9999;
+                mouse.prevY = -9999;
+            }
+
+            function onResize() {
+                setupCanvas();
+                const targetCount = DROP_COUNT();
+                if (targetCount !== drops.length) {
+                    while (drops.length < targetCount) {
+                        drops.push(new NeonDrop());
+                    }
+                    if (drops.length > targetCount) {
+                        drops.length = targetCount;
+                    }
+                }
+                ripples = [];
+                flashParticles = [];
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+                const count = DROP_COUNT();
+                drops = [];
+                for (let i = 0; i < count; i++) {
+                    drops.push(new NeonDrop());
+                }
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#0a0a14';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+        })();
+    </script>
+</body>
+</html>

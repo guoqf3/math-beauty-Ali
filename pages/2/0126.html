@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LUMINA · 光晕</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #08080f;
+            overflow: hidden;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            height: 100vh;
+            width: 100vw;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        .overlay {
+            position: fixed;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2;
+            text-align: center;
+            pointer-events: none;
+            opacity: 0.5;
+            transition: opacity 0.8s ease;
+        }
+
+        .overlay:hover {
+            opacity: 0.9;
+        }
+
+        .title {
+            color: rgba(210, 220, 245, 0.75);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.65em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 25px rgba(140, 160, 230, 0.25);
+        }
+
+        .hint {
+            color: rgba(170, 180, 210, 0.4);
+            font-size: 8px;
+            font-weight: 300;
+            letter-spacing: 0.35em;
+            text-transform: uppercase;
+        }
+
+        @media (max-width: 768px) {
+            .overlay {
+                bottom: 20px;
+            }
+            .title {
+                font-size: 8px;
+                letter-spacing: 0.5em;
+            }
+            .hint {
+                font-size: 6px;
+                letter-spacing: 0.25em;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="canvas"></canvas>
+
+    <div class="overlay">
+        <div class="title">Lumina</div>
+        <div class="hint">move &nbsp;·&nbsp; click</div>
+    </div>
+
+    <script>
+        (function() {
+            // ─── 画布初始化 ───────────────────────────────────────────────
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false, antialias: true });
+
+            let W, H, DPR;
+            let orbs = [];
+            let stars = [];
+            let motes = [];
+            let ripples = [];
+            let time = 0;
+            let colorShift = 0;
+            let clickFlash = 0;
+            let mouse = { x: -9999, y: -9999, px: -9999, py: -9999, active: false, speed: 0 };
+
+            const MAX_ORBS = 9;
+            const STAR_COUNT = 55;
+            const MOTE_COUNT = 18;
+
+            // ─── 初始化画布 ───────────────────────────────────────────────
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 1.8);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                ctx.fillStyle = '#08080f';
+                ctx.fillRect(0, 0, W, H);
+            }
+
+            // ─── 光晕对象 ───────────────────────────────────────────────
+            class Orb {
+                constructor(x, y, radius, hue) {
+                    this.x = x || Math.random() * W;
+                    this.y = y || Math.random() * H;
+                    this.radius = radius || 70 + Math.random() * 90;
+                    this.baseRadius = this.radius;
+                    this.hue = hue || 215 + Math.random() * 80;
+                    this.sat = 62 + Math.random() * 18;
+                    this.light = 52 + Math.random() * 16;
+                    this.opacity = 0.35 + Math.random() * 0.25;
+                    this.vx = (Math.random() - 0.5) * 0.35;
+                    this.vy = (Math.random() - 0.5) * 0.35;
+                    this.pulsePhase = Math.random() * Math.PI * 2;
+                    this.pulseSpeed = 0.5 + Math.random() * 0.6;
+                    this.pulseAmp = 0.08 + Math.random() * 0.07;
+                    this.hueDrift = (Math.random() - 0.5) * 0.12;
+                    this.id = Math.random().toString(36).substr(2, 6);
+                }
+
+                update(dt, t) {
+                    // 自然漂移
+                    this.vx += (Math.random() - 0.5) * 0.04 * dt;
+                    this.vy += (Math.random() - 0.5) * 0.04 * dt;
+
+                    // 鼠标吸引力
+                    if (mouse.active && mouse.x > -1000) {
+                        const dx = mouse.x - this.x;
+                        const dy = mouse.y - this.y;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        const attractRadius = 230;
+                        if (dist < attractRadius && dist > 0.1) {
+                            const force = (1 - dist / attractRadius) * 0.35 * dt;
+                            this.vx += (dx / dist) * force;
+                            this.vy += (dy / dist) * force;
+                        }
+                    }
+
+                    // 光晕间排斥力（防止完全重叠）
+                    for (const other of orbs) {
+                        if (other === this) continue;
+                        const dx = this.x - other.x;
+                        const dy = this.y - other.y;
+                        const distSq = dx * dx + dy * dy;
+                        const minDist = (this.radius + other.radius) * 0.55;
+                        const minDistSq = minDist * minDist;
+                        if (distSq < minDistSq && distSq > 0.01) {
+                            const dist = Math.sqrt(distSq);
+                            const force = (1 - dist / minDist) * 0.18 * dt;
+                            this.vx += (dx / dist) * force;
+                            this.vy += (dy / dist) * force;
+                        }
+                    }
+
+                    // 阻尼
+                    this.vx *= 0.988;
+                    this.vy *= 0.988;
+
+                    // 速度限制
+                    const maxSpeed = 0.75;
+                    const spSq = this.vx * this.vx + this.vy * this.vy;
+                    if (spSq > maxSpeed * maxSpeed) {
+                        const sp = Math.sqrt(spSq);
+                        this.vx = (this.vx / sp) * maxSpeed;
+                        this.vy = (this.vy / sp) * maxSpeed;
+                    }
+
+                    // 位置更新
+                    this.x += this.vx * dt;
+                    this.y += this.vy * dt;
+
+                    // 边界环绕
+                    const margin = 60;
+                    if (this.x < -margin) this.x = W + margin;
+                    if (this.x > W + margin) this.x = -margin;
+                    if (this.y < -margin) this.y = H + margin;
+                    if (this.y > H + margin) this.y = -margin;
+
+                    // 颜色漂移
+                    this.hue += this.hueDrift * dt;
+                    this.hue += 0.08 * dt; // 整体色相缓慢偏移
+                    if (this.hue > 340) this.hue -= 120;
+                    if (this.hue < 190) this.hue += 120;
+
+                    // 透明度随点击闪光变化
+                    this.opacity = Math.min(0.6, this.opacity + clickFlash * 0.4);
+
+                    // 波纹推力
+                    for (let i = ripples.length - 1; i >= 0; i--) {
+                        const r = ripples[i];
+                        const dx = this.x - r.x;
+                        const dy = this.y - r.y;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        const bandWidth = 90;
+                        if (dist > r.radius - bandWidth && dist < r.radius + bandWidth && dist > 0.1) {
+                            const force = r.strength * (1 - Math.abs(dist - r.radius) / bandWidth) * 0.6 * dt;
+                            this.vx += (dx / dist) * force;
+                            this.vy += (dy / dist) * force;
+                        }
+                    }
+                }
+
+                getCurrentRadius(t) {
+                    const pulse = Math.sin(t * this.pulseSpeed + this.pulsePhase) * this.pulseAmp;
+                    return this.radius * (1 + pulse);
+                }
+
+                draw(ctx, t) {
+                    const r = this.getCurrentRadius(t);
+                    if (r < 2) return;
+
+                    const hue = ((this.hue + colorShift) % 360 + 360) % 360;
+                    const alpha = this.opacity * (0.75 + 0.25 * Math.sin(t * 0.3 + this.pulsePhase));
+
+                    // 主光晕
+                    const grad = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, r);
+                    grad.addColorStop(0, `hsla(${hue}, ${this.sat}%, ${Math.min(78, this.light + 12)}%, ${alpha})`);
+                    grad.addColorStop(0.25, `hsla(${hue}, ${this.sat}%, ${this.light}%, ${alpha * 0.55})`);
+                    grad.addColorStop(0.55, `hsla(${hue}, ${this.sat}%, ${this.light - 5}%, ${alpha * 0.18})`);
+                    grad.addColorStop(0.85, `hsla(${hue + 12}, ${this.sat + 5}%, ${this.light - 12}%, ${alpha * 0.05})`);
+                    grad.addColorStop(1, 'transparent');
+
+                    ctx.fillStyle = grad;
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, r, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // 色散边缘环
+                    const edgeAlpha = alpha * 0.12;
+                    const edgeR = r * 0.85;
+                    if (edgeR > 8 && edgeAlpha > 0.005) {
+                        const edgeHue = hue + 15 + Math.sin(t * 0.5 + this.pulsePhase) * 8;
+                        ctx.strokeStyle = `hsla(${edgeHue}, ${this.sat + 8}%, ${this.light + 15}%, ${edgeAlpha})`;
+                        ctx.lineWidth = 0.6;
+                        ctx.beginPath();
+                        ctx.arc(this.x, this.y, edgeR, 0, Math.PI * 2);
+                        ctx.stroke();
+                    }
+
+                    // 核心亮点
+                    const coreR = r * 0.2;
+                    if (coreR > 3) {
+                        const coreAlpha = alpha * 0.45;
+                        const coreGrad = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, coreR);
+                        coreGrad.addColorStop(0, `hsla(${hue}, ${this.sat + 5}%, ${Math.min(90, this.light + 25)}%, ${coreAlpha})`);
+                        coreGrad.addColorStop(1, 'transparent');
+                        ctx.fillStyle = coreGrad;
+                        ctx.beginPath();
+                        ctx.arc(this.x, this.y, coreR, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+                }
+            }
+
+            // ─── 星点 ───────────────────────────────────────────────────
+            class Star {
+                constructor() {
+                    this.x = Math.random() * W;
+                    this.y = Math.random() * H;
+                    this.size = 0.5 + Math.random() * 1.4;
+                    this.baseAlpha = 0.2 + Math.random() * 0.5;
+                    this.twinkleSpeed = 0.3 + Math.random() * 0.8;
+                    this.phase = Math.random() * Math.PI * 2;
+                }
+
+                draw(ctx, t) {
+                    const alpha = this.baseAlpha * (0.6 + 0.4 * Math.sin(t * this.twinkleSpeed + this.phase));
+                    const size = this.size * (0.85 + 0.3 * Math.sin(t * this.twinkleSpeed * 1.3 + this.phase));
+                    ctx.fillStyle = `rgba(210, 220, 245, ${alpha})`;
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, size, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            // ─── 漂浮微粒 ───────────────────────────────────────────────
+            class Mote {
+                constructor() {
+                    this.x = Math.random() * W;
+                    this.y = Math.random() * H;
+                    this.size = 0.8 + Math.random() * 1.8;
+                    this.vx = (Math.random() - 0.5) * 0.5;
+                    this.vy = (Math.random() - 0.5) * 0.5;
+                    this.alpha = 0.25 + Math.random() * 0.4;
+                    this.hue = 200 + Math.random() * 100;
+                }
+
+                update(dt) {
+                    // 被最近的光晕吸引
+                    let nearestDist = Infinity;
+                    let nearestOrb = null;
+                    for (const orb of orbs) {
+                        const dx = orb.x - this.x;
+                        const dy = orb.y - this.y;
+                        const d = dx * dx + dy * dy;
+                        if (d < nearestDist) {
+                            nearestDist = d;
+                            nearestOrb = orb;
+                        }
+                    }
+                    if (nearestOrb && nearestDist < 40000) {
+                        const dx = nearestOrb.x - this.x;
+                        const dy = nearestOrb.y - this.y;
+                        const dist = Math.sqrt(nearestDist);
+                        const force = (1 - dist / 200) * 0.15 * dt;
+                        this.vx += (dx / dist) * force;
+                        this.vy += (dy / dist) * force;
+                    }
+
+                    this.vx *= 0.992;
+                    this.vy *= 0.992;
+                    this.x += this.vx * dt;
+                    this.y += this.vy * dt;
+
+                    if (this.x < -10) this.x = W + 10;
+                    if (this.x > W + 10) this.x = -10;
+                    if (this.y < -10) this.y = H + 10;
+                    if (this.y > H + 10) this.y = -10;
+                }
+
+                draw(ctx, t) {
+                    const alpha = this.alpha * (0.7 + 0.3 * Math.sin(t * 0.5 + this.x * 0.01));
+                    const hue = (this.hue + colorShift * 0.5) % 360;
+                    ctx.fillStyle = `hsla(${hue}, 55%, 70%, ${alpha})`;
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            // ─── 初始化所有对象 ───────────────────────────────────────────
+            function initObjects() {
+                orbs = [];
+                // 创建初始光晕，分布在画面中
+                const positions = [
+                    { x: W * 0.22, y: H * 0.25, r: 100, h: 225 },
+                    { x: W * 0.78, y: H * 0.22, r: 130, h: 255 },
+                    { x: W * 0.5, y: H * 0.55, r: 150, h: 280 },
+                    { x: W * 0.3, y: H * 0.72, r: 95, h: 245 },
+                    { x: W * 0.72, y: H * 0.75, r: 110, h: 265 },
+                    { x: W * 0.12, y: H * 0.55, r: 85, h: 210 },
+                    { x: W * 0.88, y: H * 0.5, r: 90, h: 290 },
+                ];
+                for (const p of positions) {
+                    if (orbs.length < MAX_ORBS) {
+                        orbs.push(new Orb(p.x, p.y, p.r, p.h));
+                    }
+                }
+                // 补充随机光晕
+                while (orbs.length < MAX_ORBS - 1) {
+                    orbs.push(new Orb());
+                }
+
+                stars = [];
+                for (let i = 0; i < STAR_COUNT; i++) {
+                    stars.push(new Star());
+                }
+
+                motes = [];
+                for (let i = 0; i < MOTE_COUNT; i++) {
+                    motes.push(new Mote());
+                }
+            }
+
+            // ─── 波纹系统 ───────────────────────────────────────────────
+            function createRipple(x, y) {
+                ripples.push({
+                    x: x,
+                    y: y,
+                    radius: 8,
+                    maxRadius: Math.max(W, H) * 0.7,
+                    strength: 2.8,
+                    life: 1.0,
+                    decay: 0.015,
+                    growth: 3.2,
+                });
+                if (ripples.length > 4) ripples.shift();
+            }
+
+            function updateRipples(dt) {
+                for (let i = ripples.length - 1; i >= 0; i--) {
+                    const r = ripples[i];
+                    r.radius += r.growth * dt;
+                    r.life -= r.decay * dt;
+                    r.strength *= 0.99;
+                    if (r.life <= 0 || r.radius > r.maxRadius) {
+                        ripples.splice(i, 1);
+                    }
+                }
+            }
+
+            function drawRipples(ctx) {
+                for (const r of ripples) {
+                    const alpha = r.life * 0.1;
+                    ctx.strokeStyle = `hsla(230, 60%, 75%, ${alpha})`;
+                    ctx.lineWidth = 1.2 + r.life * 1.5;
+                    ctx.beginPath();
+                    ctx.arc(r.x, r.y, r.radius, 0, Math.PI * 2);
+                    ctx.stroke();
+                }
+            }
+
+            // ─── 鼠标光晕 ───────────────────────────────────────────────
+            function drawCursorGlow(ctx) {
+                if (!mouse.active || mouse.x < -1000) return;
+                const alpha = 0.06 + mouse.speed * 0.15;
+                const r = 60 + mouse.speed * 40;
+                const grad = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, r);
+                const hue = 215 + colorShift;
+                grad.addColorStop(0, `hsla(${hue}, 55%, 70%, ${alpha})`);
+                grad.addColorStop(0.5, `hsla(${hue}, 50%, 65%, ${alpha * 0.3})`);
+                grad.addColorStop(1, 'transparent');
+                ctx.fillStyle = grad;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, r, 0, Math.PI * 2);
+                ctx.fill();
+
+                // 细环
+                const ringAlpha = 0.08 + mouse.speed * 0.1;
+                ctx.strokeStyle = `hsla(${hue}, 65%, 78%, ${ringAlpha})`;
+                ctx.lineWidth = 0.7;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, 12 + mouse.speed * 8, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+
+            // ─── 主渲染循环 ───────────────────────────────────────────────
+            let lastTime = 0;
+            let accumulator = 0;
+            const fixedStep = 1000 / 60;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+
+                accumulator += dt;
+                const steps = Math.min(Math.floor(accumulator / fixedStep), 3);
+                accumulator -= steps * fixedStep;
+
+                const dtNorm = dt / 16.667;
+
+                // 更新
+                for (let s = 0; s < steps; s++) {
+                    time += 0.014;
+                    const dtFixed = fixedStep / 1000 * 60;
+                    updateRipples(dtFixed);
+                    for (const orb of orbs) {
+                        orb.update(dtFixed, time);
+                    }
+                    for (const mote of motes) {
+                        mote.update(dtFixed);
+                    }
+                }
+
+                // 点击闪光衰减
+                clickFlash *= 0.96;
+
+                // 计算鼠标移动速度
+                if (mouse.active) {
+                    const dx = mouse.x - mouse.px;
+                    const dy = mouse.y - mouse.py;
+                    mouse.speed = Math.min(3, Math.sqrt(dx * dx + dy * dy) * 0.6);
+                    mouse.px = mouse.x;
+                    mouse.py = mouse.y;
+                } else {
+                    mouse.speed *= 0.9;
+                }
+
+                // 绘制（使用半透明填充产生拖尾效果）
+                ctx.fillStyle = 'rgba(8, 8, 15, 0.08)';
+                ctx.fillRect(0, 0, W, H);
+
+                // 绘制星点
+                for (const star of stars) {
+                    star.draw(ctx, time);
+                }
+
+                // 绘制漂浮微粒
+                for (const mote of motes) {
+                    mote.draw(ctx, time);
+                }
+
+                // 绘制光晕（使用加法混合产生融合效果）
+                ctx.globalCompositeOperation = 'lighter';
+                for (const orb of orbs) {
+                    orb.draw(ctx, time);
+                }
+
+                // 绘制波纹
+                drawRipples(ctx);
+
+                // 恢复默认混合模式
+                ctx.globalCompositeOperation = 'source-over';
+
+                // 绘制鼠标光晕
+                drawCursorGlow(ctx);
+
+                requestAnimationFrame(animate);
+            }
+
+            // ─── 交互事件 ───────────────────────────────────────────────
+            function onMouseMove(e) {
+                if (!mouse.active) {
+                    mouse.px = e.clientX;
+                    mouse.py = e.clientY;
+                } else {
+                    mouse.px = mouse.x;
+                    mouse.py = mouse.y;
+                }
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+                mouse.speed = 0;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.px = e.clientX;
+                mouse.py = e.clientY;
+                mouse.active = true;
+                createRipple(mouse.x, mouse.y);
+                clickFlash = 1;
+
+                // 创建新光晕（替换最旧的光晕）
+                const newOrb = new Orb(mouse.x, mouse.y, 70 + Math.random() * 60, 210 + Math.random() * 80);
+                if (orbs.length >= MAX_ORBS) {
+                    orbs.shift();
+                }
+                orbs.push(newOrb);
+
+                // 颜色偏移
+                colorShift += 30 + Math.random() * 30;
+                if (colorShift > 80) colorShift = -30;
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    if (!mouse.active) {
+                        mouse.px = touch.clientX;
+                        mouse.py = touch.clientY;
+                    } else {
+                        mouse.px = mouse.x;
+                        mouse.py = mouse.y;
+                    }
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.px = touch.clientX;
+                    mouse.py = touch.clientY;
+                    mouse.active = true;
+                    createRipple(mouse.x, mouse.y);
+                    clickFlash = 1;
+
+                    const newOrb = new Orb(mouse.x, mouse.y, 70 + Math.random() * 60, 210 + Math.random() * 80);
+                    if (orbs.length >= MAX_ORBS) {
+                        orbs.shift();
+                    }
+                    orbs.push(newOrb);
+                    colorShift += 30 + Math.random() * 30;
+                    if (colorShift > 80) colorShift = -30;
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+                mouse.speed = 0;
+            }
+
+            function onResize() {
+                const oldW = W;
+                const oldH = H;
+                setupCanvas();
+                const scaleX = W / oldW;
+                const scaleY = H / oldH;
+                for (const orb of orbs) {
+                    orb.x *= scaleX;
+                    orb.y *= scaleY;
+                    orb.radius *= Math.sqrt(scaleX * scaleY);
+                    orb.baseRadius *= Math.sqrt(scaleX * scaleY);
+                }
+                for (const star of stars) {
+                    star.x *= scaleX;
+                    star.y *= scaleY;
+                }
+                for (const mote of motes) {
+                    mote.x *= scaleX;
+                    mote.y *= scaleY;
+                }
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+                initObjects();
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+                window.addEventListener('resize', onResize);
+
+                // 立即渲染一帧防止白屏
+                ctx.fillStyle = '#08080f';
+                ctx.fillRect(0, 0, W, H);
+                for (const orb of orbs) {
+                    orb.draw(ctx, 0);
+                }
+                for (const star of stars) {
+                    star.draw(ctx, 0);
+                }
+
+                requestAnimationFrame(animate);
+            }
+
+            // 页面加载后初始化
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            // 额外确保初始背景
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#08080f';
+                    ctx.fillRect(0, 0, W, H);
+                    for (const orb of orbs) {
+                        orb.draw(ctx, 0);
+                    }
+                }
+            });
+
+        })();
+    </script>
+</body>
+</html>

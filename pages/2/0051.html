@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CRYSTAL · 万花筒晶体</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #0a0a18;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2;
+            text-align: center;
+            pointer-events: none;
+            opacity: 0.55;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+        .overlay:hover {
+            opacity: 0.9;
+        }
+        .title {
+            color: rgba(235, 220, 255, 0.8);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 20px rgba(160, 120, 240, 0.5);
+        }
+        .hint {
+            color: rgba(185, 175, 215, 0.5);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+        @media (max-width: 768px) {
+            .overlay {
+                bottom: 18px;
+            }
+            .title {
+                font-size: 8px;
+                letter-spacing: 0.45em;
+            }
+            .hint {
+                font-size: 6px;
+                letter-spacing: 0.22em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="pixi-container" style="position:fixed;top:0;left:0;width:100%;height:100%;z-index:1;"></div>
+    <div class="overlay">
+        <div class="title">Crystal</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js"></script>
+    <script>
+        (function() {
+            // ─── PixiJS 加载检查 ────────────────────────────────────────
+            if (typeof PIXI === 'undefined') {
+                document.body.style.background = '#0a0a18';
+                const container = document.getElementById('pixi-container');
+                if (container) container.style.background = '#0a0a18';
+                console.warn('PixiJS 加载失败，已显示背景色');
+                return;
+            }
+
+            // ─── 全局变量 ──────────────────────────────────────────────
+            let app;
+            let crystalContainer;
+            let crystals = [];
+            let mouse = { x: -9999, y: -9999, active: false, angle: 0 };
+            let time = 0;
+            let colorShift = 0;
+            let symmetry = 6;          // 对称数（点击切换）
+            let symmetryTarget = 6;
+            let rotationAngle = 0;
+            let glowTexture;
+            let glowSprite;
+            let bgGradientSprite;
+            let renderTexture;
+            let renderSprite;
+            let filter;
+
+            // ─── 晶体纹理缓存 ──────────────────────────────────────────
+            const crystalTextures = [];
+            const POLYGON_SIDES = [3, 4, 5, 6, 8, 10];
+            const POLYGON_COLORS = [
+                { h: 0, s: 75, l: 60 },
+                { h: 25, s: 80, l: 60 },
+                { h: 45, s: 85, l: 55 },
+                { h: 70, s: 70, l: 55 },
+                { h: 140, s: 75, l: 55 },
+                { h: 170, s: 80, l: 55 },
+                { h: 200, s: 85, l: 60 },
+                { h: 230, s: 80, l: 60 },
+                { h: 270, s: 80, l: 60 },
+                { h: 300, s: 80, l: 60 },
+                { h: 330, s: 85, l: 60 },
+                { h: 15, s: 80, l: 60 },
+            ];
+
+            // ─── 初始化PixiJS ──────────────────────────────────────────
+            function initPixi() {
+                const container = document.getElementById('pixi-container');
+                const width = window.innerWidth;
+                const height = window.innerHeight;
+                const resolution = Math.min(window.devicePixelRatio || 1, 2);
+
+                app = new PIXI.Application({
+                    width: width,
+                    height: height,
+                    resolution: resolution,
+                    backgroundColor: 0x0a0a18,
+                    antialias: true,
+                    autoDensity: true,
+                    powerPreference: 'high-performance',
+                });
+
+                container.appendChild(app.view);
+
+                // 创建晶体粒子容器
+                crystalContainer = new PIXI.ParticleContainer(3000, {
+                    position: true,
+                    rotation: true,
+                    scale: true,
+                    tint: true,
+                    alpha: true,
+                    uvs: true,
+                }, 3000, true);
+                crystalContainer.blendMode = PIXI.BLEND_MODES.ADD;
+                app.stage.addChild(crystalContainer);
+
+                // 创建背景
+                createBackground();
+
+                // 生成晶体纹理
+                generateCrystalTextures();
+
+                // 创建鼠标光晕
+                createGlowSprite();
+
+                // 初始化晶体
+                initCrystals();
+
+                // 设置事件
+                setupEvents();
+
+                // 启动动画
+                app.ticker.add(animate);
+                app.ticker.maxFPS = 60;
+            }
+
+            // ─── 创建背景 ──────────────────────────────────────────────
+            function createBackground() {
+                const bgCanvas = document.createElement('canvas');
+                bgCanvas.width = 4;
+                bgCanvas.height = 512;
+                const bgCtx = bgCanvas.getContext('2d');
+                const gradient = bgCtx.createLinearGradient(0, 0, 0, 512);
+                gradient.addColorStop(0, '#0d0a20');
+                gradient.addColorStop(0.3, '#0a0a18');
+                gradient.addColorStop(0.7, '#0a0a18');
+                gradient.addColorStop(1, '#120a1e');
+                bgCtx.fillStyle = gradient;
+                bgCtx.fillRect(0, 0, 4, 512);
+
+                const texture = PIXI.Texture.from(bgCanvas);
+                bgGradientSprite = new PIXI.Sprite(texture);
+                bgGradientSprite.width = app.screen.width;
+                bgGradientSprite.height = app.screen.height;
+                bgGradientSprite.alpha = 0.7;
+                app.stage.addChildAt(bgGradientSprite, 0);
+            }
+
+            // ─── 生成晶体纹理 ──────────────────────────────────────────
+            function generateCrystalTextures() {
+                for (const sides of POLYGON_SIDES) {
+                    for (const color of POLYGON_COLORS) {
+                        const size = 48;
+                        const canvas = document.createElement('canvas');
+                        canvas.width = size;
+                        canvas.height = size;
+                        const ctx = canvas.getContext('2d');
+                        const centerX = size / 2;
+                        const centerY = size / 2;
+                        const outerRadius = size / 2 - 2;
+                        const innerRadius = outerRadius * 0.45;
+
+                        // 绘制多边形（外环）
+                        ctx.beginPath();
+                        for (let i = 0; i < sides; i++) {
+                            const angle = (i / sides) * Math.PI * 2 - Math.PI / 2;
+                            const x = centerX + outerRadius * Math.cos(angle);
+                            const y = centerY + outerRadius * Math.sin(angle);
+                            if (i === 0) ctx.moveTo(x, y);
+                            else ctx.lineTo(x, y);
+                        }
+                        ctx.closePath();
+                        const hue = color.h;
+                        const sat = color.s;
+                        const light = color.l;
+                        ctx.fillStyle = `hsl(${hue}, ${sat}%, ${light}%)`;
+                        ctx.fill();
+                        ctx.strokeStyle = `hsla(${hue}, ${sat}%, ${Math.min(100, light + 20)}%, 0.8)`;
+                        ctx.lineWidth = 1.5;
+                        ctx.stroke();
+
+                        // 内部星形
+                        ctx.beginPath();
+                        for (let i = 0; i < sides * 2; i++) {
+                            const angle = (i / (sides * 2)) * Math.PI * 2 - Math.PI / 2;
+                            const r = i % 2 === 0 ? innerRadius : innerRadius * 0.6;
+                            const x = centerX + r * Math.cos(angle);
+                            const y = centerY + r * Math.sin(angle);
+                            if (i === 0) ctx.moveTo(x, y);
+                            else ctx.lineTo(x, y);
+                        }
+                        ctx.closePath();
+                        ctx.fillStyle = `hsla(${hue}, ${sat}%, ${Math.min(100, light + 15)}%, 0.6)`;
+                        ctx.fill();
+
+                        // 中心光点
+                        const centerGradient = ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, outerRadius * 0.3);
+                        centerGradient.addColorStop(0, `hsla(${hue}, ${sat}%, 90%, 0.9)`);
+                        centerGradient.addColorStop(1, `hsla(${hue}, ${sat}%, 70%, 0.3)`);
+                        ctx.fillStyle = centerGradient;
+                        ctx.beginPath();
+                        ctx.arc(centerX, centerY, outerRadius * 0.3, 0, Math.PI * 2);
+                        ctx.fill();
+
+                        crystalTextures.push({
+                            texture: PIXI.Texture.from(canvas),
+                            sides: sides,
+                            hue: hue,
+                        });
+                    }
+                }
+            }
+
+            // ─── 创建鼠标光晕 ──────────────────────────────────────────
+            function createGlowSprite() {
+                const glowCanvas = document.createElement('canvas');
+                glowCanvas.width = 128;
+                glowCanvas.height = 128;
+                const glowCtx = glowCanvas.getContext('2d');
+                const gradient = glowCtx.createRadialGradient(64, 64, 0, 64, 64, 64);
+                gradient.addColorStop(0, 'rgba(220, 180, 255, 0.06)');
+                gradient.addColorStop(0.5, 'rgba(180, 140, 240, 0.025)');
+                gradient.addColorStop(1, 'transparent');
+                glowCtx.fillStyle = gradient;
+                glowCtx.fillRect(0, 0, 128, 128);
+
+                glowTexture = PIXI.Texture.from(glowCanvas);
+                glowSprite = new PIXI.Sprite(glowTexture);
+                glowSprite.width = 180;
+                glowSprite.height = 180;
+                glowSprite.anchor.set(0.5, 0.5);
+                glowSprite.alpha = 0;
+                glowSprite.blendMode = PIXI.BLEND_MODES.ADD;
+                app.stage.addChild(glowSprite);
+            }
+
+            // ─── 创建晶体精灵 ──────────────────────────────────────────
+            function createCrystalSprite(x, y, texIndex, scale, isBurst) {
+                const tex = crystalTextures[texIndex];
+                const sprite = new PIXI.Sprite(tex.texture);
+                sprite.anchor.set(0.5, 0.5);
+
+                const z = 0.3 + Math.random() * 0.7;
+                const baseScale = scale || (0.5 + z * 0.8);
+                sprite.scale.set(baseScale, baseScale);
+
+                const hueOffset = Math.random() * 30 - 15;
+                sprite.tint = hslToHex(tex.hue + hueOffset, 65 + Math.random() * 25, 60 + Math.random() * 25);
+
+                const angle = Math.random() * Math.PI * 2;
+                const speed = isBurst ? (2 + Math.random() * 7) : (0.3 + Math.random() * 1.2);
+
+                const crystal = {
+                    sprite: sprite,
+                    x: x !== undefined ? x : Math.random() * app.screen.width,
+                    y: y !== undefined ? y : Math.random() * app.screen.height,
+                    baseX: x !== undefined ? x : Math.random() * app.screen.width,
+                    baseY: y !== undefined ? y : Math.random() * app.screen.height,
+                    z: z,
+                    vx: Math.cos(angle) * speed,
+                    vy: Math.sin(angle) * speed - (isBurst ? 0.5 : 0),
+                    rotation: Math.random() * Math.PI * 2,
+                    rotationSpeed: (Math.random() - 0.5) * 0.06,
+                    scale: baseScale,
+                    alpha: 0.5 + Math.random() * 0.5,
+                    hue: tex.hue,
+                    sides: tex.sides,
+                    radius: 0,
+                    angle: Math.random() * Math.PI * 2,
+                    orbitSpeed: (Math.random() - 0.5) * 0.01,
+                    pulsePhase: Math.random() * Math.PI * 2,
+                    pulseSpeed: 0.5 + Math.random() * 1.5,
+                    gravity: 0.01 + z * 0.02,
+                    drag: 0.98 + (1 - z) * 0.01,
+                    swayAmount: 0.3 + Math.random() * 0.8,
+                    swayPhase: Math.random() * Math.PI * 2,
+                    swaySpeed: 0.3 + Math.random() * 1.0,
+                    life: 1.0,
+                    decay: isBurst ? (0.008 + Math.random() * 0.01) : (0.0001 + Math.random() * 0.0003),
+                    burstMode: isBurst || false,
+                };
+
+                crystalContainer.addChild(sprite);
+                return crystal;
+            }
+
+            function hslToHex(hue, sat, light) {
+                const h = ((hue % 360) + 360) % 360;
+                const s = sat / 100;
+                const l = light / 100;
+                const c = (1 - Math.abs(2 * l - 1)) * s;
+                const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+                const m = l - c / 2;
+                let r, g, b;
+                if (h < 60) { r = c;
+                    g = x;
+                    b = 0; } else if (h < 120) { r = x;
+                    g = c;
+                    b = 0; } else if (h < 180) { r = 0;
+                    g = c;
+                    b = x; } else if (h < 240) { r = 0;
+                    g = x;
+                    b = c; } else if (h < 300) { r = x;
+                    g = 0;
+                    b = c; } else { r = c;
+                    g = 0;
+                    b = x; }
+                const toHex = (val) => Math.round((val + m) * 255).toString(16).padStart(2, '0');
+                return parseInt(`${toHex(r)}${toHex(g)}${toHex(b)}`, 16);
+            }
+
+            // ─── 初始化晶体 ────────────────────────────────────────────
+            function initCrystals() {
+                crystals = [];
+                crystalContainer.removeChildren();
+                const count = Math.max(300, Math.min(800, Math.floor(app.screen.width * app.screen.height / 1800)));
+                for (let i = 0; i < count; i++) {
+                    const texIndex = Math.floor(Math.random() * crystalTextures.length);
+                    const crystal = createCrystalSprite(undefined, undefined, texIndex);
+                    crystal.orbitRadius = Math.random() * Math.min(app.screen.width, app.screen.height) * 0.35;
+                    crystal.orbitAngle = Math.random() * Math.PI * 2;
+                    crystal.baseX = app.screen.width / 2;
+                    crystal.baseY = app.screen.height / 2;
+                    crystals.push(crystal);
+                }
+            }
+
+            // ─── 爆发晶体 ──────────────────────────────────────────────
+            function createBurst(x, y) {
+                const count = 30 + Math.floor(Math.random() * 25);
+                for (let i = 0; i < count; i++) {
+                    if (crystals.length >= 1000) break;
+                    const texIndex = Math.floor(Math.random() * crystalTextures.length);
+                    const crystal = createCrystalSprite(x, y, texIndex, 0.5 + Math.random() * 0.8, true);
+                    crystals.push(crystal);
+                }
+                if (crystals.length > 1000) {
+                    const removeCount = crystals.length - 1000;
+                    for (let i = 0; i < removeCount; i++) {
+                        const crystal = crystals[i];
+                        crystalContainer.removeChild(crystal.sprite);
+                        crystal.sprite.destroy({ texture: false, children: true });
+                    }
+                    crystals.splice(0, removeCount);
+                }
+            }
+
+            // ─── 动画循环 ──────────────────────────────────────────────
+            function animate() {
+                time += 0.016;
+                const dt = 1.0;
+                const w = app.screen.width;
+                const h = app.screen.height;
+                const cx = w / 2;
+                const cy = h / 2;
+
+                // 平滑更新对称数
+                if (Math.abs(symmetryTarget - symmetry) > 0.05) {
+                    symmetry += (symmetryTarget - symmetry) * 0.04;
+                } else {
+                    symmetry = symmetryTarget;
+                }
+
+                // 更新鼠标角度
+                if (mouse.active && mouse.x > 0) {
+                    mouse.angle = Math.atan2(mouse.y - cy, mouse.x - cx);
+                    glowSprite.alpha = 0.8;
+                    glowSprite.x = mouse.x;
+                    glowSprite.y = mouse.y;
+                    const glowScale = 1 + Math.sin(time * 3) * 0.2;
+                    glowSprite.scale.set(glowScale, glowScale);
+                } else {
+                    glowSprite.alpha *= 0.92;
+                }
+
+                // 自动旋转
+                rotationAngle += 0.004;
+
+                // 更新晶体
+                for (let i = crystals.length - 1; i >= 0; i--) {
+                    const crystal = crystals[i];
+                    const sway = Math.sin(time * crystal.swaySpeed + crystal.swayPhase) * crystal.swayAmount;
+
+                    // 鼠标影响
+                    if (mouse.active && mouse.x > 0) {
+                        const dx = mouse.x - crystal.x;
+                        const dy = mouse.y - crystal.y;
+                        const distSq = dx * dx + dy * dy;
+                        const radius = 250;
+                        const radiusSq = radius * radius;
+                        if (distSq < radiusSq && distSq > 0.01) {
+                            const dist = Math.sqrt(distSq);
+                            const falloff = 1 - dist / radius;
+                            const tangentX = -dy / dist;
+                            const tangentY = dx / dist;
+                            const vortexStrength = falloff * 1.8;
+                            const radialStrength = falloff * 0.5;
+                            crystal.vx += (tangentX * vortexStrength + dx / dist * radialStrength) * 0.25;
+                            crystal.vy += (tangentY * vortexStrength + dy / dist * radialStrength) * 0.25;
+                            crystal.alpha = Math.min(1, crystal.alpha + 0.008);
+                        }
+                    }
+
+                    // 重力
+                    crystal.vy += crystal.gravity;
+                    crystal.vx += sway * 0.04;
+
+                    // 阻尼
+                    crystal.vx *= crystal.drag;
+                    crystal.vy *= crystal.drag;
+
+                    // 速度限制
+                    const maxSpeed = crystal.burstMode ? 8 : 2.5;
+                    const speed = Math.sqrt(crystal.vx * crystal.vx + crystal.vy * crystal.vy);
+                    if (speed > maxSpeed) {
+                        crystal.vx = (crystal.vx / speed) * maxSpeed;
+                        crystal.vy = (crystal.vy / speed) * maxSpeed;
+                    }
+
+                    // 更新位置
+                    crystal.x += crystal.vx * dt;
+                    crystal.y += crystal.vy * dt;
+
+                    // 轨道运动（非爆发晶体缓慢绕中心旋转）
+                    if (!crystal.burstMode) {
+                        crystal.orbitAngle += crystal.orbitSpeed;
+                        const orbitRadius = crystal.orbitRadius || 0;
+                        const targetX = cx + Math.cos(crystal.orbitAngle) * orbitRadius;
+                        const targetY = cy + Math.sin(crystal.orbitAngle) * orbitRadius;
+                        crystal.x += (targetX - crystal.x) * 0.01;
+                        crystal.y += (targetY - crystal.y) * 0.01;
+                    }
+
+                    // 旋转
+                    crystal.rotation += crystal.rotationSpeed;
+
+                    // 脉动
+                    crystal.pulsePhase += crystal.pulseSpeed * dt;
+
+                    // 生命周期
+                    if (crystal.burstMode) {
+                        crystal.life -= crystal.decay;
+                    }
+
+                    // 边界处理
+                    if (crystal.x < -50) crystal.x = w + 50;
+                    if (crystal.x > w + 50) crystal.x = -50;
+                    if (crystal.y > h + 50) {
+                        crystal.y = -30;
+                        crystal.x = Math.random() * w;
+                    }
+                    if (crystal.y < -50) {
+                        crystal.y = h + 30;
+                    }
+
+                    // 更新精灵
+                    const pulse = 0.8 + 0.2 * Math.sin(crystal.pulsePhase);
+                    const effectiveScale = crystal.scale * pulse;
+                    crystal.sprite.x = crystal.x;
+                    crystal.sprite.y = crystal.y;
+                    crystal.sprite.rotation = crystal.rotation;
+                    crystal.sprite.scale.set(effectiveScale, effectiveScale);
+                    crystal.sprite.alpha = crystal.alpha * (crystal.burstMode ? Math.min(1, crystal.life * 5) : 1);
+
+                    // 移除消亡的爆发晶体
+                    if (crystal.burstMode && crystal.life <= 0) {
+                        crystalContainer.removeChild(crystal.sprite);
+                        crystal.sprite.destroy({ texture: false, children: true });
+                        crystals.splice(i, 1);
+                    }
+                }
+
+                // 更新背景
+                if (bgGradientSprite) {
+                    bgGradientSprite.width = w;
+                    bgGradientSprite.height = h;
+                }
+            }
+
+            // ─── 事件设置 ──────────────────────────────────────────────
+            function setupEvents() {
+                const view = app.view;
+
+                view.addEventListener('mousemove', (e) => {
+                    mouse.x = e.clientX;
+                    mouse.y = e.clientY;
+                    mouse.active = true;
+                });
+
+                view.addEventListener('mouseleave', () => {
+                    mouse.active = false;
+                    mouse.x = -9999;
+                    mouse.y = -9999;
+                });
+
+                view.addEventListener('mousedown', (e) => {
+                    mouse.x = e.clientX;
+                    mouse.y = e.clientY;
+                    mouse.active = true;
+                    createBurst(mouse.x, mouse.y);
+                    // 切换对称数
+                    symmetryTarget = 3 + Math.floor(Math.random() * 8);
+                    colorShift += 15 + Math.random() * 20;
+                    if (colorShift > 120) colorShift = -15;
+                });
+
+                view.addEventListener('touchmove', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        mouse.x = touch.clientX;
+                        mouse.y = touch.clientY;
+                        mouse.active = true;
+                    }
+                }, { passive: false });
+
+                view.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        mouse.x = touch.clientX;
+                        mouse.y = touch.clientY;
+                        mouse.active = true;
+                        createBurst(mouse.x, mouse.y);
+                        symmetryTarget = 3 + Math.floor(Math.random() * 8);
+                        colorShift += 15 + Math.random() * 20;
+                        if (colorShift > 120) colorShift = -15;
+                    }
+                }, { passive: false });
+
+                view.addEventListener('touchend', () => {
+                    mouse.active = false;
+                    mouse.x = -9999;
+                    mouse.y = -9999;
+                });
+
+                view.addEventListener('touchcancel', () => {
+                    mouse.active = false;
+                    mouse.x = -9999;
+                    mouse.y = -9999;
+                });
+
+                window.addEventListener('resize', () => {
+                    if (app) {
+                        app.renderer.resize(window.innerWidth, window.innerHeight);
+                        if (bgGradientSprite) {
+                            bgGradientSprite.width = app.screen.width;
+                            bgGradientSprite.height = app.screen.height;
+                        }
+                    }
+                });
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                try {
+                    initPixi();
+                    console.log('PixiJS 万花筒晶体已启动');
+                } catch (err) {
+                    console.error('初始化失败:', err);
+                    document.body.style.background = '#0a0a18';
+                    const container = document.getElementById('pixi-container');
+                    if (container) container.style.background = '#0a0a18';
+                }
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.addEventListener('load', () => {
+                document.body.style.background = '#0a0a18';
+                const container = document.getElementById('pixi-container');
+                if (container) container.style.background = '#0a0a18';
+            });
+        })();
+    </script>
+</body>
+</html>

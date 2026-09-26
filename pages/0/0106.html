@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>三叶结 · 编织流线</title>
+    <style>
+        :root {
+            --bg: #06060c;
+            --gold: #d4a843;
+            --cyan: #45b7aa;
+            --magenta: #d4708a;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'SimSun', serif;
+            -webkit-font-smoothing: antialiased;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        #canvas-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+        }
+        canvas {
+            display: block;
+        }
+        .overlay-title {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 22px 20px 8px;
+            text-align: center;
+            background: linear-gradient(180deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.8) 55%, rgba(6,6,12,0) 100%);
+        }
+        .overlay-title h2 {
+            font-size: clamp(1.1rem, 2.2vw, 1.8rem);
+            font-weight: 400;
+            letter-spacing: 0.13em;
+            color: #e8d5b0;
+            text-shadow: 0 0 30px rgba(212,168,67,0.45), 0 0 60px rgba(212,168,67,0.18);
+            margin: 0 0 2px;
+            line-height: 1.3;
+        }
+        .overlay-title .sub {
+            font-size: clamp(0.65rem, 1.1vw, 0.85rem);
+            letter-spacing: 0.22em;
+            color: rgba(200,180,150,0.65);
+        }
+        .overlay-formula {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 8px 20px 18px;
+            text-align: center;
+            background: linear-gradient(0deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.82) 55%, rgba(6,6,12,0) 100%);
+        }
+        .formula-text {
+            font-size: clamp(0.6rem, 1.0vw, 0.8rem);
+            color: rgba(210,200,185,0.8);
+            letter-spacing: 0.03em;
+            line-height: 1.7;
+            font-style: italic;
+        }
+        .clr-gold { color: #d4a843; font-style: normal; font-weight: bold; }
+        .clr-cyan { color: #45b7aa; font-style: normal; font-weight: bold; }
+        .clr-magenta { color: #d4708a; font-style: normal; font-weight: bold; }
+        .formula-sep {
+            display: inline-block;
+            margin: 0 14px;
+            color: rgba(150,140,130,0.35);
+            font-style: normal;
+        }
+    </style>
+</head>
+<body>
+    <div class="overlay-title">
+        <h2>三叶结 · 编织流线</h2>
+        <div class="sub">Trefoil knot braiding · Surrounding vector flow</div>
+    </div>
+    <div class="overlay-formula">
+        <div class="formula-text">
+            <span class="clr-gold">x = sin t + 2 sin 2t</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-cyan">y = cos t - 2 cos 2t</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-magenta">z = − sin 3t</span>
+        </div>
+    </div>
+    <div id="canvas-container"></div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // 固定容器
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+
+        const camera = new THREE.PerspectiveCamera(48, container.clientWidth / container.clientHeight, 0.5, 20);
+        camera.position.set(3.2, 2.0, 7.8);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x06060c, 1);
+        container.appendChild(renderer.domElement);
+
+        // 手动时钟（彻底避免 setAnimationLoop 可能的挂起）
+        let startTime = performance.now();
+        let elapsed = 0;
+        function updateTime() {
+            const now = performance.now();
+            elapsed = (now - startTime) * 0.001;
+            return elapsed;
+        }
+
+        // 颜色
+        const COLOR_GOLD = 0xd4a843;
+        const COLOR_CYAN = 0x45b7aa;
+        const COLOR_MAGENTA = 0xd4708a;
+
+        // ---------- 三叶结参数方程 ----------
+        function trefoilPoint(t) {
+            return new THREE.Vector3(
+                Math.sin(t) + 2 * Math.sin(2 * t),
+                Math.cos(t) - 2 * Math.cos(2 * t),
+                -Math.sin(3 * t)
+            );
+        }
+
+        // 编织三叶结：多条细线，每条稍微偏移相位或振幅，形成编织效果
+        function createBraidedTrefoil(color, numStrands, amplitudeVariation, phaseShift, numPoints) {
+            const group = new THREE.Group();
+            const tMax = 2 * Math.PI;
+            for (let s = 0; s < numStrands; s++) {
+                const points = [];
+                const dt = tMax / numPoints;
+                const offset = (s / numStrands) * phaseShift;
+                const amp = 1 + (s - numStrands/2) * amplitudeVariation;
+                for (let i = 0; i <= numPoints; i++) {
+                    const t = i * dt + offset;
+                    const base = trefoilPoint(t);
+                    // 轻微改变半径，但不影响拓扑，只是编织纹理
+                    points.push(base.clone().multiplyScalar(amp));
+                }
+                const geom = new THREE.BufferGeometry().setFromPoints(points);
+                const mat = new THREE.LineBasicMaterial({
+                    color: color,
+                    transparent: true,
+                    opacity: 0.72,
+                    depthWrite: true,
+                    depthTest: true,
+                });
+                group.add(new THREE.Line(geom, mat));
+            }
+            return group;
+        }
+
+        // 生成环绕流线：从三叶结附近出发，沿环绕向量场（比如绕结的扭转场）生成曲线
+        function createSurroundingFlow(baseColor, numStreams, startT, lengthScale, numPoints) {
+            const group = new THREE.Group();
+            for (let i = 0; i < numStreams; i++) {
+                const t0 = startT + (i / numStreams) * Math.PI * 2;
+                const seed = trefoilPoint(t0);
+                // 计算该点的切向量和法向量，构建局部标架
+                const dt = 1e-4;
+                const tNext = t0 + dt;
+                const tangent = trefoilPoint(tNext).clone().sub(seed).normalize();
+                // 构造一个大致正交的向量
+                const arbitrary = new THREE.Vector3(0, 1, 0);
+                const normal = new THREE.Vector3().crossVectors(tangent, arbitrary).normalize();
+                if (normal.length() < 0.1) normal.set(0, 0, 1).crossVectors(tangent, arbitrary).normalize();
+                const binormal = new THREE.Vector3().crossVectors(tangent, normal).normalize();
+                
+                // 沿环绕方向（如：螺旋离开结）生成点
+                const points = [];
+                let pos = seed.clone();
+                const step = 0.08;
+                for (let j = 0; j < numPoints; j++) {
+                    points.push(pos.clone());
+                    // 推动方向：沿切向+法向旋转（形成环绕）
+                    const angle = j * 0.25;
+                    const dir = tangent.clone().multiplyScalar(0.5)
+                        .add(normal.clone().multiplyScalar(Math.cos(angle) * 0.7))
+                        .add(binormal.clone().multiplyScalar(Math.sin(angle) * 0.7));
+                    pos.add(dir.multiplyScalar(step * lengthScale));
+                    if (pos.length() > 4.2) break; // 防止跑太远
+                }
+                if (points.length < 2) continue;
+                const geom = new THREE.BufferGeometry().setFromPoints(points);
+                const mat = new THREE.LineBasicMaterial({
+                    color: baseColor,
+                    transparent: true,
+                    opacity: 0.55,
+                    depthWrite: true,
+                    depthTest: true,
+                });
+                group.add(new THREE.Line(geom, mat));
+            }
+            return group;
+        }
+
+        // 主组
+        const rootGroup = new THREE.Group();
+        rootGroup.name = 'trefoil-system';
+        scene.add(rootGroup);
+
+        // 金色编织三叶结
+        const goldTrefoil = createBraidedTrefoil(COLOR_GOLD, 14, 0.03, Math.PI / 6, 600);
+        rootGroup.add(goldTrefoil);
+
+        // 青色编织三叶结（相位偏移形成交错）
+        const cyanTrefoil = createBraidedTrefoil(COLOR_CYAN, 12, 0.025, Math.PI / 4, 600);
+        rootGroup.add(cyanTrefoil);
+
+        // 品红编织三叶结
+        const magentaTrefoil = createBraidedTrefoil(COLOR_MAGENTA, 13, 0.028, Math.PI / 5, 600);
+        rootGroup.add(magentaTrefoil);
+
+        // 环绕流线（金色）
+        const goldFlow = createSurroundingFlow(COLOR_GOLD, 28, 0, 0.6, 400);
+        rootGroup.add(goldFlow);
+
+        // 环绕流线（青色）
+        const cyanFlow = createSurroundingFlow(COLOR_CYAN, 26, Math.PI / 3, 0.65, 380);
+        rootGroup.add(cyanFlow);
+
+        // 环绕流线（品红）
+        const magentaFlow = createSurroundingFlow(COLOR_MAGENTA, 27, 2 * Math.PI / 3, 0.58, 410);
+        rootGroup.add(magentaFlow);
+
+        console.log('三叶结+流线元素数量:', rootGroup.children.length);
+
+        // 背景星点
+        const starsGroup = new THREE.Group();
+        const starsGeom = new THREE.BufferGeometry();
+        const starsCount = 600;
+        const starsArr = new Float32Array(starsCount * 3);
+        for (let i = 0; i < starsCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const dist = 7 + Math.random() * 10;
+            starsArr[i * 3] = dist * Math.sin(phi) * Math.cos(theta);
+            starsArr[i * 3 + 1] = dist * Math.sin(phi) * Math.sin(theta);
+            starsArr[i * 3 + 2] = dist * Math.cos(phi);
+        }
+        starsGeom.setAttribute('position', new THREE.BufferAttribute(starsArr, 3));
+        const starsMat = new THREE.PointsMaterial({
+            color: 0x908878,
+            size: 0.018,
+            transparent: true,
+            opacity: 0.55,
+            depthWrite: false,
+        });
+        starsGroup.add(new THREE.Points(starsGeom, starsMat));
+        scene.add(starsGroup);
+
+        // ---------- 稳定动画循环 ----------
+        function animate() {
+            updateTime();
+            const t = elapsed;
+
+            // 整体旋转
+            rootGroup.rotation.x = t * 0.18;
+            rootGroup.rotation.y = t * 0.29;
+            rootGroup.rotation.z = t * 0.12;
+
+            starsGroup.rotation.y = t * 0.04;
+            starsGroup.rotation.x = t * 0.025;
+
+            // 相机环绕
+            const camRadius = 7.8;
+            const camAngle = t * 0.1;
+            const camHeight = 2.2 + Math.sin(t * 0.16) * 0.7;
+            camera.position.x = Math.cos(camAngle) * camRadius;
+            camera.position.z = Math.sin(camAngle) * camRadius;
+            camera.position.y = camHeight;
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+            requestAnimationFrame(animate);
+        }
+
+        // 启动动画
+        requestAnimationFrame(animate);
+
+        // 窗口大小调整
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth;
+            const h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth;
+            const h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 120));
+
+        console.log('✅ 三叶结编织动画已安全启动 (手动循环，无挂起风险)');
+    </script>
+</body>
+</html>

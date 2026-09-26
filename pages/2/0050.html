@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HOLOTUNNEL · 全息隧道</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #080818;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+        #pixi-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2;
+            text-align: center;
+            pointer-events: none;
+            opacity: 0.5;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+        .overlay:hover {
+            opacity: 0.85;
+        }
+        .title {
+            color: rgba(200, 230, 255, 0.7);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 20px rgba(100, 180, 255, 0.5);
+        }
+        .hint {
+            color: rgba(160, 190, 220, 0.45);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+        @media (max-width: 768px) {
+            .overlay {
+                bottom: 18px;
+            }
+            .title {
+                font-size: 8px;
+                letter-spacing: 0.45em;
+            }
+            .hint {
+                font-size: 6px;
+                letter-spacing: 0.22em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="pixi-container"></div>
+    <div class="overlay">
+        <div class="title">Holotunnel</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js">
+    </script>
+    <script>
+        (function() {
+            // ─── PixiJS 加载检测 ────────────────────────────────────────
+            if (typeof PIXI === 'undefined') {
+                document.body.style.background = '#080818';
+                const container = document.getElementById('pixi-container');
+                if (container) container.style.background = '#080818';
+                console.warn('PixiJS 加载失败，已启用兜底背景');
+                return;
+            }
+
+            // ─── 全局变量 ──────────────────────────────────────────────
+            let app;
+            let ringContainer;
+            let floatContainer;
+            let centerGlow;
+            let centerGlow2;
+            let ringParticles = [];
+            let floatParticles = [];
+            let mouse = { x: 0, y: 0, active: false, tx: 0, ty: 0 };
+            let rotX = 0.4;
+            let rotY = 0;
+            let targetRotX = 0.4;
+            let targetRotY = 0;
+            let time = 0;
+            let pulseTime = -10;
+            let colorShift = 0;
+            let ringCount = 14;
+            let particlesPerRing = 18;
+            let floatCount = 120;
+            let tunnelDepth = 22;
+            let baseRingRadius = 2.8;
+            let perspective = 3.5;
+
+            // 预生成纹理
+            let dotTexture;
+
+            // ─── 初始化 PixiJS ─────────────────────────────────────────
+            function initPixi() {
+                const container = document.getElementById('pixi-container');
+                const width = window.innerWidth;
+                const height = window.innerHeight;
+                const resolution = Math.min(window.devicePixelRatio || 1, 2);
+
+                app = new PIXI.Application({
+                    width: width,
+                    height: height,
+                    resolution: resolution,
+                    backgroundColor: 0x080818,
+                    antialias: true,
+                    autoDensity: true,
+                    powerPreference: 'high-performance',
+                });
+                container.appendChild(app.view);
+
+                // 创建环形粒子容器
+                ringContainer = new PIXI.ParticleContainer(3000, {
+                    position: true,
+                    scale: true,
+                    tint: true,
+                    alpha: true,
+                    uvs: true,
+                }, 3000, true);
+                ringContainer.blendMode = PIXI.BLEND_MODES.ADD;
+                app.stage.addChild(ringContainer);
+
+                // 创建漂浮粒子容器
+                floatContainer = new PIXI.ParticleContainer(500, {
+                    position: true,
+                    scale: true,
+                    tint: true,
+                    alpha: true,
+                }, 500, true);
+                floatContainer.blendMode = PIXI.BLEND_MODES.ADD;
+                app.stage.addChild(floatContainer);
+
+                // 生成点纹理
+                dotTexture = createDotTexture();
+
+                // 创建中心光晕
+                createCenterGlow();
+
+                // 初始化粒子
+                initRingParticles();
+                initFloatParticles();
+
+                // 设置事件
+                setupEvents();
+
+                // 启动动画
+                app.ticker.add(animate);
+                app.ticker.maxFPS = 60;
+            }
+
+            // ─── 创建点纹理 ────────────────────────────────────────────
+            function createDotTexture() {
+                const canvas = document.createElement('canvas');
+                canvas.width = 32;
+                canvas.height = 32;
+                const c = canvas.getContext('2d');
+                const gradient = c.createRadialGradient(16, 16, 0, 16, 16, 16);
+                gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
+                gradient.addColorStop(0.4, 'rgba(255, 255, 255, 0.7)');
+                gradient.addColorStop(0.8, 'rgba(255, 255, 255, 0.2)');
+                gradient.addColorStop(1, 'transparent');
+                c.fillStyle = gradient;
+                c.fillRect(0, 0, 32, 32);
+                return PIXI.Texture.from(canvas);
+            }
+
+            // ─── 创建中心光晕 ──────────────────────────────────────────
+            function createCenterGlow() {
+                const glowCanvas = document.createElement('canvas');
+                glowCanvas.width = 256;
+                glowCanvas.height = 256;
+                const c = glowCanvas.getContext('2d');
+                const gradient = c.createRadialGradient(128, 128, 0, 128, 128, 128);
+                gradient.addColorStop(0, 'rgba(200, 230, 255, 0.9)');
+                gradient.addColorStop(0.3, 'rgba(150, 200, 255, 0.5)');
+                gradient.addColorStop(0.7, 'rgba(80, 140, 220, 0.15)');
+                gradient.addColorStop(1, 'transparent');
+                c.fillStyle = gradient;
+                c.fillRect(0, 0, 256, 256);
+
+                const glowTexture = PIXI.Texture.from(glowCanvas);
+                centerGlow = new PIXI.Sprite(glowTexture);
+                centerGlow.anchor.set(0.5, 0.5);
+                centerGlow.width = 500;
+                centerGlow.height = 500;
+                centerGlow.blendMode = PIXI.BLEND_MODES.ADD;
+                centerGlow.alpha = 0.7;
+                app.stage.addChild(centerGlow);
+
+                centerGlow2 = new PIXI.Sprite(glowTexture);
+                centerGlow2.anchor.set(0.5, 0.5);
+                centerGlow2.width = 200;
+                centerGlow2.height = 200;
+                centerGlow2.blendMode = PIXI.BLEND_MODES.ADD;
+                centerGlow2.alpha = 1.0;
+                centerGlow2.tint = 0xaaccff;
+                app.stage.addChild(centerGlow2);
+            }
+
+            // ─── 初始化环形粒子 ────────────────────────────────────────
+            function initRingParticles() {
+                ringParticles = [];
+                ringContainer.removeChildren();
+
+                for (let r = 0; r < ringCount; r++) {
+                    const z = (r / (ringCount - 1)) * tunnelDepth;
+                    const ringRadius = baseRingRadius * (1 + z * 0.03);
+                    const particleCount = particlesPerRing;
+
+                    for (let i = 0; i < particleCount; i++) {
+                        const theta = (i / particleCount) * Math.PI * 2;
+                        const sprite = new PIXI.Sprite(dotTexture);
+                        sprite.anchor.set(0.5, 0.5);
+                        sprite.blendMode = PIXI.BLEND_MODES.ADD;
+
+                        // 颜色：近处暖色，远处冷色
+                        const hue = 220 - z * 5 + Math.sin(theta * 3 + r * 0.5) * 15;
+                        const sat = 70 - z * 2;
+                        const light = 55 + Math.sin(theta * 2 + r * 0.3) * 15;
+
+                        const particle = {
+                            sprite: sprite,
+                            ringIndex: r,
+                            theta: theta,
+                            z: z,
+                            radius: ringRadius,
+                            hue: hue,
+                            sat: sat,
+                            light: light,
+                            baseAlpha: 0.5 + 0.4 * Math.abs(Math.sin(theta * 2 + r * 0.2)),
+                            pulseOffset: Math.random() * Math.PI * 2,
+                        };
+
+                        sprite.tint = hslToHex(hue, sat, light);
+                        sprite.alpha = particle.baseAlpha;
+                        ringContainer.addChild(sprite);
+                        ringParticles.push(particle);
+                    }
+                }
+            }
+
+            // ─── 初始化漂浮粒子 ────────────────────────────────────────
+            function initFloatParticles() {
+                floatParticles = [];
+                floatContainer.removeChildren();
+
+                floatCount = Math.max(60, Math.min(160, Math.floor(window.innerWidth * window.innerHeight / 12000)));
+
+                for (let i = 0; i < floatCount; i++) {
+                    const sprite = new PIXI.Sprite(dotTexture);
+                    sprite.anchor.set(0.5, 0.5);
+                    sprite.blendMode = PIXI.BLEND_MODES.ADD;
+
+                    const particle = {
+                        sprite: sprite,
+                        x: (Math.random() - 0.5) * 6,
+                        y: (Math.random() - 0.5) * 6,
+                        z: Math.random() * tunnelDepth,
+                        vx: (Math.random() - 0.5) * 0.02,
+                        vy: (Math.random() - 0.5) * 0.02,
+                        vz: 0.15 + Math.random() * 0.25,
+                        hue: 200 + Math.random() * 60,
+                        sat: 60 + Math.random() * 30,
+                        light: 55 + Math.random() * 30,
+                        alpha: 0.3 + Math.random() * 0.5,
+                        size: 0.5 + Math.random() * 1.2,
+                    };
+
+                    sprite.tint = hslToHex(particle.hue, particle.sat, particle.light);
+                    sprite.alpha = particle.alpha;
+                    sprite.scale.set(particle.size, particle.size);
+                    floatContainer.addChild(sprite);
+                    floatParticles.push(particle);
+                }
+            }
+
+            // ─── HSL 转 Hex ───────────────────────────────────────────
+            function hslToHex(h, s, l) {
+                h = ((h % 360) + 360) % 360;
+                s = Math.max(0, Math.min(100, s)) / 100;
+                l = Math.max(0, Math.min(100, l)) / 100;
+                const c = (1 - Math.abs(2 * l - 1)) * s;
+                const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+                const m = l - c / 2;
+                let r, g, b;
+                if (h < 60) { r = c;
+                    g = x;
+                    b = 0; } else if (h < 120) { r = x;
+                    g = c;
+                    b = 0; } else if (h < 180) { r = 0;
+                    g = c;
+                    b = x; } else if (h < 240) { r = 0;
+                    g = x;
+                    b = c; } else if (h < 300) { r = x;
+                    g = 0;
+                    b = c; } else { r = c;
+                    g = 0;
+                    b = x; }
+                const toHex = (v) => Math.round((v + m) * 255).toString(16).padStart(2, '0');
+                return parseInt(`${toHex(r)}${toHex(g)}${toHex(b)}`, 16);
+            }
+
+            // ─── 3D 投影 ──────────────────────────────────────────────
+            function project3D(x, y, z) {
+                const cosX = Math.cos(rotX);
+                const sinX = Math.sin(rotX);
+                const cosY = Math.cos(rotY);
+                const sinY = Math.sin(rotY);
+
+                // 绕X轴旋转
+                const y1 = y * cosX - z * sinX;
+                const z1 = y * sinX + z * cosX;
+                // 绕Y轴旋转
+                const x1 = x * cosY + z1 * sinY;
+                const z2 = -x * sinY + z1 * cosY;
+
+                // 透视投影
+                const persp = perspective / (perspective + z2);
+                const sx = x1 * persp * 150;
+                const sy = y1 * persp * 150;
+                const scale = persp;
+
+                return { sx: sx, sy: sy, scale: scale, z2: z2 };
+            }
+
+            // ─── 动画循环 ──────────────────────────────────────────────
+            function animate() {
+                time += 0.016;
+                const w = app.screen.width;
+                const h = app.screen.height;
+                const cx = w / 2;
+                const cy = h / 2;
+
+                // 鼠标平滑跟随
+                if (mouse.active) {
+                    mouse.tx = (mouse.x - cx) / cx * 1.2;
+                    mouse.ty = (mouse.y - cy) / cy * 1.2;
+                    targetRotY = -mouse.tx * 0.8;
+                    targetRotX = 0.4 + mouse.ty * 0.6;
+                } else {
+                    targetRotY = 0;
+                    targetRotX = 0.4;
+                }
+                rotX += (targetRotX - rotX) * 0.08;
+                rotY += (targetRotY - rotY) * 0.08;
+
+                // 脉冲传播
+                const pulseActive = (time - pulseTime) < 2.5;
+                const pulseProgress = (time - pulseTime) / 2.5;
+
+                // ─── 更新环形粒子 ───────────────────────────────────
+                for (const p of ringParticles) {
+                    const zOffset = p.z;
+                    const theta = p.theta + time * 0.12;
+                    const cosT = Math.cos(theta);
+                    const sinT = Math.sin(theta);
+
+                    // 隧道坐标：螺旋扭曲
+                    const twistFactor = 0.15;
+                    const effectiveTheta = theta + p.z * twistFactor;
+                    const x = p.radius * Math.cos(effectiveTheta);
+                    const y = p.radius * Math.sin(effectiveTheta) * 0.85;
+
+                    const projected = project3D(x, y, zOffset);
+
+                    // 脉冲效果
+                    let pulseBoost = 0;
+                    if (pulseActive) {
+                        const pulseZ = pulseProgress * tunnelDepth;
+                        const distZ = Math.abs(p.z - pulseZ);
+                        const pulseWidth = 2.5;
+                        if (distZ < pulseWidth) {
+                            pulseBoost = (1 - distZ / pulseWidth) * 0.8;
+                        }
+                    }
+
+                    // 计算最终位置和属性
+                    const sprite = p.sprite;
+                    const s = projected.sx;
+                    const sy = projected.sy;
+                    const scale = projected.scale;
+
+                    sprite.x = cx + s;
+                    sprite.y = cy + sy;
+                    sprite.scale.set(scale * 2.5, scale * 2.5);
+
+                    const depthAlpha = Math.max(0.15, 1 - p.z / tunnelDepth * 0.5);
+                    const pulseAlpha = pulseBoost;
+                    const finalAlpha = Math.min(1, (p.baseAlpha + pulseAlpha) * depthAlpha);
+                    sprite.alpha = finalAlpha;
+
+                    // 颜色动态变化
+                    const hueShift = colorShift + Math.sin(time * 0.5 + p.theta) * 12 + pulseBoost * 30;
+                    sprite.tint = hslToHex(p.hue + hueShift, p.sat, p.light + pulseBoost * 20);
+                }
+
+                // ─── 更新漂浮粒子 ───────────────────────────────────
+                for (const p of floatParticles) {
+                    p.x += p.vx;
+                    p.y += p.vy;
+                    p.z -= p.vz;
+                    if (p.z < 0.5) {
+                        p.z = tunnelDepth;
+                        p.x = (Math.random() - 0.5) * 5;
+                        p.y = (Math.random() - 0.5) * 5;
+                    }
+
+                    const projected = project3D(p.x, p.y, p.z);
+                    const sprite = p.sprite;
+                    const scale = projected.scale;
+
+                    sprite.x = cx + projected.sx;
+                    sprite.y = cy + projected.sy;
+                    sprite.scale.set(scale * 3.5 * p.size, scale * 3.5 * p.size);
+
+                    const depthAlpha = Math.max(0.1, 1 - p.z / tunnelDepth * 0.7);
+                    sprite.alpha = p.alpha * depthAlpha;
+
+                    const hueShift = colorShift + Math.sin(time * 0.3 + p.z * 0.5) * 15;
+                    sprite.tint = hslToHex(p.hue + hueShift, p.sat, p.light);
+                }
+
+                // ─── 更新中心光晕 ──────────────────────────────────
+                const centerProj = project3D(0, 0, 0);
+                centerGlow.x = cx + centerProj.sx;
+                centerGlow.y = cy + centerProj.sy;
+                const glowScale = 2.5 + Math.sin(time * 0.8) * 0.3;
+                centerGlow.scale.set(glowScale, glowScale);
+                centerGlow.alpha = 0.5 + Math.sin(time * 0.6) * 0.15;
+
+                centerGlow2.x = cx + centerProj.sx;
+                centerGlow2.y = cy + centerProj.sy;
+                const glow2Scale = 1.2 + Math.sin(time * 1.2) * 0.2 + (pulseActive ? 0.5 : 0);
+                centerGlow2.scale.set(glow2Scale, glow2Scale);
+                centerGlow2.alpha = 0.8 + Math.sin(time * 0.9) * 0.15;
+            }
+
+            // ─── 事件设置 ──────────────────────────────────────────────
+            function setupEvents() {
+                const view = app.view;
+
+                view.addEventListener('mousemove', (e) => {
+                    mouse.x = e.clientX;
+                    mouse.y = e.clientY;
+                    mouse.active = true;
+                });
+
+                view.addEventListener('mouseleave', () => {
+                    mouse.active = false;
+                    mouse.x = -9999;
+                    mouse.y = -9999;
+                });
+
+                view.addEventListener('mousedown', (e) => {
+                    mouse.x = e.clientX;
+                    mouse.y = e.clientY;
+                    mouse.active = true;
+                    pulseTime = time;
+                    colorShift += 20 + Math.random() * 25;
+                    if (colorShift > 150) colorShift = -20;
+                });
+
+                view.addEventListener('touchmove', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        mouse.x = touch.clientX;
+                        mouse.y = touch.clientY;
+                        mouse.active = true;
+                    }
+                }, { passive: false });
+
+                view.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        mouse.x = touch.clientX;
+                        mouse.y = touch.clientY;
+                        mouse.active = true;
+                        pulseTime = time;
+                        colorShift += 20 + Math.random() * 25;
+                        if (colorShift > 150) colorShift = -20;
+                    }
+                }, { passive: false });
+
+                view.addEventListener('touchend', () => {
+                    mouse.active = false;
+                    mouse.x = -9999;
+                    mouse.y = -9999;
+                });
+
+                view.addEventListener('touchcancel', () => {
+                    mouse.active = false;
+                    mouse.x = -9999;
+                    mouse.y = -9999;
+                });
+
+                window.addEventListener('resize', () => {
+                    if (app) {
+                        app.renderer.resize(window.innerWidth, window.innerHeight);
+                    }
+                });
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                try {
+                    initPixi();
+                    console.log('全息隧道已启动');
+                } catch (err) {
+                    console.error('初始化失败:', err);
+                    document.body.style.background = '#080818';
+                    const container = document.getElementById('pixi-container');
+                    if (container) container.style.background = '#080818';
+                }
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.addEventListener('load', () => {
+                document.body.style.background = '#080818';
+                const container = document.getElementById('pixi-container');
+                if (container) container.style.background = '#080818';
+            });
+        })();
+    </script>
+</body>
+</html>

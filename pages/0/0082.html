@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>超立方体投影 · 四维编织</title>
+    <style>
+        :root {
+            --bg: #06060c;
+            --gold: #d4a843;
+            --cyan: #45b7aa;
+            --magenta: #d4708a;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'SimSun', serif;
+            -webkit-font-smoothing: antialiased;
+            user-select: none;
+        }
+        #canvas-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+        }
+        canvas {
+            display: block;
+        }
+        .overlay-title {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 22px 20px 8px;
+            text-align: center;
+            background: linear-gradient(180deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.8) 55%, rgba(6,6,12,0) 100%);
+        }
+        .overlay-title h2 {
+            font-size: clamp(1.1rem, 2.2vw, 1.8rem);
+            font-weight: 400;
+            letter-spacing: 0.13em;
+            color: #e8d5b0;
+            text-shadow: 0 0 30px rgba(212,168,67,0.45), 0 0 60px rgba(212,168,67,0.18);
+            margin: 0 0 2px;
+            line-height: 1.3;
+        }
+        .overlay-title .sub {
+            font-size: clamp(0.65rem, 1.1vw, 0.85rem);
+            letter-spacing: 0.22em;
+            color: rgba(200,180,150,0.65);
+        }
+        .overlay-formula {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 8px 20px 18px;
+            text-align: center;
+            background: linear-gradient(0deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.82) 55%, rgba(6,6,12,0) 100%);
+        }
+        .formula-text {
+            font-size: clamp(0.6rem, 1.0vw, 0.8rem);
+            color: rgba(210,200,185,0.8);
+            letter-spacing: 0.03em;
+            line-height: 1.7;
+        }
+        .clr-gold { color: #d4a843; font-weight: bold; }
+        .clr-cyan { color: #45b7aa; font-weight: bold; }
+        .clr-magenta { color: #d4708a; font-weight: bold; }
+        .formula-sep {
+            display: inline-block;
+            margin: 0 14px;
+            color: rgba(150,140,130,0.35);
+        }
+    </style>
+</head>
+<body>
+    <div class="overlay-title">
+        <h2>超立方体投影 · 四维编织</h2>
+        <div class="sub">Tesseract · Double rotation in 4D · Perspective projection</div>
+    </div>
+    <div class="overlay-formula">
+        <div class="formula-text">
+            <span class="clr-gold">R₁(θ) : xy‑plane</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-cyan">R₂(φ) : zw‑plane</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-magenta">Proj: (x,y,z)/(1−w/d)</span>
+        </div>
+    </div>
+    <div id="canvas-container"></div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ---------- 场景初始化 ----------
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(48, container.clientWidth / container.clientHeight, 0.5, 20);
+        camera.position.set(3.5, 2.2, 7.0);
+        camera.lookAt(0, 0, 0);
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x06060c, 1);
+        container.appendChild(renderer.domElement);
+
+        // 手动时钟——杜绝暂停
+        let startTime = performance.now();
+        function getElapsed() {
+            return (performance.now() - startTime) * 0.001;
+        }
+
+        const COLOR_GOLD = 0xd4a843;
+        const COLOR_CYAN = 0x45b7aa;
+        const COLOR_MAGENTA = 0xd4708a;
+
+        // 超立方体顶点 (十六个，坐标±1)
+        function generateTesseractVertices() {
+            const verts = [];
+            for (let i = 0; i < 16; i++) {
+                const x = (i & 1) ? 1 : -1;
+                const y = (i & 2) ? 1 : -1;
+                const z = (i & 4) ? 1 : -1;
+                const w = (i & 8) ? 1 : -1;
+                verts.push(new THREE.Vector4(x, y, z, w));
+            }
+            return verts;
+        }
+
+        // 超立方体边列表 (根据汉明距离为1)
+        function generateTesseractEdges() {
+            const verts = generateTesseractVertices();
+            const edges = [];
+            for (let i = 0; i < 16; i++) {
+                for (let j = i + 1; j < 16; j++) {
+                    const a = verts[i];
+                    const b = verts[j];
+                    const diff = Math.abs(a.x - b.x) + Math.abs(a.y - b.y) + Math.abs(a.z - b.z) + Math.abs(a.w - b.w);
+                    if (Math.abs(diff - 2) < 0.01) { // 汉明距离1 => 坐标和差2
+                        edges.push([i, j]);
+                    }
+                }
+            }
+            return { verts, edges };
+        }
+
+        // 四维旋转矩阵：在xy平面旋转angle1，在zw平面旋转angle2
+        function rotate4D(v, angle1, angle2) {
+            const x = v.x, y = v.y, z = v.z, w = v.w;
+            const cos1 = Math.cos(angle1), sin1 = Math.sin(angle1);
+            const cos2 = Math.cos(angle2), sin2 = Math.sin(angle2);
+            // 先xy平面旋转
+            const x1 = x * cos1 - y * sin1;
+            const y1 = x * sin1 + y * cos1;
+            // 再zw平面旋转
+            const z1 = z * cos2 - w * sin2;
+            const w1 = z * sin2 + w * cos2;
+            return new THREE.Vector4(x1, y1, z1, w1);
+        }
+
+        // 透视投影 4D→3D
+        const PROJECTION_DISTANCE = 2.8;
+        function project4Dto3D(v4) {
+            const w = v4.w;
+            const denom = PROJECTION_DISTANCE - w;
+            if (Math.abs(denom) < 0.05) return null;
+            const factor = 1.8 / denom;
+            return new THREE.Vector3(v4.x * factor, v4.y * factor, v4.z * factor);
+        }
+
+        // 为每条边生成一组平行细线，形成“编织束”
+        function createEdgeBundle(v4a, v4b, color, numStrands, offsetAmount) {
+            const group = new THREE.Group();
+            // 在4D空间中计算单位切向量和两个正交方向用于偏移
+            const dir = new THREE.Vector4(v4b.x - v4a.x, v4b.y - v4a.y, v4b.z - v4a.z, v4b.w - v4a.w).normalize();
+            // 构造两个正交的偏移方向（简单的方法：取与dir正交的固定向量）
+            let u, v;
+            if (Math.abs(dir.x) < 0.9) {
+                u = new THREE.Vector4(1, 0, 0, 0).sub(dir.clone().multiplyScalar(dir.x)).normalize();
+            } else {
+                u = new THREE.Vector4(0, 1, 0, 0).sub(dir.clone().multiplyScalar(dir.y)).normalize();
+            }
+            v = new THREE.Vector4().crossVectors(dir, u); // 需要四维叉积？使用简单替代：随机正交
+            // 简化：使用垂直于dir的两个随机方向并正交化
+            // 这里仅为偏移生成，采用随机两个正交方向
+            // 更好的办法：直接用投影后的三维方向进行偏移，但为了精确性，在4D做偏移后再投影
+            // 为简化，我们将在3D投影后偏移，但会导致不完美；考虑到主要视觉效果，可以在投影后做微小偏移
+            // 由于用户需要细线多，我们主要在投影后在三维空间偏移。
+            // 因此，我们直接生成多个投影点并轻微偏移
+            return group;
+        }
+
+        // 简化：生成一条边的一束平行线（在投影后偏移）
+        function createProjectedEdgeBundle(v3a, v3b, color, numStrands, offsetMag) {
+            const group = new THREE.Group();
+            const dir = v3b.clone().sub(v3a).normalize();
+            // 构造两个正交方向
+            const aux = new THREE.Vector3(0, 1, 0);
+            let perp1 = new THREE.Vector3().crossVectors(dir, aux).normalize();
+            if (perp1.length() < 0.1) perp1 = new THREE.Vector3().crossVectors(dir, new THREE.Vector3(1, 0, 0)).normalize();
+            const perp2 = new THREE.Vector3().crossVectors(dir, perp1).normalize();
+            for (let i = 0; i < numStrands; i++) {
+                const angle = (i / numStrands) * Math.PI * 2;
+                const off = perp1.clone().multiplyScalar(Math.cos(angle) * offsetMag).add(
+                    perp2.clone().multiplyScalar(Math.sin(angle) * offsetMag)
+                );
+                const a = v3a.clone().add(off);
+                const b = v3b.clone().add(off);
+                const pts = [a, b];
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color,
+                    transparent: true,
+                    opacity: 0.5,
+                    depthWrite: true,
+                    depthTest: true,
+                });
+                group.add(new THREE.Line(geom, mat));
+            }
+            return group;
+        }
+
+        // 根据边的方向类型分配颜色
+        function edgeColor(indexA, indexB) {
+            // 边的方向：看哪个坐标不同
+            const a = { x: indexA & 1 ? 1 : -1, y: indexA & 2 ? 1 : -1, z: indexA & 4 ? 1 : -1, w: indexA & 8 ? 1 : -1 };
+            const b = { x: indexB & 1 ? 1 : -1, y: indexB & 2 ? 1 : -1, z: indexB & 4 ? 1 : -1, w: indexB & 8 ? 1 : -1 };
+            if (a.x !== b.x) return COLOR_GOLD;
+            if (a.y !== b.y) return COLOR_CYAN;
+            if (a.z !== b.z) return COLOR_MAGENTA;
+            if (a.w !== b.w) return COLOR_GOLD; // w方向也用金色
+        }
+
+        // 主组
+        const rootGroup = new THREE.Group();
+        rootGroup.name = 'tesseract-projection';
+        scene.add(rootGroup);
+
+        const { verts, edges } = generateTesseractEdges();
+        const numStrands = 6;   // 每条边生成6根平行线
+        const offsetMag = 0.02; // 偏移量
+
+        // 存储初始边的颜色信息
+        const edgeColorMap = edges.map(([i, j]) => edgeColor(i, j));
+
+        // 构建线束组（我们将在动画循环中动态更新位置）
+        // 为每条边创建一个组，包含 numStrands 条线段
+        const lineBundleGroups = edges.map(([i, j], idx) => {
+            const color = edgeColorMap[idx];
+            const group = new THREE.Group();
+            // 创建6条线段，初始占位
+            for (let s = 0; s < numStrands; s++) {
+                const geom = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0)]);
+                const mat = new THREE.LineBasicMaterial({
+                    color,
+                    transparent: true,
+                    opacity: 0.5,
+                    depthWrite: true,
+                    depthTest: true,
+                });
+                group.add(new THREE.Line(geom, mat));
+            }
+            return group;
+        });
+
+        // 将所有边组添加到场景
+        lineBundleGroups.forEach(g => rootGroup.add(g));
+
+        // 背景星点
+        const starsGroup = new THREE.Group();
+        const starsGeom = new THREE.BufferGeometry();
+        const starsCount = 500;
+        const starsPos = new Float32Array(starsCount * 3);
+        for (let i = 0; i < starsCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const dist = 6.5 + Math.random() * 10;
+            starsPos[i * 3] = dist * Math.sin(phi) * Math.cos(theta);
+            starsPos[i * 3 + 1] = dist * Math.sin(phi) * Math.sin(theta);
+            starsPos[i * 3 + 2] = dist * Math.cos(phi);
+        }
+        starsGeom.setAttribute('position', new THREE.BufferAttribute(starsPos, 3));
+        const starsMat = new THREE.PointsMaterial({
+            color: 0x908878,
+            size: 0.018,
+            transparent: true,
+            opacity: 0.55,
+            depthWrite: false,
+        });
+        starsGroup.add(new THREE.Points(starsGeom, starsMat));
+        scene.add(starsGroup);
+
+        // ---------- 动画循环 ----------
+        function animate() {
+            const t = getElapsed();
+
+            // 四维旋转角度 (随时间变化)
+            const angle1 = t * 0.35; // xy平面
+            const angle2 = t * 0.48; // zw平面
+
+            // 计算所有投影后的顶点
+            const projectedVerts = verts.map(v => {
+                const rot = rotate4D(v, angle1, angle2);
+                return project4Dto3D(rot);
+            });
+
+            // 更新每条边的线束位置
+            edges.forEach(([i, j], idx) => {
+                const vA = projectedVerts[i];
+                const vB = projectedVerts[j];
+                const bundleGroup = lineBundleGroups[idx];
+                if (!vA || !vB) {
+                    // 如果某个顶点在投影后不可见，隐藏所有子线
+                    bundleGroup.children.forEach(line => { line.visible = false; });
+                    return;
+                }
+                const dir = vB.clone().sub(vA).normalize();
+                const aux = new THREE.Vector3(0, 1, 0);
+                let perp1 = new THREE.Vector3().crossVectors(dir, aux).normalize();
+                if (perp1.length() < 0.1) perp1 = new THREE.Vector3().crossVectors(dir, new THREE.Vector3(1, 0, 0)).normalize();
+                const perp2 = new THREE.Vector3().crossVectors(dir, perp1).normalize();
+
+                for (let s = 0; s < numStrands; s++) {
+                    const angle = (s / numStrands) * Math.PI * 2;
+                    const off = perp1.clone().multiplyScalar(Math.cos(angle) * offsetMag).add(
+                        perp2.clone().multiplyScalar(Math.sin(angle) * offsetMag)
+                    );
+                    const a = vA.clone().add(off);
+                    const b = vB.clone().add(off);
+                    const line = bundleGroup.children[s];
+                    if (line) {
+                        const geom = line.geometry;
+                        const positions = geom.attributes.position.array;
+                        positions[0] = a.x;
+                        positions[1] = a.y;
+                        positions[2] = a.z;
+                        positions[3] = b.x;
+                        positions[4] = b.y;
+                        positions[5] = b.z;
+                        geom.attributes.position.needsUpdate = true;
+                        line.visible = true;
+                    }
+                }
+            });
+
+            // 整体旋转（额外美感）
+            rootGroup.rotation.x = t * 0.10;
+            rootGroup.rotation.y = t * 0.15;
+            rootGroup.rotation.z = t * 0.05;
+
+            // 背景星点旋转
+            starsGroup.rotation.y = t * 0.03;
+            starsGroup.rotation.x = t * 0.02;
+
+            // 相机微动
+            const camRadius = 7.2;
+            const camAngle = t * 0.08;
+            const camHeight = 2.3 + Math.sin(t * 0.17) * 0.7;
+            camera.position.x = Math.cos(camAngle) * camRadius;
+            camera.position.z = Math.sin(camAngle) * camRadius;
+            camera.position.y = camHeight;
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+            requestAnimationFrame(animate);
+        }
+
+        // 预渲染首帧，确保立即显示
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+
+        // 响应式调整
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth, h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth, h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 120));
+
+        console.log('✅ 超立方体四维编织动画已稳定运行');
+    </script>
+</body>
+</html>

@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>THREAD · 丝线编织</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #0a0a14;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2;
+            text-align: center;
+            pointer-events: none;
+            opacity: 0.55;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+        .overlay:hover {
+            opacity: 0.9;
+        }
+        .title {
+            color: rgba(230, 220, 255, 0.75);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 20px rgba(150, 120, 240, 0.5);
+        }
+        .hint {
+            color: rgba(190, 180, 220, 0.45);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+        @media (max-width: 768px) {
+            .overlay { bottom: 18px; }
+            .title { font-size: 8px; letter-spacing: 0.45em; }
+            .hint { font-size: 6px; letter-spacing: 0.22em; }
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <div class="overlay">
+        <div class="title">Thread</div>
+        <div class="hint">move · click</div>
+    </div>
+    <script>
+        (function() {
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            let threads = [];
+            let mouse = { x: -9999, y: -9999, active: false };
+            let time = 0;
+            let colorShift = 0;
+            let burstParticles = [];
+
+            // ─── 显著降低性能开销 ───────────────────────────────────────
+            const THREAD_COUNT = () => Math.max(10, Math.min(20, Math.floor(W * H / 45000)));
+            const SEGMENTS = () => Math.max(24, Math.min(36, Math.floor(H / 22)));
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                // 立即填充背景，杜绝黑屏
+                ctx.fillStyle = '#0a0a14';
+                ctx.fillRect(0, 0, W, H);
+            }
+
+            class Thread {
+                constructor() {
+                    this.segments = SEGMENTS();
+                    this.points = [];
+                    this.hue = 190 + Math.random() * 70;
+                    this.saturation = 55 + Math.random() * 30;
+                    this.lightness = 45 + Math.random() * 25;
+                    this.alpha = 0.3 + Math.random() * 0.3;
+                    this.thickness = 0.6 + Math.random() * 0.9;
+                    this.phase = Math.random() * Math.PI * 2;
+                    this.speed = 0.3 + Math.random() * 0.6;
+                    this.amplitude = 18 + Math.random() * 35;
+                    this.anchorX = Math.random() * W;
+                    this.anchorY = Math.random() * H;
+                    this.driftX = (Math.random() - 0.5) * 0.5;
+                    this.driftY = (Math.random() - 0.5) * 0.5;
+                    this.cutTimer = 0;
+                    this.regrowTimer = 0;
+                    this.initPoints();
+                }
+
+                initPoints() {
+                    this.points = [];
+                    for (let i = 0; i <= this.segments; i++) {
+                        this.points.push({
+                            x: this.anchorX,
+                            y: this.anchorY,
+                            alphaMul: 1,
+                        });
+                    }
+                }
+
+                cut() {
+                    this.cutTimer = 15 + Math.random() * 20;
+                    this.regrowTimer = 25 + Math.random() * 35;
+                }
+
+                update(dt, mouse, t) {
+                    this.anchorX += this.driftX * dt;
+                    this.anchorY += this.driftY * dt;
+                    if (this.anchorX < -50) this.anchorX = W + 50;
+                    if (this.anchorX > W + 50) this.anchorX = -50;
+                    if (this.anchorY < -50) this.anchorY = H + 50;
+                    if (this.anchorY > H + 50) this.anchorY = -50;
+
+                    this.phase += this.speed * 0.03 * dt;
+                    if (this.cutTimer > 0) this.cutTimer -= dt;
+                    if (this.regrowTimer > 0) this.regrowTimer -= dt;
+
+                    const seg = this.segments;
+                    for (let i = 0; i <= seg; i++) {
+                        const p = this.points[i];
+                        const ratio = i / seg;
+                        const waveX = Math.sin(ratio * 7 + this.phase * 3) * this.amplitude * ratio;
+                        const waveY = Math.cos(ratio * 6 + this.phase * 2.5) * this.amplitude * 0.7;
+                        const driftWave = Math.sin(ratio * 5 + t * 0.4) * 12;
+                        let baseX = this.anchorX + waveX + driftWave;
+                        let baseY = this.anchorY + waveY + Math.cos(ratio * 5 + t * 0.5) * 15;
+
+                        if (mouse.active && this.cutTimer <= 0) {
+                            const dx = mouse.x - baseX;
+                            const dy = mouse.y - baseY;
+                            const distSq = dx * dx + dy * dy;
+                            const infSq = 170 * 170;
+                            if (distSq < infSq) {
+                                const dist = Math.sqrt(distSq);
+                                const force = (1 - dist / 170) * 35;
+                                const normX = dx / (dist || 1);
+                                const normY = dy / (dist || 1);
+                                baseX -= normX * force * Math.sin(ratio * Math.PI);
+                                baseY -= normY * force * Math.cos(ratio * Math.PI);
+                            }
+                        }
+
+                        let alphaMul = 1;
+                        if (this.cutTimer > 0) {
+                            const breakPoint = 0.3 + Math.random() * 0.1;
+                            const distFromBreak = Math.abs(ratio - breakPoint);
+                            if (distFromBreak < 0.12) alphaMul = 0;
+                            else if (distFromBreak < 0.25) alphaMul = (distFromBreak - 0.12) / 0.13;
+                        }
+                        if (this.regrowTimer > 0 && this.cutTimer <= 0) {
+                            const progress = 1 - this.regrowTimer / 35;
+                            if (ratio < progress * 0.5) alphaMul = 0;
+                            else if (ratio < progress) alphaMul = 0.5;
+                        }
+
+                        p.x = baseX;
+                        p.y = baseY;
+                        p.alphaMul = alphaMul;
+                    }
+                }
+
+                draw(ctx, t) {
+                    const seg = this.segments;
+                    for (let i = 0; i < seg; i++) {
+                        const p1 = this.points[i];
+                        const p2 = this.points[i + 1];
+                        if (p1.alphaMul <= 0.03 || p2.alphaMul <= 0.03) continue;
+                        const ratio = i / seg;
+                        const alpha = this.alpha * Math.min(p1.alphaMul, p2.alphaMul);
+                        const hue = this.hue + colorShift + Math.sin(ratio * 5 + t * 0.4) * 18;
+                        const sat = this.saturation + Math.sin(ratio * 4 + t * 0.3) * 12;
+                        const light = this.lightness + Math.sin(ratio * 6 + t * 0.5) * 10;
+                        const width = this.thickness * (0.7 + 0.5 * Math.sin(ratio * 8 + t + this.hue));
+
+                        ctx.strokeStyle = `hsla(${hue}, ${sat}%, ${light}%, ${alpha})`;
+                        ctx.lineWidth = width;
+                        ctx.lineCap = 'round';
+                        ctx.beginPath();
+                        ctx.moveTo(p1.x, p1.y);
+                        ctx.lineTo(p2.x, p2.y);
+                        ctx.stroke();
+                    }
+
+                    // 绘制发光节点（减少节点数量）
+                    for (let i = 0; i <= seg; i += 4) {
+                        const p = this.points[i];
+                        if (p.alphaMul <= 0.1) continue;
+                        const ratio = i / seg;
+                        const alpha = this.alpha * p.alphaMul * 0.5;
+                        const hue = this.hue + colorShift + Math.sin(ratio * 6 + t * 0.5) * 18;
+                        const size = this.thickness * 1.8;
+                        ctx.fillStyle = `hsla(${hue}, ${this.saturation}%, ${this.lightness + 15}%, ${alpha})`;
+                        ctx.beginPath();
+                        ctx.arc(p.x, p.y, size, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+                }
+            }
+
+            function initThreads() {
+                const count = THREAD_COUNT();
+                threads = [];
+                for (let i = 0; i < count; i++) {
+                    threads.push(new Thread());
+                }
+            }
+
+            function createBurst(x, y) {
+                const count = 12 + Math.floor(Math.random() * 10);
+                for (let i = 0; i < count; i++) {
+                    const angle = Math.random() * Math.PI * 2;
+                    const speed = 1 + Math.random() * 3;
+                    burstParticles.push({
+                        x, y,
+                        vx: Math.cos(angle) * speed,
+                        vy: Math.sin(angle) * speed,
+                        life: 0.6 + Math.random() * 0.5,
+                        maxLife: 1.1,
+                        size: 1.2 + Math.random() * 2,
+                        hue: 200 + colorShift + Math.random() * 50 - 25,
+                    });
+                }
+                if (burstParticles.length > 100) {
+                    burstParticles.splice(0, burstParticles.length - 100);
+                }
+            }
+
+            function updateBurstParticles(dt) {
+                for (let i = burstParticles.length - 1; i >= 0; i--) {
+                    const p = burstParticles[i];
+                    p.x += p.vx * dt;
+                    p.y += p.vy * dt;
+                    p.vx *= 0.95;
+                    p.vy *= 0.95;
+                    p.life -= 0.025 * dt;
+                    if (p.life <= 0) burstParticles.splice(i, 1);
+                }
+            }
+
+            function drawBurstParticles(ctx) {
+                for (const p of burstParticles) {
+                    const alpha = p.life * 0.7;
+                    const size = p.size * p.life;
+                    ctx.fillStyle = `hsla(${p.hue}, 70%, 70%, ${alpha})`;
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, size, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            function drawCursorGlow(ctx) {
+                if (!mouse.active) return;
+                const radius = 60;
+                const hue = 200 + colorShift;
+                const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                gradient.addColorStop(0, `hsla(${hue}, 60%, 75%, 0.05)`);
+                gradient.addColorStop(0.7, `hsla(${hue}, 50%, 70%, 0.02)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            let lastTime = 0;
+            let accumulator = 0;
+            const fixedStep = 1000 / 60;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+
+                accumulator += dt;
+                const steps = Math.min(Math.floor(accumulator / fixedStep), 3);
+                accumulator -= steps * fixedStep;
+
+                for (let s = 0; s < steps; s++) {
+                    time += 0.016;
+                    const dtNorm = fixedStep / 1000 * 60;
+                    for (const th of threads) {
+                        th.update(dtNorm, mouse, time);
+                    }
+                    updateBurstParticles(dtNorm);
+                }
+
+                // 清除并填充背景
+                ctx.fillStyle = '#0a0a14';
+                ctx.fillRect(0, 0, W, H);
+
+                // 绘制丝线
+                for (const th of threads) {
+                    th.draw(ctx, time);
+                }
+
+                // 绘制爆发粒子
+                drawBurstParticles(ctx);
+
+                // 鼠标光晕
+                drawCursorGlow(ctx);
+
+                requestAnimationFrame(animate);
+            }
+
+            function onMouseMove(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                for (const th of threads) {
+                    const dx = th.anchorX - mouse.x;
+                    const dy = th.anchorY - mouse.y;
+                    if (dx * dx + dy * dy < 180 * 180) {
+                        th.cut();
+                    }
+                }
+                createBurst(mouse.x, mouse.y);
+                colorShift += 25 + Math.random() * 30;
+                if (colorShift > 140) colorShift = -25;
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    for (const th of threads) {
+                        const dx = th.anchorX - mouse.x;
+                        const dy = th.anchorY - mouse.y;
+                        if (dx * dx + dy * dy < 180 * 180) {
+                            th.cut();
+                        }
+                    }
+                    createBurst(mouse.x, mouse.y);
+                    colorShift += 25 + Math.random() * 30;
+                    if (colorShift > 140) colorShift = -25;
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onResize() {
+                setupCanvas();
+                const targetCount = THREAD_COUNT();
+                if (targetCount !== threads.length) {
+                    while (threads.length < targetCount) {
+                        threads.push(new Thread());
+                    }
+                    if (threads.length > targetCount) {
+                        threads.length = targetCount;
+                    }
+                }
+                for (const th of threads) {
+                    th.segments = SEGMENTS();
+                    th.initPoints();
+                }
+                burstParticles = [];
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function init() {
+                setupCanvas();
+                initThreads();
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                // 启动动画循环，并添加错误保护
+                try {
+                    requestAnimationFrame(animate);
+                } catch (err) {
+                    console.error('动画启动失败:', err);
+                    // 兜底：确保背景可见
+                    ctx.fillStyle = '#0a0a14';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#0a0a14';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+        })();
+    </script>
+</body>
+</html>

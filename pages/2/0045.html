@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FRACTAL · 分形粒子场</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #08080f;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+        #pixi-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2;
+            text-align: center;
+            pointer-events: none;
+            opacity: 0.55;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+        .overlay:hover {
+            opacity: 0.9;
+        }
+        .title {
+            color: rgba(235, 220, 255, 0.8);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 25px rgba(160, 130, 240, 0.6);
+        }
+        .hint {
+            color: rgba(180, 170, 215, 0.5);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+        @media (max-width: 768px) {
+            .overlay {
+                bottom: 18px;
+            }
+            .title {
+                font-size: 8px;
+                letter-spacing: 0.45em;
+            }
+            .hint {
+                font-size: 6px;
+                letter-spacing: 0.22em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="pixi-container"></div>
+    <div class="overlay">
+        <div class="title">Fractal</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js"></script>
+    <script>
+        (function() {
+            if (typeof PIXI === 'undefined') {
+                document.body.style.background = '#08080f';
+                document.getElementById('pixi-container').style.background = '#08080f';
+                console.warn('PixiJS 加载失败');
+                return;
+            }
+
+            // ─── 全局变量 ──────────────────────────────────────────────
+            let app;
+            let container;
+            let particles = [];
+            let mouse = { x: 0, y: 0, active: false };
+            let time = 0;
+            let colorShift = 0;
+            let fractalType = 0; // 0=圆环, 1=螺旋, 2=星形, 3=花形
+            let rotationAngle = 0;
+            let targetRotation = 0;
+
+            const PARTICLE_COUNT = 3000;
+            const FRACTAL_TYPES = ['circle', 'spiral', 'star', 'flower'];
+
+            // ─── 初始化PixiJS ─────────────────────────────────────────
+            function initPixi() {
+                const containerEl = document.getElementById('pixi-container');
+                const resolution = Math.min(window.devicePixelRatio || 1, 2);
+
+                app = new PIXI.Application({
+                    width: window.innerWidth,
+                    height: window.innerHeight,
+                    resolution: resolution,
+                    backgroundColor: 0x08080f,
+                    antialias: true,
+                    autoDensity: true,
+                    powerPreference: 'high-performance',
+                });
+
+                containerEl.appendChild(app.view);
+                container = new PIXI.Container();
+                app.stage.addChild(container);
+
+                // 创建粒子纹理
+                const glowTexture = createGlowTexture();
+
+                // 创建粒子
+                createFractalParticles(glowTexture);
+
+                // 创建中心光晕
+                createCenterGlow();
+
+                setupEvents();
+                app.ticker.add(animate);
+            }
+
+            // ─── 创建发光粒子纹理 ──────────────────────────────────────
+            function createGlowTexture() {
+                const size = 24;
+                const canvas = document.createElement('canvas');
+                canvas.width = size;
+                canvas.height = size;
+                const ctx = canvas.getContext('2d');
+                const gradient = ctx.createRadialGradient(size/2, size/2, 0, size/2, size/2, size/2);
+                gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
+                gradient.addColorStop(0.25, 'rgba(255, 255, 255, 0.8)');
+                gradient.addColorStop(0.6, 'rgba(255, 255, 255, 0.3)');
+                gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+                ctx.fillStyle = gradient;
+                ctx.fillRect(0, 0, size, size);
+                return PIXI.Texture.from(canvas);
+            }
+
+            // ─── 计算分形坐标 ─────────────────────────────────────────
+            function getFractalPosition(t, type, index, total) {
+                const cx = app.screen.width / 2;
+                const cy = app.screen.height / 2;
+                const maxR = Math.min(app.screen.width, app.screen.height) * 0.42;
+                const angle = (index / total) * Math.PI * 2;
+
+                let x, y, r;
+
+                switch (type) {
+                    case 'circle':
+                        // 多层圆环
+                        r = maxR * (0.4 + 0.6 * Math.pow(index / total, 0.7));
+                        x = cx + r * Math.cos(angle + t * 0.1);
+                        y = cy + r * Math.sin(angle + t * 0.1);
+                        break;
+
+                    case 'spiral':
+                        // 对数螺旋
+                        const spiralAngle = angle * 4 + t * 0.2;
+                        r = maxR * (index / total);
+                        x = cx + r * Math.cos(spiralAngle);
+                        y = cy + r * Math.sin(spiralAngle);
+                        break;
+
+                    case 'star':
+                        // 五角星
+                        const starPoints = 5;
+                        const starAngle = Math.floor(angle / (Math.PI * 2) * starPoints * 2) * (Math.PI / starPoints);
+                        const starRadius = maxR * (0.7 + 0.3 * Math.cos(starPoints * starAngle));
+                        r = starRadius * (0.5 + 0.5 * (index / total));
+                        x = cx + r * Math.cos(angle);
+                        y = cy + r * Math.sin(angle);
+                        break;
+
+                    case 'flower':
+                        // 玫瑰线 (rose curve)
+                        const k = 5;
+                        const flowerAngle = angle;
+                        r = maxR * Math.cos(k * flowerAngle + t * 0.15) * (0.5 + 0.5 * (index / total));
+                        const finalAngle = flowerAngle + Math.sin(flowerAngle * 3 + t * 0.2) * 0.3;
+                        x = cx + Math.abs(r) * Math.cos(finalAngle);
+                        y = cy + Math.abs(r) * Math.sin(finalAngle);
+                        break;
+
+                    default:
+                        r = maxR * (index / total);
+                        x = cx + r * Math.cos(angle);
+                        y = cy + r * Math.sin(angle);
+                }
+
+                // 粒子散布（沿径向和垂直方向）
+                const spreadX = (Math.random() - 0.5) * 4;
+                const spreadY = (Math.random() - 0.5) * 4;
+                return { x: x + spreadX, y: y + spreadY, r: r, angle: angle };
+            }
+
+            // ─── 创建分形粒子 ──────────────────────────────────────────
+            function createFractalParticles(glowTexture) {
+                for (let i = 0; i < PARTICLE_COUNT; i++) {
+                    const sprite = new PIXI.Sprite(glowTexture);
+                    sprite.anchor.set(0.5, 0.5);
+
+                    // 粒子大小：外围稍小
+                    const sizeFactor = 0.6 + 0.4 * (i / PARTICLE_COUNT);
+                    const size = (0.8 + sizeFactor * 1.5) * (0.7 + Math.random() * 0.6);
+                    sprite.scale.set(size / 6, size / 6);
+
+                    // 颜色沿光谱分布
+                    const hue = (i / PARTICLE_COUNT) * 280 + 200;
+                    const sat = 65 + Math.random() * 30;
+                    const light = 55 + Math.random() * 30;
+                    sprite.tint = hslToHex(hue, sat, light);
+
+                    sprite.alpha = 0.5 + Math.random() * 0.5;
+                    sprite.blendMode = PIXI.BLEND_MODES.ADD;
+
+                    const pos = getFractalPosition(0, FRACTAL_TYPES[fractalType], i, PARTICLE_COUNT);
+
+                    particles.push({
+                        sprite: sprite,
+                        index: i,
+                        baseX: pos.x,
+                        baseY: pos.y,
+                        r: pos.r,
+                        angle: pos.angle,
+                        size: size,
+                        alpha: sprite.alpha,
+                        hue: hue,
+                        sat: sat,
+                        light: light,
+                        pulsePhase: Math.random() * Math.PI * 2,
+                        pulseSpeed: 0.3 + Math.random() * 1.2,
+                        pulseAmount: 0.2 + Math.random() * 0.6,
+                        wobblePhase: Math.random() * Math.PI * 2,
+                        wobbleSpeed: 0.2 + Math.random() * 0.5,
+                        wobbleAmount: 0.5 + Math.random() * 1.5,
+                    });
+
+                    container.addChild(sprite);
+                }
+            }
+
+            // ─── 创建中心光晕 ──────────────────────────────────────────
+            function createCenterGlow() {
+                const size = 96;
+                const canvas = document.createElement('canvas');
+                canvas.width = size;
+                canvas.height = size;
+                const ctx = canvas.getContext('2d');
+                const gradient = ctx.createRadialGradient(size/2, size/2, 0, size/2, size/2, size/2);
+                gradient.addColorStop(0, 'rgba(255, 255, 255, 0.9)');
+                gradient.addColorStop(0.3, 'rgba(255, 255, 255, 0.5)');
+                gradient.addColorStop(0.6, 'rgba(255, 255, 255, 0.15)');
+                gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+                ctx.fillStyle = gradient;
+                ctx.fillRect(0, 0, size, size);
+
+                const texture = PIXI.Texture.from(canvas);
+                const coreSprite = new PIXI.Sprite(texture);
+                coreSprite.anchor.set(0.5, 0.5);
+                coreSprite.scale.set(3, 3);
+                coreSprite.alpha = 0.5;
+                coreSprite.blendMode = PIXI.BLEND_MODES.ADD;
+                container.addChild(coreSprite);
+                particles.push({
+                    sprite: coreSprite,
+                    isCore: true,
+                    alpha: 0.5,
+                    pulsePhase: 0,
+                    pulseSpeed: 0.6,
+                    pulseAmount: 0.3,
+                });
+            }
+
+            // ─── HSL转十六进制颜色 ──────────────────────────────────────
+            function hslToHex(hue, sat, light) {
+                const h = ((hue % 360) + 360) % 360;
+                const s = sat / 100;
+                const l = light / 100;
+                const c = (1 - Math.abs(2 * l - 1)) * s;
+                const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+                const m = l - c / 2;
+                let r, g, b;
+                if (h < 60) { r = c; g = x; b = 0; }
+                else if (h < 120) { r = x; g = c; b = 0; }
+                else if (h < 180) { r = 0; g = c; b = x; }
+                else if (h < 240) { r = 0; g = x; b = c; }
+                else if (h < 300) { r = x; g = 0; b = c; }
+                else { r = c; g = 0; b = x; }
+                const toHex = (val) => Math.round((val + m) * 255).toString(16).padStart(2, '0');
+                return parseInt(`${toHex(r)}${toHex(g)}${toHex(b)}`, 16);
+            }
+
+            // ─── 动画循环 ──────────────────────────────────────────────
+            function animate() {
+                time += 0.016;
+                const cx = app.screen.width / 2;
+                const cy = app.screen.height / 2;
+
+                // 鼠标旋转影响
+                let mouseRotation = 0;
+                if (mouse.active) {
+                    mouseRotation = Math.atan2(mouse.y - cy, mouse.x - cx) * 0.35;
+                }
+
+                // 平滑旋转
+                rotationAngle += (targetRotation + mouseRotation - rotationAngle) * 0.05;
+
+                // 更新粒子位置
+                for (const p of particles) {
+                    if (p.isCore) {
+                        const corePulse = 1 + Math.sin(time * p.pulseSpeed) * p.pulseAmount;
+                        const scale = 3 * corePulse;
+                        p.sprite.scale.set(scale, scale);
+                        p.sprite.alpha = p.alpha * corePulse;
+                        p.sprite.x = cx;
+                        p.sprite.y = cy;
+                        p.sprite.tint = hslToHex(220 + colorShift + Math.sin(time * 0.5) * 20, 65, 70);
+                        continue;
+                    }
+
+                    // 获取当前分形位置
+                    const type = FRACTAL_TYPES[fractalType];
+                    const pos = getFractalPosition(time * 0.3, type, p.index, PARTICLE_COUNT);
+
+                    // 应用旋转
+                    const rotAngle = rotationAngle + p.angle;
+                    const rotatedX = cx + (pos.x - cx) * Math.cos(rotAngle) - (pos.y - cy) * Math.sin(rotAngle);
+                    const rotatedY = cy + (pos.x - cx) * Math.sin(rotAngle) + (pos.y - cy) * Math.cos(rotAngle);
+
+                    // 添加动态脉动
+                    const pulse = 1 + Math.sin(time * p.pulseSpeed + p.pulsePhase) * p.pulseAmount * 0.3;
+                    const wobbleX = Math.cos(time * p.wobbleSpeed + p.wobblePhase) * p.wobbleAmount;
+                    const wobbleY = Math.sin(time * p.wobbleSpeed + p.wobblePhase) * p.wobbleAmount;
+
+                    // 鼠标引力
+                    let offsetX = 0;
+                    let offsetY = 0;
+                    if (mouse.active) {
+                        const dx = mouse.x - rotatedX;
+                        const dy = mouse.y - rotatedY;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        const influenceRadius = 150;
+                        if (dist < influenceRadius && dist > 0.01) {
+                            const falloff = 1 - dist / influenceRadius;
+                            offsetX = dx / dist * falloff * 15;
+                            offsetY = dy / dist * falloff * 15;
+                        }
+                    }
+
+                    p.sprite.x = rotatedX + wobbleX + offsetX;
+                    p.sprite.y = rotatedY + wobbleY + offsetY;
+
+                    // 动态缩放
+                    const sizePulse = 1 + Math.sin(time * p.pulseSpeed + p.pulsePhase) * 0.2;
+                    const scale = (p.size * sizePulse) / 6;
+                    p.sprite.scale.set(scale, scale);
+
+                    // 动态颜色
+                    const hueShift = Math.sin(time * 0.3 + p.pulsePhase) * 20;
+                    const alphaPulse = 1 + Math.sin(time * p.pulseSpeed * 1.5 + p.pulsePhase) * 0.3;
+                    p.sprite.alpha = Math.max(0.05, Math.min(1, p.alpha * alphaPulse));
+                    p.sprite.tint = hslToHex(
+                        p.hue + colorShift + hueShift,
+                        p.sat,
+                        p.light + Math.sin(time * 0.5 + p.pulsePhase) * 15
+                    );
+                }
+            }
+
+            // ─── 设置事件 ──────────────────────────────────────────────
+            function setupEvents() {
+                const view = app.view;
+
+                view.addEventListener('mousemove', (e) => {
+                    mouse.x = e.clientX;
+                    mouse.y = e.clientY;
+                    mouse.active = true;
+                });
+
+                view.addEventListener('mouseleave', () => {
+                    mouse.active = false;
+                });
+
+                view.addEventListener('mousedown', (e) => {
+                    mouse.x = e.clientX;
+                    mouse.y = e.clientY;
+                    mouse.active = true;
+                    // 切换分形类型
+                    fractalType = (fractalType + 1) % FRACTAL_TYPES.length;
+                    // 随机旋转角度
+                    targetRotation = (Math.random() - 0.5) * Math.PI * 2;
+                    // 色彩偏移
+                    colorShift += 35 + Math.random() * 35;
+                    if (colorShift > 180) colorShift = -35;
+                });
+
+                view.addEventListener('touchmove', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        mouse.x = touch.clientX;
+                        mouse.y = touch.clientY;
+                        mouse.active = true;
+                    }
+                }, { passive: false });
+
+                view.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        mouse.x = touch.clientX;
+                        mouse.y = touch.clientY;
+                        mouse.active = true;
+                        fractalType = (fractalType + 1) % FRACTAL_TYPES.length;
+                        targetRotation = (Math.random() - 0.5) * Math.PI * 2;
+                        colorShift += 35 + Math.random() * 35;
+                        if (colorShift > 180) colorShift = -35;
+                    }
+                }, { passive: false });
+
+                view.addEventListener('touchend', () => {
+                    mouse.active = false;
+                });
+
+                window.addEventListener('resize', () => {
+                    if (app) {
+                        app.renderer.resize(window.innerWidth, window.innerHeight);
+                    }
+                });
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                try {
+                    initPixi();
+                    console.log('分形粒子场已启动');
+                } catch (err) {
+                    console.error('初始化失败:', err);
+                    document.body.style.background = '#08080f';
+                    document.getElementById('pixi-container').style.background = '#08080f';
+                }
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.addEventListener('load', () => {
+                document.body.style.background = '#08080f';
+                document.getElementById('pixi-container').style.background = '#08080f';
+            });
+        })();
+    </script>
+</body>
+</html>

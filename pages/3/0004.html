@@ -1,0 +1,950 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>分形树 · 栖息的猫头鹰</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{
+    height:100%;overflow:hidden;background:#02060e;color:#fff;
+    font-family:"Helvetica Neue",Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif;
+    -webkit-font-smoothing:antialiased;cursor:crosshair;
+  }
+  canvas{display:block;position:fixed;inset:0;}
+
+  #ui{position:fixed;inset:0;pointer-events:none;z-index:5;}
+
+  #title{
+    position:absolute;top:0;left:0;
+    padding:42px 48px;opacity:0;
+    animation:fade 1.8s 0.3s ease forwards;
+  }
+  #title .en{
+    font-size:10px;letter-spacing:.52em;text-indent:.52em;
+    color:rgba(140,190,240,.34);font-weight:300;margin-bottom:14px;
+  }
+  #title h1{
+    font-size:clamp(22px,3.2vw,42px);
+    font-weight:200;letter-spacing:.32em;text-indent:.32em;
+    background:linear-gradient(96deg,#7ab8ff 0%,#a99eff 42%,#d9b48a 78%,#ffeed0 100%);
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+    margin-bottom:14px;
+    filter:drop-shadow(0 0 30px rgba(130,160,240,.42));
+  }
+  #title .sub{
+    font-size:11px;letter-spacing:.22em;line-height:2.0;
+    color:rgba(160,200,240,.30);font-weight:300;
+  }
+
+  #stats{
+    position:absolute;bottom:0;left:0;
+    padding:0 48px 42px;
+    font-family:"SF Mono",Consolas,Monaco,"Courier New",monospace;
+    font-size:10px;letter-spacing:.14em;line-height:2.1;
+    color:rgba(150,195,240,.28);
+    opacity:0;animation:fade 1.8s 1.1s ease forwards;
+  }
+  #stats .k{color:rgba(180,190,255,.52);}
+  #stats .v{color:rgba(255,215,150,.70);}
+  #stats .lab{
+    display:block;font-size:8.5px;letter-spacing:.42em;text-indent:.42em;
+    color:rgba(130,180,230,.24);margin-bottom:8px;
+  }
+
+  #meter{
+    position:absolute;bottom:0;right:0;
+    padding:0 48px 42px;text-align:right;
+    font-family:"SF Mono",Consolas,Monaco,"Courier New",monospace;
+    font-size:10px;letter-spacing:.14em;line-height:2.1;
+    color:rgba(150,195,240,.28);
+    opacity:0;animation:fade 1.8s 1.4s ease forwards;
+  }
+  #meter .k{color:rgba(180,190,255,.52);}
+  #meter .v{color:rgba(255,215,150,.70);}
+
+  #hint{
+    position:absolute;bottom:0;left:50%;transform:translateX(-50%);
+    padding-bottom:46px;white-space:nowrap;
+    font-size:10px;letter-spacing:.28em;
+    color:rgba(160,200,240,.40);
+    opacity:0;animation:fade 1.8s 1.8s ease forwards;
+  }
+  #hint .dot{
+    display:inline-block;width:5px;height:5px;border-radius:50%;
+    background:rgba(255,200,120,.85);vertical-align:middle;
+    margin:0 8px;position:relative;top:-1px;
+    animation:pulse 2.0s ease-in-out infinite;
+  }
+  @keyframes pulse{
+    0%,100%{opacity:.35;transform:scale(1);}
+    50%{opacity:1;transform:scale(1.4);}
+  }
+  @keyframes fade{to{opacity:1;}}
+
+  @media (max-width:640px){
+    #title{padding:22px 22px;}
+    #title .sub{font-size:9.5px;}
+    #stats{padding:0 22px 22px;font-size:8.5px;}
+    #meter{padding:0 22px 22px;font-size:8.5px;}
+    #hint{padding-bottom:26px;font-size:8.5px;}
+  }
+</style>
+</head>
+<body>
+
+<canvas id="c"></canvas>
+
+<div id="ui">
+  <div id="title">
+    <div class="en">FRACTAL TREE · PERCHING OWL</div>
+    <h1>栖息的猫头鹰</h1>
+    <div class="sub">
+      递归分形 · 自相似树干<br>
+      鼠标靠近 · 猫头鹰转头追踪
+    </div>
+  </div>
+
+  <div id="stats">
+    <span class="lab">TREE GENERATION</span>
+    <div><span class="k">递归深度</span> <span class="v">8 层</span></div>
+    <div><span class="k">长度比</span> <span class="v">0.735</span></div>
+    <div><span class="k">宽度比</span> <span class="v">0.720</span></div>
+    <div><span class="k">风力摆动</span> <span class="v">正弦场</span></div>
+  </div>
+
+  <div id="meter">
+    <div><span class="k">注视 </span><span class="v" id="gaze">—</span></div>
+    <div><span class="k">转头 </span><span class="v" id="turn">0°</span></div>
+    <div><span class="k">状态 </span><span class="v" id="mood">安静</span></div>
+  </div>
+
+  <div id="hint">
+    <span class="dot"></span>移动鼠标 · 猫头鹰会转头看着你<span class="dot"></span>
+  </div>
+</div>
+
+<script>
+(function(){
+'use strict';
+
+/* =========================================================
+   画布
+   ========================================================= */
+const TAU = Math.PI * 2;
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha: false });
+
+let W = 0, H = 0, DPR = 1, S = 0;
+let skyGrad = null, vignette = null;
+let moonX = 0, moonY = 0;
+
+function resize(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width  = Math.round(W * DPR);
+  canvas.height = Math.round(H * DPR);
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  S = Math.min(W, H);
+  moonX = W * 0.78;
+  moonY = H * 0.16;
+
+  skyGrad = ctx.createLinearGradient(0, 0, 0, H);
+  skyGrad.addColorStop(0.00, '#01030a');
+  skyGrad.addColorStop(0.24, '#050e1e');
+  skyGrad.addColorStop(0.52, '#0a1a33');
+  skyGrad.addColorStop(0.78, '#0d2544');
+  skyGrad.addColorStop(1.00, '#040a16');
+
+  vignette = ctx.createRadialGradient(W * 0.5, H * 0.45, S * 0.28, W * 0.5, H * 0.5, S * 1.0);
+  vignette.addColorStop(0.00, 'rgba(0,0,0,0)');
+  vignette.addColorStop(0.62, 'rgba(0,3,10,0.22)');
+  vignette.addColorStop(1.00, 'rgba(0,0,3,0.72)');
+}
+window.addEventListener('resize', resize);
+
+/* =========================================================
+   确定性伪随机
+   ========================================================= */
+function rnd(seed){
+  const v = Math.sin(seed * 12.9898 + 78.233) * 43758.5453;
+  return v - Math.floor(v);
+}
+
+/* =========================================================
+   分形树参数
+   ========================================================= */
+const MAX_DEPTH = 8;
+const TRUNK_LEN = 0.200;
+const TRUNK_W   = 0.018;
+const LEN_RATIO = 0.735;
+const WID_RATIO = 0.720;
+const SPREAD    = 0.44;
+const JITTER    = 0.20;
+const WIND_AMP  = 0.020;
+
+/* 猫头鹰期望落点 */
+let targetPerchX = 0, targetPerchY = 0;
+
+/* =========================================================
+   构建分形树（每帧重建，带风）
+   ========================================================= */
+const branches = [];
+let perch = null;
+
+function buildTree(t){
+  branches.length = 0;
+  perch = null;
+  let bestScore = Infinity;
+
+  const startX = W * 0.5;
+  const startY = H * 1.02;
+  const trunkLen = H * TRUNK_LEN;
+  const trunkW   = H * TRUNK_W;
+
+  const tx = targetPerchX;
+  const ty = targetPerchY;
+
+  function recurse(x, y, angle, len, w, depth, id){
+    if (depth > MAX_DEPTH) return;
+    if (w < 0.35) return;
+    if (branches.length > 900) return;
+
+    /* ---- 风力：正弦场，越细摆得越厉害 ---- */
+    const dRatio = depth / MAX_DEPTH;
+    const windS = WIND_AMP * Math.pow(dRatio, 1.55);
+    const wind = Math.sin(t * 0.52 + depth * 0.94 + id * 0.31) * windS
+               + Math.sin(t * 0.81 + depth * 1.37 + id * 0.17) * windS * 0.48;
+
+    const a  = angle + wind;
+    const ex = x + Math.cos(a) * len;
+    const ey = y + Math.sin(a) * len;
+
+    branches.push({
+      x1: x, y1: y, x2: ex, y2: ey,
+      w: w, depth: depth, angle: a
+    });
+
+    /* ---- 记录最佳栖息点（深度 3-5） ---- */
+    if (depth >= 3 && depth <= 5){
+      const dx = ex - tx;
+      const dy = ey - ty;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      /* 偏好靠近目标的、较粗的树枝 */
+      const score = dist - w * 6;
+
+      if (score < bestScore){
+        bestScore = score;
+        perch = { x: ex, y: ey, angle: a, depth: depth, w: w };
+      }
+    }
+
+    /* ---- 子分支 ---- */
+    const r1 = rnd(id * 1.31);
+    const r2 = rnd(id * 2.73);
+    const r3 = rnd(id * 3.11);
+    const r4 = rnd(id * 3.77);
+
+    const leftAngle  = a - SPREAD - r1 * JITTER;
+    const rightAngle = a + SPREAD + r2 * JITTER;
+    const leftLen    = len * LEN_RATIO * (0.90 + r3 * 0.20);
+    const rightLen   = len * LEN_RATIO * (0.90 + r4 * 0.20);
+    const newW       = w * WID_RATIO;
+
+    recurse(ex, ey, leftAngle,  leftLen,  newW, depth + 1, id * 2);
+    recurse(ex, ey, rightAngle, rightLen, newW, depth + 1, id * 2 + 1);
+  }
+
+  recurse(startX, startY, -Math.PI * 0.5, trunkLen, trunkW, 0, 1);
+
+  if (!perch){
+    perch = { x: W * 0.5, y: H * 0.42, angle: -Math.PI * 0.5, depth: 3, w: 8 };
+  }
+}
+
+/* =========================================================
+   绘制树
+   ========================================================= */
+function drawTree(){
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  for (let i = 0; i < branches.length; i++){
+    const br = branches[i];
+
+    const mx = (br.x1 + br.x2) * 0.5;
+    const my = (br.y1 + br.y2) * 0.5;
+    const dxm = mx - moonX;
+    const dym = my - moonY;
+    const distToMoon = Math.sqrt(dxm * dxm + dym * dym) / (S * 1.1);
+    const lit = Math.max(0, 1 - distToMoon * 0.85);
+
+    const dRatio = br.depth / MAX_DEPTH;
+    const hue = 222 - dRatio * 14;
+    const lum = 4.2 + lit * 6.8 + dRatio * 1.4;
+    const sat = 26 + lit * 14;
+
+    ctx.strokeStyle = 'hsl(' + hue.toFixed(0) + ',' + sat.toFixed(0) + '%,' + lum.toFixed(1) + '%)';
+    ctx.lineWidth = Math.max(0.55, br.w);
+
+    ctx.beginPath();
+    ctx.moveTo(br.x1, br.y1);
+    ctx.lineTo(br.x2, br.y2);
+    ctx.stroke();
+  }
+
+  /* 月亮侧边缘光 */
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < branches.length; i++){
+    const br = branches[i];
+    if (br.w < 1.4) continue;
+
+    const mx = (br.x1 + br.x2) * 0.5;
+    const my = (br.y1 + br.y2) * 0.5;
+    const dxm = mx - moonX;
+    const dym = my - moonY;
+    const d = Math.sqrt(dxm * dxm + dym * dym);
+    const lit = Math.max(0, 1 - d / (S * 0.85));
+    if (lit < 0.08) continue;
+
+    ctx.strokeStyle = 'hsla(210, 70%, 78%, ' + (lit * 0.16) + ')';
+    ctx.lineWidth = Math.max(0.6, br.w * 0.38);
+    ctx.beginPath();
+    ctx.moveTo(br.x1, br.y1);
+    ctx.lineTo(br.x2, br.y2);
+    ctx.stroke();
+  }
+
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* =========================================================
+   星空 / 月亮
+   ========================================================= */
+const stars = [];
+for (let i = 0; i < 180; i++){
+  stars.push({
+    x: Math.random(),
+    y: Math.random() * 0.75,
+    r: Math.random() * 1.15 + 0.20,
+    ph: Math.random() * TAU,
+    sp: 0.20 + Math.random() * 0.85
+  });
+}
+
+function drawSky(t){
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = skyGrad;
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.globalCompositeOperation = 'lighter';
+
+  /* 星星 */
+  for (let i = 0; i < stars.length; i++){
+    const s = stars[i];
+    const a = 0.12 + 0.38 * (0.5 + 0.5 * Math.sin(t * s.sp + s.ph));
+    ctx.fillStyle = 'rgba(205, 228, 255,' + (a * 0.72) + ')';
+    ctx.beginPath();
+    ctx.arc(s.x * W, s.y * H, s.r, 0, TAU);
+    ctx.fill();
+  }
+
+  /* 月亮光晕 */
+  const mr = S * 0.050;
+  const glow = ctx.createRadialGradient(moonX, moonY, 0, moonX, moonY, mr * 7);
+  glow.addColorStop(0.00, 'rgba(255, 250, 228, 0.30)');
+  glow.addColorStop(0.12, 'rgba(240, 245, 255, 0.14)');
+  glow.addColorStop(0.42, 'rgba(190, 215, 255, 0.038)');
+  glow.addColorStop(1.00, 'rgba(150, 190, 255, 0)');
+  ctx.fillStyle = glow;
+  ctx.beginPath();
+  ctx.arc(moonX, moonY, mr * 7, 0, TAU);
+  ctx.fill();
+
+  /* 月盘 */
+  ctx.beginPath();
+  ctx.arc(moonX, moonY, mr, 0, TAU);
+  ctx.fillStyle = 'rgba(250, 250, 245, 0.94)';
+  ctx.fill();
+
+  /* 月面阴影 */
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.beginPath();
+  ctx.arc(moonX - mr * 0.32, moonY - mr * 0.26, mr * 0.20, 0, TAU);
+  ctx.fillStyle = 'rgba(214, 224, 244, 0.42)';
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(moonX + mr * 0.26, moonY + mr * 0.20, mr * 0.14, 0, TAU);
+  ctx.fillStyle = 'rgba(214, 224, 244, 0.32)';
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(moonX + mr * 0.10, moonY - mr * 0.38, mr * 0.09, 0, TAU);
+  ctx.fillStyle = 'rgba(214, 224, 244, 0.24)';
+  ctx.fill();
+
+  ctx.globalCompositeOperation = 'lighter';
+}
+
+/* =========================================================
+   猫头鹰状态
+   ========================================================= */
+const owl = {
+  x: 0, y: 0,
+  headX: 0, headY: 0,
+  headAngle: 0,
+  targetHeadAngle: 0,
+  lookX: 0, lookY: 0,
+  targetLookX: 0, targetLookY: 0,
+  size: 0,
+  angle: 0,
+  targetAngle: 0,
+  attention: 0,
+  blink: 0,        // 0 = 睁眼，1 = 闭眼
+  blinkTimer: 2.0,
+  hooted: 0
+};
+
+/* =========================================================
+   鼠标
+   ========================================================= */
+let mouseX = -9999, mouseY = -9999;
+let mouseActive = false;
+
+window.addEventListener('mousemove', function(e){
+  mouseX = e.clientX;
+  mouseY = e.clientY;
+  mouseActive = true;
+});
+
+window.addEventListener('touchmove', function(e){
+  if (e.touches.length){
+    mouseX = e.touches[0].clientX;
+    mouseY = e.touches[0].clientY;
+    mouseActive = true;
+  }
+}, { passive: true });
+
+window.addEventListener('mouseleave', function(){
+  mouseActive = false;
+});
+
+/* =========================================================
+   音频
+   ========================================================= */
+let audioCtx = null;
+let masterGain = null;
+let audioOn = false;
+
+function initAudio(){
+  if (audioOn) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  try { audioCtx = new AC(); } catch(e){ return; }
+
+  masterGain = audioCtx.createGain();
+  masterGain.gain.value = 0;
+  masterGain.connect(audioCtx.destination);
+  masterGain.gain.setTargetAtTime(0.72, audioCtx.currentTime, 2.2);
+
+  /* ---------- 夜风底噪 ---------- */
+  const bufLen = audioCtx.sampleRate * 4;
+  const buf = audioCtx.createBuffer(1, bufLen, audioCtx.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < bufLen; i++) d[i] = Math.random() * 2 - 1;
+
+  const src = audioCtx.createBufferSource();
+  src.buffer = buf;
+  src.loop = true;
+
+  const lp = audioCtx.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.frequency.value = 320;
+  lp.Q.value = 0.5;
+
+  const nGain = audioCtx.createGain();
+  nGain.gain.value = 0.014;
+
+  src.connect(lp); lp.connect(nGain); nGain.connect(masterGain);
+  src.start();
+
+  const nlfo = audioCtx.createOscillator();
+  nlfo.frequency.value = 0.085;
+  const nlfoG = audioCtx.createGain();
+  nlfoG.gain.value = 0.008;
+  nlfo.connect(nlfoG);
+  nlfoG.connect(nGain.gain);
+  nlfo.start();
+
+  audioOn = true;
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+
+  scheduleCricket();
+  scheduleHoot();
+}
+
+/* ---------- 蟋蟀 ---------- */
+function playCricket(){
+  if (!audioCtx) return;
+  const now = audioCtx.currentTime;
+  const pulses = 3 + Math.floor(Math.random() * 3);
+  const baseF = 3900 + Math.random() * 1200;
+  const gap = 0.042 + Math.random() * 0.012;
+
+  for (let i = 0; i < pulses; i++){
+    const t0 = now + i * gap;
+    const osc = audioCtx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(baseF, t0);
+    osc.frequency.linearRampToValueAtTime(baseF * 0.94, t0 + 0.03);
+
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(0, t0);
+    g.gain.linearRampToValueAtTime(0.006 + Math.random() * 0.004, t0 + 0.004);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.032);
+
+    osc.connect(g);
+    g.connect(masterGain);
+    osc.start(t0);
+    osc.stop(t0 + 0.05);
+  }
+}
+
+let cricketTimer = null;
+function scheduleCricket(){
+  const wait = 1.4 + Math.random() * 3.6;
+  cricketTimer = setTimeout(function(){
+    playCricket();
+    if (Math.random() < 0.42) setTimeout(playCricket, 220 + Math.random() * 320);
+    scheduleCricket();
+  }, wait * 1000);
+}
+
+/* ---------- 猫头鹰咕咕 ---------- */
+function playHoot(strength){
+  if (!audioCtx) return;
+  const now = audioCtx.currentTime;
+  const baseF = 310 + Math.random() * 70;
+  const s = strength || 1;
+
+  for (let i = 0; i < 2; i++){
+    const t0 = now + i * 0.58;
+    const startF = baseF * (i === 0 ? 1.0 : 0.94);
+    const endF   = baseF * (i === 0 ? 0.90 : 0.86);
+
+    const osc = audioCtx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(startF, t0);
+    osc.frequency.linearRampToValueAtTime(endF, t0 + 0.32);
+
+    /* 轻微颤音，更真实 */
+    const vib = audioCtx.createOscillator();
+    vib.frequency.value = 17;
+    const vibG = audioCtx.createGain();
+    vibG.gain.value = 7;
+    vib.connect(vibG);
+    vibG.connect(osc.frequency);
+    vib.start(t0);
+    vib.stop(t0 + 0.6);
+
+    /* 二次谐波让声音更柔软 */
+    const osc2 = audioCtx.createOscillator();
+    osc2.type = 'sine';
+    osc2.frequency.setValueAtTime(startF * 2.004, t0);
+    osc2.frequency.linearRampToValueAtTime(endF * 2.004, t0 + 0.32);
+
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(0, t0);
+    g.gain.linearRampToValueAtTime(0.042 * s, t0 + 0.07);
+    g.gain.setValueAtTime(0.042 * s, t0 + 0.22);
+    g.gain.exponentialRampToValueAtTime(0.0005, t0 + 0.52);
+
+    const g2 = audioCtx.createGain();
+    g2.gain.value = 0.22;
+
+    osc.connect(g);
+    osc2.connect(g2); g2.connect(g);
+
+    g.connect(masterGain);
+    osc.start(t0);
+    osc.stop(t0 + 0.58);
+    osc2.start(t0);
+    osc2.stop(t0 + 0.58);
+  }
+}
+
+let hootTimer = null;
+function scheduleHoot(){
+  const wait = 7 + Math.random() * 12;
+  hootTimer = setTimeout(function(){
+    /* 只有在没被注意到时才叫（更自然） */
+    playHoot(owl.attention < 0.4 ? 1.0 : 0.55);
+    owl.hooted = 1;
+    scheduleHoot();
+  }, wait * 1000);
+}
+
+/* 首次交互启动音频 */
+window.addEventListener('pointerdown', initAudio);
+window.addEventListener('keydown', initAudio);
+
+/* =========================================================
+   绘制猫头鹰
+   ========================================================= */
+function drawOwl(t, dt){
+  const size = owl.size;
+  const headR = size;
+  const bodyW = size * 1.20;
+  const bodyH = size * 1.68;
+
+  const cx = owl.x;
+  const cy = owl.y;
+
+  /* 呼吸 */
+  const breathe = 1 + 0.014 * Math.sin(t * 1.35);
+  const bodyScaleY = breathe;
+
+  const headCX = cx;
+  const headCY = cy - bodyH * bodyScaleY - headR * 0.62;
+  const bodyCY = cy - bodyH * bodyScaleY * 0.5;
+
+  owl.headX = headCX;
+  owl.headY = headCY;
+
+  const fillCol = '#0a0c18';
+  const rimCol  = 'rgba(170, 195, 240, 0.20)';
+
+  ctx.save();
+
+  /* ===== 整体微转（朝向鼠标） ===== */
+  ctx.translate(cx, cy);
+  ctx.rotate(owl.angle);
+  ctx.translate(-cx, -cy);
+
+  /* ===== 身体 ===== */
+  ctx.beginPath();
+  ctx.moveTo(cx - bodyW * 0.40, cy);
+  ctx.bezierCurveTo(
+    cx - bodyW * 0.50, cy - bodyH * 0.38 * bodyScaleY,
+    cx - bodyW * 0.46, cy - bodyH * 0.84 * bodyScaleY,
+    cx - bodyW * 0.21, cy - bodyH * 0.97 * bodyScaleY
+  );
+  ctx.bezierCurveTo(
+    cx - bodyW * 0.10, cy - bodyH * 1.03 * bodyScaleY,
+    cx + bodyW * 0.10, cy - bodyH * 1.03 * bodyScaleY,
+    cx + bodyW * 0.21, cy - bodyH * 0.97 * bodyScaleY
+  );
+  ctx.bezierCurveTo(
+    cx + bodyW * 0.46, cy - bodyH * 0.84 * bodyScaleY,
+    cx + bodyW * 0.50, cy - bodyH * 0.38 * bodyScaleY,
+    cx + bodyW * 0.40, cy
+  );
+  ctx.bezierCurveTo(
+    cx + bodyW * 0.22, cy + bodyH * 0.04,
+    cx - bodyW * 0.22, cy + bodyH * 0.04,
+    cx - bodyW * 0.40, cy
+  );
+  ctx.closePath();
+  ctx.fillStyle = fillCol;
+  ctx.fill();
+  ctx.strokeStyle = rimCol;
+  ctx.lineWidth = 1.1;
+  ctx.stroke();
+
+  /* ===== 身体羽毛暗纹 ===== */
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < 3; i++){
+    const yy = cy - bodyH * (0.30 + i * 0.22) * bodyScaleY;
+    const ww = bodyW * (0.30 - i * 0.05);
+    ctx.beginPath();
+    ctx.ellipse(cx, yy, ww, headR * 0.05, 0, 0, TAU);
+    ctx.fillStyle = 'rgba(120, 150, 220, 0.028)';
+    ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+
+  /* ===== 翅膀轮廓（左右各一） ===== */
+  for (let side = -1; side <= 1; side += 2){
+    ctx.beginPath();
+    ctx.moveTo(cx + side * bodyW * 0.36, cy - bodyH * 0.80 * bodyScaleY);
+    ctx.bezierCurveTo(
+      cx + side * bodyW * 0.50, cy - bodyH * 0.58 * bodyScaleY,
+      cx + side * bodyW * 0.46, cy - bodyH * 0.20 * bodyScaleY,
+      cx + side * bodyW * 0.32, cy - bodyH * 0.04
+    );
+    ctx.strokeStyle = 'rgba(120, 145, 210, 0.10)';
+    ctx.lineWidth = 1.4;
+    ctx.stroke();
+  }
+
+  /* ===== 脚爪 ===== */
+  ctx.strokeStyle = 'rgba(160, 175, 225, 0.28)';
+  ctx.lineWidth = Math.max(1.2, size * 0.045);
+  ctx.lineCap = 'round';
+  for (let side = -1; side <= 1; side += 2){
+    for (let k = -1; k <= 1; k++){
+      ctx.beginPath();
+      ctx.moveTo(cx + side * size * 0.20, cy - size * 0.03);
+      ctx.quadraticCurveTo(
+        cx + side * size * 0.20 + k * size * 0.12, cy + size * 0.07,
+        cx + side * size * 0.20 + k * size * 0.18, cy + size * 0.16
+      );
+      ctx.stroke();
+    }
+  }
+
+  /* ===== 头部（会旋转） ===== */
+  ctx.save();
+  ctx.translate(headCX, headCY);
+  ctx.rotate(owl.headAngle);
+
+  /* 耳羽簇（左） */
+  ctx.beginPath();
+  ctx.moveTo(-headR * 0.72, -headR * 0.42);
+  ctx.quadraticCurveTo(-headR * 0.92, -headR * 1.42, -headR * 0.28, -headR * 0.86);
+  ctx.closePath();
+  ctx.fillStyle = fillCol;
+  ctx.fill();
+  ctx.strokeStyle = rimCol;
+  ctx.lineWidth = 1.0;
+  ctx.stroke();
+
+  /* 耳羽簇（右） */
+  ctx.beginPath();
+  ctx.moveTo(headR * 0.72, -headR * 0.42);
+  ctx.quadraticCurveTo(headR * 0.92, -headR * 1.42, headR * 0.28, -headR * 0.86);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  /* 头部圆形 */
+  ctx.beginPath();
+  ctx.ellipse(0, 0, headR * 1.03, headR * 0.96, 0, 0, TAU);
+  ctx.fillStyle = fillCol;
+  ctx.fill();
+  ctx.strokeStyle = rimCol;
+  ctx.stroke();
+
+  /* 面盘 */
+  ctx.beginPath();
+  ctx.ellipse(0, headR * 0.03, headR * 0.82, headR * 0.76, 0, 0, TAU);
+  ctx.fillStyle = 'rgba(16, 18, 32, 0.80)';
+  ctx.fill();
+
+  /* ===== 眼睛 ===== */
+  const blinkAmt = owl.blink;
+  const eyeBaseY = -headR * 0.06;
+  const eyeSpacing = headR * 0.44;
+  const eyeR = headR * 0.255;
+
+  const eyeOffX = owl.lookX * headR * 0.13;
+  const eyeOffY = owl.lookY * headR * 0.09;
+
+  /* 眼睛柔光 */
+  const attn = owl.attention;
+  const glowA = 0.10 + attn * 0.20;
+  const glow = ctx.createRadialGradient(
+    0, eyeBaseY, 0, 0, eyeBaseY, headR * 1.05
+  );
+  glow.addColorStop(0.00, 'rgba(255, 205, 110,' + (glowA * 0.55) + ')');
+  glow.addColorStop(0.55, 'rgba(255, 180, 80,' + (glowA * 0.18) + ')');
+  glow.addColorStop(1.00, 'rgba(255, 160, 70, 0)');
+  ctx.fillStyle = glow;
+  ctx.beginPath();
+  ctx.arc(0, eyeBaseY, headR * 1.05, 0, TAU);
+  ctx.fill();
+
+  /* 眼睛绘制函数 */
+  function drawEye(ex){
+    const openH = eyeR * (1 - blinkAmt * 0.94);
+
+    /* 眼白 / 虹膜 */
+    ctx.save();
+    ctx.beginPath();
+    ctx.ellipse(ex + eyeOffX, eyeBaseY + eyeOffY, eyeR, Math.max(0.6, openH), 0, 0, TAU);
+
+    const eg = ctx.createRadialGradient(
+      ex + eyeOffX, eyeBaseY + eyeOffY, 0,
+      ex + eyeOffX, eyeBaseY + eyeOffY, eyeR
+    );
+    eg.addColorStop(0.00, 'rgba(255, 248, 210, 1)');
+    eg.addColorStop(0.45, 'rgba(255, 212, 110, 0.97)');
+    eg.addColorStop(0.85, 'rgba(232, 152, 48, 0.88)');
+    eg.addColorStop(1.00, 'rgba(190, 110, 30, 0.60)');
+    ctx.fillStyle = eg;
+    ctx.fill();
+    ctx.restore();
+
+    /* 瞳孔 */
+    if (blinkAmt < 0.62){
+      const pupR = eyeR * 0.42;
+      const pupOff = eyeR * 0.28;
+      ctx.beginPath();
+      ctx.arc(
+        ex + eyeOffX + owl.lookX * pupOff,
+        eyeBaseY + eyeOffY + owl.lookY * pupOff,
+        pupR, 0, TAU
+      );
+      ctx.fillStyle = '#04040a';
+      ctx.fill();
+
+      /* 高光 */
+      ctx.beginPath();
+      ctx.arc(
+        ex + eyeOffX + owl.lookX * pupOff - pupR * 0.42,
+        eyeBaseY + eyeOffY + owl.lookY * pupOff - pupR * 0.42,
+        pupR * 0.32, 0, TAU
+      );
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.72)';
+      ctx.fill();
+    }
+  }
+
+  drawEye(-eyeSpacing);
+  drawEye( eyeSpacing);
+
+  /* ===== 喙 ===== */
+  if (blinkAmt < 0.85){
+    ctx.beginPath();
+    ctx.moveTo(-headR * 0.075, headR * 0.20);
+    ctx.quadraticCurveTo(0, headR * 0.30, headR * 0.075, headR * 0.20);
+    ctx.lineTo(0, headR * 0.46);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(190, 150, 88, 0.78)';
+    ctx.fill();
+  }
+
+  ctx.restore();  /* 头部旋转结束 */
+
+  ctx.restore();  /* 整体旋转结束 */
+}
+
+/* =========================================================
+   更新猫头鹰状态
+   ========================================================= */
+function updateOwl(t, dt){
+  owl.size = S * 0.040;
+
+  /* 栖息点来自分形树 */
+  owl.x = perch.x;
+  owl.y = perch.y + perch.w * 0.55;
+
+  /* 头部旋转：基于鼠标水平偏移 */
+  let targetHead = 0;
+  let targetAngle = 0;
+  let tLookX = 0, tLookY = 0;
+
+  if (mouseActive){
+    const dx = mouseX - owl.x;
+    const dy = mouseY - owl.headY;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+
+    /* 注意力 */
+    const att = Math.max(0, 1 - dist / (S * 0.62));
+    owl.attention += (att - owl.attention) * (1 - Math.exp(-2.6 * dt));
+
+    /* 头部倾斜 */
+    const xNorm = Math.max(-1, Math.min(1, dx / (S * 0.45)));
+    targetHead = xNorm * (0.22 + owl.attention * 0.20);
+
+    /* 身体微转 */
+    targetAngle = xNorm * 0.055 * owl.attention;
+
+    /* 目光 */
+    tLookX = Math.max(-1, Math.min(1, dx / (S * 0.55)));
+    tLookY = Math.max(-1, Math.min(1, dy / (S * 0.55)));
+  } else {
+    owl.attention += (0 - owl.attention) * (1 - Math.exp(-1.6 * dt));
+  }
+
+  const k1 = 1 - Math.exp(-5.0 * dt);
+  owl.headAngle    += (targetHead - owl.headAngle) * k1;
+  owl.targetHeadAngle = targetHead;
+
+  owl.angle += (targetAngle - owl.angle) * (1 - Math.exp(-3.2 * dt));
+
+  const k2 = 1 - Math.exp(-7.5 * dt);
+  owl.lookX += (tLookX - owl.lookX) * k2;
+  owl.lookY += (tLookY - owl.lookY) * k2;
+
+  /* 眨眼 */
+  owl.blinkTimer -= dt;
+  if (owl.blinkTimer <= 0){
+    owl.blinkTimer = 2.4 + Math.random() * 4.5;
+    owl.blink = 1;
+  }
+  owl.blink += (0 - owl.blink) * (1 - Math.exp(-11.0 * dt));
+}
+
+/* =========================================================
+   主循环
+   ========================================================= */
+let lastNow = performance.now();
+
+function frame(now){
+  const t  = now * 0.001;
+  const dt = Math.min((now - lastNow) * 0.001, 0.05);
+  lastNow = now;
+
+  /* 目标栖息点（每帧算一次，供 buildTree 使用） */
+  targetPerchX = W * 0.60;
+  targetPerchY = H * 0.34;
+
+  /* ---- 天空 ---- */
+  drawSky(t);
+
+  /* ---- 树 ---- */
+  buildTree(t);
+  drawTree();
+
+  /* ---- 猫头鹰 ---- */
+  updateOwl(t, dt);
+  drawOwl(t, dt);
+
+  /* ---- 暗角 ---- */
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = vignette;
+  ctx.fillRect(0, 0, W, H);
+
+  /* ---- HUD ---- */
+  const gEl = document.getElementById('gaze');
+  const tEl = document.getElementById('turn');
+  const mEl = document.getElementById('mood');
+
+  if (gEl){
+    if (!mouseActive) gEl.textContent = '休息';
+    else if (owl.attention > 0.55) gEl.textContent = '注视着你';
+    else if (owl.attention > 0.22) gEl.textContent = '注意到你';
+    else gEl.textContent = '余光扫过';
+  }
+  if (tEl){
+    tEl.textContent = (owl.headAngle * 180 / Math.PI).toFixed(0) + '°';
+  }
+  if (mEl){
+    if (owl.attention > 0.6) mEl.textContent = '好奇';
+    else if (owl.blink > 0.55) mEl.textContent = '眨眼';
+    else mEl.textContent = '安静';
+  }
+
+  requestAnimationFrame(frame);
+}
+
+/* =========================================================
+   启动
+   ========================================================= */
+resize();
+targetPerchX = W * 0.60;
+targetPerchY = H * 0.34;
+buildTree(0);
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

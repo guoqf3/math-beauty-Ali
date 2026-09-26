@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>悬链面 · 极小曲面渐近网</title>
+    <style>
+        :root {
+            --bg: #06060c;
+            --gold: #d4a843;
+            --cyan: #45b7aa;
+            --magenta: #d4708a;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'SimSun', serif;
+            -webkit-font-smoothing: antialiased;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        #canvas-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+        }
+        canvas {
+            display: block;
+        }
+        .overlay-title {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 22px 20px 8px;
+            text-align: center;
+            background: linear-gradient(180deg, rgba(6, 6, 12, 0.95) 0%, rgba(6, 6, 12, 0.8) 55%, rgba(6, 6, 12, 0) 100%);
+        }
+        .overlay-title h2 {
+            font-size: clamp(1.1rem, 2.2vw, 1.8rem);
+            font-weight: 400;
+            letter-spacing: 0.13em;
+            color: #e8d5b0;
+            text-shadow: 0 0 30px rgba(212, 168, 67, 0.45), 0 0 60px rgba(212, 168, 67, 0.18);
+            margin: 0 0 2px;
+            line-height: 1.3;
+        }
+        .overlay-title .sub {
+            font-size: clamp(0.65rem, 1.1vw, 0.85rem);
+            letter-spacing: 0.22em;
+            color: rgba(200, 180, 150, 0.65);
+        }
+        .overlay-formula {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 8px 20px 18px;
+            text-align: center;
+            background: linear-gradient(0deg, rgba(6, 6, 12, 0.95) 0%, rgba(6, 6, 12, 0.82) 55%, rgba(6, 6, 12, 0) 100%);
+        }
+        .formula-text {
+            font-size: clamp(0.6rem, 1.0vw, 0.8rem);
+            color: rgba(210, 200, 185, 0.8);
+            letter-spacing: 0.03em;
+            line-height: 1.7;
+            font-style: italic;
+        }
+        .clr-gold { color: #d4a843; font-style: normal; font-weight: bold; }
+        .clr-cyan { color: #45b7aa; font-style: normal; font-weight: bold; }
+        .clr-magenta { color: #d4708a; font-style: normal; font-weight: bold; }
+        .formula-sep {
+            display: inline-block;
+            margin: 0 14px;
+            color: rgba(150, 140, 130, 0.35);
+            font-style: normal;
+        }
+    </style>
+</head>
+<body>
+    <div class="overlay-title">
+        <h2>悬链面 · 极小曲面渐近网</h2>
+        <div class="sub">Catenoid asymptotic lines · Geodesic foliation</div>
+    </div>
+    <div class="overlay-formula">
+        <div class="formula-text">
+            <span class="clr-gold">u‑曲线 (圆) : r(u,v₀)</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-cyan">v‑曲线 (悬链线) : r(u₀,v)</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-magenta">测地线 : u = t , v = k·t + φ</span>
+        </div>
+    </div>
+    <div id="canvas-container"></div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ---------- 场景初始化 ----------
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+
+        const camera = new THREE.PerspectiveCamera(48, container.clientWidth / container.clientHeight, 0.5, 30);
+        camera.position.set(3.5, 2.5, 8.6);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x06060c, 1);
+        container.appendChild(renderer.domElement);
+
+        const clock = new THREE.Clock();
+        clock.start();
+
+        // ---------- 颜色 ----------
+        const COLOR_GOLD = 0xd4a843;
+        const COLOR_CYAN = 0x45b7aa;
+        const COLOR_MAGENTA = 0xd4708a;
+
+        // ---------- 悬链面点函数 ----------
+        function catenoidPoint(u, v) {
+            const coshv = Math.cosh(v);
+            return new THREE.Vector3(
+                coshv * Math.cos(u),
+                coshv * Math.sin(u),
+                v
+            );
+        }
+
+        // ---------- 创建悬链面线框 ----------
+        function createCatenoidWireframe(uSteps, vSteps, vMin, vMax, colors) {
+            const group = new THREE.Group();
+
+            const uRange = 2 * Math.PI;
+            const uSamples = uSteps + 1;
+            const vSamples = vSteps + 1;
+
+            const uValues = [];
+            const du = uRange / uSteps;
+            for (let i = 0; i <= uSteps; i++) uValues.push(i * du);
+
+            const vValues = [];
+            const dv = (vMax - vMin) / vSteps;
+            for (let i = 0; i <= vSteps; i++) vValues.push(vMin + i * dv);
+
+            // u-曲线（固定v，变化u）—— 圆
+            function buildULines(color, opacity = 0.7) {
+                const totalSegments = vValues.length * (uValues.length - 1);
+                const positions = new Float32Array(totalSegments * 2 * 3);
+                let idx = 0;
+                for (const v of vValues) {
+                    for (let i = 0; i < uValues.length - 1; i++) {
+                        const u1 = uValues[i];
+                        const u2 = uValues[i + 1];
+                        const p1 = catenoidPoint(u1, v);
+                        const p2 = catenoidPoint(u2, v);
+                        positions[idx++] = p1.x; positions[idx++] = p1.y; positions[idx++] = p1.z;
+                        positions[idx++] = p2.x; positions[idx++] = p2.y; positions[idx++] = p2.z;
+                    }
+                }
+                const geom = new THREE.BufferGeometry();
+                geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+                const mat = new THREE.LineBasicMaterial({
+                    color: color,
+                    transparent: true,
+                    opacity: opacity,
+                    depthWrite: true,
+                    depthTest: true,
+                });
+                return new THREE.LineSegments(geom, mat);
+            }
+
+            // v-曲线（固定u，变化v）—— 悬链线
+            function buildVLines(color, opacity = 0.65) {
+                const totalSegments = uValues.length * (vValues.length - 1);
+                const positions = new Float32Array(totalSegments * 2 * 3);
+                let idx = 0;
+                for (const u of uValues) {
+                    for (let i = 0; i < vValues.length - 1; i++) {
+                        const v1 = vValues[i];
+                        const v2 = vValues[i + 1];
+                        const p1 = catenoidPoint(u, v1);
+                        const p2 = catenoidPoint(u, v2);
+                        positions[idx++] = p1.x; positions[idx++] = p1.y; positions[idx++] = p1.z;
+                        positions[idx++] = p2.x; positions[idx++] = p2.y; positions[idx++] = p2.z;
+                    }
+                }
+                const geom = new THREE.BufferGeometry();
+                geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+                const mat = new THREE.LineBasicMaterial({
+                    color: color,
+                    transparent: true,
+                    opacity: opacity,
+                    depthWrite: true,
+                    depthTest: true,
+                });
+                return new THREE.LineSegments(geom, mat);
+            }
+
+            // 测地线（斜线）：u = t, v = slope * t + phase
+            function buildGeodesics(count, color, opacity = 0.55) {
+                const geodesicGroup = new THREE.Group();
+                const rangeT = 4 * Math.PI;  // t的范围
+                const pointsPerLine = 700;
+                for (let i = 0; i < count; i++) {
+                    const slope = 0.2 + i * 0.25;  // 不同斜率
+                    const phase = (i * Math.PI) / 4;
+                    const pts = [];
+                    const dt = rangeT / pointsPerLine;
+                    for (let j = 0; j <= pointsPerLine; j++) {
+                        const t = j * dt;
+                        const v = slope * t + phase;
+                        // 将v限制在vMin,vMax内以保持在可见范围内
+                        if (v >= vMin && v <= vMax) {
+                            pts.push(catenoidPoint(t, v));
+                        }
+                    }
+                    if (pts.length > 1) {
+                        const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                        const mat = new THREE.LineBasicMaterial({
+                            color: color,
+                            transparent: true,
+                            opacity: opacity,
+                            depthTest: true,
+                            depthWrite: true,
+                        });
+                        geodesicGroup.add(new THREE.Line(geom, mat));
+                    }
+                }
+                return geodesicGroup;
+            }
+
+            group.add(buildULines(colors.gold, 0.72));
+            group.add(buildVLines(colors.cyan, 0.68));
+            group.add(buildGeodesics(16, colors.magenta, 0.5));
+
+            return group;
+        }
+
+        const uSteps = 130;
+        const vSteps = 70;
+        const vMin = -2.4;
+        const vMax = 2.4;
+
+        const catenoidGroup = new THREE.Group();
+        catenoidGroup.name = 'catenoid';
+        const wire = createCatenoidWireframe(uSteps, vSteps, vMin, vMax, {
+            gold: COLOR_GOLD,
+            cyan: COLOR_CYAN,
+            magenta: COLOR_MAGENTA
+        });
+        catenoidGroup.add(wire);
+        scene.add(catenoidGroup);
+
+        // ---------- 背景星点 ----------
+        const starsGroup = new THREE.Group();
+        starsGroup.name = 'stars';
+        const starsGeom = new THREE.BufferGeometry();
+        const starsCount = 500;
+        const starsPositions = new Float32Array(starsCount * 3);
+        for (let i = 0; i < starsCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const dist = 7 + Math.random() * 10;
+            starsPositions[i * 3] = dist * Math.sin(phi) * Math.cos(theta);
+            starsPositions[i * 3 + 1] = dist * Math.sin(phi) * Math.sin(theta);
+            starsPositions[i * 3 + 2] = dist * Math.cos(phi);
+        }
+        starsGeom.setAttribute('position', new THREE.BufferAttribute(starsPositions, 3));
+        const starsMat = new THREE.PointsMaterial({
+            color: 0x908878,
+            size: 0.018,
+            transparent: true,
+            opacity: 0.55,
+            depthWrite: false,
+        });
+        starsGroup.add(new THREE.Points(starsGeom, starsMat));
+        scene.add(starsGroup);
+
+        // ---------- 动画循环 ----------
+        function animate() {
+            const elapsed = clock.getElapsedTime();
+
+            // 悬链面组复合旋转
+            catenoidGroup.rotation.x = elapsed * 0.22;
+            catenoidGroup.rotation.y = elapsed * 0.34;
+            catenoidGroup.rotation.z = elapsed * 0.16;
+
+            // 背景星点
+            starsGroup.rotation.y = elapsed * 0.04;
+            starsGroup.rotation.x = elapsed * 0.025;
+
+            // 相机动态环绕
+            const camRadius = 8.5;
+            const camAngle = elapsed * 0.11;
+            const camHeight = 2.7 + Math.sin(elapsed * 0.18) * 0.9;
+            camera.position.x = Math.cos(camAngle) * camRadius;
+            camera.position.z = Math.sin(camAngle) * camRadius;
+            camera.position.y = camHeight;
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        renderer.setAnimationLoop(animate);
+
+        // ---------- 窗口缩放 ----------
+        function onResize() {
+            const w = container.clientWidth;
+            const h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }
+        window.addEventListener('resize', onResize);
+        window.addEventListener('orientationchange', () => setTimeout(onResize, 120));
+        onResize();
+
+        console.log('✨ 悬链面渐近网动画已启动');
+    </script>
+</body>
+</html>

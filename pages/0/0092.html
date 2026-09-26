@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hopf联络 · 平行移动纤维网</title>
+    <style>
+        :root {
+            --bg: #06060c;
+            --gold: #d4a843;
+            --cyan: #45b7aa;
+            --magenta: #d4708a;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'SimSun', serif;
+            -webkit-font-smoothing: antialiased;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        #canvas-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+        }
+        canvas {
+            display: block;
+        }
+        .overlay-title {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 22px 20px 8px;
+            text-align: center;
+            background: linear-gradient(180deg, rgba(6, 6, 12, 0.95) 0%, rgba(6, 6, 12, 0.8) 55%, rgba(6, 6, 12, 0) 100%);
+        }
+        .overlay-title h2 {
+            font-size: clamp(1.1rem, 2.2vw, 1.8rem);
+            font-weight: 400;
+            letter-spacing: 0.13em;
+            color: #e8d5b0;
+            text-shadow: 0 0 30px rgba(212, 168, 67, 0.45), 0 0 60px rgba(212, 168, 67, 0.18);
+            margin: 0 0 2px;
+            line-height: 1.3;
+        }
+        .overlay-title .sub {
+            font-size: clamp(0.65rem, 1.1vw, 0.85rem);
+            letter-spacing: 0.22em;
+            color: rgba(200, 180, 150, 0.65);
+        }
+        .overlay-formula {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 8px 20px 18px;
+            text-align: center;
+            background: linear-gradient(0deg, rgba(6, 6, 12, 0.95) 0%, rgba(6, 6, 12, 0.82) 55%, rgba(6, 6, 12, 0) 100%);
+        }
+        .formula-text {
+            font-size: clamp(0.6rem, 1.0vw, 0.8rem);
+            color: rgba(210, 200, 185, 0.8);
+            letter-spacing: 0.03em;
+            line-height: 1.7;
+            font-style: italic;
+        }
+        .clr-gold {
+            color: #d4a843;
+            font-style: normal;
+            font-weight: bold;
+        }
+        .clr-cyan {
+            color: #45b7aa;
+            font-style: normal;
+            font-weight: bold;
+        }
+        .clr-magenta {
+            color: #d4708a;
+            font-style: normal;
+            font-weight: bold;
+        }
+        .formula-sep {
+            display: inline-block;
+            margin: 0 14px;
+            color: rgba(150, 140, 130, 0.35);
+            font-style: normal;
+        }
+    </style>
+</head>
+<body>
+    <div class="overlay-title">
+        <h2>Hopf联络 · 平行移动纤维网</h2>
+        <div class="sub">Horizontal lifts · Parallel transport · Connection on S³→S²</div>
+    </div>
+    <div class="overlay-formula">
+        <div class="formula-text">
+            <span class="clr-gold">纬线提升: ψ̇ = −cosθ₀</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-cyan">经线提升: ψ̇ = 0</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-magenta">斜线提升: ψ̇ = −k·cos t</span>
+        </div>
+    </div>
+    <div id="canvas-container"></div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ---------- 场景初始化 ----------
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(48, container.clientWidth / container.clientHeight, 0.5, 20);
+        camera.position.set(3.2, 2.5, 7.5);
+        camera.lookAt(0, 0, 0);
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x06060c, 1);
+        container.appendChild(renderer.domElement);
+
+        // 手动时钟
+        let startTime = performance.now();
+        let elapsed = 0;
+        function tick() { elapsed = (performance.now() - startTime) * 0.001; return elapsed; }
+
+        const COLOR_GOLD = 0xd4a843;
+        const COLOR_CYAN = 0x45b7aa;
+        const COLOR_MAGENTA = 0xd4708a;
+        const SCALE = 2.8;
+        const MAX_PROJ_R = 8.5;
+
+        // ---- Hopf参数化 S³ 和球极投影 ----
+        function hopfToR4(theta, phi, psi) {
+            const ct2 = Math.cos(theta / 2);
+            const st2 = Math.sin(theta / 2);
+            return [
+                ct2 * Math.cos((phi + psi) / 2),
+                ct2 * Math.sin((phi + psi) / 2),
+                st2 * Math.cos((phi - psi) / 2),
+                st2 * Math.sin((phi - psi) / 2)
+            ];
+        }
+
+        function stereographicProj(x1, x2, x3, x4) {
+            const denom = 1 - x4;
+            if (Math.abs(denom) < 0.02) return null;
+            const f = SCALE / denom;
+            const pt = new THREE.Vector3(x1 * f, x2 * f, x3 * f);
+            if (pt.length() > MAX_PROJ_R) return null;
+            return pt;
+        }
+
+        // ---- 水平提升公式 ----
+        function horizontalPsi(thetaFunc, phiFunc, psi0, t) {
+            const dt = 1e-4;
+            const phiDot = (phiFunc(t + dt) - phiFunc(t - dt)) / (2 * dt);
+            const thetaT = thetaFunc(t);
+            const cosTheta = Math.cos(thetaT);
+            return psi0 - cosTheta * phiDot * t;
+        }
+
+        // 数值积分水平提升
+        function integrateHorizontalLift(thetaFunc, phiFunc, psi0, tStart, tEnd, steps) {
+            const dt = (tEnd - tStart) / steps;
+            const pts = [];
+            let psi = psi0;
+            for (let i = 0; i <= steps; i++) {
+                const t = tStart + i * dt;
+                const theta = thetaFunc(t);
+                const phi = phiFunc(t);
+                const [x1, x2, x3, x4] = hopfToR4(theta, phi, psi);
+                const proj = stereographicProj(x1, x2, x3, x4);
+                if (proj) pts.push(proj);
+
+                // 更新psi：dψ/dt = -cosθ · dφ/dt
+                const dt2 = 1e-4;
+                const phiDot = (phiFunc(t + dt2) - phiFunc(t - dt2)) / (2 * dt2);
+                psi -= Math.cos(theta) * phiDot * dt;
+            }
+            return pts;
+        }
+
+        // ---- 族1：纬线（金色）----
+        function createLatitudeLifts(thetaValues, psiOffsets, color, opacity, steps = 350) {
+            const group = new THREE.Group();
+            for (const theta of thetaValues) {
+                for (const psi0 of psiOffsets) {
+                    const thetaFn = () => theta;
+                    const phiFn = (t) => t;
+                    const pts = integrateHorizontalLift(thetaFn, phiFn, psi0, 0, 2 * Math.PI, steps);
+                    if (pts.length < 2) continue;
+                    const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                    group.add(new THREE.Line(geom, new THREE.LineBasicMaterial({
+                        color, transparent: true, opacity, depthWrite: true, depthTest: true
+                    })));
+                }
+            }
+            return group;
+        }
+
+        // ---- 族2：经线（青色）----
+        function createLongitudeLifts(phiValues, psiOffsets, color, opacity, steps = 300) {
+            const group = new THREE.Group();
+            const tMin = 0.15;
+            const tMax = Math.PI - 0.15;
+            for (const phi of phiValues) {
+                for (const psi0 of psiOffsets) {
+                    const thetaFn = (t) => t;
+                    const phiFn = () => phi;
+                    const pts = integrateHorizontalLift(thetaFn, phiFn, psi0, tMin, tMax, steps);
+                    if (pts.length < 2) continue;
+                    const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                    group.add(new THREE.Line(geom, new THREE.LineBasicMaterial({
+                        color, transparent: true, opacity, depthWrite: true, depthTest: true
+                    })));
+                }
+            }
+            return group;
+        }
+
+        // ---- 族3：斜线/大圆族（品红）----
+        function createDiagonalLifts(kValues, psiOffsets, color, opacity, steps = 400) {
+            const group = new THREE.Group();
+            const tMin = 0.15;
+            const tMax = Math.PI - 0.15;
+            for (const k of kValues) {
+                for (const psi0 of psiOffsets) {
+                    const thetaFn = (t) => t;
+                    const phiFn = (t) => k * t;
+                    const pts = integrateHorizontalLift(thetaFn, phiFn, psi0, tMin, tMax, steps);
+                    if (pts.length < 2) continue;
+                    const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                    group.add(new THREE.Line(geom, new THREE.LineBasicMaterial({
+                        color, transparent: true, opacity, depthWrite: true, depthTest: true
+                    })));
+                }
+            }
+            return group;
+        }
+
+        // 主结构
+        const rootGroup = new THREE.Group();
+        rootGroup.name = 'hopf-connection';
+        scene.add(rootGroup);
+
+        // 金色纬线族：θ取不同值
+        const thetaCount = 26;
+        const thetaVals = [];
+        for (let i = 0; i < thetaCount; i++) {
+            thetaVals.push(0.12 + i * (Math.PI - 0.24) / (thetaCount - 1));
+        }
+        const psiOffsetsGold = [0, Math.PI, 2 * Math.PI];
+        rootGroup.add(createLatitudeLifts(thetaVals, psiOffsetsGold, COLOR_GOLD, 0.8));
+
+        // 青色经线族：φ取不同值
+        const phiCount = 28;
+        const phiVals = [];
+        for (let i = 0; i < phiCount; i++) {
+            phiVals.push(i * 2 * Math.PI / phiCount);
+        }
+        const psiOffsetsCyan = [0, Math.PI / 2, Math.PI, 3 * Math.PI / 2];
+        rootGroup.add(createLongitudeLifts(phiVals, psiOffsetsCyan, COLOR_CYAN, 0.78));
+
+        // 品红斜线族：k取不同值
+        const kCount = 30;
+        const kVals = [];
+        for (let i = 0; i < kCount; i++) {
+            kVals.push(1.5 + i * 4.0 / (kCount - 1));
+        }
+        const psiOffsetsMagenta = [0, Math.PI / 3, 2 * Math.PI / 3, Math.PI];
+        rootGroup.add(createDiagonalLifts(kVals, psiOffsetsMagenta, COLOR_MAGENTA, 0.76));
+
+        console.log('Hopf联络曲线总数:', rootGroup.children.length);
+
+        // ---- 背景星点 ----
+        const starsGroup = new THREE.Group();
+        const starsGeom = new THREE.BufferGeometry();
+        const starsCount = 550;
+        const starsPos = new Float32Array(starsCount * 3);
+        for (let i = 0; i < starsCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const dist = 7 + Math.random() * 11;
+            starsPos[i * 3] = dist * Math.sin(phi) * Math.cos(theta);
+            starsPos[i * 3 + 1] = dist * Math.sin(phi) * Math.sin(theta);
+            starsPos[i * 3 + 2] = dist * Math.cos(phi);
+        }
+        starsGeom.setAttribute('position', new THREE.BufferAttribute(starsPos, 3));
+        const starsMat = new THREE.PointsMaterial({
+            color: 0x908878,
+            size: 0.018,
+            transparent: true,
+            opacity: 0.55,
+            depthWrite: false,
+        });
+        starsGroup.add(new THREE.Points(starsGeom, starsMat));
+        scene.add(starsGroup);
+
+        // ---- 稳定动画循环 ----
+        function animate() {
+            tick();
+            const t = elapsed;
+
+            rootGroup.rotation.x = t * 0.16;
+            rootGroup.rotation.y = t * 0.25;
+            rootGroup.rotation.z = t * 0.11;
+
+            starsGroup.rotation.y = t * 0.03;
+            starsGroup.rotation.x = t * 0.02;
+
+            const camRadius = 7.6;
+            const camAngle = t * 0.08;
+            const camHeight = 2.5 + Math.sin(t * 0.16) * 0.7;
+            camera.position.x = Math.cos(camAngle) * camRadius;
+            camera.position.z = Math.sin(camAngle) * camRadius;
+            camera.position.y = camHeight;
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+            requestAnimationFrame(animate);
+        }
+
+        // 预渲染首帧
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+
+        // 响应式调整
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth,
+                h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth,
+                h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 120));
+
+        console.log('✅ Hopf联络平行移动纤维网动画已稳定运行');
+    </script>
+</body>
+</html>

@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>外部射线编织 · 复动力等势网</title>
+    <style>
+        :root {
+            --bg: #06060c;
+            --gold: #d4a843;
+            --cyan: #45b7aa;
+            --magenta: #d4708a;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'SimSun', serif;
+            -webkit-font-smoothing: antialiased;
+            user-select: none;
+        }
+        #canvas-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+        }
+        canvas { display: block; }
+        .overlay-title {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 22px 20px 8px;
+            text-align: center;
+            background: linear-gradient(180deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.8) 55%, rgba(6,6,12,0) 100%);
+        }
+        .overlay-title h2 {
+            font-size: clamp(1.1rem, 2.2vw, 1.8rem);
+            font-weight: 400;
+            letter-spacing: 0.13em;
+            color: #e8d5b0;
+            text-shadow: 0 0 30px rgba(212,168,67,0.45), 0 0 60px rgba(212,168,67,0.18);
+            margin: 0 0 2px;
+            line-height: 1.3;
+        }
+        .overlay-title .sub {
+            font-size: clamp(0.65rem, 1.1vw, 0.85rem);
+            letter-spacing: 0.22em;
+            color: rgba(200,180,150,0.65);
+        }
+        .overlay-formula {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 8px 20px 18px;
+            text-align: center;
+            background: linear-gradient(0deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.82) 55%, rgba(6,6,12,0) 100%);
+        }
+        .formula-text {
+            font-size: clamp(0.6rem, 1.0vw, 0.8rem);
+            color: rgba(210,200,185,0.8);
+            letter-spacing: 0.03em;
+            line-height: 1.7;
+        }
+        .clr-gold { color: #d4a843; font-weight: bold; }
+        .clr-cyan { color: #45b7aa; font-weight: bold; }
+        .clr-magenta { color: #d4708a; font-weight: bold; }
+        .formula-sep {
+            display: inline-block;
+            margin: 0 14px;
+            color: rgba(150,140,130,0.35);
+        }
+    </style>
+</head>
+<body>
+    <div class="overlay-title">
+        <h2>外部射线编织 · 复动力等势网</h2>
+        <div class="sub">Böttcher external rays · Equipotential lines · Julia set foils</div>
+    </div>
+    <div class="overlay-formula">
+        <div class="formula-text">
+            <span class="clr-gold">c₁=−0.62+0.42i</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-cyan">c₂=0.28+0.53i</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-magenta">c₃=−0.15−0.68i</span>
+        </div>
+    </div>
+    <div id="canvas-container"></div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(46, container.clientWidth / container.clientHeight, 0.5, 22);
+        camera.position.set(3.5, 2.3, 7.0);
+        camera.lookAt(0, 0, 0);
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x06060c, 1);
+        container.appendChild(renderer.domElement);
+
+        let startTime = performance.now();
+        const getElapsed = () => (performance.now() - startTime) * 0.001;
+
+        const COLOR_GOLD = 0xd4a843;
+        const COLOR_CYAN = 0x45b7aa;
+        const COLOR_MAGENTA = 0xd4708a;
+        const SPHERE_R = 2.65;
+        const PROJ_D = 2.2;
+        const RAY_COUNT = 36;
+        const EQUI_COUNT = 16;
+        const INV_STEPS = 14;
+        const MAX_R = 2.6;
+        const ANGLE_OFFSET_SPEED = 0.12;
+
+        // 球极投影
+        function stereographic(px, py) {
+            const d = px * px + py * py + PROJ_D * PROJ_D;
+            return new THREE.Vector3(2 * PROJ_D * px / d, 2 * PROJ_D * py / d, (px * px + py * py - PROJ_D * PROJ_D) / d).multiplyScalar(SPHERE_R);
+        }
+
+        // 复平方根（选择辐角连续的分支）
+        function complexSqrt(re, im, preferAngle) {
+            const mod = Math.sqrt(Math.sqrt(re * re + im * im));
+            let half = Math.atan2(im, re) * 0.5;
+            const alt = half + Math.PI;
+            if (preferAngle !== undefined) {
+                if (Math.abs(half - preferAngle) > Math.abs(alt - preferAngle)) half = alt;
+            }
+            return { re: mod * Math.cos(half), im: mod * Math.sin(half), angle: half };
+        }
+
+        // 生成外部射线 + 等势线网格
+        function generateRayEquiNet(cRe, cIm, color, opacityR, opacityE, angleOffset) {
+            const rayGroup = new THREE.Group();
+            const equiGroup = new THREE.Group();
+
+            // 初始等势圆上的角度采样
+            const angles = [];
+            for (let j = 0; j < RAY_COUNT; j++) {
+                angles.push(angleOffset + j * 2 * Math.PI / RAY_COUNT);
+            }
+
+            // 构建逆迭代层级表 points[k][j]
+            const points = [];
+            const row0 = [];
+            for (let j = 0; j < RAY_COUNT; j++) {
+                const a = angles[j];
+                row0.push({ re: MAX_R * Math.cos(a), im: MAX_R * Math.sin(a), angle: a });
+            }
+            points.push(row0);
+
+            for (let k = 1; k <= INV_STEPS; k++) {
+                const prev = points[k - 1];
+                const cur = [];
+                for (let j = 0; j < RAY_COUNT; j++) {
+                    const p = prev[j];
+                    const wRe = p.re - cRe;
+                    const wIm = p.im - cIm;
+                    const sq = complexSqrt(wRe, wIm, p.angle * 0.5);
+                    cur.push(sq);
+                }
+                points.push(cur);
+            }
+
+            // 外部射线（沿固定角度，纵向）
+            for (let j = 0; j < RAY_COUNT; j++) {
+                const pts3D = [];
+                for (let k = 0; k <= INV_STEPS; k++) {
+                    const p = points[k][j];
+                    const sp = stereographic(p.re, p.im);
+                    if (sp && sp.length() < 9.5) pts3D.push(sp);
+                }
+                if (pts3D.length >= 2) {
+                    const g = new THREE.BufferGeometry().setFromPoints(pts3D);
+                    rayGroup.add(new THREE.Line(g, new THREE.LineBasicMaterial({ color, transparent: true, opacity: opacityR, depthWrite: true, depthTest: true })));
+                }
+            }
+
+            // 等势线（沿固定深度，横向闭合）
+            for (let k = 0; k <= INV_STEPS; k++) {
+                const row = points[k];
+                const pts3D = [];
+                for (let j = 0; j <= RAY_COUNT; j++) {
+                    const p = row[j % RAY_COUNT];
+                    const sp = stereographic(p.re, p.im);
+                    if (sp && sp.length() < 9.5) pts3D.push(sp);
+                }
+                if (pts3D.length >= 2) {
+                    pts3D.push(pts3D[0].clone());
+                    const g = new THREE.BufferGeometry().setFromPoints(pts3D);
+                    equiGroup.add(new THREE.Line(g, new THREE.LineBasicMaterial({ color, transparent: true, opacity: opacityE, depthWrite: true, depthTest: true })));
+                }
+            }
+
+            const combined = new THREE.Group();
+            combined.add(rayGroup);
+            combined.add(equiGroup);
+            return combined;
+        }
+
+        // 三族曲线分组
+        const goldGroup = new THREE.Group(); goldGroup.name = 'gold';
+        const cyanGroup = new THREE.Group(); cyanGroup.name = 'cyan';
+        const magentaGroup = new THREE.Group(); magentaGroup.name = 'magenta';
+
+        const rootGroup = new THREE.Group();
+        rootGroup.add(goldGroup);
+        rootGroup.add(cyanGroup);
+        rootGroup.add(magentaGroup);
+        scene.add(rootGroup);
+
+        function rebuildAll(angleOffset) {
+            // 清空
+            [goldGroup, cyanGroup, magentaGroup].forEach(g => {
+                while (g.children.length > 0) g.remove(g.children[0]);
+            });
+            // 重建
+            const net1 = generateRayEquiNet(-0.62, 0.42, COLOR_GOLD, 0.55, 0.38, angleOffset);
+            const net2 = generateRayEquiNet(0.28, 0.53, COLOR_CYAN, 0.55, 0.38, angleOffset + 2.1);
+            const net3 = generateRayEquiNet(-0.15, -0.68, COLOR_MAGENTA, 0.55, 0.38, angleOffset + 4.2);
+            goldGroup.add(net1);
+            cyanGroup.add(net2);
+            magentaGroup.add(net3);
+        }
+
+        // 辅助球面参考线
+        for (let i = 0; i < 8; i++) {
+            const lat = (i + 0.5) * Math.PI / 8;
+            const r = SPHERE_R * Math.sin(lat);
+            const z = SPHERE_R * Math.cos(lat);
+            const pts = [];
+            for (let j = 0; j <= 200; j++) {
+                const phi = j * 2 * Math.PI / 200;
+                pts.push(new THREE.Vector3(r * Math.cos(phi), z, r * Math.sin(phi)));
+            }
+            rootGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: 0x403830, transparent: true, opacity: 0.08, depthWrite: true, depthTest: true })));
+        }
+        for (let k = 0; k < 6; k++) {
+            const phi = k * Math.PI / 3;
+            const pts = [];
+            for (let j = 0; j <= 200; j++) {
+                const theta = 0.02 + j * Math.PI / 200;
+                const st = Math.sin(theta);
+                pts.push(new THREE.Vector3(SPHERE_R * st * Math.cos(phi), SPHERE_R * Math.cos(theta), SPHERE_R * st * Math.sin(phi)));
+            }
+            rootGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: 0x303840, transparent: true, opacity: 0.06, depthWrite: true, depthTest: true })));
+        }
+
+        // 背景星点
+        const starsGroup = new THREE.Group();
+        const starsGeom = new THREE.BufferGeometry();
+        const sc = 500;
+        const sp = new Float32Array(sc * 3);
+        for (let i = 0; i < sc; i++) {
+            const th = Math.random() * Math.PI * 2, ph = Math.acos(2 * Math.random() - 1), d = 6.5 + Math.random() * 10;
+            sp[i * 3] = d * Math.sin(ph) * Math.cos(th);
+            sp[i * 3 + 1] = d * Math.sin(ph) * Math.sin(th);
+            sp[i * 3 + 2] = d * Math.cos(ph);
+        }
+        starsGeom.setAttribute('position', new THREE.BufferAttribute(sp, 3));
+        starsGroup.add(new THREE.Points(starsGeom, new THREE.PointsMaterial({ color: 0x908878, size: 0.018, transparent: true, opacity: 0.55, depthWrite: false })));
+        scene.add(starsGroup);
+
+        console.log('外部射线编织已准备');
+
+        // 动画循环
+        let lastRebuild = -10, rebuildInterval = 1.8;
+        rebuildAll(0);
+
+        function animate() {
+            const t = getElapsed();
+            if (t - lastRebuild > rebuildInterval) {
+                try { rebuildAll(t * ANGLE_OFFSET_SPEED);
+                    lastRebuild = t; } catch (e) { console.warn(e); }
+            }
+            rootGroup.rotation.x = t * 0.14;
+            rootGroup.rotation.y = t * 0.23;
+            rootGroup.rotation.z = t * 0.09;
+            starsGroup.rotation.y = t * 0.04;
+            starsGroup.rotation.x = t * 0.025;
+            const cr = 7.2, ca = t * 0.08, ch = 2.4 + Math.sin(t * 0.16) * 0.7;
+            camera.position.set(Math.cos(ca) * cr, ch, Math.sin(ca) * cr);
+            camera.lookAt(0, 0, 0);
+            renderer.render(scene, camera);
+            requestAnimationFrame(animate);
+        }
+
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+
+        window.addEventListener('resize', () => {
+            camera.aspect = container.clientWidth / Math.max(container.clientHeight, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            camera.aspect = container.clientWidth / Math.max(container.clientHeight, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        }, 120));
+        console.log('✅ 外部射线等势网编织动画已稳定运行');
+    </script>
+</body>
+</html>

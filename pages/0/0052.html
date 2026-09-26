@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>复指数编织 · 正交射线圆网</title>
+    <style>
+        :root {
+            --bg: #06060c;
+            --gold: #d4a843;
+            --cyan: #45b7aa;
+            --magenta: #d4708a;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'SimSun', serif;
+            -webkit-font-smoothing: antialiased;
+            user-select: none;
+        }
+        #canvas-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+        }
+        canvas { display: block; }
+        .overlay-title {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 22px 20px 8px;
+            text-align: center;
+            background: linear-gradient(180deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.8) 55%, rgba(6,6,12,0) 100%);
+        }
+        .overlay-title h2 {
+            font-size: clamp(1.1rem, 2.2vw, 1.8rem);
+            font-weight: 400;
+            letter-spacing: 0.13em;
+            color: #e8d5b0;
+            text-shadow: 0 0 30px rgba(212,168,67,0.45), 0 0 60px rgba(212,168,67,0.18);
+            margin: 0 0 2px;
+            line-height: 1.3;
+        }
+        .overlay-title .sub {
+            font-size: clamp(0.65rem, 1.1vw, 0.85rem);
+            letter-spacing: 0.22em;
+            color: rgba(200,180,150,0.65);
+        }
+        .overlay-formula {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 8px 20px 18px;
+            text-align: center;
+            background: linear-gradient(0deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.82) 55%, rgba(6,6,12,0) 100%);
+        }
+        .formula-text {
+            font-size: clamp(0.6rem, 1.0vw, 0.8rem);
+            color: rgba(210,200,185,0.8);
+            letter-spacing: 0.03em;
+            line-height: 1.7;
+        }
+        .clr-gold { color: #d4a843; font-weight: bold; }
+        .clr-cyan { color: #45b7aa; font-weight: bold; }
+        .clr-magenta { color: #d4708a; font-weight: bold; }
+        .formula-sep {
+            display: inline-block;
+            margin: 0 14px;
+            color: rgba(150,140,130,0.35);
+        }
+    </style>
+</head>
+<body>
+    <div class="overlay-title">
+        <h2>复指数编织 · 正交射线圆网</h2>
+        <div class="sub">w = eᶻ conformal net · Rays & circles · Stereographic projection</div>
+    </div>
+    <div class="overlay-formula">
+        <div class="formula-text">
+            <span class="clr-gold">Im(z)=const → 射线</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-cyan">Re(z)=const → 同心圆</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-magenta">Re(z)±Im(z)=const → 螺线</span>
+        </div>
+    </div>
+    <div id="canvas-container"></div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(46, container.clientWidth / container.clientHeight, 0.5, 21);
+        camera.position.set(3.5, 2.2, 7.0);
+        camera.lookAt(0, 0, 0);
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x06060c, 1);
+        container.appendChild(renderer.domElement);
+
+        // 手动时钟——杜绝暂停
+        let startTime = performance.now();
+        const getElapsed = () => (performance.now() - startTime) * 0.001;
+
+        const COLOR_GOLD = 0xd4a843;
+        const COLOR_CYAN = 0x45b7aa;
+        const COLOR_MAGENTA = 0xd4708a;
+        const SPHERE_R = 2.7;
+        const PROJ_D = 2.2;
+
+        // 球极投影（平面→球面）
+        function stereographic(px, py) {
+            const denom = px * px + py * py + PROJ_D * PROJ_D;
+            return new THREE.Vector3(
+                2 * PROJ_D * px / denom,
+                2 * PROJ_D * py / denom,
+                (px * px + py * py - PROJ_D * PROJ_D) / denom
+            ).multiplyScalar(SPHERE_R);
+        }
+
+        // 复指数映射 w = exp(z) = exp(x+iy)
+        function expMap(x, y) {
+            const r = Math.exp(x);
+            return { px: r * Math.cos(y), py: r * Math.sin(y) };
+        }
+
+        // 在z平面上生成曲线，映射到w平面，再投影到球面
+        function createMappedCurve(zPoints, color, opacity) {
+            const pts3D = [];
+            for (const [x, y] of zPoints) {
+                const w = expMap(x, y);
+                if (w.px * w.px + w.py * w.py > 60) continue;
+                const sp = stereographic(w.px, w.py);
+                if (sp && sp.length() < 9.5) pts3D.push(sp);
+            }
+            if (pts3D.length >= 2) {
+                const geom = new THREE.BufferGeometry().setFromPoints(pts3D);
+                const mat = new THREE.LineBasicMaterial({
+                    color, transparent: true, opacity, depthWrite: true, depthTest: true,
+                });
+                return new THREE.Line(geom, mat);
+            }
+            return null;
+        }
+
+        // 生成水平线族（固定Im(z)，变化Re(z)）
+        function createRayFamily(yValues, xMin, xMax, color, opacity, numPoints) {
+            const group = new THREE.Group();
+            const dx = (xMax - xMin) / numPoints;
+            for (const y of yValues) {
+                const pts = [];
+                for (let i = 0; i <= numPoints; i++) {
+                    const x = xMin + i * dx;
+                    pts.push([x, y]);
+                }
+                const line = createMappedCurve(pts, color, opacity);
+                if (line) group.add(line);
+            }
+            return group;
+        }
+
+        // 生成垂直线族（固定Re(z)，变化Im(z)）
+        function createCircleFamily(xValues, yMin, yMax, color, opacity, numPoints) {
+            const group = new THREE.Group();
+            const dy = (yMax - yMin) / numPoints;
+            for (const x of xValues) {
+                const pts = [];
+                for (let i = 0; i <= numPoints; i++) {
+                    const y = yMin + i * dy;
+                    pts.push([x, y]);
+                }
+                const line = createMappedCurve(pts, color, opacity);
+                if (line) group.add(line);
+            }
+            return group;
+        }
+
+        // 生成对角线族（x+y=const或x-y=const）
+        function createDiagonalFamily(constValues, sign, xMin, xMax, color, opacity, numPoints) {
+            const group = new THREE.Group();
+            for (const c of constValues) {
+                const pts = [];
+                const dt = (xMax - xMin) / numPoints;
+                for (let i = 0; i <= numPoints; i++) {
+                    const x = xMin + i * dt;
+                    const y = sign === 1 ? c - x : x - c;
+                    const yMinLocal = sign === 1 ? c - xMax : xMin - c;
+                    const yMaxLocal = sign === 1 ? c - xMin : xMax - c;
+                    if (y >= Math.min(yMinLocal, yMaxLocal) && y <= Math.max(yMinLocal, yMaxLocal)) {
+                        // 检查y是否在可见范围
+                        if (Math.abs(y) < 4 * Math.PI) {
+                            pts.push([x, y]);
+                        }
+                    }
+                }
+                if (pts.length >= 2) {
+                    const line = createMappedCurve(pts, color, opacity * 0.8);
+                    if (line) group.add(line);
+                }
+            }
+            return group;
+        }
+
+        // 主组
+        const rootGroup = new THREE.Group();
+        rootGroup.name = 'exp-conformal';
+        scene.add(rootGroup);
+
+        const xMin = -1.6;
+        const xMax = 1.9;
+        const yMin = -Math.PI;
+        const yMax = 3 * Math.PI;
+        const curvePoints = 400;
+
+        // 金色族：水平线（Im(z)=const → 射线）28条
+        const yRayCount = 28;
+        const yRayValues = [];
+        for (let i = 0; i < yRayCount; i++) {
+            yRayValues.push(-Math.PI + i * 4 * Math.PI / (yRayCount - 1));
+        }
+        rootGroup.add(createRayFamily(yRayValues, xMin, xMax, COLOR_GOLD, 0.60, curvePoints));
+        // 补充更多射线
+        const yRayExtra = [];
+        for (let i = 0; i < 16; i++) yRayExtra.push(-Math.PI + 0.15 + i * 4 * Math.PI / 15);
+        rootGroup.add(createRayFamily(yRayExtra, xMin, xMax, COLOR_GOLD, 0.42, curvePoints));
+
+        // 青色族：垂直线（Re(z)=const → 同心圆）24条
+        const xCircleCount = 24;
+        const xCircleValues = [];
+        for (let i = 0; i < xCircleCount; i++) {
+            xCircleValues.push(xMin + i * (xMax - xMin) / (xCircleCount - 1));
+        }
+        rootGroup.add(createCircleFamily(xCircleValues, yMin, yMax, COLOR_CYAN, 0.60, curvePoints));
+        // 补充更多圆
+        const xCircleExtra = [];
+        for (let i = 0; i < 14; i++) xCircleExtra.push(xMin + 0.06 + i * (xMax - xMin) / 13);
+        rootGroup.add(createCircleFamily(xCircleExtra, yMin, yMax, COLOR_CYAN, 0.40, curvePoints));
+
+        // 品红族：对角线（x±y=const → 对数螺线）
+        const diagCount = 32;
+        const diagValues = [];
+        const diagMin = xMin - 3 * Math.PI;
+        const diagMax = xMax + 3 * Math.PI;
+        for (let i = 0; i < diagCount; i++) {
+            diagValues.push(diagMin + i * (diagMax - diagMin) / (diagCount - 1));
+        }
+        rootGroup.add(createDiagonalFamily(diagValues, 1, xMin, xMax, COLOR_MAGENTA, 0.55, curvePoints));
+        rootGroup.add(createDiagonalFamily(diagValues, -1, xMin, xMax, COLOR_MAGENTA, 0.50, curvePoints));
+
+        // 额外对角线（更密集的品红螺线）
+        const diagExtra = [];
+        const diagMin2 = xMin - 2.8 * Math.PI;
+        const diagMax2 = xMax + 2.8 * Math.PI;
+        for (let i = 0; i < 22; i++) {
+            diagExtra.push(diagMin2 + 0.18 + i * (diagMax2 - diagMin2) / 21);
+        }
+        rootGroup.add(createDiagonalFamily(diagExtra, 1, xMin, xMax, COLOR_MAGENTA, 0.38, Math.floor(curvePoints * 0.8)));
+        rootGroup.add(createDiagonalFamily(diagExtra, -1, xMin, xMax, COLOR_MAGENTA, 0.35, Math.floor(curvePoints * 0.8)));
+
+        // 辅助球面参考网格
+        for (let i = 0; i < 10; i++) {
+            const lat = (i + 0.5) * Math.PI / 10;
+            const r = SPHERE_R * Math.sin(lat);
+            const z = SPHERE_R * Math.cos(lat);
+            const pts = [];
+            for (let j = 0; j <= 240; j++) {
+                const phi = j * 2 * Math.PI / 240;
+                pts.push(new THREE.Vector3(r * Math.cos(phi), z, r * Math.sin(phi)));
+            }
+            const geom = new THREE.BufferGeometry().setFromPoints(pts);
+            rootGroup.add(new THREE.Line(geom, new THREE.LineBasicMaterial({
+                color: 0x403830, transparent: true, opacity: 0.09, depthWrite: true, depthTest: true
+            })));
+        }
+        for (let k = 0; k < 8; k++) {
+            const phi = k * Math.PI / 4;
+            const pts = [];
+            for (let j = 0; j <= 240; j++) {
+                const theta = 0.02 + j * Math.PI / 240;
+                const st = Math.sin(theta);
+                pts.push(new THREE.Vector3(SPHERE_R * st * Math.cos(phi), SPHERE_R * Math.cos(theta), SPHERE_R * st * Math.sin(phi)));
+            }
+            const geom = new THREE.BufferGeometry().setFromPoints(pts);
+            rootGroup.add(new THREE.Line(geom, new THREE.LineBasicMaterial({
+                color: 0x303840, transparent: true, opacity: 0.07, depthWrite: true, depthTest: true
+            })));
+        }
+
+        console.log('复指数编织线条总数:', rootGroup.children.length);
+
+        // 背景星点
+        const starsGroup = new THREE.Group();
+        const starsGeom = new THREE.BufferGeometry();
+        const starsCount = 550;
+        const starsPos = new Float32Array(starsCount * 3);
+        for (let i = 0; i < starsCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const dist = 6.5 + Math.random() * 10;
+            starsPos[i * 3] = dist * Math.sin(phi) * Math.cos(theta);
+            starsPos[i * 3 + 1] = dist * Math.sin(phi) * Math.sin(theta);
+            starsPos[i * 3 + 2] = dist * Math.cos(phi);
+        }
+        starsGeom.setAttribute('position', new THREE.BufferAttribute(starsPos, 3));
+        const starsMat = new THREE.PointsMaterial({
+            color: 0x908878, size: 0.018, transparent: true, opacity: 0.55, depthWrite: false,
+        });
+        starsGroup.add(new THREE.Points(starsGeom, starsMat));
+        scene.add(starsGroup);
+
+        // ---- 双保险动画循环 ----
+        let animFrameId;
+        function mainLoop() {
+            const t = getElapsed();
+            rootGroup.rotation.x = t * 0.15;
+            rootGroup.rotation.y = t * 0.25;
+            rootGroup.rotation.z = t * 0.11;
+            starsGroup.rotation.y = t * 0.04;
+            starsGroup.rotation.x = t * 0.025;
+
+            const camRadius = 7.2;
+            const camAngle = t * 0.08;
+            const camHeight = 2.3 + Math.sin(t * 0.16) * 0.7;
+            camera.position.x = Math.cos(camAngle) * camRadius;
+            camera.position.z = Math.sin(camAngle) * camRadius;
+            camera.position.y = camHeight;
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        function scheduleFrame() {
+            animFrameId = requestAnimationFrame(() => {
+                try { mainLoop(); } catch (e) { console.warn('动画异常:', e); }
+                scheduleFrame();
+            });
+        }
+
+        const backupTimer = setInterval(() => {
+            if (animFrameId !== undefined) {
+                cancelAnimationFrame(animFrameId);
+                scheduleFrame();
+            }
+        }, 3000);
+
+        // 预渲染首帧确保立即显示
+        renderer.render(scene, camera);
+        scheduleFrame();
+
+        // 响应式
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth,
+                h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth,
+                h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 120));
+
+        console.log('✅ 复指数映射正交编织动画已稳定运行');
+    </script>
+</body>
+</html>

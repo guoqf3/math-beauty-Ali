@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>三重周期晶格叠加 · 空间编织</title>
+    <style>
+        :root { --bg: #02040a; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'STSong', 'Songti SC', 'Noto Serif SC', 'SimSun', 'Times New Roman', serif;
+            -webkit-font-smoothing: antialiased;
+            height: 100vh; width: 100vw;
+            user-select: none; -webkit-user-select: none; cursor: default;
+        }
+        #canvas-container { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+        canvas { display: block; }
+        #title-overlay {
+            position: fixed; top: 24px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+        }
+        #title-overlay .title {
+            font-size: clamp(1.0rem, 2.2vw, 1.5rem); font-weight: 400; letter-spacing: 0.08em;
+            color: #cfc7b5; text-shadow: 0 0 42px rgba(200,180,150,0.5), 0 0 72px rgba(170,150,130,0.22);
+            line-height: 1.4; white-space: nowrap;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.5rem, 0.9vw, 0.66rem); font-weight: 300; letter-spacing: 0.12em;
+            color: #a09888; text-shadow: 0 0 16px rgba(155,145,125,0.32);
+            margin-top: 2px; white-space: nowrap;
+        }
+        #formula-overlay {
+            position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+            background: rgba(2,4,10,0.68); padding: 10px 20px; border-radius: 32px;
+            border: 1px solid rgba(175,155,135,0.16);
+            backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); max-width: 95vw;
+        }
+        #formula-overlay .formula {
+            font-size: clamp(0.4rem, 0.7vw, 0.56rem); font-weight: 300; letter-spacing: 0.04em;
+            color: #c5bdaa; text-shadow: 0 0 13px rgba(185,170,145,0.25);
+            line-height: 1.55; white-space: nowrap;
+        }
+        #formula-overlay .formula .c1 { color: #d4885c; }
+        #formula-overlay .formula .c2 { color: #5d9ec6; }
+        #formula-overlay .formula .c3 { color: #c77d9f; }
+        @media (max-width: 600px) {
+            #title-overlay { top: 14px; }
+            #formula-overlay { bottom: 10px; padding: 7px 12px; border-radius: 24px; }
+            #formula-overlay .formula { font-size: 0.32rem; white-space: normal; line-height: 1.3; }
+            #title-overlay .title { font-size: 0.68rem; }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="title-overlay">
+        <div class="title">三重周期晶格叠加 · 空间编织</div>
+        <div class="subtitle">TRIPLY PERIODIC LATTICE &nbsp;·&nbsp; SC · BCC · FCC</div>
+    </div>
+    <div id="formula-overlay">
+        <div class="formula">
+            <span class="c1">SC:</span> Λ={(i,j,k)} d=1 &nbsp;
+            <span class="c2">BCC:</span> Λ∪Λ+(½,½,½) d=√3/2 &nbsp;
+            <span class="c3">FCC:</span> {x+y+z≡0 mod2}∪{半整数排列} d=√2/2
+            <br>
+            <span style="color:#9aa8b8;">i,j,k∈[−2,2] &nbsp;|&nbsp; 球面半径R=2.8 &nbsp;|&nbsp; 绝对时间驱动</span>
+        </div>
+    </div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#02040a');
+        scene.fog = new THREE.Fog('#02040a', 7, 20);
+
+        const camera = new THREE.PerspectiveCamera(
+            48,
+            container.clientWidth / Math.max(container.clientHeight, 1),
+            0.3,
+            25
+        );
+        camera.position.set(1.4, 0.7, 6.8);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = false;
+        container.appendChild(renderer.domElement);
+
+        // ==================== 颜色 ====================
+        const C1 = '#d4885c'; // 暖金 – SC晶格
+        const C2 = '#5d9ec6'; // 冰蓝 – BCC晶格
+        const C3 = '#c77d9f'; // 玫瑰粉 – FCC晶格
+        const C_SPHERE = '#3a4a5c';
+        const C_GLINT = '#8898aa';
+        const C_POLE = '#6a7a8a';
+
+        const R_SPHERE = 2.8;
+        const RANGE = [-2, -1, 0, 1, 2];
+        const HALF_VALS = [-1.5, -0.5, 0.5, 1.5];
+        const RANGE_LEN = RANGE.length;
+        const HALF_LEN = HALF_VALS.length;
+
+        // ==================== SC晶格节点生成 ====================
+        function generateSCNodes() {
+            const nodes = [];
+            for (const i of RANGE) {
+                for (const j of RANGE) {
+                    for (const k of RANGE) {
+                        const d = Math.sqrt(i*i + j*j + k*k);
+                        if (d <= R_SPHERE + 0.3) {
+                            nodes.push(new THREE.Vector3(i, j, k));
+                        }
+                    }
+                }
+            }
+            return nodes;
+        }
+
+        // ==================== BCC晶格节点生成 ====================
+        function generateBCCNodes() {
+            const nodes = [];
+            const half = 0.5;
+            for (const i of RANGE) {
+                for (const j of RANGE) {
+                    for (const k of RANGE) {
+                        const d = Math.sqrt(i*i + j*j + k*k);
+                        if (d <= R_SPHERE + 0.4) {
+                            nodes.push(new THREE.Vector3(i, j, k));
+                            const shifted = new THREE.Vector3(i + half, j + half, k + half);
+                            const ds = shifted.length();
+                            if (ds <= R_SPHERE + 0.4) {
+                                nodes.push(shifted);
+                            }
+                        }
+                    }
+                }
+            }
+            // 去重
+            const unique = [];
+            const eps = 0.001;
+            for (const v of nodes) {
+                let dup = false;
+                for (const u of unique) {
+                    if (v.distanceTo(u) < eps) { dup = true; break; }
+                }
+                if (!dup) unique.push(v.clone());
+            }
+            return unique;
+        }
+
+        // ==================== FCC晶格节点生成 ====================
+        function generateFCCNodes() {
+            const nodes = [];
+            // 整数节点：i+j+k为偶数
+            for (const i of RANGE) {
+                for (const j of RANGE) {
+                    for (const k of RANGE) {
+                        if ((i + j + k) % 2 === 0) {
+                            const d = Math.sqrt(i*i + j*j + k*k);
+                            if (d <= R_SPHERE + 0.35) {
+                                nodes.push(new THREE.Vector3(i, j, k));
+                            }
+                        }
+                    }
+                }
+            }
+            // 半整数节点：两个半整数+一个整数（三种排列）
+            const intVals = RANGE;
+            for (const hi of HALF_VALS) {
+                for (const hj of HALF_VALS) {
+                    for (const ik of intVals) {
+                        const v1 = new THREE.Vector3(hi, hj, ik);
+                        const v2 = new THREE.Vector3(hi, ik, hj);
+                        const v3 = new THREE.Vector3(ik, hi, hj);
+                        for (const v of [v1, v2, v3]) {
+                            if (v.length() <= R_SPHERE + 0.35) {
+                                nodes.push(v);
+                            }
+                        }
+                    }
+                }
+            }
+            // 去重
+            const unique = [];
+            const eps = 0.001;
+            for (const v of nodes) {
+                let dup = false;
+                for (const u of unique) {
+                    if (v.distanceTo(u) < eps) { dup = true; break; }
+                }
+                if (!dup) unique.push(v.clone());
+            }
+            return unique;
+        }
+
+        // ==================== 生成边 ====================
+        function buildEdges(nodes, targetDist, tolerance) {
+            const edges = [];
+            const n = nodes.length;
+            const lo = targetDist - tolerance;
+            const hi = targetDist + tolerance;
+            for (let i = 0; i < n; i++) {
+                for (let j = i + 1; j < n; j++) {
+                    const d = nodes[i].distanceTo(nodes[j]);
+                    if (d >= lo && d <= hi) {
+                        edges.push([i, j]);
+                    }
+                }
+            }
+            return edges;
+        }
+
+        function createLineSegments(nodes, edges, colorHex, opacity) {
+            if (edges.length === 0) return new THREE.Group();
+            const vertices = [];
+            for (const [i, j] of edges) {
+                const a = nodes[i];
+                const b = nodes[j];
+                vertices.push(a.x, a.y, a.z, b.x, b.y, b.z);
+            }
+            const geom = new THREE.BufferGeometry();
+            geom.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+            const mat = new THREE.LineBasicMaterial({
+                color: new THREE.Color(colorHex),
+                transparent: true,
+                opacity: opacity,
+                depthWrite: true,
+            });
+            return new THREE.LineSegments(geom, mat);
+        }
+
+        // ==================== 生成三个晶格 ====================
+        console.log('生成SC晶格节点...');
+        const scNodes = generateSCNodes();
+        console.log('SC节点数:', scNodes.length);
+        const scEdges = buildEdges(scNodes, 1.0, 0.015);
+        console.log('SC边数:', scEdges.length);
+
+        console.log('生成BCC晶格节点...');
+        const bccNodes = generateBCCNodes();
+        console.log('BCC节点数:', bccNodes.length);
+        const bccEdges = buildEdges(bccNodes, Math.sqrt(3) / 2, 0.015);
+        console.log('BCC边数:', bccEdges.length);
+
+        console.log('生成FCC晶格节点...');
+        const fccNodes = generateFCCNodes();
+        console.log('FCC节点数:', fccNodes.length);
+        const fccEdges = buildEdges(fccNodes, Math.sqrt(2) / 2, 0.015);
+        console.log('FCC边数:', fccEdges.length);
+
+        const linesSC = createLineSegments(scNodes, scEdges, C1, 0.65);
+        const linesBCC = createLineSegments(bccNodes, bccEdges, C2, 0.6);
+        const linesFCC = createLineSegments(fccNodes, fccEdges, C3, 0.62);
+
+        const mainGroup = new THREE.Group();
+        mainGroup.add(linesSC);
+        mainGroup.add(linesBCC);
+        mainGroup.add(linesFCC);
+        scene.add(mainGroup);
+
+        // ==================== 节点微光点 ====================
+        function createNodeGlints(nodes, colorHex, opacity, sz) {
+            const group = new THREE.Group();
+            for (const p of nodes) {
+                const pairs = [
+                    [p.clone().add(new THREE.Vector3(-sz, 0, 0)), p.clone().add(new THREE.Vector3(sz, 0, 0))],
+                    [p.clone().add(new THREE.Vector3(0, -sz, 0)), p.clone().add(new THREE.Vector3(0, sz, 0))],
+                    [p.clone().add(new THREE.Vector3(0, 0, -sz)), p.clone().add(new THREE.Vector3(0, 0, sz))],
+                ];
+                for (const [a, b] of pairs) {
+                    const g = new THREE.BufferGeometry().setFromPoints([a, b]);
+                    const m = new THREE.LineBasicMaterial({
+                        color: new THREE.Color(colorHex),
+                        transparent: true,
+                        opacity: opacity,
+                        depthWrite: true,
+                    });
+                    group.add(new THREE.Line(g, m));
+                }
+            }
+            return group;
+        }
+        // 只在球面附近的节点处加光点（减少数量）
+        function filterNodesOnSphere(nodes, rMin, rMax) {
+            return nodes.filter(p => {
+                const d = p.length();
+                return d >= rMin && d <= rMax;
+            });
+        }
+        const scOnSphere = filterNodesOnSphere(scNodes, R_SPHERE - 0.3, R_SPHERE + 0.3);
+        const bccOnSphere = filterNodesOnSphere(bccNodes, R_SPHERE - 0.3, R_SPHERE + 0.3);
+        const fccOnSphere = filterNodesOnSphere(fccNodes, R_SPHERE - 0.3, R_SPHERE + 0.3);
+
+        const glintsSC = createNodeGlints(scOnSphere, C1, 0.55, 0.05);
+        const glintsBCC = createNodeGlints(bccOnSphere, C2, 0.5, 0.045);
+        const glintsFCC = createNodeGlints(fccOnSphere, C3, 0.52, 0.04);
+        mainGroup.add(glintsSC);
+        mainGroup.add(glintsBCC);
+        mainGroup.add(glintsFCC);
+
+        // ==================== 参考球面线框 ====================
+        function createSphereWireframe(radius, colorHex, opacity) {
+            const group = new THREE.Group();
+            const segs = 170;
+            const circleDefs = [
+                (a) => new THREE.Vector3(Math.cos(a) * radius, Math.sin(a) * radius, 0),
+                (a) => new THREE.Vector3(Math.cos(a) * radius, 0, Math.sin(a) * radius),
+                (a) => new THREE.Vector3(0, Math.cos(a) * radius, Math.sin(a) * radius),
+            ];
+            for (const gen of circleDefs) {
+                const pts = [];
+                for (let i = 0; i <= segs; i++) pts.push(gen((i / segs) * Math.PI * 2));
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(colorHex),
+                    transparent: true,
+                    opacity: opacity,
+                    depthWrite: true,
+                });
+                group.add(new THREE.Line(geom, mat));
+            }
+            for (const z of [-radius * 0.45, radius * 0.45]) {
+                const r = Math.sqrt(Math.max(0, radius * radius - z * z));
+                if (r > 0.02) {
+                    const pts = [];
+                    for (let i = 0; i <= segs; i++) {
+                        const a = (i / segs) * Math.PI * 2;
+                        pts.push(new THREE.Vector3(Math.cos(a) * r, z, Math.sin(a) * r));
+                    }
+                    const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                    const mat = new THREE.LineBasicMaterial({
+                        color: new THREE.Color(colorHex),
+                        transparent: true,
+                        opacity: opacity * 0.6,
+                        depthWrite: true,
+                    });
+                    group.add(new THREE.Line(geom, mat));
+                }
+            }
+            return group;
+        }
+        const sphereRef = createSphereWireframe(R_SPHERE, C_SPHERE, 0.22);
+        scene.add(sphereRef);
+
+        // ==================== 原点光点 ====================
+        function createOriginGlint() {
+            const group = new THREE.Group();
+            const sz = 0.1;
+            const pairs = [
+                [new THREE.Vector3(-sz, 0, 0), new THREE.Vector3(sz, 0, 0)],
+                [new THREE.Vector3(0, -sz, 0), new THREE.Vector3(0, sz, 0)],
+                [new THREE.Vector3(0, 0, -sz), new THREE.Vector3(0, 0, sz)],
+            ];
+            for (const [a, b] of pairs) {
+                const g = new THREE.BufferGeometry().setFromPoints([a, b]);
+                const m = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(C_GLINT),
+                    transparent: true,
+                    opacity: 0.7,
+                    depthWrite: true,
+                });
+                group.add(new THREE.Line(g, m));
+            }
+            return group;
+        }
+        scene.add(createOriginGlint());
+
+        // 极点标记
+        function createPoleGlints(radius, colorHex, sz) {
+            const group = new THREE.Group();
+            for (const sign of [-1, 1]) {
+                const pt = new THREE.Vector3(0, sign * radius, 0);
+                const pairs = [
+                    [pt.clone().add(new THREE.Vector3(-sz, 0, 0)), pt.clone().add(new THREE.Vector3(sz, 0, 0))],
+                    [pt.clone().add(new THREE.Vector3(0, 0, -sz)), pt.clone().add(new THREE.Vector3(0, 0, sz))],
+                ];
+                for (const [a, b] of pairs) {
+                    const g = new THREE.BufferGeometry().setFromPoints([a, b]);
+                    const m = new THREE.LineBasicMaterial({
+                        color: new THREE.Color(colorHex),
+                        transparent: true,
+                        opacity: 0.5,
+                        depthWrite: true,
+                    });
+                    group.add(new THREE.Line(g, m));
+                }
+            }
+            return group;
+        }
+        scene.add(createPoleGlints(R_SPHERE, C_POLE, 0.07));
+
+        // ==================== 动画循环（绝对时间） ====================
+        let time = 0;
+        let lastTime = performance.now();
+        let frameCount = 0;
+        let logTime = 0;
+
+        function animate(now) {
+            requestAnimationFrame(animate);
+            let delta = (now - lastTime) / 1000;
+            if (delta <= 0 || delta > 0.5) delta = 0.016;
+            lastTime = now;
+            time += delta;
+            frameCount++;
+            if (now - logTime > 4000) {
+                console.log(`[动画运行中] 帧:${frameCount} 时间:${time.toFixed(2)}s 边:${scEdges.length+bccEdges.length+fccEdges.length}`);
+                logTime = now;
+            }
+
+            // 主结构绕对角线旋转
+            mainGroup.rotation.y = time * 0.28;
+            mainGroup.rotation.x = time * 0.15 + Math.sin(time * 0.24) * 0.2;
+            mainGroup.rotation.z = Math.cos(time * 0.19) * 0.13;
+
+            // 参考球面同步
+            sphereRef.rotation.copy(mainGroup.rotation);
+
+            // 相机游走
+            const camX = 1.4 + Math.sin(time * 0.15) * 0.55;
+            const camY = 0.7 + Math.cos(time * 0.19) * 0.48;
+            const camZ = 6.8 + Math.sin(time * 0.12) * 0.5;
+            camera.position.set(camX, camY, camZ);
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        // ==================== 窗口调整 ====================
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth;
+            const h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth;
+            const h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 100));
+
+        console.log('=== 三重周期晶格叠加 · 空间编织 ===');
+        console.log('SC边(暖金):', scEdges.length);
+        console.log('BCC边(冰蓝):', bccEdges.length);
+        console.log('FCC边(玫瑰粉):', fccEdges.length);
+        console.log('总边数:', scEdges.length + bccEdges.length + fccEdges.length);
+        console.log('✅ 初始帧渲染完成，启动绝对时间动画循环...');
+
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reeb叶状结构 · 切触编织</title>
+    <style>
+        :root {
+            --bg: #06060c;
+            --gold: #d4a843;
+            --cyan: #45b7aa;
+            --magenta: #d4708a;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'SimSun', serif;
+            -webkit-font-smoothing: antialiased;
+            user-select: none;
+        }
+        #canvas-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+        }
+        canvas {
+            display: block;
+        }
+        .overlay-title {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 22px 20px 8px;
+            text-align: center;
+            background: linear-gradient(180deg, rgba(6, 6, 12, 0.95) 0%, rgba(6, 6, 12, 0.8) 55%, rgba(6, 6, 12, 0) 100%);
+        }
+        .overlay-title h2 {
+            font-size: clamp(1.1rem, 2.2vw, 1.8rem);
+            font-weight: 400;
+            letter-spacing: 0.13em;
+            color: #e8d5b0;
+            text-shadow: 0 0 30px rgba(212, 168, 67, 0.45), 0 0 60px rgba(212, 168, 67, 0.18);
+            margin: 0 0 2px;
+            line-height: 1.3;
+        }
+        .overlay-title .sub {
+            font-size: clamp(0.65rem, 1.1vw, 0.85rem);
+            letter-spacing: 0.22em;
+            color: rgba(200, 180, 150, 0.65);
+        }
+        .overlay-formula {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 8px 20px 18px;
+            text-align: center;
+            background: linear-gradient(0deg, rgba(6, 6, 12, 0.95) 0%, rgba(6, 6, 12, 0.82) 55%, rgba(6, 6, 12, 0) 100%);
+        }
+        .formula-text {
+            font-size: clamp(0.6rem, 1.0vw, 0.8rem);
+            color: rgba(210, 200, 185, 0.8);
+            letter-spacing: 0.03em;
+            line-height: 1.7;
+        }
+        .clr-gold {
+            color: #d4a843;
+            font-weight: bold;
+        }
+        .clr-cyan {
+            color: #45b7aa;
+            font-weight: bold;
+        }
+        .clr-magenta {
+            color: #d4708a;
+            font-weight: bold;
+        }
+        .formula-sep {
+            display: inline-block;
+            margin: 0 14px;
+            color: rgba(150, 140, 130, 0.35);
+        }
+    </style>
+</head>
+<body>
+    <div class="overlay-title">
+        <h2>Reeb叶状结构 · 切触编织</h2>
+        <div class="sub">Reeb foliation on S² · Contact topology spirals</div>
+    </div>
+    <div class="overlay-formula">
+        <div class="formula-text">
+            <span class="clr-gold">dθ/dφ = ε₁·sin θ , ε₁=0.06</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-cyan">dθ/dφ = ε₂·sin θ , ε₂=0.10</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-magenta">dθ/dφ = ε₃·sin θ , ε₃=0.15</span>
+        </div>
+    </div>
+    <div id="canvas-container"></div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ---------- 场景初始化 ----------
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(46, container.clientWidth / container.clientHeight, 0.5, 20);
+        camera.position.set(3.2, 2.0, 7.2);
+        camera.lookAt(0, 0, 0);
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x06060c, 1);
+        container.appendChild(renderer.domElement);
+
+        // 手动时钟——杜绝暂停
+        let startTime = performance.now();
+        const getElapsed = () => (performance.now() - startTime) * 0.001;
+
+        const COLOR_GOLD = 0xd4a843;
+        const COLOR_CYAN = 0x45b7aa;
+        const COLOR_MAGENTA = 0xd4708a;
+        const RADIUS = 2.7;
+
+        // 球面点 from θ(余纬), φ(经度)
+        function spherePoint(theta, phi) {
+            const st = Math.sin(theta);
+            return new THREE.Vector3(
+                RADIUS * st * Math.cos(phi),
+                RADIUS * Math.cos(theta),
+                RADIUS * st * Math.sin(phi)
+            );
+        }
+
+        // Reeb叶状结构曲线：解析解 θ(φ) = 2·arctan(exp(ε(φ-φ₀)))
+        // 给定初始相位φ₀（即θ=π/2时的φ值），生成从近北极到近南极的曲线
+        function reebCurve(epsilon, phiZero, numPoints) {
+            const pts = [];
+            // φ的范围：从φ₀ - 足够大 到 φ₀ + 足够大
+            const phiRange = 12 / epsilon; // 覆盖足够多的螺旋
+            const phiMin = phiZero - phiRange * 0.5;
+            const phiMax = phiZero + phiRange * 0.5;
+            const dPhi = (phiMax - phiMin) / numPoints;
+            for (let i = 0; i <= numPoints; i++) {
+                const phi = phiMin + i * dPhi;
+                const expTerm = Math.exp(epsilon * (phi - phiZero));
+                const theta = 2 * Math.atan(expTerm);
+                // 限制θ在(0.015, π-0.015)避免极点奇异性导致点过密
+                if (theta > 0.015 && theta < Math.PI - 0.015) {
+                    pts.push(spherePoint(theta, phi));
+                }
+            }
+            return pts;
+        }
+
+        // 生成一族Reeb曲线
+        function createReebFamily(epsilon, color, opacity, numCurves, numPoints) {
+            const group = new THREE.Group();
+            for (let k = 0; k < numCurves; k++) {
+                const phiZero = k * 2 * Math.PI / numCurves;
+                const pts = reebCurve(epsilon, phiZero, numPoints);
+                if (pts.length < 2) continue;
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color,
+                    transparent: true,
+                    opacity,
+                    depthWrite: true,
+                    depthTest: true,
+                });
+                group.add(new THREE.Line(geom, mat));
+            }
+            return group;
+        }
+
+        // 生成赤道附近薄环中的纬线作为参考纹理
+        function createParallelRefs(color, opacity, count, thetaCenter) {
+            const group = new THREE.Group();
+            const dPhi = 2 * Math.PI / 300;
+            for (let i = 0; i < count; i++) {
+                const theta = thetaCenter + (i - count / 2) * 0.035;
+                if (theta < 0.02 || theta > Math.PI - 0.02) continue;
+                const pts = [];
+                for (let j = 0; j <= 300; j++) {
+                    pts.push(spherePoint(theta, j * dPhi));
+                }
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color,
+                    transparent: true,
+                    opacity,
+                    depthWrite: true,
+                    depthTest: true,
+                });
+                group.add(new THREE.Line(geom, mat));
+            }
+            return group;
+        }
+
+        // 主组
+        const rootGroup = new THREE.Group();
+        rootGroup.name = 'reeb-foliation';
+        scene.add(rootGroup);
+
+        // 金色：慢螺旋 ε=0.06，20条曲线
+        rootGroup.add(createReebFamily(0.06, COLOR_GOLD, 0.62, 20, 700));
+        // 额外金色变体（ε稍不同）
+        rootGroup.add(createReebFamily(0.055, COLOR_GOLD, 0.55, 14, 650));
+        rootGroup.add(createReebFamily(0.065, COLOR_GOLD, 0.50, 14, 650));
+
+        // 青色：中等螺旋 ε=0.10，20条曲线
+        rootGroup.add(createReebFamily(0.10, COLOR_CYAN, 0.62, 20, 700));
+        rootGroup.add(createReebFamily(0.095, COLOR_CYAN, 0.55, 14, 650));
+        rootGroup.add(createReebFamily(0.105, COLOR_CYAN, 0.50, 14, 650));
+
+        // 品红：较快螺旋 ε=0.15，20条曲线
+        rootGroup.add(createReebFamily(0.15, COLOR_MAGENTA, 0.60, 20, 700));
+        rootGroup.add(createReebFamily(0.145, COLOR_MAGENTA, 0.53, 14, 650));
+        rootGroup.add(createReebFamily(0.155, COLOR_MAGENTA, 0.48, 13, 640));
+
+        // 赤道附近参考纬线（淡金色和淡青色）
+        rootGroup.add(createParallelRefs(COLOR_GOLD, 0.22, 18, Math.PI / 2));
+        rootGroup.add(createParallelRefs(COLOR_CYAN, 0.18, 8, Math.PI / 2 + 0.4));
+        rootGroup.add(createParallelRefs(COLOR_CYAN, 0.18, 8, Math.PI / 2 - 0.4));
+
+        // 几条经线（淡品红）作为纵向参考
+        const meridianCount = 12;
+        for (let i = 0; i < meridianCount; i++) {
+            const phi = i * 2 * Math.PI / meridianCount;
+            const pts = [];
+            const dTheta = Math.PI / 300;
+            for (let j = 0; j <= 300; j++) {
+                const theta = 0.02 + j * dTheta;
+                pts.push(spherePoint(theta, phi));
+            }
+            const geom = new THREE.BufferGeometry().setFromPoints(pts);
+            const mat = new THREE.LineBasicMaterial({
+                color: COLOR_MAGENTA,
+                transparent: true,
+                opacity: 0.18,
+                depthWrite: true,
+                depthTest: true,
+            });
+            rootGroup.add(new THREE.Line(geom, mat));
+        }
+
+        console.log('Reeb叶状结构线条总数:', rootGroup.children.length);
+
+        // 背景星点
+        const starsGroup = new THREE.Group();
+        const starsGeom = new THREE.BufferGeometry();
+        const starsCount = 550;
+        const starsPos = new Float32Array(starsCount * 3);
+        for (let i = 0; i < starsCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const dist = 6.5 + Math.random() * 10;
+            starsPos[i * 3] = dist * Math.sin(phi) * Math.cos(theta);
+            starsPos[i * 3 + 1] = dist * Math.sin(phi) * Math.sin(theta);
+            starsPos[i * 3 + 2] = dist * Math.cos(phi);
+        }
+        starsGeom.setAttribute('position', new THREE.BufferAttribute(starsPos, 3));
+        const starsMat = new THREE.PointsMaterial({
+            color: 0x908878,
+            size: 0.018,
+            transparent: true,
+            opacity: 0.55,
+            depthWrite: false,
+        });
+        starsGroup.add(new THREE.Points(starsGeom, starsMat));
+        scene.add(starsGroup);
+
+        // ---- 稳定动画循环 ----
+        function mainLoop() {
+            const t = getElapsed();
+            rootGroup.rotation.x = t * 0.13;
+            rootGroup.rotation.y = t * 0.22;
+            rootGroup.rotation.z = t * 0.09;
+            starsGroup.rotation.y = t * 0.04;
+            starsGroup.rotation.x = t * 0.025;
+
+            const camRadius = 7.3;
+            const camAngle = t * 0.08;
+            const camHeight = 2.1 + Math.sin(t * 0.15) * 0.7;
+            camera.position.x = Math.cos(camAngle) * camRadius;
+            camera.position.z = Math.sin(camAngle) * camRadius;
+            camera.position.y = camHeight;
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        function scheduleFrame() {
+            requestAnimationFrame(() => {
+                try {
+                    mainLoop();
+                } catch (e) {
+                    console.warn('动画循环异常:', e);
+                }
+                scheduleFrame();
+            });
+        }
+
+        // 预渲染首帧确保立即显示
+        renderer.render(scene, camera);
+        scheduleFrame();
+
+        // 响应式
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth,
+                h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth,
+                h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 120));
+
+        console.log('✅ Reeb叶状结构切触编织动画已稳定运行');
+    </script>
+</body>
+</html>

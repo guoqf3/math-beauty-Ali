@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TORUS · 环面粒子星云</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #07070f;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+        #pixi-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2;
+            text-align: center;
+            pointer-events: none;
+            opacity: 0.55;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+        .overlay:hover {
+            opacity: 0.9;
+        }
+        .title {
+            color: rgba(230, 215, 255, 0.75);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 25px rgba(170, 130, 250, 0.5);
+        }
+        .hint {
+            color: rgba(175, 160, 220, 0.45);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+        @media (max-width: 768px) {
+            .overlay { bottom: 18px; }
+            .title { font-size: 8px; letter-spacing: 0.45em; }
+            .hint { font-size: 6px; letter-spacing: 0.22em; }
+        }
+    </style>
+</head>
+<body>
+    <div id="pixi-container"></div>
+    <div class="overlay">
+        <div class="title">Torus</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js"></script>
+    <script>
+        (function() {
+            // ─── PixiJS加载检查 ────────────────────────────────────────
+            if (typeof PIXI === 'undefined') {
+                document.body.style.background = '#07070f';
+                document.getElementById('pixi-container').style.background = '#07070f';
+                console.warn('PixiJS 加载失败，已显示备用背景');
+                return;
+            }
+
+            // ─── 全局状态 ──────────────────────────────────────────────
+            let app;
+            let particleContainer;
+            let glowSprite;
+            let particles = [];
+            let mouse = { x: 0, y: 0, active: false, targetX: 0, targetY: 0 };
+            let time = 0;
+            let colorShift = 0;
+
+            // ─── 环面参数 ──────────────────────────────────────────────
+            const TORUS = {
+                R: 160,           // 主半径
+                r: 55,            // 管半径
+                particleCount: 2000,
+                rotationX: 0,
+                rotationY: 0,
+                rotationZ: 0,
+                speedX: 0.004,
+                speedY: 0.007,
+                speedZ: 0.003,
+                turbulence: 0.15,
+                breathe: 0.08,
+            };
+
+            // ─── 粒子纹理（径向渐变发光点） ────────────────────────────
+            function createGlowTexture(size, color) {
+                const canvas = document.createElement('canvas');
+                canvas.width = size;
+                canvas.height = size;
+                const ctx = canvas.getContext('2d');
+                const half = size / 2;
+                const gradient = ctx.createRadialGradient(half, half, 0, half, half, half);
+                gradient.addColorStop(0, `rgba(255, 255, 255, 1)`);
+                gradient.addColorStop(0.25, `rgba(255, 255, 255, 0.8)`);
+                gradient.addColorStop(0.55, `rgba(255, 255, 255, 0.35)`);
+                gradient.addColorStop(1, `rgba(255, 255, 255, 0)`);
+                ctx.fillStyle = gradient;
+                ctx.fillRect(0, 0, size, size);
+                return PIXI.Texture.from(canvas);
+            }
+
+            function createCoreTexture() {
+                const size = 128;
+                const canvas = document.createElement('canvas');
+                canvas.width = size;
+                canvas.height = size;
+                const ctx = canvas.getContext('2d');
+                const half = size / 2;
+                const gradient = ctx.createRadialGradient(half, half, 0, half, half, half);
+                gradient.addColorStop(0, 'rgba(255, 255, 255, 0.9)');
+                gradient.addColorStop(0.3, 'rgba(255, 255, 255, 0.5)');
+                gradient.addColorStop(0.6, 'rgba(255, 255, 255, 0.15)');
+                gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+                ctx.fillStyle = gradient;
+                ctx.fillRect(0, 0, size, size);
+                return PIXI.Texture.from(canvas);
+            }
+
+            function hslToHex(h, s, l) {
+                const hue = ((h % 360) + 360) % 360;
+                const sat = s / 100;
+                const light = l / 100;
+                const c = (1 - Math.abs(2 * light - 1)) * sat;
+                const x = c * (1 - Math.abs((hue / 60) % 2 - 1));
+                const m = light - c / 2;
+                let r, g, b;
+                if (hue < 60) { r = c; g = x; b = 0; }
+                else if (hue < 120) { r = x; g = c; b = 0; }
+                else if (hue < 180) { r = 0; g = c; b = x; }
+                else if (hue < 240) { r = 0; g = x; b = c; }
+                else if (hue < 300) { r = x; g = 0; b = c; }
+                else { r = c; g = 0; b = x; }
+                const toHex = (val) => Math.round((val + m) * 255).toString(16).padStart(2, '0');
+                return parseInt(`${toHex(r)}${toHex(g)}${toHex(b)}`, 16);
+            }
+
+            // ─── 初始化PixiJS ─────────────────────────────────────────
+            function initPixi() {
+                const containerEl = document.getElementById('pixi-container');
+                const resolution = Math.min(window.devicePixelRatio || 1, 2);
+
+                app = new PIXI.Application({
+                    width: window.innerWidth,
+                    height: window.innerHeight,
+                    resolution: resolution,
+                    backgroundColor: 0x07070f,
+                    antialias: true,
+                    autoDensity: true,
+                    powerPreference: 'high-performance',
+                });
+
+                containerEl.appendChild(app.view);
+
+                // 粒子容器（高性能批量渲染）
+                particleContainer = new PIXI.ParticleContainer(3000, {
+                    position: true,
+                    scale: true,
+                    tint: true,
+                    alpha: true,
+                }, 3000, true);
+                particleContainer.blendMode = PIXI.BLEND_MODES.ADD;
+                app.stage.addChild(particleContainer);
+
+                // 创建纹理
+                const glowTexture = createGlowTexture(24);
+                const coreTexture = createCoreTexture();
+
+                // 创建环面粒子
+                createTorusParticles(glowTexture);
+
+                // 创建中心光晕
+                createCoreGlow(coreTexture);
+
+                // 创建鼠标光晕
+                createMouseGlow();
+
+                // 设置事件
+                setupEvents();
+
+                // 启动动画
+                app.ticker.add(animate);
+            }
+
+            // ─── 创建环面粒子 ──────────────────────────────────────────
+            function createTorusParticles(texture) {
+                const count = TORUS.particleCount;
+
+                for (let i = 0; i < count; i++) {
+                    const sprite = new PIXI.Sprite(texture);
+                    sprite.anchor.set(0.5, 0.5);
+
+                    // 环面参数坐标
+                    const u = Math.random() * Math.PI * 2;
+                    const v = Math.random() * Math.PI * 2;
+
+                    // 3D位置
+                    const R = TORUS.R;
+                    const r = TORUS.r;
+                    const x3 = (R + r * Math.cos(v)) * Math.cos(u);
+                    const y3 = (R + r * Math.cos(v)) * Math.sin(u);
+                    const z3 = r * Math.sin(v);
+
+                    // 存储3D坐标
+                    const particle = {
+                        sprite: sprite,
+                        x3: x3,
+                        y3: y3,
+                        z3: z3,
+                        u: u,
+                        v: v,
+                        size: 0.5 + Math.random() * 1.2,
+                        alpha: 0.3 + Math.random() * 0.55,
+                        hue: 220 + (u / (Math.PI * 2)) * 140,  // 沿环面从蓝到紫到粉
+                        sat: 60 + Math.random() * 30,
+                        light: 50 + Math.random() * 30,
+                        phase: Math.random() * Math.PI * 2,
+                        waveSpeed: 0.3 + Math.random() * 0.7,
+                    };
+
+                    particleContainer.addChild(sprite);
+                    particles.push(particle);
+                }
+            }
+
+            // ─── 创建中心光晕 ──────────────────────────────────────────
+            function createCoreGlow(texture) {
+                const coreSprite = new PIXI.Sprite(texture);
+                coreSprite.anchor.set(0.5, 0.5);
+                coreSprite.blendMode = PIXI.BLEND_MODES.ADD;
+                coreSprite.alpha = 0.4;
+                coreSprite.scale.set(2.5, 2.5);
+                app.stage.addChild(coreSprite);
+                particles.push({
+                    sprite: coreSprite,
+                    isCore: true,
+                    x3: 0,
+                    y3: 0,
+                    z3: 0,
+                    size: 80,
+                    alpha: 0.4,
+                    hue: 260,
+                    sat: 70,
+                    light: 70,
+                    phase: 0,
+                    waveSpeed: 0.5,
+                });
+            }
+
+            // ─── 创建鼠标光晕 ──────────────────────────────────────────
+            function createMouseGlow() {
+                const canvas = document.createElement('canvas');
+                canvas.width = 128;
+                canvas.height = 128;
+                const ctx = canvas.getContext('2d');
+                const gradient = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+                gradient.addColorStop(0, 'rgba(255, 220, 255, 0.1)');
+                gradient.addColorStop(0.5, 'rgba(255, 180, 230, 0.04)');
+                gradient.addColorStop(1, 'rgba(255, 180, 230, 0)');
+                ctx.fillStyle = gradient;
+                ctx.fillRect(0, 0, 128, 128);
+
+                const texture = PIXI.Texture.from(canvas);
+                glowSprite = new PIXI.Sprite(texture);
+                glowSprite.anchor.set(0.5, 0.5);
+                glowSprite.width = 160;
+                glowSprite.height = 160;
+                glowSprite.alpha = 0;
+                glowSprite.blendMode = PIXI.BLEND_MODES.ADD;
+                app.stage.addChild(glowSprite);
+            }
+
+            // ─── 3D旋转和投影 ──────────────────────────────────────────
+            function rotatePoint(x, y, z, rotX, rotY, rotZ) {
+                // 绕X轴旋转
+                let y1 = y * Math.cos(rotX) - z * Math.sin(rotX);
+                let z1 = y * Math.sin(rotX) + z * Math.cos(rotX);
+                // 绕Y轴旋转
+                let x2 = x * Math.cos(rotY) + z1 * Math.sin(rotY);
+                let z2 = -x * Math.sin(rotY) + z1 * Math.cos(rotY);
+                // 绕Z轴旋转
+                let x3 = x2 * Math.cos(rotZ) - y1 * Math.sin(rotZ);
+                let y3 = x2 * Math.sin(rotZ) + y1 * Math.cos(rotZ);
+                return { x: x3, y: y3, z: z2 };
+            }
+
+            // ─── 动画循环 ──────────────────────────────────────────────
+            function animate() {
+                time += 0.016;
+                const cx = app.screen.width / 2;
+                const cy = app.screen.height / 2;
+
+                // 鼠标平滑跟随
+                if (mouse.active) {
+                    mouse.targetX = mouse.x;
+                    mouse.targetY = mouse.y;
+                }
+                const smoothX = mouse.targetX;
+                const smoothY = mouse.targetY;
+
+                // 鼠标影响旋转
+                const mouseRotX = mouse.active ? (smoothY - cy) * 0.00012 : 0;
+                const mouseRotY = mouse.active ? (smoothX - cx) * 0.00012 : 0;
+
+                // 更新旋转
+                TORUS.rotationX += TORUS.speedX + mouseRotY * 0.5;
+                TORUS.rotationY += TORUS.speedY + mouseRotX * 0.5;
+                TORUS.rotationZ += TORUS.speedZ;
+
+                // 呼吸效果
+                const breatheFactor = 1 + Math.sin(time * 0.8) * TORUS.breathe;
+                const R = TORUS.R * breatheFactor;
+                const r = TORUS.r * (1 + Math.sin(time * 0.6) * TORUS.breathe * 0.7);
+
+                // 透视投影参数
+                const focalLength = 420;
+                const minScale = 0.08;
+                const maxScale = 2.5;
+
+                // 更新所有粒子
+                for (const p of particles) {
+                    if (p.isCore) {
+                        // 核心光晕脉动
+                        const pulse = 1 + Math.sin(time * 1.2) * 0.15;
+                        const scale = (p.size * pulse) / 64;
+                        p.sprite.scale.set(scale, scale);
+                        p.sprite.alpha = p.alpha * (1 + Math.sin(time * 0.8) * 0.3);
+                        p.sprite.x = cx;
+                        p.sprite.y = cy;
+                        p.sprite.tint = hslToHex(p.hue + colorShift, p.sat, p.light + Math.sin(time * 0.5) * 10);
+                        continue;
+                    }
+
+                    // 环面参数坐标（添加湍流扰动）
+                    const wave = Math.sin(time * p.waveSpeed + p.phase) * TORUS.turbulence;
+                    const u = p.u + wave * 0.03;
+                    const v = p.v + wave * 0.04;
+
+                    const R_eff = R * (1 + Math.sin(time * 0.5 + p.phase) * 0.04);
+                    const r_eff = r * (1 + Math.cos(time * 0.7 + p.phase) * 0.05);
+
+                    // 环面3D坐标
+                    const tx = (R_eff + r_eff * Math.cos(v)) * Math.cos(u);
+                    const ty = (R_eff + r_eff * Math.cos(v)) * Math.sin(u);
+                    const tz = r_eff * Math.sin(v);
+
+                    // 旋转
+                    const rotated = rotatePoint(tx, ty, tz, TORUS.rotationX, TORUS.rotationY, TORUS.rotationZ);
+
+                    // 透视投影
+                    const scale = focalLength / (focalLength + rotated.z);
+                    const projX = rotated.x * scale + cx;
+                    const projY = rotated.y * scale + cy;
+
+                    // 深度因子
+                    const depthFactor = (rotated.z + 200) / 400;  // 0到1之间
+                    const depthClamped = Math.max(0, Math.min(1, depthFactor));
+
+                    // 更新精灵
+                    p.sprite.x = projX;
+                    p.sprite.y = projY;
+                    const spriteScale = Math.max(minScale, Math.min(maxScale, p.size * scale * depthClamped));
+                    p.sprite.scale.set(spriteScale, spriteScale);
+                    p.sprite.alpha = p.alpha * depthClamped * (0.6 + 0.4 * Math.sin(time * 0.8 + p.phase));
+                    p.sprite.tint = hslToHex(
+                        p.hue + colorShift + depthClamped * 20,
+                        p.sat,
+                        p.light + depthClamped * 18
+                    );
+                }
+
+                // 更新鼠标光晕
+                if (mouse.active) {
+                    glowSprite.alpha = 0.8;
+                    glowSprite.x = smoothX;
+                    glowSprite.y = smoothY;
+                    const glowScale = 1 + Math.sin(time * 2) * 0.1;
+                    glowSprite.scale.set(glowScale, glowScale);
+                } else {
+                    glowSprite.alpha *= 0.95;
+                }
+            }
+
+            // ─── 设置事件 ──────────────────────────────────────────────
+            function setupEvents() {
+                const view = app.view;
+
+                view.addEventListener('mousemove', (e) => {
+                    mouse.x = e.clientX;
+                    mouse.y = e.clientY;
+                    mouse.active = true;
+                });
+
+                view.addEventListener('mouseleave', () => {
+                    mouse.active = false;
+                });
+
+                view.addEventListener('mousedown', (e) => {
+                    mouse.x = e.clientX;
+                    mouse.y = e.clientY;
+                    mouse.active = true;
+                    // 点击切换颜色主题
+                    colorShift += 45 + Math.random() * 45;
+                    if (colorShift > 180) colorShift = -45;
+                    // 随机调整环面参数
+                    TORUS.r = 40 + Math.random() * 50;
+                    TORUS.speedX = 0.002 + Math.random() * 0.008;
+                    TORUS.speedY = 0.003 + Math.random() * 0.01;
+                });
+
+                view.addEventListener('touchmove', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        mouse.x = touch.clientX;
+                        mouse.y = touch.clientY;
+                        mouse.active = true;
+                    }
+                }, { passive: false });
+
+                view.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        mouse.x = touch.clientX;
+                        mouse.y = touch.clientY;
+                        mouse.active = true;
+                        colorShift += 45 + Math.random() * 45;
+                        if (colorShift > 180) colorShift = -45;
+                        TORUS.r = 40 + Math.random() * 50;
+                    }
+                }, { passive: false });
+
+                view.addEventListener('touchend', () => {
+                    mouse.active = false;
+                });
+
+                window.addEventListener('resize', () => {
+                    if (app) {
+                        app.renderer.resize(window.innerWidth, window.innerHeight);
+                    }
+                });
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                try {
+                    initPixi();
+                    console.log('环面粒子星云已启动');
+                } catch (err) {
+                    console.error('初始化失败:', err);
+                    document.body.style.background = '#07070f';
+                    document.getElementById('pixi-container').style.background = '#07070f';
+                }
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            // 兜底背景
+            window.addEventListener('load', () => {
+                document.body.style.background = '#07070f';
+                document.getElementById('pixi-container').style.background = '#07070f';
+            });
+        })();
+    </script>
+</body>
+</html>

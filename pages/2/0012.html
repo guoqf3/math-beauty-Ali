@@ -1,0 +1,732 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>光之涟漪 · 交互光点矩阵</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: radial-gradient(ellipse at 50% 40%, #0c0e1a 0%, #060812 50%, #020310 100%);
+            overflow: hidden;
+            width: 100vw;
+            height: 100vh;
+            cursor: none;
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            inset: 0;
+        }
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+        #pixi-container {
+            position: fixed;
+            inset: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+        }
+        #cursor-glow {
+            position: fixed;
+            pointer-events: none;
+            z-index: 2;
+            width: 70px;
+            height: 70px;
+            border-radius: 50%;
+            background: radial-gradient(circle, rgba(255, 180, 100, 0.2) 0%, rgba(200, 120, 80, 0.06) 40%, transparent 70%);
+            transform: translate(-50%, -50%);
+            transition: opacity 0.2s;
+            mix-blend-mode: screen;
+            opacity: 0;
+        }
+        #hint {
+            position: fixed;
+            bottom: 40px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 3;
+            color: rgba(220, 200, 180, 0.6);
+            font-size: 12px;
+            letter-spacing: 4px;
+            pointer-events: none;
+            text-align: center;
+            transition: opacity 1.5s;
+            font-weight: 300;
+            text-shadow: 0 0 20px rgba(255, 160, 80, 0.4);
+        }
+        #error-message {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 10;
+            color: #fff;
+            background: rgba(0,0,0,0.7);
+            padding: 20px 30px;
+            border-radius: 12px;
+            font-size: 16px;
+            display: none;
+            text-align: center;
+            pointer-events: none;
+        }
+        @media (max-width: 768px) {
+            #hint {
+                bottom: 25px;
+                font-size: 11px;
+                letter-spacing: 2px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="pixi-container"></div>
+    <div id="cursor-glow"></div>
+    <div id="hint">移 动 鼠 标 引 导 光 点 波 动 · 点 击 唤 醒 涟 漪 脉 冲</div>
+    <div id="error-message"></div>
+
+    <script>
+        window.PIXI_LOADED = false;
+        function loadPixi(src, fallback) {
+            return new Promise((resolve, reject) => {
+                const script = document.createElement('script');
+                script.src = src;
+                script.onload = () => resolve();
+                script.onerror = () => {
+                    console.warn('Failed to load PixiJS from', src);
+                    if (fallback) {
+                        loadPixi(fallback).then(resolve).catch(reject);
+                    } else {
+                        reject(new Error('All PixiJS CDN sources failed'));
+                    }
+                };
+                document.head.appendChild(script);
+            });
+        }
+        loadPixi(
+            'https://cdn.jsdelivr.net/npm/pixi.js@7.3.2/dist/pixi.min.js',
+            'https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js'
+        ).then(() => {
+            window.PIXI_LOADED = true;
+            initApp();
+        }).catch(err => {
+            console.error(err);
+            showError('无法加载渲染引擎，请检查网络连接或刷新重试。');
+        });
+    </script>
+
+    <script>
+        function showError(msg) {
+            const el = document.getElementById('error-message');
+            el.textContent = msg;
+            el.style.display = 'block';
+        }
+
+        function initApp() {
+            if (!window.PIXI_LOADED || typeof PIXI === 'undefined') {
+                showError('PixiJS 加载失败，请尝试刷新页面。');
+                return;
+            }
+
+            // ---------- 呼吸感音效 ----------
+            const AudioEngine = {
+                ctx: null,
+                masterGain: null,
+                initialized: false,
+
+                init() {
+                    if (this.initialized) return;
+                    try {
+                        this.ctx = new(window.AudioContext || window.webkitAudioContext)();
+                        this.masterGain = this.ctx.createGain();
+                        this.masterGain.gain.value = 0.4;
+                        const compressor = this.ctx.createDynamicsCompressor();
+                        compressor.threshold.value = -22;
+                        compressor.ratio.value = 6;
+                        compressor.attack.value = 0.004;
+                        compressor.release.value = 0.25;
+                        this.masterGain.connect(compressor);
+                        compressor.connect(this.ctx.destination);
+                        this.initialized = true;
+                    } catch (e) {
+                        console.warn('Audio init failed:', e);
+                    }
+                },
+
+                playBreath() {
+                    if (!this.initialized) this.init();
+                    if (!this.initialized || !this.ctx) return;
+                    const ctx = this.ctx;
+                    const now = ctx.currentTime;
+                    const duration = 1.3;
+
+                    // 主增益包络
+                    const gainNode = ctx.createGain();
+                    gainNode.connect(this.masterGain);
+                    gainNode.gain.setValueAtTime(0.0001, now);
+                    gainNode.gain.exponentialRampToValueAtTime(0.16, now + 0.35);
+                    gainNode.gain.exponentialRampToValueAtTime(0.09, now + 0.55);
+                    gainNode.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+
+                    // 低通滤波
+                    const filter = ctx.createBiquadFilter();
+                    filter.type = 'lowpass';
+                    filter.frequency.value = 1700;
+                    filter.Q.value = 0.6;
+                    filter.connect(gainNode);
+
+                    // 两个失谐正弦波
+                    const osc1 = ctx.createOscillator();
+                    osc1.type = 'sine';
+                    osc1.frequency.setValueAtTime(210, now);
+                    osc1.frequency.exponentialRampToValueAtTime(330, now + 0.35);
+                    osc1.frequency.exponentialRampToValueAtTime(190, now + duration);
+                    osc1.connect(filter);
+
+                    const osc2 = ctx.createOscillator();
+                    osc2.type = 'sine';
+                    osc2.frequency.setValueAtTime(215, now);
+                    osc2.frequency.exponentialRampToValueAtTime(336, now + 0.35);
+                    osc2.frequency.exponentialRampToValueAtTime(194, now + duration);
+                    osc2.connect(filter);
+
+                    // 柔和噪声
+                    const noiseBuffer = this._createNoiseBuffer(ctx);
+                    const noiseSource = ctx.createBufferSource();
+                    noiseSource.buffer = noiseBuffer;
+                    noiseSource.loop = true;
+                    const noiseFilter = ctx.createBiquadFilter();
+                    noiseFilter.type = 'bandpass';
+                    noiseFilter.frequency.value = 1100;
+                    noiseFilter.Q.value = 0.8;
+                    const noiseGain = ctx.createGain();
+                    noiseGain.gain.setValueAtTime(0.0001, now);
+                    noiseGain.gain.exponentialRampToValueAtTime(0.025, now + 0.3);
+                    noiseGain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+                    noiseSource.connect(noiseFilter);
+                    noiseFilter.connect(noiseGain);
+                    noiseGain.connect(gainNode);
+
+                    osc1.start(now);
+                    osc2.start(now);
+                    noiseSource.start(now);
+                    osc1.stop(now + duration + 0.05);
+                    osc2.stop(now + duration + 0.05);
+                    noiseSource.stop(now + duration + 0.05);
+
+                    osc1.onended = () => {
+                        osc1.disconnect();
+                        osc2.disconnect();
+                        noiseSource.disconnect();
+                        filter.disconnect();
+                        gainNode.disconnect();
+                        noiseFilter.disconnect();
+                        noiseGain.disconnect();
+                    };
+                },
+
+                _createNoiseBuffer(ctx) {
+                    const bufferSize = ctx.sampleRate * 0.5;
+                    const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+                    const data = buffer.getChannelData(0);
+                    for (let i = 0; i < bufferSize; i++) {
+                        data[i] = (Math.random() * 2 - 1) * 0.5;
+                    }
+                    return buffer;
+                }
+            };
+
+            // ---------- 纹理生成 ----------
+            function createGlowTexture(size) {
+                const canvas = document.createElement('canvas');
+                canvas.width = size;
+                canvas.height = size;
+                const ctx = canvas.getContext('2d');
+                const half = size / 2;
+                const gradient = ctx.createRadialGradient(half, half, 0, half, half, half);
+                gradient.addColorStop(0, 'rgba(255,255,255,1)');
+                gradient.addColorStop(0.3, 'rgba(255,255,255,0.9)');
+                gradient.addColorStop(0.6, 'rgba(255,220,180,0.3)');
+                gradient.addColorStop(1, 'rgba(0,0,0,0)');
+                ctx.fillStyle = gradient;
+                ctx.fillRect(0, 0, size, size);
+                return PIXI.Texture.from(canvas);
+            }
+
+            function createHaloTexture(size, color = 'rgba(255,180,120,0.4)') {
+                const canvas = document.createElement('canvas');
+                canvas.width = size;
+                canvas.height = size;
+                const ctx = canvas.getContext('2d');
+                const half = size / 2;
+                const gradient = ctx.createRadialGradient(half, half, 0, half, half, half);
+                gradient.addColorStop(0, color);
+                gradient.addColorStop(0.4, color.replace('0.4', '0.15'));
+                gradient.addColorStop(0.8, 'rgba(0,0,0,0)');
+                gradient.addColorStop(1, 'rgba(0,0,0,0)');
+                ctx.fillStyle = gradient;
+                ctx.fillRect(0, 0, size, size);
+                return PIXI.Texture.from(canvas);
+            }
+
+            // ---------- 应用初始化 ----------
+            const container = document.getElementById('pixi-container');
+            const cursorGlow = document.getElementById('cursor-glow');
+            const hintEl = document.getElementById('hint');
+
+            let app;
+            try {
+                app = new PIXI.Application({
+                    width: window.innerWidth,
+                    height: window.innerHeight,
+                    backgroundColor: 0x060812,
+                    antialias: true,
+                    autoDensity: true,
+                    resolution: Math.min(window.devicePixelRatio || 1, 2),
+                    powerPreference: 'high-performance',
+                    resizeTo: container,
+                });
+            } catch (err) {
+                console.warn('WebGL init failed, falling back to Canvas:', err);
+                try {
+                    app = new PIXI.Application({
+                        width: window.innerWidth,
+                        height: window.innerHeight,
+                        backgroundColor: 0x060812,
+                        antialias: false,
+                        autoDensity: true,
+                        resolution: 1,
+                        forceCanvas: true,
+                        resizeTo: container,
+                    });
+                } catch (err2) {
+                    console.error('Canvas fallback also failed:', err2);
+                    showError('您的浏览器不支持Canvas或WebGL，无法渲染此页面。');
+                    return;
+                }
+            }
+
+            app.view.style.position = 'fixed';
+            app.view.style.top = '0';
+            app.view.style.left = '0';
+            app.view.style.width = '100%';
+            app.view.style.height = '100%';
+            app.view.style.display = 'block';
+            container.appendChild(app.view);
+
+            const stage = app.stage;
+            const screenW = () => app.screen.width;
+            const screenH = () => app.screen.height;
+
+            // 调色板 - 温暖的光谱色
+            const palette = [
+                0xff9a5a, 0xffa56b, 0xffb47a, 0xffc187,
+                0xffcc99, 0xf2a65a, 0xe08e4a, 0xc2763c,
+                0xff7e5f, 0xf76b5c, 0xe6546a, 0xd43d7a,
+                0xa855f7, 0x8b5cf6, 0x6366f1, 0x3b82f6
+            ];
+
+            const particleTexture = createGlowTexture(32);
+            const haloTexture = createHaloTexture(140, 'rgba(255,170,110,0.5)');
+            const rippleTexture = createHaloTexture(80, 'rgba(255,160,100,0.7)');
+
+            // 光点矩阵参数
+            const gridCols = 30;
+            const gridRows = 20;
+            const spacingX = () => screenW() / (gridCols + 1);
+            const spacingY = () => screenH() / (gridRows + 1);
+            const totalPoints = gridCols * gridRows;
+
+            const points = [];
+            const pointSprites = [];
+
+            // 粒子容器
+            const particleContainer = new PIXI.ParticleContainer(totalPoints * 1.5, {
+                position: true,
+                rotation: false,
+                scale: true,
+                alpha: true,
+                tint: true,
+                uvs: false,
+                vertices: false,
+            });
+            stage.addChild(particleContainer);
+
+            // 涟漪容器
+            const rippleContainer = new PIXI.Container();
+            stage.addChild(rippleContainer);
+            const ripples = [];
+            const MAX_RIPPLES = 20;
+            const ripplePool = [];
+
+            // 预创建涟漪精灵
+            for (let i = 0; i < MAX_RIPPLES; i++) {
+                const sprite = new PIXI.Sprite(rippleTexture);
+                sprite.anchor.set(0.5);
+                sprite.blendMode = PIXI.BLEND_MODES.ADD;
+                sprite.visible = false;
+                rippleContainer.addChild(sprite);
+                ripplePool.push({
+                    sprite,
+                    active: false,
+                    x: 0,
+                    y: 0,
+                    scale: 0.1,
+                    maxScale: 6 + Math.random() * 4,
+                    alpha: 0.9,
+                    decay: 0.012 + Math.random() * 0.01,
+                });
+            }
+
+            // 鼠标光晕
+            const mouseHalo = new PIXI.Sprite(haloTexture);
+            mouseHalo.anchor.set(0.5);
+            mouseHalo.blendMode = PIXI.BLEND_MODES.ADD;
+            mouseHalo.alpha = 0.4;
+            mouseHalo.scale.set(1.8);
+            mouseHalo.visible = false;
+            stage.addChild(mouseHalo);
+
+            // 初始化光点矩阵
+            function initPoints() {
+                const w = screenW();
+                const h = screenH();
+                const spX = spacingX();
+                const spY = spacingY();
+                for (let row = 0; row < gridRows; row++) {
+                    for (let col = 0; col < gridCols; col++) {
+                        const baseX = spX * (col + 1);
+                        const baseY = spY * (row + 1);
+                        const color = palette[Math.floor(Math.random() * palette.length)];
+                        const baseScale = 0.25 + Math.random() * 0.4;
+                        const alpha = 0.5 + Math.random() * 0.4;
+                        const sprite = new PIXI.Sprite(particleTexture);
+                        sprite.anchor.set(0.5);
+                        sprite.blendMode = PIXI.BLEND_MODES.ADD;
+                        sprite.tint = color;
+                        sprite.alpha = alpha;
+                        sprite.scale.set(baseScale);
+                        particleContainer.addChild(sprite);
+                        pointSprites.push(sprite);
+
+                        points.push({
+                            baseX,
+                            baseY,
+                            x: baseX,
+                            y: baseY,
+                            vx: 0,
+                            vy: 0,
+                            color,
+                            baseScale,
+                            alpha,
+                            alphaPhase: Math.random() * Math.PI * 2,
+                            alphaFreq: 0.005 + Math.random() * 0.015,
+                            offsetX: 0,
+                            offsetY: 0,
+                            timeOffset: Math.random() * 1000,
+                        });
+                    }
+                }
+            }
+
+            // 鼠标状态
+            const mouse = {
+                x: screenW() / 2,
+                y: screenH() / 2,
+                inside: false,
+                isDown: false,
+                lastClickX: 0,
+                lastClickY: 0,
+                rippleActive: false,
+                rippleStartTime: 0,
+                rippleX: 0,
+                rippleY: 0,
+                rippleRadius: 0,
+                rippleMaxRadius: 0,
+            };
+
+            // 触发涟漪
+            function triggerRipple(x, y) {
+                let spawned = false;
+                for (let i = 0; i < ripplePool.length; i++) {
+                    const rp = ripplePool[i];
+                    if (!rp.active) {
+                        rp.active = true;
+                        rp.x = x;
+                        rp.y = y;
+                        rp.sprite.x = x;
+                        rp.sprite.y = y;
+                        rp.scale = 0.3;
+                        rp.maxScale = 5 + Math.random() * 4;
+                        rp.alpha = 0.9;
+                        rp.decay = 0.012 + Math.random() * 0.015;
+                        rp.sprite.visible = true;
+                        rp.sprite.scale.set(0.3);
+                        rp.sprite.alpha = 0.9;
+                        rp.sprite.tint = 0xffaa77;
+                        spawned = true;
+                        break;
+                    }
+                }
+                if (spawned) {
+                    AudioEngine.playBreath();
+                    // 同时设置一个全局的脉冲影响，稍后在粒子更新中使用
+                    mouse.rippleActive = true;
+                    mouse.rippleStartTime = performance.now();
+                    mouse.rippleX = x;
+                    mouse.rippleY = y;
+                    mouse.rippleRadius = 0;
+                    mouse.rippleMaxRadius = Math.max(screenW(), screenH()) * 1.2;
+                }
+            }
+
+            // 更新粒子（光点）
+            function updatePoints(delta) {
+                const dt = Math.min(delta, 2.5);
+                const w = screenW();
+                const h = screenH();
+                const mx = mouse.x;
+                const my = mouse.y;
+                const mouseInfluenceRadius = 180;
+                const ripple = mouse;
+
+                // 更新全局涟漪参数
+                if (ripple.rippleActive) {
+                    const elapsed = (performance.now() - ripple.rippleStartTime) / 1000;
+                    ripple.rippleRadius = elapsed * 550; // 像素/秒
+                    if (ripple.rippleRadius > ripple.rippleMaxRadius || elapsed > 3) {
+                        ripple.rippleActive = false;
+                        ripple.rippleRadius = 0;
+                    }
+                }
+
+                for (let i = 0; i < points.length; i++) {
+                    const p = points[i];
+                    const spr = pointSprites[i];
+
+                    // 基础偏移：模拟流体波动（正弦叠加）
+                    const time = performance.now() * 0.001 + p.timeOffset;
+                    const wave1 = Math.sin(time * 0.8 + p.baseX * 0.01) * 12;
+                    const wave2 = Math.cos(time * 0.6 + p.baseY * 0.015) * 10;
+                    let offsetX = wave1;
+                    let offsetY = wave2;
+
+                    // 鼠标影响：排斥或吸引
+                    const dx = p.baseX - mx;
+                    const dy = p.baseY - my;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    if (dist < mouseInfluenceRadius && dist > 0.1) {
+                        const strength = (1 - dist / mouseInfluenceRadius) * 0.6;
+                        const nx = dx / dist;
+                        const ny = dy / dist;
+                        // 向外排斥
+                        offsetX += nx * strength * 35;
+                        offsetY += ny * strength * 35;
+                        // 切向旋转
+                        const tangentStrength = (1 - dist / mouseInfluenceRadius) * 0.2;
+                        offsetX += -ny * tangentStrength * 20;
+                        offsetY += nx * tangentStrength * 20;
+                    }
+
+                    // 涟漪影响：当涟漪经过时，光点向外移动并变亮
+                    if (ripple.rippleActive && ripple.rippleRadius > 0) {
+                        const rdx = p.baseX - ripple.rippleX;
+                        const rdy = p.baseY - ripple.rippleY;
+                        const rdist = Math.sqrt(rdx * rdx + rdy * rdy);
+                        const rippleBand = 80; // 涟漪影响带的宽度
+                        if (Math.abs(rdist - ripple.rippleRadius) < rippleBand) {
+                            const intensity = 1 - Math.abs(rdist - ripple.rippleRadius) / rippleBand;
+                            // 向外推
+                            const rnx = rdist > 0 ? rdx / rdist : 0;
+                            const rny = rdist > 0 ? rdy / rdist : 0;
+                            offsetX += rnx * intensity * 30;
+                            offsetY += rny * intensity * 30;
+                            // 亮度增强
+                            spr.alpha = Math.min(1, p.alpha + intensity * 0.6);
+                        }
+                    }
+
+                    // 更新位置
+                    p.x = p.baseX + offsetX;
+                    p.y = p.baseY + offsetY;
+
+                    // 边界环绕（如果偏移太远则拉回）
+                    if (p.x < -20) p.x = -20;
+                    if (p.x > w + 20) p.x = w + 20;
+                    if (p.y < -20) p.y = -20;
+                    if (p.y > h + 20) p.y = h + 20;
+
+                    spr.x = p.x;
+                    spr.y = p.y;
+
+                    // 如果没有涟漪影响，恢复基础alpha并脉动
+                    if (!ripple.rippleActive || Math.abs(Math.sqrt((p.baseX - ripple.rippleX) ** 2 + (p.baseY - ripple.rippleY) ** 2) - ripple.rippleRadius) > 80) {
+                        p.alphaPhase += p.alphaFreq * dt;
+                        const alphaMod = 0.7 + 0.3 * Math.sin(p.alphaPhase);
+                        spr.alpha = p.alpha * alphaMod;
+                    }
+
+                    // 缩放微调
+                    const scaleMod = 0.85 + 0.25 * Math.sin(p.alphaPhase * 0.8);
+                    spr.scale.set(p.baseScale * scaleMod);
+                }
+            }
+
+            // 更新涟漪精灵
+            function updateRipples() {
+                for (let i = 0; i < ripplePool.length; i++) {
+                    const rp = ripplePool[i];
+                    if (!rp.active) continue;
+                    rp.scale += 0.12;
+                    rp.alpha -= rp.decay;
+                    if (rp.alpha <= 0 || rp.scale >= rp.maxScale) {
+                        rp.active = false;
+                        rp.sprite.visible = false;
+                        continue;
+                    }
+                    rp.sprite.scale.set(rp.scale);
+                    rp.sprite.alpha = rp.alpha;
+                }
+            }
+
+            // 更新鼠标光晕
+            function updateMouseHalo() {
+                if (mouse.inside) {
+                    mouseHalo.visible = true;
+                    mouseHalo.x = mouse.x;
+                    mouseHalo.y = mouse.y;
+                    const breathe = 1 + Math.sin(performance.now() * 0.004) * 0.2;
+                    mouseHalo.scale.set(1.8 * breathe);
+                    mouseHalo.alpha = 0.4 + Math.sin(performance.now() * 0.005) * 0.1;
+                } else {
+                    mouseHalo.alpha *= 0.95;
+                    if (mouseHalo.alpha < 0.01) mouseHalo.visible = false;
+                }
+            }
+
+            // 主循环
+            app.ticker.add((delta) => {
+                updatePoints(delta);
+                updateRipples();
+                updateMouseHalo();
+            });
+
+            // 事件处理
+            function handlePointerMove(x, y) {
+                mouse.x = x;
+                mouse.y = y;
+                mouse.inside = true;
+                cursorGlow.style.opacity = '1';
+                cursorGlow.style.left = x + 'px';
+                cursorGlow.style.top = y + 'px';
+            }
+
+            function handlePointerLeave() {
+                mouse.inside = false;
+                cursorGlow.style.opacity = '0';
+            }
+
+            function handlePointerDown(x, y) {
+                mouse.isDown = true;
+                mouse.lastClickX = x;
+                mouse.lastClickY = y;
+                triggerRipple(x, y);
+            }
+
+            function handlePointerUp() {
+                mouse.isDown = false;
+            }
+
+            window.addEventListener('mousemove', (e) => {
+                handlePointerMove(e.clientX, e.clientY);
+            });
+            window.addEventListener('mousedown', (e) => {
+                handlePointerDown(e.clientX, e.clientY);
+            });
+            window.addEventListener('mouseup', handlePointerUp);
+            window.addEventListener('mouseleave', handlePointerLeave);
+
+            window.addEventListener('touchmove', (e) => {
+                e.preventDefault();
+                const touch = e.touches[0];
+                handlePointerMove(touch.clientX, touch.clientY);
+            }, { passive: false });
+            window.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                const touch = e.touches[0];
+                handlePointerMove(touch.clientX, touch.clientY);
+                handlePointerDown(touch.clientX, touch.clientY);
+                AudioEngine.init();
+            }, { passive: false });
+            window.addEventListener('touchend', (e) => {
+                handlePointerUp();
+            });
+
+            window.addEventListener('keydown', (e) => {
+                if (e.code === 'Space' || e.code === 'Enter') {
+                    e.preventDefault();
+                    triggerRipple(mouse.x, mouse.y);
+                }
+            });
+
+            window.addEventListener('resize', () => {
+                app.renderer.resize(window.innerWidth, window.innerHeight);
+                // 重新计算光点基础位置
+                const w = screenW();
+                const h = screenH();
+                const spX = spacingX();
+                const spY = spacingY();
+                for (let row = 0; row < gridRows; row++) {
+                    for (let col = 0; col < gridCols; col++) {
+                        const idx = row * gridCols + col;
+                        if (idx < points.length) {
+                            points[idx].baseX = spX * (col + 1);
+                            points[idx].baseY = spY * (row + 1);
+                        }
+                    }
+                }
+            });
+
+            window.addEventListener('click', () => {
+                AudioEngine.init();
+            }, { once: true });
+
+            // 延迟初始化确保纹理就绪
+            setTimeout(() => {
+                initPoints();
+                mouse.x = screenW() / 2;
+                mouse.y = screenH() / 2;
+                app.renderer.render(app.stage);
+            }, 50);
+
+            // 隐藏提示文字
+            setTimeout(() => {
+                hintEl.style.opacity = '0';
+                setTimeout(() => {
+                    hintEl.style.display = 'none';
+                }, 1500);
+            }, 6000);
+
+            // 全局错误捕获
+            window.addEventListener('error', (e) => {
+                console.error('Runtime error:', e.error);
+                showError('运行时错误，请刷新页面或更换浏览器。');
+            });
+
+            console.log('✨ 光之涟漪已初始化 — 移动鼠标引导光点波动，点击唤醒涟漪脉冲');
+        }
+    </script>
+</body>
+</html>

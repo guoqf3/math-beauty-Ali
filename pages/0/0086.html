@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>海森堡群 · 次黎曼编织</title>
+    <style>
+        :root {
+            --bg: #06060c;
+            --gold: #d4a843;
+            --cyan: #45b7aa;
+            --magenta: #d4708a;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'SimSun', serif;
+            -webkit-font-smoothing: antialiased;
+            user-select: none;
+        }
+        #canvas-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+        }
+        canvas {
+            display: block;
+        }
+        .overlay-title {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 22px 20px 8px;
+            text-align: center;
+            background: linear-gradient(180deg, rgba(6, 6, 12, 0.95) 0%, rgba(6, 6, 12, 0.8) 55%, rgba(6, 6, 12, 0) 100%);
+        }
+        .overlay-title h2 {
+            font-size: clamp(1.1rem, 2.2vw, 1.8rem);
+            font-weight: 400;
+            letter-spacing: 0.13em;
+            color: #e8d5b0;
+            text-shadow: 0 0 30px rgba(212, 168, 67, 0.45), 0 0 60px rgba(212, 168, 67, 0.18);
+            margin: 0 0 2px;
+            line-height: 1.3;
+        }
+        .overlay-title .sub {
+            font-size: clamp(0.65rem, 1.1vw, 0.85rem);
+            letter-spacing: 0.22em;
+            color: rgba(200, 180, 150, 0.65);
+        }
+        .overlay-formula {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 8px 20px 18px;
+            text-align: center;
+            background: linear-gradient(0deg, rgba(6, 6, 12, 0.95) 0%, rgba(6, 6, 12, 0.82) 55%, rgba(6, 6, 12, 0) 100%);
+        }
+        .formula-text {
+            font-size: clamp(0.6rem, 1.0vw, 0.8rem);
+            color: rgba(210, 200, 185, 0.8);
+            letter-spacing: 0.03em;
+            line-height: 1.7;
+            font-style: italic;
+        }
+        .clr-gold {
+            color: #d4a843;
+            font-style: normal;
+            font-weight: bold;
+        }
+        .clr-cyan {
+            color: #45b7aa;
+            font-style: normal;
+            font-weight: bold;
+        }
+        .clr-magenta {
+            color: #d4708a;
+            font-style: normal;
+            font-weight: bold;
+        }
+        .formula-sep {
+            display: inline-block;
+            margin: 0 14px;
+            color: rgba(150, 140, 130, 0.35);
+            font-style: normal;
+        }
+    </style>
+</head>
+<body>
+    <div class="overlay-title">
+        <h2>海森堡群 · 次黎曼编织</h2>
+        <div class="sub">Heisenberg group · Sub‑Riemannian geodesic web</div>
+    </div>
+    <div class="overlay-formula">
+        <div class="formula-text">
+            <span class="clr-gold">x=(A/C)(1−cos Ct)+(B/C)sin Ct</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-cyan">y=(B/C)(1−cos Ct)+(A/C)sin Ct</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-magenta">z=(A²+B²)/2C ·(t−sin Ct / C)</span>
+        </div>
+    </div>
+    <div id="canvas-container"></div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ---------- 场景初始化 ----------
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(48, container.clientWidth / container.clientHeight, 0.5, 22);
+        camera.position.set(3.5, 2.8, 7.5);
+        camera.lookAt(0, 0, 1.0);
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x06060c, 1);
+        container.appendChild(renderer.domElement);
+
+        // 手动时钟——杜绝暂停
+        let startTime = performance.now();
+        let elapsed = 0;
+        function tick() { elapsed = (performance.now() - startTime) * 0.001; return elapsed; }
+
+        const COLOR_GOLD = 0xd4a843;
+        const COLOR_CYAN = 0x45b7aa;
+        const COLOR_MAGENTA = 0xd4708a;
+        const SCALE = 0.85;
+
+        // 海森堡测地线公式：给定参数(A,B,C)和最大时间
+        function heisenbergGeodesic(A, B, C, tMax, steps) {
+            const pts = [];
+            const dt = tMax / steps;
+            for (let i = 0; i <= steps; i++) {
+                const t = i * dt;
+                let x, y, z;
+                if (Math.abs(C) < 1e-6) {
+                    // C=0 退化直线
+                    x = A * t;
+                    y = B * t;
+                    z = 0;
+                } else {
+                    const cosCt = Math.cos(C * t);
+                    const sinCt = Math.sin(C * t);
+                    const oneMinusCos = 1 - cosCt;
+                    x = (A / C) * oneMinusCos + (B / C) * sinCt;
+                    y = (B / C) * oneMinusCos - (A / C) * sinCt;
+                    z = ((A * A + B * B) / (2 * C)) * (t - sinCt / C);
+                }
+                pts.push(new THREE.Vector3(x, y, z).multiplyScalar(SCALE));
+            }
+            return pts;
+        }
+
+        // 生成一族测地线
+        function createGeodesicFamily(ABpairs, C, color, opacity, tMax, steps) {
+            const group = new THREE.Group();
+            for (const [A, B] of ABpairs) {
+                const pts = heisenbergGeodesic(A, B, C, tMax, steps);
+                if (pts.length < 2) continue;
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color,
+                    transparent: true,
+                    opacity,
+                    depthWrite: true,
+                    depthTest: true,
+                });
+                group.add(new THREE.Line(geom, mat));
+            }
+            return group;
+        }
+
+        const tMax = 7.5;
+        const steps = 420;
+        const rootGroup = new THREE.Group();
+        rootGroup.name = 'heisenberg-weave';
+        scene.add(rootGroup);
+
+        // 生成AB对：极坐标网格
+        const radii = [0.3, 0.6, 0.9, 1.2, 1.5, 1.8, 2.1];
+        const angles = [0, 60, 120, 180, 240, 300].map(d => d * Math.PI / 180);
+
+        const goldPairs = [];
+        const cyanPairs = [];
+        const magentaPairs = [];
+
+        // 分配颜色：根据角度区域
+        for (const r of radii) {
+            for (const ang of angles) {
+                const A = r * Math.cos(ang);
+                const B = r * Math.sin(ang);
+                const absAngle = ((ang % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+                if (absAngle < 2 * Math.PI / 3) {
+                    goldPairs.push([A, B]);
+                } else if (absAngle < 4 * Math.PI / 3) {
+                    cyanPairs.push([A, B]);
+                } else {
+                    magentaPairs.push([A, B]);
+                }
+            }
+        }
+
+        // 添加额外点对扩展密度
+        const extraRadii = [0.45, 0.75, 1.05, 1.35, 1.65];
+        const extraAngles = [30, 90, 150, 210, 270, 330].map(d => d * Math.PI / 180);
+        for (const r of extraRadii) {
+            for (const ang of extraAngles) {
+                const A = r * Math.cos(ang);
+                const B = r * Math.sin(ang);
+                const absAngle = ((ang % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+                if (absAngle < 2 * Math.PI / 3) goldPairs.push([A, B]);
+                else if (absAngle < 4 * Math.PI / 3) cyanPairs.push([A, B]);
+                else magentaPairs.push([A, B]);
+            }
+        }
+
+        // 生成三族曲线，C取不同值
+        rootGroup.add(createGeodesicFamily(goldPairs, 1.2, COLOR_GOLD, 0.68, tMax, steps));
+        rootGroup.add(createGeodesicFamily(cyanPairs, 0.9, COLOR_CYAN, 0.68, tMax, steps));
+        rootGroup.add(createGeodesicFamily(magentaPairs, 1.5, COLOR_MAGENTA, 0.68, tMax, steps));
+
+        // 增加一组C接近零的直线族（金色）
+        const linePairs = [];
+        for (const r of [0.5, 1.0, 1.5, 2.0]) {
+            for (const ang of [15, 75, 135, 195, 255, 315].map(d => d * Math.PI / 180)) {
+                const A = r * Math.cos(ang);
+                const B = r * Math.sin(ang);
+                linePairs.push([A, B]);
+            }
+        }
+        rootGroup.add(createGeodesicFamily(linePairs, 0.0, COLOR_GOLD, 0.55, tMax, steps));
+
+        console.log('海森堡测地线总数:', rootGroup.children.length);
+
+        // ---- 背景星点 ----
+        const starsGroup = new THREE.Group();
+        const starsGeom = new THREE.BufferGeometry();
+        const starsCount = 550;
+        const starsPos = new Float32Array(starsCount * 3);
+        for (let i = 0; i < starsCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const dist = 6.5 + Math.random() * 10;
+            starsPos[i * 3] = dist * Math.sin(phi) * Math.cos(theta);
+            starsPos[i * 3 + 1] = dist * Math.sin(phi) * Math.sin(theta);
+            starsPos[i * 3 + 2] = dist * Math.cos(phi);
+        }
+        starsGeom.setAttribute('position', new THREE.BufferAttribute(starsPos, 3));
+        const starsMat = new THREE.PointsMaterial({
+            color: 0x908878,
+            size: 0.018,
+            transparent: true,
+            opacity: 0.55,
+            depthWrite: false,
+        });
+        starsGroup.add(new THREE.Points(starsGeom, starsMat));
+        scene.add(starsGroup);
+
+        // ---- 稳定动画循环 ----
+        function animate() {
+            tick();
+            const t = elapsed;
+            rootGroup.rotation.x = t * 0.15;
+            rootGroup.rotation.y = t * 0.26;
+            rootGroup.rotation.z = t * 0.12;
+            starsGroup.rotation.y = t * 0.03;
+            starsGroup.rotation.x = t * 0.02;
+
+            const camRadius = 7.5;
+            const camAngle = t * 0.09;
+            const camHeight = 2.9 + Math.sin(t * 0.17) * 0.8;
+            camera.position.x = Math.cos(camAngle) * camRadius;
+            camera.position.z = Math.sin(camAngle) * camRadius;
+            camera.position.y = camHeight;
+            camera.lookAt(0, 0, 1.0);
+            renderer.render(scene, camera);
+            requestAnimationFrame(animate);
+        }
+
+        // 预渲染首帧确保画面立即出现
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+
+        // 响应式
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth, h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth, h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 120));
+
+        console.log('✅ 海森堡群次黎曼编织动画已稳定运行');
+    </script>
+</body>
+</html>

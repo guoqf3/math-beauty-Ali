@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>流光织物 · 弹性网格</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #0b0d14;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            font-family: 'Segoe UI', system-ui, sans-serif;
+        }
+        .container {
+            position: relative;
+            border-radius: 28px;
+            overflow: hidden;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.9), 0 0 0 1px rgba(255, 255, 255, 0.05);
+            background: #0b0d14;
+        }
+        canvas {
+            display: block;
+            width: 1000px;
+            height: 600px;
+            cursor: grab;
+            background: radial-gradient(ellipse at 50% 50%, #121624, #07080c);
+        }
+        canvas:active {
+            cursor: grabbing;
+        }
+        .credit {
+            position: absolute;
+            bottom: 20px;
+            right: 28px;
+            color: rgba(255, 255, 255, 0.12);
+            font-size: 13px;
+            letter-spacing: 2px;
+            font-weight: 300;
+            pointer-events: none;
+            text-transform: uppercase;
+            backdrop-filter: blur(4px);
+            padding: 6px 16px;
+            border-radius: 40px;
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.03);
+        }
+        .credit span {
+            color: rgba(150, 200, 255, 0.25);
+        }
+        .hint {
+            position: absolute;
+            top: 20px;
+            left: 28px;
+            color: rgba(255, 255, 255, 0.10);
+            font-size: 13px;
+            font-weight: 300;
+            letter-spacing: 0.5px;
+            pointer-events: none;
+            backdrop-filter: blur(4px);
+            padding: 6px 16px;
+            border-radius: 40px;
+            background: rgba(0, 0, 0, 0.2);
+            border: 1px solid rgba(255, 255, 255, 0.02);
+        }
+        .hint i {
+            font-style: normal;
+            display: inline-block;
+            animation: pulse 2.8s ease-in-out infinite;
+        }
+        @keyframes pulse {
+            0%,
+            100% {
+                opacity: 0.3;
+            }
+            50% {
+                opacity: 0.9;
+            }
+        }
+        @media (max-width: 1024px) {
+            canvas {
+                width: 100%;
+                height: auto;
+                aspect-ratio: 1000 / 600;
+            }
+            .credit,
+            .hint {
+                display: none;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <canvas id="canvas" width="1000" height="600"></canvas>
+        <div class="hint"><i>✦ 拖拽 · 网格如织物般流动</i></div>
+        <div class="credit">vibe <span>·</span> code</div>
+    </div>
+
+    <script>
+        // ============================================================
+        //  流光织物 · 弹性网格物理
+        //  核心机制： 弹簧质点系统，节点间通过弹性约束连接，
+        //  受鼠标引力拉扯，形成布匹般的柔韧形变。
+        // ============================================================
+
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+
+        const W = 1000,
+            H = 600;
+
+        // ---------- 网格参数 ----------
+        const COLS = 28;
+        const ROWS = 18;
+        const SPACING = 34;
+        const STIFFNESS = 0.12; // 弹簧硬度
+        const DAMPING = 0.97; // 阻尼系数
+        const GRAVITY = 0.08; // 微弱重力 (向下)
+        const CENTER_FORCE = 0.002; // 向心拉力 (让网格聚拢)
+        const MOUSE_RADIUS = 120;
+        const MOUSE_PULL = 0.9; // 鼠标牵引强度
+
+        // ---------- 状态 ----------
+        let mouse = { x: -9999, y: -9999, active: false };
+        let time = 0;
+
+        // ---------- 节点与边 ----------
+        let nodes = [];
+        let edges = [];
+
+        // 初始化节点 (网格布局)
+        const offsetX = (W - (COLS - 1) * SPACING) / 2;
+        const offsetY = (H - (ROWS - 1) * SPACING) / 2;
+
+        for (let r = 0; r < ROWS; r++) {
+            for (let c = 0; c < COLS; c++) {
+                const x = c * SPACING + offsetX;
+                const y = r * SPACING + offsetY;
+                // 加入微小的随机初始偏移，打破绝对对称，增加自然感
+                const randX = (Math.random() - 0.5) * 1.2;
+                const randY = (Math.random() - 0.5) * 1.2;
+                nodes.push({
+                    x: x + randX,
+                    y: y + randY,
+                    vx: 0,
+                    vy: 0,
+                    // 记录初始位置作为参考
+                    baseX: x,
+                    baseY: y,
+                    // 随机颜色偏移
+                    hueOff: Math.random() * 40 - 20,
+                });
+            }
+        }
+
+        // 建立边连接 (水平 & 垂直)
+        for (let i = 0; i < nodes.length; i++) {
+            // 水平连接 (向右)
+            if (i % COLS < COLS - 1) {
+                edges.push([i, i + 1]);
+            }
+            // 垂直连接 (向下)
+            if (i < nodes.length - COLS) {
+                edges.push([i, i + COLS]);
+            }
+        }
+
+        // ---------- 物理更新 ----------
+        function updatePhysics() {
+            // 1) 重置力 (速度积分前)
+            for (let n of nodes) {
+                // 重力
+                n.vy += GRAVITY;
+                // 向心拉力 (让网格整体聚拢，避免散开)
+                const dxCenter = W / 2 - n.x;
+                const dyCenter = H / 2 - n.y;
+                n.vx += dxCenter * CENTER_FORCE;
+                n.vy += dyCenter * CENTER_FORCE;
+
+                // 鼠标交互 (引力)
+                if (mouse.active) {
+                    const dxMouse = mouse.x - n.x;
+                    const dyMouse = mouse.y - n.y;
+                    const dist = Math.sqrt(dxMouse * dxMouse + dyMouse * dyMouse);
+                    if (dist < MOUSE_RADIUS && dist > 0.5) {
+                        const force = (1 - dist / MOUSE_RADIUS) * MOUSE_PULL;
+                        n.vx += (dxMouse / dist) * force * 0.6;
+                        n.vy += (dyMouse / dist) * force * 0.6;
+                        // 靠近鼠标时轻微排斥，产生环绕层次感
+                        if (dist < 30) {
+                            const repel = (1 - dist / 30) * 0.4;
+                            n.vx -= (dxMouse / dist) * repel * 0.3;
+                            n.vy -= (dyMouse / dist) * repel * 0.3;
+                        }
+                    }
+                }
+
+                // 阻尼
+                n.vx *= DAMPING;
+                n.vy *= DAMPING;
+
+                // 速度限制 (避免爆炸)
+                const speed = Math.sqrt(n.vx * n.vx + n.vy * n.vy);
+                if (speed > 8) {
+                    n.vx = (n.vx / speed) * 8;
+                    n.vy = (n.vy / speed) * 8;
+                }
+
+                // 更新位置
+                n.x += n.vx;
+                n.y += n.vy;
+
+                // 边界碰撞 (带能量损失)
+                if (n.x < 0) { n.x = 0;
+                    n.vx *= -0.3; }
+                if (n.x > W) { n.x = W;
+                    n.vx *= -0.3; }
+                if (n.y < 0) { n.y = 0;
+                    n.vy *= -0.3; }
+                if (n.y > H) { n.y = H;
+                    n.vy *= -0.3; }
+            }
+
+            // 2) 弹簧约束 (迭代两次以增强稳定性)
+            for (let iter = 0; iter < 2; iter++) {
+                for (let [i, j] of edges) {
+                    const n1 = nodes[i];
+                    const n2 = nodes[j];
+                    const dx = n2.x - n1.x;
+                    const dy = n2.y - n1.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    if (dist < 0.001) continue;
+                    const diff = (dist - SPACING) / dist;
+                    const force = diff * STIFFNESS;
+                    // 对称的力
+                    const fx = dx * force;
+                    const fy = dy * force;
+                    n1.vx += fx;
+                    n1.vy += fy;
+                    n2.vx -= fx;
+                    n2.vy -= fy;
+                }
+            }
+        }
+
+        // ---------- 渲染 ----------
+        function draw() {
+            // 半透明叠加实现运动拖尾 (光晕效果)
+            ctx.fillStyle = 'rgba(11, 13, 20, 0.18)';
+            ctx.fillRect(0, 0, W, H);
+
+            // ---- 绘制连接线 ----
+            for (let [i, j] of edges) {
+                const n1 = nodes[i];
+                const n2 = nodes[j];
+                // 根据节点速度计算颜色和透明度
+                const speed1 = Math.sqrt(n1.vx * n1.vx + n1.vy * n1.vy);
+                const speed2 = Math.sqrt(n2.vx * n2.vx + n2.vy * n2.vy);
+                const avgSpeed = (speed1 + speed2) / 2;
+
+                // 色相：从青蓝 (190) 到紫红 (310) 随速度变化
+                const hue = 190 + avgSpeed * 8 + n1.hueOff * 0.3;
+                const lightness = 50 + Math.min(avgSpeed * 6, 30);
+                const alpha = 0.3 + Math.min(avgSpeed * 0.06, 0.6);
+
+                ctx.beginPath();
+                ctx.moveTo(n1.x, n1.y);
+                ctx.lineTo(n2.x, n2.y);
+                ctx.strokeStyle = `hsla(${hue}, 80%, ${lightness}%, ${alpha})`;
+                ctx.lineWidth = 1.2 + avgSpeed * 0.3;
+                ctx.shadowColor = `hsla(${hue}, 100%, 70%, ${alpha * 0.15})`;
+                ctx.shadowBlur = 12;
+                ctx.stroke();
+            }
+
+            // ---- 绘制节点 (发光粒子) ----
+            ctx.shadowBlur = 0;
+            for (let n of nodes) {
+                const speed = Math.sqrt(n.vx * n.vx + n.vy * n.vy);
+                const hue = 190 + speed * 8 + n.hueOff * 0.3;
+                const size = 2.2 + Math.min(speed * 0.4, 2.8);
+
+                // 节点光晕
+                const grad = ctx.createRadialGradient(
+                    n.x - size * 0.2, n.y - size * 0.2, 0.5,
+                    n.x, n.y, size * 2.5
+                );
+                grad.addColorStop(0, `hsla(${hue}, 90%, 75%, 0.9)`);
+                grad.addColorStop(0.5, `hsla(${hue + 10}, 80%, 55%, 0.6)`);
+                grad.addColorStop(1, `hsla(${hue + 20}, 70%, 40%, 0)`);
+
+                ctx.shadowColor = `hsla(${hue}, 100%, 60%, ${0.2})`;
+                ctx.shadowBlur = 18;
+                ctx.beginPath();
+                ctx.arc(n.x, n.y, size * 1.4, 0, Math.PI * 2);
+                ctx.fillStyle = grad;
+                ctx.fill();
+
+                // 核心亮点
+                ctx.shadowBlur = 0;
+                ctx.beginPath();
+                ctx.arc(n.x - size * 0.1, n.y - size * 0.1, size * 0.3, 0, Math.PI * 2);
+                ctx.fillStyle = `hsla(0, 0%, 100%, ${0.3 + speed * 0.05})`;
+                ctx.fill();
+            }
+
+            // ---- 重置阴影 ----
+            ctx.shadowBlur = 0;
+
+            // ---- 鼠标光晕 (氛围指示) ----
+            if (mouse.active) {
+                const grad = ctx.createRadialGradient(
+                    mouse.x, mouse.y, 0,
+                    mouse.x, mouse.y, MOUSE_RADIUS * 1.3
+                );
+                grad.addColorStop(0, 'rgba(140, 180, 255, 0.04)');
+                grad.addColorStop(0.5, 'rgba(80, 120, 255, 0.02)');
+                grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+                ctx.fillStyle = grad;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, MOUSE_RADIUS * 1.3, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // ---- 星星背景 (闪烁) ----
+            if (Math.random() < 0.08) {
+                const sx = Math.random() * W;
+                const sy = Math.random() * H;
+                const sr = 0.5 + Math.random() * 1.0;
+                ctx.beginPath();
+                ctx.arc(sx, sy, sr, 0, Math.PI * 2);
+                ctx.fillStyle = `rgba(255,255,255,${0.1 + Math.random() * 0.2})`;
+                ctx.fill();
+            }
+        }
+
+        // ---------- 动画循环 ----------
+        function animate(timestamp) {
+            time = timestamp || 0;
+            updatePhysics();
+            draw();
+            requestAnimationFrame(animate);
+        }
+
+        // ---------- 鼠标事件 ----------
+        canvas.addEventListener('mousemove', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            mouse.x = (e.clientX - rect.left) * scaleX;
+            mouse.y = (e.clientY - rect.top) * scaleY;
+            mouse.active = true;
+        });
+
+        canvas.addEventListener('mouseleave', () => {
+            mouse.active = false;
+        });
+
+        // 触摸支持
+        canvas.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            const rect = canvas.getBoundingClientRect();
+            const touch = e.touches[0];
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            mouse.x = (touch.clientX - rect.left) * scaleX;
+            mouse.y = (touch.clientY - rect.top) * scaleY;
+            mouse.active = true;
+        }, { passive: false });
+
+        canvas.addEventListener('touchend', () => {
+            mouse.active = false;
+        });
+
+        // ---------- 启动 ----------
+        animate(0);
+
+        // ---------- 自适应 ----------
+        function resizeCanvas() {
+            const container = canvas.parentElement;
+            const maxW = window.innerWidth - 40;
+            const maxH = window.innerHeight - 40;
+            const ratio = canvas.width / canvas.height;
+            let w = Math.min(1000, maxW);
+            let h = w / ratio;
+            if (h > maxH) {
+                h = maxH;
+                w = h * ratio;
+            }
+            canvas.style.width = w + 'px';
+            canvas.style.height = h + 'px';
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        console.log('✦ 流光织物 · 弹性网格物理');
+        console.log('可调参数: STIFFNESS (硬度), DAMPING (阻尼), MOUSE_PULL (牵引力)');
+    </script>
+</body>
+</html>

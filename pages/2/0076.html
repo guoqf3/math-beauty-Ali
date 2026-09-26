@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LISSAJOUS · 利萨茹曲线</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #0a0a14;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            right: 32px;
+            z-index: 2;
+            text-align: right;
+            pointer-events: none;
+            opacity: 0.55;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+
+        .overlay:hover {
+            opacity: 0.9;
+        }
+
+        .title {
+            color: rgba(225, 220, 245, 0.8);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 20px rgba(140, 120, 230, 0.5);
+        }
+
+        .hint {
+            color: rgba(180, 175, 205, 0.5);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+
+        @media (max-width: 768px) {
+            .overlay {
+                bottom: 18px;
+                right: 20px;
+            }
+            .title {
+                font-size: 8px;
+                letter-spacing: 0.45em;
+            }
+            .hint {
+                font-size: 6px;
+                letter-spacing: 0.22em;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="canvas"></canvas>
+
+    <div class="overlay">
+        <div class="title">Lissajous</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script>
+        (function() {
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            let mouse = { x: -9999, y: -9999, active: false };
+            let time = 0;
+            let colorShift = 0;
+
+            // 曲线参数
+            let curves = [];
+            const NUM_CURVES = 10;
+            const POINTS_PER_CURVE = 300;
+
+            // 色彩调色板
+            const palettes = [
+                { baseHue: 250, satRange: [70, 90], lightRange: [55, 75] }, // 紫色系
+                { baseHue: 180, satRange: [70, 90], lightRange: [55, 75] }, // 青色系
+                { baseHue: 320, satRange: [70, 90], lightRange: [60, 80] }, // 粉红系
+                { baseHue: 40, satRange: [80, 100], lightRange: [55, 70] },  // 金色系
+                { baseHue: 0, satRange: [70, 90], lightRange: [55, 70] },   // 红色系
+            ];
+            let paletteIndex = 0;
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                // 填充深色背景，杜绝白屏
+                ctx.fillStyle = '#0a0a14';
+                ctx.fillRect(0, 0, W, H);
+            }
+
+            // ─── 初始化曲线参数 ─────────────────────────────────────────
+            function initCurves() {
+                curves = [];
+                for (let i = 0; i < NUM_CURVES; i++) {
+                    curves.push({
+                        freqX: 3 + Math.random() * 6,      // 3~9
+                        freqY: 2 + Math.random() * 5,      // 2~7
+                        phaseX: Math.random() * Math.PI * 2,
+                        phaseY: Math.random() * Math.PI * 2,
+                        ampX: 0.35 + Math.random() * 0.3,  // 相对中心的比例
+                        ampY: 0.35 + Math.random() * 0.3,
+                        speed: 0.5 + Math.random() * 1.0,  // 相位变化速度
+                        thickness: 0.8 + Math.random() * 1.5,
+                        alpha: 0.15 + Math.random() * 0.2,
+                        hueOffset: Math.random() * 40 - 20,
+                    });
+                }
+            }
+
+            // ─── 绘制利萨茹曲线 ───────────────────────────────────────
+            function drawLissajous(ctx, t, mouse) {
+                const pal = palettes[paletteIndex];
+                const centerX = W / 2;
+                const centerY = H / 2;
+                const scaleX = W * 0.45;
+                const scaleY = H * 0.45;
+
+                // 鼠标影响：轻微改变频率和相位
+                let mouseFX = 0, mouseFY = 0;
+                if (mouse.active) {
+                    mouseFX = (mouse.x / W - 0.5) * 0.3;
+                    mouseFY = (mouse.y / H - 0.5) * 0.3;
+                }
+
+                // 使用半透明清除，产生拖尾效果
+                ctx.fillStyle = 'rgba(10, 10, 20, 0.08)';
+                ctx.fillRect(0, 0, W, H);
+
+                for (let c = 0; c < curves.length; c++) {
+                    const curve = curves[c];
+                    const freqX = curve.freqX + mouseFX * 2;
+                    const freqY = curve.freqY + mouseFY * 2;
+                    const phaseX = curve.phaseX + t * curve.speed;
+                    const phaseY = curve.phaseY + t * curve.speed * 0.8;
+                    const ampX = curve.ampX * scaleX;
+                    const ampY = curve.ampY * scaleY;
+
+                    // 计算颜色
+                    const hue = pal.baseHue + curve.hueOffset + colorShift + Math.sin(t * 0.5 + c) * 15;
+                    const sat = pal.satRange[0] + Math.random() * (pal.satRange[1] - pal.satRange[0]);
+                    const light = pal.lightRange[0] + Math.random() * (pal.lightRange[1] - pal.lightRange[0]);
+                    const alpha = curve.alpha * (0.7 + 0.3 * Math.sin(t * 0.8 + c));
+
+                    ctx.strokeStyle = `hsla(${hue}, ${sat}%, ${light}%, ${alpha})`;
+                    ctx.lineWidth = curve.thickness;
+                    ctx.lineCap = 'round';
+                    ctx.beginPath();
+
+                    // 绘制曲线点
+                    for (let i = 0; i <= POINTS_PER_CURVE; i++) {
+                        const ratio = i / POINTS_PER_CURVE;
+                        const angle = ratio * Math.PI * 2;
+                        const x = centerX + ampX * Math.sin(freqX * angle + phaseX);
+                        const y = centerY + ampY * Math.sin(freqY * angle + phaseY);
+                        if (i === 0) {
+                            ctx.moveTo(x, y);
+                        } else {
+                            ctx.lineTo(x, y);
+                        }
+                    }
+                    ctx.stroke();
+                }
+            }
+
+            // ─── 鼠标光晕 ───────────────────────────────────────────────
+            function drawCursorGlow(ctx) {
+                if (!mouse.active) return;
+                const radius = 50;
+                const hue = palettes[paletteIndex].baseHue + colorShift;
+                const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                gradient.addColorStop(0, `hsla(${hue}, 70%, 80%, 0.06)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // ─── 主循环 ─────────────────────────────────────────────────
+            let lastTime = 0;
+            let accumulator = 0;
+            const fixedStep = 1000 / 60;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+
+                accumulator += dt;
+                const steps = Math.min(Math.floor(accumulator / fixedStep), 3);
+                accumulator -= steps * fixedStep;
+
+                for (let s = 0; s < steps; s++) {
+                    time += 0.015;
+                }
+
+                // 绘制利萨茹曲线（内部包含半透明清除）
+                drawLissajous(ctx, time, mouse);
+
+                // 绘制鼠标光晕
+                drawCursorGlow(ctx);
+
+                requestAnimationFrame(animate);
+            }
+
+            // ─── 交互事件 ───────────────────────────────────────────────
+            function onMouseMove(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                // 切换调色板
+                paletteIndex = (paletteIndex + 1) % palettes.length;
+                // 添加随机颜色偏移
+                colorShift += 20 + Math.random() * 30;
+                if (colorShift > 120) colorShift = -20;
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    paletteIndex = (paletteIndex + 1) % palettes.length;
+                    colorShift += 20 + Math.random() * 30;
+                    if (colorShift > 120) colorShift = -20;
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onResize() {
+                setupCanvas();
+                // 曲线参数不需要重新初始化，但振幅可能适应新尺寸（在绘制时动态计算）
+                // 无需调整
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+                initCurves();
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            // 确保初始背景填充
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#0a0a14';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+
+        })();
+    </script>
+</body>
+</html>

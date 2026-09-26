@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LUMINA · 流动光带</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #07070f;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            right: 32px;
+            z-index: 2;
+            text-align: right;
+            pointer-events: none;
+            opacity: 0.55;
+            transition: opacity 0.8s ease;
+            mix-blend-mode: screen;
+        }
+
+        .overlay:hover {
+            opacity: 0.9;
+        }
+
+        .title {
+            color: rgba(220, 210, 255, 0.8);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.65em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 18px rgba(150, 130, 230, 0.5);
+        }
+
+        .hint {
+            color: rgba(180, 170, 210, 0.5);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.35em;
+            text-transform: uppercase;
+        }
+
+        @media (max-width: 768px) {
+            .overlay {
+                bottom: 18px;
+                right: 20px;
+            }
+            .title {
+                font-size: 8px;
+                letter-spacing: 0.5em;
+            }
+            .hint {
+                font-size: 6px;
+                letter-spacing: 0.25em;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="canvas"></canvas>
+
+    <div class="overlay">
+        <div class="title">Lumina</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script>
+        (function() {
+            // ─── 画布初始化 ───────────────────────────────────────────────
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            let ribbons = [];
+            let ripples = [];
+            let mouse = { x: -9999, y: -9999, px: -9999, py: -9999, active: false, speedX: 0, speedY: 0 };
+            let time = 0;
+            let colorShift = 0; // 用于点击切换色相
+
+            // ─── 性能参数 ───────────────────────────────────────────────
+            const RIBBON_COUNT = () => Math.max(32, Math.min(70, Math.floor(W / 22)));
+            const SEGMENTS = () => Math.max(24, Math.min(50, Math.floor(H / 14)));
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                // 填充深色背景，杜绝白屏
+                ctx.fillStyle = '#07070f';
+                ctx.fillRect(0, 0, W, H);
+            }
+
+            // ─── 流动光带类 ─────────────────────────────────────────────
+            class Ribbon {
+                constructor(index) {
+                    this.index = index;
+                    this.segments = SEGMENTS();
+                    this.points = [];
+                    this.baseX = Math.random() * W;
+                    this.baseY = Math.random() * H;
+                    this.speed = 0.4 + Math.random() * 0.7;
+                    this.amplitude = 18 + Math.random() * 35;
+                    this.frequency = 0.0012 + Math.random() * 0.0018;
+                    this.phase = Math.random() * Math.PI * 2;
+                    this.hueBase = 210 + Math.random() * 70 - 35; // 蓝紫范围
+                    this.saturation = 70 + Math.random() * 25;
+                    this.lightness = 55 + Math.random() * 20;
+                    this.lineWidth = 0.8 + Math.random() * 1.8;
+                    this.alpha = 0.14 + Math.random() * 0.25;
+                    this.wobbleSpeed = 0.4 + Math.random() * 0.5;
+                    this.mouseInfluence = 0.6 + Math.random() * 0.5;
+                    this.initPoints();
+                }
+
+                initPoints() {
+                    this.points = [];
+                    const seg = this.segments;
+                    const horizontalSpread = W * 0.25;
+                    for (let i = 0; i <= seg; i++) {
+                        const t = i / seg;
+                        const x = this.baseX + Math.sin(t * Math.PI * 2 + this.phase) * horizontalSpread * (0.7 + 0.3 * Math.sin(t * 6 + this.phase));
+                        const y = this.baseY + (t - 0.5) * H * 0.9 + Math.cos(t * 5 + this.phase) * 20;
+                        this.points.push({
+                            x: x,
+                            y: y,
+                            origX: x,
+                            origY: y,
+                            offsetX: 0,
+                            offsetY: 0,
+                        });
+                    }
+                }
+
+                update(dt, t, mouse) {
+                    // 流动相位更新
+                    this.phase += dt * 0.15 * this.speed;
+                    const seg = this.segments;
+                    const horizontalDrift = Math.sin(t * 0.3 + this.index) * 30;
+
+                    for (let i = 0; i <= seg; i++) {
+                        const p = this.points[i];
+                        const ratio = i / seg;
+                        // 基础位置动态偏移
+                        const waveX = Math.sin(ratio * 8 + this.phase * 2) * this.amplitude * 0.6;
+                        const waveY = Math.cos(ratio * 6 + this.phase * 1.6) * this.amplitude * 0.8;
+                        const driftX = Math.sin(ratio * 4 + t * 0.7 + this.index) * 18;
+                        const driftY = Math.cos(ratio * 5 + t * 0.8 + this.index * 0.5) * 22;
+
+                        let baseX = this.baseX + waveX + driftX + horizontalDrift * Math.sin(ratio * Math.PI);
+                        let baseY = this.baseY + (ratio - 0.5) * H * 0.7 + waveY + driftY;
+
+                        // 鼠标影响：光带局部弯曲
+                        if (mouse.active) {
+                            const dx = mouse.x - baseX;
+                            const dy = mouse.y - baseY;
+                            const distSq = dx * dx + dy * dy;
+                            const influenceRadius = 150;
+                            const infSq = influenceRadius * influenceRadius;
+                            if (distSq < infSq) {
+                                const dist = Math.sqrt(distSq);
+                                const force = (1 - dist / influenceRadius) * this.mouseInfluence * 40;
+                                const normX = dx / (dist || 1);
+                                const normY = dy / (dist || 1);
+                                baseX -= normX * force * Math.sin(ratio * Math.PI) * 0.8;
+                                baseY -= normY * force * Math.cos(ratio * Math.PI) * 0.8;
+                            }
+                        }
+
+                        p.x = baseX;
+                        p.y = baseY;
+                    }
+                }
+
+                draw(ctx, t) {
+                    ctx.lineCap = 'round';
+                    ctx.lineJoin = 'round';
+                    const seg = this.segments;
+                    for (let i = 0; i < seg; i++) {
+                        const p1 = this.points[i];
+                        const p2 = this.points[i + 1];
+                        if (!p1 || !p2) continue;
+
+                        const ratio = i / seg;
+                        const hue = this.hueBase + colorShift + Math.sin(ratio * 6 + t * 0.5 + this.index) * 18;
+                        const sat = this.saturation + Math.sin(ratio * 5 + t * 0.3) * 10;
+                        const light = this.lightness + Math.sin(ratio * 7 + t * 0.6) * 12;
+                        const alpha = this.alpha * (0.6 + 0.4 * Math.sin(ratio * 10 + t + this.index));
+
+                        // 渐变线段
+                        const gradient = ctx.createLinearGradient(p1.x, p1.y, p2.x, p2.y);
+                        gradient.addColorStop(0, `hsla(${hue}, ${sat}%, ${light}%, ${alpha})`);
+                        gradient.addColorStop(1, `hsla(${hue + 20}, ${sat - 5}%, ${light + 8}%, ${alpha * 0.85})`);
+
+                        ctx.strokeStyle = gradient;
+                        ctx.lineWidth = this.lineWidth * (0.8 + 0.4 * Math.sin(ratio * 9 + t * 1.2));
+                        ctx.beginPath();
+                        ctx.moveTo(p1.x, p1.y);
+                        ctx.lineTo(p2.x, p2.y);
+                        ctx.stroke();
+                    }
+                }
+            }
+
+            // ─── 波纹（点击效果） ────────────────────────────────────────
+            function createRipple(x, y) {
+                ripples.push({
+                    x,
+                    y,
+                    radius: 4,
+                    maxRadius: Math.max(W, H) * 0.4,
+                    life: 1.0,
+                    decay: 0.015 + Math.random() * 0.008,
+                    growth: 4.5 + Math.random() * 2.0,
+                    hue: 210 + colorShift + Math.random() * 40,
+                });
+                if (ripples.length > 8) ripples.shift();
+            }
+
+            function updateRipples(dt) {
+                for (let i = ripples.length - 1; i >= 0; i--) {
+                    const r = ripples[i];
+                    r.radius += r.growth * dt;
+                    r.life -= r.decay * dt;
+                    if (r.life <= 0 || r.radius > r.maxRadius) {
+                        ripples.splice(i, 1);
+                    }
+                }
+            }
+
+            function drawRipples(ctx) {
+                for (const r of ripples) {
+                    const alpha = r.life * 0.25;
+                    const lineWidth = 1.5 + r.life * 2.5;
+                    ctx.strokeStyle = `hsla(${r.hue}, 75%, 70%, ${alpha})`;
+                    ctx.lineWidth = lineWidth;
+                    ctx.lineCap = 'round';
+                    ctx.beginPath();
+                    ctx.arc(r.x, r.y, r.radius, 0, Math.PI * 2);
+                    ctx.stroke();
+
+                    if (r.radius > 15) {
+                        const innerR = r.radius * 0.8;
+                        ctx.strokeStyle = `hsla(${r.hue + 30}, 70%, 80%, ${alpha * 0.5})`;
+                        ctx.lineWidth = lineWidth * 0.4;
+                        ctx.beginPath();
+                        ctx.arc(r.x, r.y, innerR, 0, Math.PI * 2);
+                        ctx.stroke();
+                    }
+                }
+            }
+
+            // ─── 初始化光带 ─────────────────────────────────────────────
+            function initRibbons() {
+                const count = RIBBON_COUNT();
+                ribbons = [];
+                for (let i = 0; i < count; i++) {
+                    ribbons.push(new Ribbon(i));
+                }
+            }
+
+            // ─── 鼠标光晕 ───────────────────────────────────────────────
+            function drawCursorGlow(ctx) {
+                if (!mouse.active) return;
+                const radius = 80;
+                const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                gradient.addColorStop(0, `hsla(${225 + colorShift}, 65%, 70%, 0.06)`);
+                gradient.addColorStop(0.6, `hsla(${225 + colorShift}, 55%, 60%, 0.02)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // ─── 主循环 ─────────────────────────────────────────────────
+            let lastTime = 0;
+            let accumulator = 0;
+            const fixedStep = 1000 / 60;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+
+                accumulator += dt;
+                const steps = Math.min(Math.floor(accumulator / fixedStep), 3);
+                accumulator -= steps * fixedStep;
+
+                const dtNorm = dt / 16.667; // 归一化
+
+                for (let s = 0; s < steps; s++) {
+                    time += 0.01;
+                    updateRipples(fixedStep / 1000 * 60);
+                    for (const rib of ribbons) {
+                        rib.update(1, time, mouse);
+                    }
+                }
+
+                // 拖尾效果：半透明清除
+                ctx.fillStyle = 'rgba(7, 7, 15, 0.06)';
+                ctx.fillRect(0, 0, W, H);
+
+                // 绘制光带
+                for (const rib of ribbons) {
+                    rib.draw(ctx, time);
+                }
+
+                // 绘制波纹
+                drawRipples(ctx);
+
+                // 鼠标光晕
+                drawCursorGlow(ctx);
+
+                requestAnimationFrame(animate);
+            }
+
+            // ─── 交互事件 ───────────────────────────────────────────────
+            function onMouseMove(e) {
+                mouse.px = mouse.x;
+                mouse.py = mouse.y;
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                // 计算移动速度
+                mouse.speedX = (mouse.x - mouse.px) * 0.15;
+                mouse.speedY = (mouse.y - mouse.py) * 0.15;
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                createRipple(mouse.x, mouse.y);
+                // 切换色相偏移
+                colorShift += 35 + Math.random() * 30;
+                if (colorShift > 140) colorShift = -40;
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.px = mouse.x;
+                    mouse.py = mouse.y;
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    createRipple(mouse.x, mouse.y);
+                    colorShift += 35 + Math.random() * 30;
+                    if (colorShift > 140) colorShift = -40;
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onResize() {
+                const oldW = W;
+                const oldH = H;
+                setupCanvas();
+                // 调整光带基准位置
+                const scaleX = W / oldW;
+                const scaleY = H / oldH;
+                for (const rib of ribbons) {
+                    rib.baseX *= scaleX;
+                    rib.baseY *= scaleY;
+                    for (const p of rib.points) {
+                        p.origX *= scaleX;
+                        p.origY *= scaleY;
+                    }
+                }
+                // 可能数量变化
+                const targetCount = RIBBON_COUNT();
+                if (targetCount !== ribbons.length) {
+                    while (ribbons.length < targetCount) {
+                        ribbons.push(new Ribbon(ribbons.length));
+                    }
+                    if (ribbons.length > targetCount) {
+                        ribbons.length = targetCount;
+                    }
+                }
+                // 重置片段数
+                for (const rib of ribbons) {
+                    rib.segments = SEGMENTS();
+                    rib.initPoints();
+                }
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+                initRibbons();
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#07070f';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+
+        })();
+    </script>
+</body>
+</html>

@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>球面玫瑰交织 · 多频谐振曲线</title>
+    <style>
+        :root { --bg: #02040a; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'STSong', 'Songti SC', 'Noto Serif SC', 'SimSun', 'Times New Roman', serif;
+            -webkit-font-smoothing: antialiased;
+            height: 100vh; width: 100vw;
+            user-select: none; -webkit-user-select: none; cursor: default;
+        }
+        #canvas-container { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+        canvas { display: block; }
+        #title-overlay {
+            position: fixed; top: 24px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+        }
+        #title-overlay .title {
+            font-size: clamp(1.0rem, 2.2vw, 1.5rem); font-weight: 400; letter-spacing: 0.09em;
+            color: #cfc7b5; text-shadow: 0 0 42px rgba(200,180,150,0.5), 0 0 72px rgba(170,150,130,0.22);
+            line-height: 1.4; white-space: nowrap;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.5rem, 0.9vw, 0.66rem); font-weight: 300; letter-spacing: 0.13em;
+            color: #a09888; text-shadow: 0 0 16px rgba(155,145,125,0.32);
+            margin-top: 2px; white-space: nowrap;
+        }
+        #formula-overlay {
+            position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+            background: rgba(2,4,10,0.7); padding: 11px 22px; border-radius: 34px;
+            border: 1px solid rgba(175,155,135,0.18);
+            backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); max-width: 95vw;
+        }
+        #formula-overlay .formula {
+            font-size: clamp(0.4rem, 0.72vw, 0.58rem); font-weight: 300; letter-spacing: 0.04em;
+            color: #c5bdaa; text-shadow: 0 0 14px rgba(185,170,145,0.27);
+            line-height: 1.55; white-space: nowrap;
+        }
+        #formula-overlay .formula .c1 { color: #d4885c; }
+        #formula-overlay .formula .c2 { color: #5d9ec6; }
+        #formula-overlay .formula .c3 { color: #c77d9f; }
+        @media (max-width: 600px) {
+            #title-overlay { top: 14px; }
+            #formula-overlay { bottom: 10px; padding: 8px 13px; border-radius: 26px; }
+            #formula-overlay .formula { font-size: 0.34rem; white-space: normal; line-height: 1.3; }
+            #title-overlay .title { font-size: 0.7rem; }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="title-overlay">
+        <div class="title">球面玫瑰交织 · 多频谐振曲线</div>
+        <div class="subtitle">SPHERICAL ROSE WEAVING &nbsp;·&nbsp; MULTI‑FREQUENCY RESONANCE</div>
+    </div>
+    <div id="formula-overlay">
+        <div class="formula">
+            <span class="c1">Γₐ:</span> θ=½π+A₁sin(p₁t+δ) φ=q₁t &nbsp;
+            <span class="c2">Γₑ:</span> θ=½π+A₂sin(p₂t+ε) φ=q₂t+π/3 &nbsp;
+            <span class="c3">Γᵢ:</span> θ=½π+A₃sin(p₃t+ζ) φ=q₃t+2π/3
+            <br>
+            <span style="color:#9aa8b8;">p=(5,7,9) q=(3,4,5) A≈0.5 &nbsp;14曲线/族 &nbsp;R=2.65 &nbsp;绝对时间驱动</span>
+        </div>
+    </div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#02040a');
+        scene.fog = new THREE.Fog('#02040a', 8, 22);
+
+        const camera = new THREE.PerspectiveCamera(
+            50,
+            container.clientWidth / Math.max(container.clientHeight, 1),
+            0.3,
+            26
+        );
+        camera.position.set(1.2, 0.6, 7.0);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = false;
+        container.appendChild(renderer.domElement);
+
+        // ==================== 颜色 ====================
+        const C1 = '#d4885c'; // 暖金
+        const C2 = '#5d9ec6'; // 冰蓝
+        const C3 = '#c77d9f'; // 玫瑰粉
+        const C_SPHERE = '#3a4a5c';
+        const C_GLINT = '#8898aa';
+
+        const R = 2.65;
+        const NUM_CURVES_PER_FAMILY = 14;
+        const NUM_SAMPLES = 340;
+
+        // ==================== 球面玫瑰曲线生成 ====================
+        /**
+         * 生成一族球面玫瑰曲线
+         * @param {number} p - θ的正弦调制频率（花瓣数相关）
+         * @param {number} q - φ的频率（绕圈数）
+         * @param {number} A - θ的调制振幅
+         * @param {number} phiOffset - φ的初始偏移
+         * @param {number} numCurves - 曲线数量
+         * @param {number} numSamples - 每条曲线采样点数
+         * @returns {THREE.Vector3[][]}
+         */
+        function generateRoseCurves(p, q, A, phiOffset, numCurves, numSamples) {
+            const allCurves = [];
+            for (let k = 0; k < numCurves; k++) {
+                const delta = (k / numCurves) * Math.PI * 2;
+                const pts = [];
+                // t从0到2π*LCM(p,q)以确保曲线闭合，这里使用2π*LCM近似
+                // 简化：t范围取0到2π*q（覆盖完整的φ周期）
+                const tMax = Math.PI * 2 * Math.max(q, 1);
+                const dt = tMax / numSamples;
+                for (let i = 0; i <= numSamples; i++) {
+                    const t = i * dt;
+                    const theta = Math.PI / 2 + A * Math.sin(p * t + delta);
+                    const phi = q * t + phiOffset;
+                    const sinTheta = Math.sin(theta);
+                    const x = R * sinTheta * Math.cos(phi);
+                    const y = R * sinTheta * Math.sin(phi);
+                    const z = R * Math.cos(theta);
+                    pts.push(new THREE.Vector3(x, y, z));
+                }
+                allCurves.push(pts);
+            }
+            return allCurves;
+        }
+
+        // ==================== 创建曲线组 ====================
+        function createCurveGroup(curvesData, colorHex, opacity) {
+            const group = new THREE.Group();
+            for (const pts of curvesData) {
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(colorHex),
+                    transparent: true,
+                    opacity: opacity,
+                    depthWrite: true,
+                });
+                group.add(new THREE.Line(geom, mat));
+            }
+            return group;
+        }
+
+        // 族1: p=5, q=3, A=0.52, φ初始偏移=0
+        const curves1 = generateRoseCurves(5, 3, 0.52, 0, NUM_CURVES_PER_FAMILY, NUM_SAMPLES);
+        // 族2: p=7, q=4, A=0.46, φ初始偏移=π/3
+        const curves2 = generateRoseCurves(7, 4, 0.46, Math.PI / 3, NUM_CURVES_PER_FAMILY, NUM_SAMPLES);
+        // 族3: p=9, q=5, A=0.48, φ初始偏移=2π/3
+        const curves3 = generateRoseCurves(9, 5, 0.48, 2 * Math.PI / 3, NUM_CURVES_PER_FAMILY, NUM_SAMPLES);
+
+        const group1 = createCurveGroup(curves1, C1, 0.6);
+        const group2 = createCurveGroup(curves2, C2, 0.57);
+        const group3 = createCurveGroup(curves3, C3, 0.58);
+
+        const mainGroup = new THREE.Group();
+        mainGroup.add(group1);
+        mainGroup.add(group2);
+        mainGroup.add(group3);
+        scene.add(mainGroup);
+
+        // ==================== 参考球面线框 ====================
+        function createSphereWireframe(radius, colorHex, opacity) {
+            const group = new THREE.Group();
+            const segs = 170;
+            const circleDefs = [
+                (a) => new THREE.Vector3(Math.cos(a)*radius, Math.sin(a)*radius, 0),
+                (a) => new THREE.Vector3(Math.cos(a)*radius, 0, Math.sin(a)*radius),
+                (a) => new THREE.Vector3(0, Math.cos(a)*radius, Math.sin(a)*radius),
+            ];
+            for (const gen of circleDefs) {
+                const pts = [];
+                for (let i=0; i<=segs; i++) pts.push(gen((i/segs)*Math.PI*2));
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(colorHex),
+                    transparent: true, opacity: opacity, depthWrite: true,
+                });
+                group.add(new THREE.Line(geom, mat));
+            }
+            // 两条纬线
+            for (const z of [-radius*0.45, radius*0.45]) {
+                const r = Math.sqrt(Math.max(0, radius*radius - z*z));
+                if (r > 0.02) {
+                    const pts = [];
+                    for (let i=0; i<=segs; i++) {
+                        const a = (i/segs)*Math.PI*2;
+                        pts.push(new THREE.Vector3(Math.cos(a)*r, z, Math.sin(a)*r));
+                    }
+                    const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                    const mat = new THREE.LineBasicMaterial({
+                        color: new THREE.Color(colorHex),
+                        transparent: true, opacity: opacity*0.65, depthWrite: true,
+                    });
+                    group.add(new THREE.Line(geom, mat));
+                }
+            }
+            return group;
+        }
+        const sphereRef = createSphereWireframe(R, C_SPHERE, 0.22);
+        scene.add(sphereRef);
+
+        // ==================== 原点光点 ====================
+        function createOriginGlint() {
+            const group = new THREE.Group();
+            const sz = 0.1;
+            const pairs = [
+                [new THREE.Vector3(-sz,0,0), new THREE.Vector3(sz,0,0)],
+                [new THREE.Vector3(0,-sz,0), new THREE.Vector3(0,sz,0)],
+                [new THREE.Vector3(0,0,-sz), new THREE.Vector3(0,0,sz)],
+            ];
+            for (const [a,b] of pairs) {
+                const g = new THREE.BufferGeometry().setFromPoints([a,b]);
+                const m = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(C_GLINT),
+                    transparent: true, opacity: 0.7, depthWrite: true,
+                });
+                group.add(new THREE.Line(g, m));
+            }
+            return group;
+        }
+        scene.add(createOriginGlint());
+
+        // ==================== 球面极点标记 ====================
+        function createPoleGlints(radius, colorHex, sz) {
+            const group = new THREE.Group();
+            for (const sign of [-1, 1]) {
+                const pt = new THREE.Vector3(0, sign * radius, 0);
+                const pairs = [
+                    [pt.clone().add(new THREE.Vector3(-sz,0,0)), pt.clone().add(new THREE.Vector3(sz,0,0))],
+                    [pt.clone().add(new THREE.Vector3(0,0,-sz)), pt.clone().add(new THREE.Vector3(0,0,sz))],
+                ];
+                for (const [a,b] of pairs) {
+                    const g = new THREE.BufferGeometry().setFromPoints([a,b]);
+                    const m = new THREE.LineBasicMaterial({
+                        color: new THREE.Color(colorHex),
+                        transparent: true, opacity: 0.55, depthWrite: true,
+                    });
+                    group.add(new THREE.Line(g, m));
+                }
+            }
+            return group;
+        }
+        scene.add(createPoleGlints(R, C_SPHERE, 0.08));
+
+        // ==================== 动画循环（绝对时间） ====================
+        let time = 0;
+        let lastTime = performance.now();
+        let frameCount = 0;
+        let logTime = 0;
+
+        function animate(now) {
+            requestAnimationFrame(animate);
+            let delta = (now - lastTime) / 1000;
+            if (delta <= 0 || delta > 0.5) delta = 0.016;
+            lastTime = now;
+            time += delta;
+            frameCount++;
+            if (now - logTime > 4000) {
+                console.log(`[动画运行中] 帧:${frameCount} 时间:${time.toFixed(2)}s 曲线:${NUM_CURVES_PER_FAMILY*3}`);
+                logTime = now;
+            }
+
+            // 主球体绕对角线旋转
+            mainGroup.rotation.y = time * 0.3;
+            mainGroup.rotation.x = time * 0.17 + Math.sin(time * 0.24) * 0.22;
+            mainGroup.rotation.z = Math.cos(time * 0.2) * 0.15;
+
+            // 参考球面同步旋转
+            sphereRef.rotation.copy(mainGroup.rotation);
+
+            // 相机游走
+            const camX = 1.2 + Math.sin(time * 0.15) * 0.55;
+            const camY = 0.6 + Math.cos(time * 0.19) * 0.5;
+            const camZ = 7.0 + Math.sin(time * 0.11) * 0.5;
+            camera.position.set(camX, camY, camZ);
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        // ==================== 窗口调整 ====================
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth;
+            const h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth;
+            const h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 100));
+
+        console.log('=== 球面玫瑰交织 · 多频谐振曲线 ===');
+        console.log('族1 (暖金, p=5,q=3):', curves1.length, '条曲线');
+        console.log('族2 (冰蓝, p=7,q=4):', curves2.length, '条曲线');
+        console.log('族3 (玫瑰粉, p=9,q=5):', curves3.length, '条曲线');
+        console.log('总曲线数:', curves1.length + curves2.length + curves3.length);
+        console.log('✅ 初始帧渲染完成，启动绝对时间动画循环...');
+
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>柏拉图与阿基米德 · 球面多面体交织</title>
+    <style>
+        :root { --bg: #02040a; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'STSong', 'Songti SC', 'Noto Serif SC', 'SimSun', 'Times New Roman', serif;
+            -webkit-font-smoothing: antialiased;
+            height: 100vh; width: 100vw;
+            user-select: none; -webkit-user-select: none; cursor: default;
+        }
+        #canvas-container {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1;
+        }
+        canvas { display: block; }
+        #title-overlay {
+            position: fixed; top: 26px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+        }
+        #title-overlay .title {
+            font-size: clamp(1.0rem, 2.2vw, 1.5rem); font-weight: 400; letter-spacing: 0.09em;
+            color: #cfc7b5; text-shadow: 0 0 42px rgba(200, 180, 150, 0.5), 0 0 72px rgba(170, 150, 130, 0.22);
+            line-height: 1.4; white-space: nowrap;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.5rem, 0.9vw, 0.66rem); font-weight: 300; letter-spacing: 0.13em;
+            color: #a09888; text-shadow: 0 0 16px rgba(155, 145, 125, 0.32);
+            margin-top: 2px; white-space: nowrap;
+        }
+        #formula-overlay {
+            position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+            background: rgba(2, 4, 10, 0.7); padding: 12px 24px; border-radius: 34px;
+            border: 1px solid rgba(175, 155, 135, 0.18);
+            backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); max-width: 95vw;
+        }
+        #formula-overlay .formula {
+            font-size: clamp(0.42rem, 0.78vw, 0.62rem); font-weight: 300; letter-spacing: 0.04em;
+            color: #c5bdaa; text-shadow: 0 0 14px rgba(185, 170, 145, 0.27);
+            line-height: 1.55; white-space: nowrap;
+        }
+        #formula-overlay .formula .c1 { color: #d4885c; }
+        #formula-overlay .formula .c2 { color: #5d9ec6; }
+        #formula-overlay .formula .c3 { color: #c77d9f; }
+        @media (max-width: 600px) {
+            #title-overlay { top: 14px; }
+            #formula-overlay { bottom: 12px; padding: 8px 14px; border-radius: 26px; }
+            #formula-overlay .formula { font-size: 0.36rem; white-space: normal; line-height: 1.35; }
+            #title-overlay .title { font-size: 0.7rem; }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="title-overlay">
+        <div class="title">柏拉图与阿基米德 · 球面多面体交织</div>
+        <div class="subtitle">ICOSA · DODECA · TRUNCATED ICOSA &nbsp;·&nbsp; 150 EDGES</div>
+    </div>
+    <div id="formula-overlay">
+        <div class="formula">
+            <span class="c1">I:</span> (0,±1,±φ)㊨ &nbsp;
+            <span class="c2">D:</span> (±1,±1,±1)∪(0,±φ⁻¹,±φ)㊨ &nbsp;
+            <span class="c3">T:</span> (0,±1,±3φ)∪… &nbsp;φ=(1+√5)/2
+            <br>
+            <span style="color:#9aa8b8;">R=2.7 &nbsp;12+20+60顶点 &nbsp;30+30+90边 &nbsp;绝对时间驱动</span>
+        </div>
+    </div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#02040a');
+        scene.fog = new THREE.Fog('#02040a', 8, 22);
+
+        const camera = new THREE.PerspectiveCamera(
+            48,
+            container.clientWidth / Math.max(container.clientHeight, 1),
+            0.25,
+            26
+        );
+        camera.position.set(1.5, 0.75, 7.5);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = false;
+        container.appendChild(renderer.domElement);
+
+        // ==================== 颜色 ====================
+        const COLOR_ICO = '#d4885c'; // 暖金 - 正二十面体
+        const COLOR_DOD = '#5d9ec6'; // 冰蓝 - 正十二面体
+        const COLOR_TRUNC = '#c77d9f'; // 玫瑰粉 - 截断二十面体
+        const COLOR_SPHERE = '#3a4a5c';
+        const COLOR_GLINT = '#8898aa';
+
+        const R = 2.7;
+        const phi = (1 + Math.sqrt(5)) / 2;
+        const invPhi = 1 / phi;
+
+        // ==================== 顶点生成 ====================
+        function normalizeToSphere(verts, radius) {
+            return verts.map(v => {
+                const len = Math.sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
+                if (len < 1e-10) return [0,0,0];
+                const scale = radius / len;
+                return [v[0]*scale, v[1]*scale, v[2]*scale];
+            });
+        }
+
+        // 正二十面体 12顶点
+        function generateIcosaVertices(r) {
+            const raw = [];
+            // 三个循环排列 (0, ±1, ±φ)
+            const perms = [[0,1,2],[2,0,1],[1,2,0]];
+            for (const [i,j,k] of perms) {
+                for (let si=-1; si<=1; si+=2) {
+                    for (let sj=-1; sj<=1; sj+=2) {
+                        const v = [0,0,0];
+                        v[i] = 0;
+                        v[j] = si;
+                        v[k] = sj * phi;
+                        raw.push(v);
+                    }
+                }
+            }
+            return normalizeToSphere(raw, r);
+        }
+
+        // 正十二面体 20顶点
+        function generateDodecaVertices(r) {
+            const raw = [];
+            // (±1,±1,±1)
+            for (let x=-1; x<=1; x+=2)
+                for (let y=-1; y<=1; y+=2)
+                    for (let z=-1; z<=1; z+=2)
+                        raw.push([x, y, z]);
+            // (0, ±1/φ, ±φ) 循环排列
+            const perms = [[0,1,2],[2,0,1],[1,2,0]];
+            for (const [i,j,k] of perms) {
+                for (let sj=-1; sj<=1; sj+=2) {
+                    for (let sk=-1; sk<=1; sk+=2) {
+                        const v = [0,0,0];
+                        v[i] = 0;
+                        v[j] = sj * invPhi;
+                        v[k] = sk * phi;
+                        raw.push(v);
+                    }
+                }
+            }
+            return normalizeToSphere(raw, r);
+        }
+
+        // 截断二十面体 60顶点
+        function generateTruncIcosaVertices(r) {
+            const raw = [];
+            const threePhi = 3 * phi;
+            const twoPlusPhi = 2 + phi;
+            const twoPhi = 2 * phi;
+            const twoPhiPlusOne = 2 * phi + 1;
+
+            const patterns = [
+                [0, 1, threePhi],
+                [1, twoPlusPhi, twoPhi],
+                [phi, 2, twoPhiPlusOne]
+            ];
+
+            // 所有偶排列及符号组合（判定坐标乘积为正？采用全排列加符号，然后过滤）
+            function allSignsAndPerms(base) {
+                const results = [];
+                const perms = [
+                    [0,1,2],[0,2,1],[1,0,2],[1,2,0],[2,0,1],[2,1,0]
+                ];
+                for (const p of perms) {
+                    for (let s0=-1; s0<=1; s0+=2) {
+                        for (let s1=-1; s1<=1; s1+=2) {
+                            for (let s2=-1; s2<=1; s2+=2) {
+                                const v = [0,0,0];
+                                v[0] = s0 * base[p[0]];
+                                v[1] = s1 * base[p[1]];
+                                v[2] = s2 * base[p[2]];
+                                results.push(v);
+                            }
+                        }
+                    }
+                }
+                return results;
+            }
+
+            for (const base of patterns) {
+                const expanded = allSignsAndPerms(base);
+                for (const v of expanded) raw.push(v);
+            }
+
+            // 去重（可能重复）
+            const unique = [];
+            const eps = 0.01;
+            for (const v of raw) {
+                let dup = false;
+                for (const u of unique) {
+                    const dx = u[0]-v[0], dy = u[1]-v[1], dz = u[2]-v[2];
+                    if (Math.sqrt(dx*dx+dy*dy+dz*dz) < eps) { dup = true; break; }
+                }
+                if (!dup) unique.push(v);
+            }
+
+            return normalizeToSphere(unique, r);
+        }
+
+        const icoVerts = generateIcosaVertices(R);
+        const dodVerts = generateDodecaVertices(R);
+        const truncVerts = generateTruncIcosaVertices(R);
+
+        console.log('正二十面体顶点:', icoVerts.length);
+        console.log('正十二面体顶点:', dodVerts.length);
+        console.log('截断二十面体顶点:', truncVerts.length);
+
+        // ==================== 自动生成边 ====================
+        function buildEdges(verts) {
+            const n = verts.length;
+            const points = verts.map(v => new THREE.Vector3(v[0], v[1], v[2]));
+            // 找到最小正距离作为边长参考
+            let minDist = Infinity;
+            for (let i = 0; i < n; i++) {
+                for (let j = i+1; j < n; j++) {
+                    const d = points[i].distanceTo(points[j]);
+                    if (d > 1e-6 && d < minDist) minDist = d;
+                }
+            }
+            const threshold = minDist * 1.05;
+            const edges = [];
+            for (let i = 0; i < n; i++) {
+                for (let j = i+1; j < n; j++) {
+                    const d = points[i].distanceTo(points[j]);
+                    if (d < threshold) edges.push([i, j]);
+                }
+            }
+            return { points, edges, threshold };
+        }
+
+        const icoData = buildEdges(icoVerts);
+        const dodData = buildEdges(dodVerts);
+        const truncData = buildEdges(truncVerts);
+
+        console.log('正二十面体边数:', icoData.edges.length);
+        console.log('正十二面体边数:', dodData.edges.length);
+        console.log('截断二十面体边数:', truncData.edges.length);
+
+        function createLineSegmentsFromData(data, colorHex, opacity) {
+            const vertices = [];
+            for (const [i, j] of data.edges) {
+                const a = data.points[i];
+                const b = data.points[j];
+                vertices.push(a.x, a.y, a.z, b.x, b.y, b.z);
+            }
+            const geom = new THREE.BufferGeometry();
+            geom.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+            const mat = new THREE.LineBasicMaterial({
+                color: new THREE.Color(colorHex),
+                transparent: true,
+                opacity: opacity,
+                depthWrite: true,
+            });
+            return new THREE.LineSegments(geom, mat);
+        }
+
+        const linesIco = createLineSegmentsFromData(icoData, COLOR_ICO, 0.62);
+        const linesDod = createLineSegmentsFromData(dodData, COLOR_DOD, 0.58);
+        const linesTrunc = createLineSegmentsFromData(truncData, COLOR_TRUNC, 0.6);
+
+        const mainGroup = new THREE.Group();
+        mainGroup.add(linesIco);
+        mainGroup.add(linesDod);
+        mainGroup.add(linesTrunc);
+        scene.add(mainGroup);
+
+        // ==================== 参考球面线框 ====================
+        function createSphereWireframe(radius, colorHex, opacity) {
+            const group = new THREE.Group();
+            const segs = 170;
+            const circleDefs = [
+                (a) => new THREE.Vector3(Math.cos(a)*radius, Math.sin(a)*radius, 0),
+                (a) => new THREE.Vector3(Math.cos(a)*radius, 0, Math.sin(a)*radius),
+                (a) => new THREE.Vector3(0, Math.cos(a)*radius, Math.sin(a)*radius),
+            ];
+            for (const gen of circleDefs) {
+                const pts = [];
+                for (let i=0; i<=segs; i++) pts.push(gen((i/segs)*Math.PI*2));
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(colorHex),
+                    transparent: true, opacity: opacity, depthWrite: true,
+                });
+                group.add(new THREE.Line(geom, mat));
+            }
+            return group;
+        }
+        const sphereRef = createSphereWireframe(R, COLOR_SPHERE, 0.22);
+        scene.add(sphereRef);
+
+        // 原点光点
+        function createOriginGlint() {
+            const group = new THREE.Group();
+            const sz = 0.1;
+            const pairs = [
+                [new THREE.Vector3(-sz,0,0), new THREE.Vector3(sz,0,0)],
+                [new THREE.Vector3(0,-sz,0), new THREE.Vector3(0,sz,0)],
+                [new THREE.Vector3(0,0,-sz), new THREE.Vector3(0,0,sz)],
+            ];
+            for (const [a,b] of pairs) {
+                const g = new THREE.BufferGeometry().setFromPoints([a,b]);
+                const m = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(COLOR_GLINT),
+                    transparent: true, opacity: 0.7, depthWrite: true,
+                });
+                group.add(new THREE.Line(g, m));
+            }
+            return group;
+        }
+        scene.add(createOriginGlint());
+
+        // ==================== 动画循环（绝对时间） ====================
+        let time = 0;
+        let lastTime = performance.now();
+        let frameCount = 0;
+        let logTime = 0;
+
+        function animate(now) {
+            requestAnimationFrame(animate);
+            let delta = (now - lastTime) / 1000;
+            if (delta <= 0 || delta > 0.5) delta = 0.016;
+            lastTime = now;
+            time += delta;
+            frameCount++;
+            if (now - logTime > 4000) {
+                console.log(`[动画运行中] 帧:${frameCount} 时间:${time.toFixed(2)}s 总边:${icoData.edges.length+dodData.edges.length+truncData.edges.length}`);
+                logTime = now;
+            }
+
+            // 主结构绕对角线旋转
+            mainGroup.rotation.y = time * 0.27;
+            mainGroup.rotation.x = time * 0.15 + Math.sin(time * 0.24) * 0.22;
+            mainGroup.rotation.z = Math.cos(time * 0.19) * 0.16;
+
+            // 参考球面轻微独立旋转
+            sphereRef.rotation.y += 0.0009;
+            sphereRef.rotation.x += 0.0006;
+
+            // 相机游走
+            const camX = 1.5 + Math.sin(time * 0.14) * 0.55;
+            const camY = 0.75 + Math.cos(time * 0.18) * 0.5;
+            const camZ = 7.5 + Math.sin(time * 0.11) * 0.5;
+            camera.position.set(camX, camY, camZ);
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        // ==================== 窗口调整 ====================
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth;
+            const h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth;
+            const h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 100));
+
+        // ==================== 启动 ====================
+        console.log('=== 柏拉图与阿基米德 · 球面多面体交织 ===');
+        console.log('总边数:', icoData.edges.length + dodData.edges.length + truncData.edges.length);
+        console.log('✅ 初始帧渲染完成，启动绝对时间动画循环...');
+
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

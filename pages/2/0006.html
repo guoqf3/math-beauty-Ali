@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>红金射线光效</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            /* 兜底深红色背景，加载瞬间不会出现黑屏 */
+            background-color: #8a0000; 
+        }
+        #container {
+            width: 100vw;
+            height: 100vh;
+            display: block;
+        }
+        /* 极简提示文字，几乎不可见，满足“不要太多文字”的需求 */
+        #hint {
+            position: absolute;
+            bottom: 15px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: rgba(255, 255, 255, 0.2);
+            font-family: sans-serif;
+            font-size: 12px;
+            pointer-events: none;
+            user-select: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="container"></div>
+    <div id="hint">移动鼠标聚焦光心 · 点击爆发能量</div>
+
+    <!-- 引入 PixiJS 7 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.4.2/pixi.min.js"></script>
+
+    <script>
+        // 1. 初始化应用，配置防黑屏背景
+        const app = new PIXI.Application({
+            resizeTo: window,
+            backgroundColor: 0x8a0000, 
+            antialias: true,
+            autoDensity: true,
+            resolution: window.devicePixelRatio || 1
+        });
+        document.getElementById('container').appendChild(app.view);
+
+        // 2. 创建承载全屏着色器的 Sprite
+        const geometry = new PIXI.Graphics();
+        geometry.beginFill(0xffffff);
+        geometry.drawRect(0, 0, 1, 1);
+        geometry.endFill();
+        const texture = app.renderer.generateTexture(geometry);
+        const sprite = new PIXI.Sprite(texture);
+        sprite.width = window.innerWidth;
+        sprite.height = window.innerHeight;
+        app.stage.addChild(sprite);
+
+        // 3. 交互变量
+        let mouse = { x: 0.5, y: 0.5 };
+        let clickEnergy = 0;
+
+        // 4. 核心渲染逻辑：自定义 Shader
+        const filter = new PIXI.Filter(
+            // 顶点着色器
+            `
+            attribute vec2 aVertexPosition;
+            attribute vec2 aTextureCoord;
+            uniform mat3 projectionMatrix;
+            varying vec2 vTextureCoord;
+            void main(void) {
+                gl_Position = vec4((projectionMatrix * vec3(aVertexPosition, 1.0)).xy, 0.0, 1.0);
+                vTextureCoord = aTextureCoord;
+            }
+            `,
+            // 片元着色器（GPU 全屏并行计算，保证极高帧率）
+            `
+            precision highp float;
+            varying vec2 vTextureCoord;
+            uniform float uTime;
+            uniform vec2 uMouse;
+            uniform float uClickEnergy;
+            uniform vec2 uResolution;
+
+            // 随机数函数（用于生成粒子）
+            float hash(vec2 p) {
+                return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+            }
+
+            void main(void) {
+                // 将坐标原点移至中心，并修正长宽比
+                vec2 uv = vTextureCoord;
+                vec2 aspect = vec2(uResolution.x / uResolution.y, 1.0);
+                vec2 p = (uv - 0.5) * aspect;
+                
+                // 光心位置（跟随鼠标）
+                vec2 m = (uMouse - 0.5) * aspect;
+                vec2 delta = p - m;
+                
+                // 距离与角度
+                float r = length(delta);
+                float a = atan(delta.y, delta.x);
+
+                // 核心动效：时光隧道/射线流
+                // 利用时间和角度生成波动，速度明快（乘以 2.0 增加速度）
+                float t = uTime * 2.0;
+                a += sin(r * 5.0 - t) * 0.05; // 射线向中心流动的微微扭曲
+
+                // 粒子与闪烁
+                float particle = step(0.98, hash(floor(uv * 40.0)) + sin(uTime * 10.0) * 0.02);
+
+                // 生成密集的放射状线条
+                float lines = abs(sin(a * 80.0 + r * 10.0 - t * 5.0));
+                lines = pow(lines, 20.0); // 让线条变细，更锐利
+
+                // 光的能量场（径向渐变）
+                float glow = exp(-r * 3.0); // 中心主光
+                float halo = exp(-r * 1.5) * 0.5; // 大范围光晕
+                
+                // 点击爆发时的能量波
+                float wave = sin(r * 20.0 - uTime * 15.0) * exp(-r * 5.0) * uClickEnergy;
+
+                // 颜色映射：依次为 深红 -> 红 -> 金 -> 白
+                vec3 deepRed = vec3(0.35, 0.0, 0.0);
+                vec3 red = vec3(0.8, 0.1, 0.1);
+                vec3 gold = vec3(1.0, 0.8, 0.3);
+                vec3 white = vec3(1.0);
+
+                // 基础背景层（深红渐变）
+                vec3 color = mix(deepRed, red, glow * 2.0);
+                
+                // 叠加光芒线条（受距离衰减，外围变淡）
+                color = mix(color, gold, lines * exp(-r * 2.0) * 1.5);
+                
+                // 叠加极亮的光心和冲击波
+                color = mix(color, white, glow + wave);
+                color = mix(color, red, halo);
+
+                // 叠加粒子闪烁（距离中心越近越亮）
+                color = mix(color, gold, particle * exp(-r * 4.0) * 2.0);
+
+                // 鼠标平滑过渡，增强交互感
+                color += vec3(0.1, 0.0, 0.0) * exp(-r * 2.0);
+
+                // 色彩截断和 Gamma 校正，防止过曝
+                gl_FragColor = vec4(pow(color, vec3(0.9)), 1.0);
+            }
+            `
+        );
+
+        // 应用滤镜
+        sprite.filters = [filter];
+
+        // 5. 事件监听
+        window.addEventListener('mousemove', (e) => {
+            mouse.x = e.clientX / window.innerWidth;
+            mouse.y = 1.0 - (e.clientY / window.innerHeight);
+        });
+
+        window.addEventListener('mousedown', () => {
+            clickEnergy = 1.0; // 点击触发全屏能量爆发
+        });
+
+        window.addEventListener('resize', () => {
+            sprite.width = window.innerWidth;
+            sprite.height = window.innerHeight;
+            filter.uniforms.uResolution = [window.innerWidth, window.innerHeight];
+        });
+
+        // 初始化分辨率
+        filter.uniforms.uResolution = [window.innerWidth, window.innerHeight];
+
+        // 6. 动画循环
+        app.ticker.add(() => {
+            // 爆发的点击能量平滑衰减，形成涟漪
+            clickEnergy *= 0.92;
+            if (clickEnergy < 0.001) clickEnergy = 0;
+
+            // 更新着色器参数
+            filter.uniforms.uTime = app.ticker.lastTime / 1000;
+            filter.uniforms.uMouse = [mouse.x, mouse.y];
+            filter.uniforms.uClickEnergy = clickEnergy;
+        });
+
+    </script>
+</body>
+</html>

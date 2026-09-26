@@ -1,0 +1,594 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hopf纤维化 · 拓扑之美</title>
+    <style>
+        :root {
+            --bg: #04040e;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'Noto Serif SC', 'STSong', 'KaiTi', '楷体', '华文楷体', '宋体', serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            height: 100vh;
+            width: 100vw;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+        #canvas-container {
+            position: fixed;
+            inset: 0;
+            z-index: 1;
+        }
+        canvas {
+            display: block;
+        }
+        .overlay {
+            position: fixed;
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+        #title-overlay {
+            top: clamp(12px, 3.5vh, 36px);
+        }
+        #title-overlay .title {
+            font-size: clamp(1.05rem, 2.1vw, 1.55rem);
+            font-weight: 400;
+            letter-spacing: 0.12em;
+            color: rgba(235, 228, 220, 0.91);
+            text-shadow: 0 0 24px rgba(170, 160, 200, 0.5), 0 0 6px rgba(150, 140, 190, 0.35);
+            line-height: 1.4;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.68rem, 1.25vw, 0.82rem);
+            font-weight: 300;
+            letter-spacing: 0.07em;
+            color: rgba(200, 192, 210, 0.7);
+            margin-top: 0.25em;
+            text-shadow: 0 0 13px rgba(160, 145, 180, 0.3);
+        }
+        #formula-overlay {
+            bottom: clamp(16px, 4vh, 44px);
+        }
+        #formula-overlay .formula {
+            font-size: clamp(0.72rem, 1.35vw, 1.0rem);
+            font-style: italic;
+            letter-spacing: 0.05em;
+            color: rgba(222, 214, 204, 0.84);
+            text-shadow: 0 0 20px rgba(160, 145, 135, 0.42), 0 0 5px rgba(170, 155, 140, 0.28);
+            line-height: 1.55;
+            background: rgba(10, 9, 16, 0.48);
+            padding: 0.42em 1.3em;
+            border-radius: 2em;
+            backdrop-filter: blur(5px);
+            -webkit-backdrop-filter: blur(5px);
+            border: 1px solid rgba(130, 115, 155, 0.22);
+        }
+        @media (max-width: 600px) {
+            #formula-overlay .formula {
+                padding: 0.35em 0.9em;
+                letter-spacing: 0.03em;
+                font-size: 0.66rem;
+            }
+            #title-overlay .title {
+                letter-spacing: 0.07em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+
+    <div class="overlay" id="title-overlay">
+        <div class="title">Hopf纤维化 · 拓扑之美</div>
+        <div class="subtitle">Hopf Fibration — S³ → S²</div>
+    </div>
+
+    <div class="overlay" id="formula-overlay">
+        <div class="formula">
+            F<sub>ζ</sub> = { (z₁, z₂) ∈ S³ | z₁ = ζ·z₂ }
+            &ensp;→&ensp; π(F<sub>ζ</sub>) 是 ℝ³ 中的完美圆
+        </div>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 时间配置 ====================
+        const DRAW_DURATION = 15.0;
+        const HOLD_DURATION = 1.5;
+        const ERASE_DURATION = 15.0;
+        const CYCLE_DURATION = DRAW_DURATION + HOLD_DURATION + ERASE_DURATION;
+        const DRAW_END = DRAW_DURATION;
+        const ERASE_START = DRAW_END + HOLD_DURATION;
+        const FADE_IN_DURATION = 2.6;
+        const FADE_OUT_START = CYCLE_DURATION - 3.0;
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x04040e, 0.0001);
+
+        const camera = new THREE.PerspectiveCamera(46, container.clientWidth / container.clientHeight, 0.35, 16);
+        camera.position.set(0.35, 0.5, 4.8);
+        camera.lookAt(0, -0.04, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.15;
+        renderer.outputColorSpace = THREE.SRGBColorSpace;
+        container.appendChild(renderer.domElement);
+
+        // ==================== 主旋转组 ====================
+        const mainGroup = new THREE.Group();
+        scene.add(mainGroup);
+
+        // ==================== 背景星空粒子 ====================
+        const starsGroup = new THREE.Group();
+        mainGroup.add(starsGroup);
+        const starCount = 200;
+        const starPosArr = new Float32Array(starCount * 3);
+        for (let i = 0; i < starCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const r = 2.0 + Math.random() * 3.2;
+            starPosArr[i * 3] = Math.sin(phi) * Math.cos(theta) * r;
+            starPosArr[i * 3 + 1] = Math.sin(phi) * Math.sin(theta) * r;
+            starPosArr[i * 3 + 2] = Math.cos(phi) * r;
+        }
+        const starGeom = new THREE.BufferGeometry();
+        starGeom.setAttribute('position', new THREE.BufferAttribute(starPosArr, 3));
+        const starMat = new THREE.PointsMaterial({
+            color: 0xc8c0d8,
+            size: 0.011,
+            transparent: true,
+            opacity: 0.38,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending,
+        });
+        const starPts = new THREE.Points(starGeom, starMat);
+        starsGroup.add(starPts);
+
+        // 球面附近光点
+        const glowGroup = new THREE.Group();
+        mainGroup.add(glowGroup);
+        const glowCount = 90;
+        const glowArr = new Float32Array(glowCount * 3);
+        const phiG = Math.PI * (3 - Math.sqrt(5));
+        for (let i = 0; i < glowCount; i++) {
+            const y = 1 - (i / (glowCount - 1)) * 2;
+            const rAtY = Math.sqrt(1 - y * y);
+            const theta = phiG * i;
+            glowArr[i * 3] = Math.cos(theta) * rAtY * 1.38;
+            glowArr[i * 3 + 1] = y * 1.38;
+            glowArr[i * 3 + 2] = Math.sin(theta) * rAtY * 1.38;
+        }
+        const glowGeom = new THREE.BufferGeometry();
+        glowGeom.setAttribute('position', new THREE.BufferAttribute(glowArr, 3));
+        const glowMat = new THREE.PointsMaterial({
+            color: 0xf2e6d6,
+            size: 0.02,
+            transparent: true,
+            opacity: 0.5,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending,
+        });
+        const glowPts = new THREE.Points(glowGeom, glowMat);
+        glowGroup.add(glowPts);
+
+        // ==================== 参考球面线框 ====================
+        const sphereWireGroup = new THREE.Group();
+        mainGroup.add(sphereWireGroup);
+        const SPHERE_R = 1.0;
+        const sphereMats = [];
+
+        function createLatLine(phi) {
+            const pts = [];
+            const r = Math.sin(phi) * SPHERE_R;
+            const y = Math.cos(phi) * SPHERE_R;
+            for (let i = 0; i <= 220; i++) {
+                const th = (i / 220) * Math.PI * 2;
+                pts.push(new THREE.Vector3(r * Math.cos(th), y, r * Math.sin(th)));
+            }
+            const g = new THREE.BufferGeometry().setFromPoints(pts);
+            const m = new THREE.LineBasicMaterial({
+                color: 0x3d3855,
+                transparent: true,
+                opacity: 0.16,
+                depthWrite: false,
+            });
+            sphereMats.push(m);
+            return new THREE.Line(g, m);
+        }
+        function createLongLine(theta) {
+            const pts = [];
+            for (let i = 0; i <= 180; i++) {
+                const phi = (i / 180) * Math.PI;
+                pts.push(new THREE.Vector3(
+                    Math.sin(phi) * Math.cos(theta) * SPHERE_R,
+                    Math.cos(phi) * SPHERE_R,
+                    Math.sin(phi) * Math.sin(theta) * SPHERE_R
+                ));
+            }
+            const g = new THREE.BufferGeometry().setFromPoints(pts);
+            const m = new THREE.LineBasicMaterial({
+                color: 0x3d3855,
+                transparent: true,
+                opacity: 0.16,
+                depthWrite: false,
+            });
+            sphereMats.push(m);
+            return new THREE.Line(g, m);
+        }
+        for (let i = 1; i <= 7; i++) {
+            sphereWireGroup.add(createLatLine((i / 8) * Math.PI));
+        }
+        for (let i = 0; i < 18; i++) {
+            sphereWireGroup.add(createLongLine((i / 18) * Math.PI * 2));
+        }
+        // 赤道
+        {
+            const eqPts = [];
+            for (let i = 0; i <= 280; i++) {
+                const th = (i / 280) * Math.PI * 2;
+                eqPts.push(new THREE.Vector3(Math.cos(th) * SPHERE_R, 0, Math.sin(th) * SPHERE_R));
+            }
+            const eqG = new THREE.BufferGeometry().setFromPoints(eqPts);
+            const eqM = new THREE.LineBasicMaterial({
+                color: 0x5a5580,
+                transparent: true,
+                opacity: 0.22,
+                depthWrite: false,
+            });
+            sphereMats.push(eqM);
+            sphereWireGroup.add(new THREE.Line(eqG, eqM));
+        }
+
+        // ==================== 参考环面线框 ====================
+        const torusGroup = new THREE.Group();
+        mainGroup.add(torusGroup);
+        const torusMats = [];
+
+        function createTorusWireframe(R, r, color, opacity) {
+            const segU = 180;
+            const segV = 90;
+            const ptsArr = [];
+            // 环面以z轴为中心：x=(R+r*cos v)*cos u, y=(R+r*cos v)*sin u, z=r*sin v
+            // 生成纬线（固定v）
+            for (let j = 0; j <= segV; j += 6) {
+                const v = (j / segV) * Math.PI * 2;
+                const ringPts = [];
+                for (let i = 0; i <= segU; i++) {
+                    const u = (i / segU) * Math.PI * 2;
+                    ringPts.push(new THREE.Vector3(
+                        (R + r * Math.cos(v)) * Math.cos(u),
+                        (R + r * Math.cos(v)) * Math.sin(u),
+                        r * Math.sin(v)
+                    ));
+                }
+                const g = new THREE.BufferGeometry().setFromPoints(ringPts);
+                const m = new THREE.LineBasicMaterial({
+                    color,
+                    transparent: true,
+                    opacity,
+                    depthWrite: false,
+                });
+                torusMats.push(m);
+                torusGroup.add(new THREE.Line(g, m));
+            }
+            // 生成经线（固定u）
+            for (let i = 0; i <= segU; i += 10) {
+                const u = (i / segU) * Math.PI * 2;
+                const merPts = [];
+                for (let j = 0; j <= segV; j++) {
+                    const v = (j / segV) * Math.PI * 2;
+                    merPts.push(new THREE.Vector3(
+                        (R + r * Math.cos(v)) * Math.cos(u),
+                        (R + r * Math.cos(v)) * Math.sin(u),
+                        r * Math.sin(v)
+                    ));
+                }
+                const g = new THREE.BufferGeometry().setFromPoints(merPts);
+                const m = new THREE.LineBasicMaterial({
+                    color,
+                    transparent: true,
+                    opacity,
+                    depthWrite: false,
+                });
+                torusMats.push(m);
+                torusGroup.add(new THREE.Line(g, m));
+            }
+        }
+
+        // 3个代表性环面，对应S²上不同纬度
+        createTorusWireframe(0.58, 1.15, 0x6a6080, 0.15); // θ≈π/3
+        createTorusWireframe(1.0, 1.41, 0x5a5580, 0.13); // θ≈π/4
+        createTorusWireframe(1.73, 2.0, 0x504a70, 0.11); // θ≈π/6
+
+        // ==================== Hopf纤维生成 ====================
+        const fibersGroup = new THREE.Group();
+        mainGroup.add(fibersGroup);
+        const allCurveData = [];
+        const FIBER_SEGMENTS = 420;
+
+        /**
+         * 为给定的 w = u+iv（有限非零复数）生成Hopf纤维圆
+         * 使用立体投影公式
+         */
+        function createHopfFiber(w, color) {
+            const u = w.real !== undefined ? w.real : w[0];
+            const v = w.imag !== undefined ? w.imag : w[1];
+            const normWSq = u * u + v * v;
+            const sqrtFactor = Math.sqrt(1 + normWSq);
+            const positions = new Float32Array((FIBER_SEGMENTS + 1) * 3);
+
+            for (let i = 0; i <= FIBER_SEGMENTS; i++) {
+                const psi = (i / FIBER_SEGMENTS) * Math.PI * 2;
+                const cosPsi = Math.cos(psi);
+                const sinPsi = Math.sin(psi);
+                const denom = sqrtFactor - sinPsi; // 始终 > 0 对于 |w| > 0
+
+                const X = (u * cosPsi - v * sinPsi) / denom;
+                const Y = (u * sinPsi + v * cosPsi) / denom;
+                const Z = cosPsi / denom;
+
+                positions[i * 3] = X;
+                positions[i * 3 + 1] = Z; // 交换Y/Z使环面以竖直轴为中心
+                positions[i * 3 + 2] = Y;
+            }
+
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            geometry.setDrawRange(0, 0);
+
+            const material = new THREE.LineBasicMaterial({
+                color,
+                transparent: true,
+                opacity: 0.8,
+                depthWrite: false,
+            });
+            const line = new THREE.Line(geometry, material);
+            allCurveData.push({ geometry, totalVertices: FIBER_SEGMENTS + 1 });
+            return line;
+        }
+
+        /** 创建xy平面上的单位圆（对应w=∞） */
+        function createEquatorialFiber(color) {
+            const positions = new Float32Array((FIBER_SEGMENTS + 1) * 3);
+            for (let i = 0; i <= FIBER_SEGMENTS; i++) {
+                const theta = (i / FIBER_SEGMENTS) * Math.PI * 2;
+                positions[i * 3] = Math.cos(theta);
+                positions[i * 3 + 1] = 0;
+                positions[i * 3 + 2] = Math.sin(theta);
+            }
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            geometry.setDrawRange(0, 0);
+            const material = new THREE.LineBasicMaterial({
+                color,
+                transparent: true,
+                opacity: 0.8,
+                depthWrite: false,
+            });
+            const line = new THREE.Line(geometry, material);
+            allCurveData.push({ geometry, totalVertices: FIBER_SEGMENTS + 1 });
+            return line;
+        }
+
+        // 使用斐波那契球面分布选择S²上的点，然后映射到w=tan(θ/2)*e^{iφ}
+        const NUM_FIBERS_TOTAL = 55;
+        const wValues = [];
+        const phiValues = [];
+
+        for (let i = 0; i < NUM_FIBERS_TOTAL; i++) {
+            const y = 1 - (i / (NUM_FIBERS_TOTAL - 1)) * 2; // 1 到 -1
+            const theta = Math.acos(y); // 0 到 π
+            const phi = Math.PI * (3 - Math.sqrt(5)) * i;
+            const tanHalfTheta = Math.tan(theta / 2);
+            // 排除|w|太小的（北极附近，圆太大）
+            if (tanHalfTheta < 0.28) continue;
+            wValues.push({
+                real: tanHalfTheta * Math.cos(phi),
+                imag: tanHalfTheta * Math.sin(phi),
+                isInf: false,
+                phi,
+                theta,
+            });
+            phiValues.push(phi);
+        }
+        // 确保包含南极（w=∞）
+        wValues.push({ real: Infinity, imag: Infinity, isInf: true, phi: 0, theta: Math.PI });
+        phiValues.push(0);
+
+        const actualNum = wValues.length;
+
+        // 生成所有纤维
+        for (let i = 0; i < actualNum; i++) {
+            const wData = wValues[i];
+            const hue = (wData.phi / (Math.PI * 2) + 0.08) % 1.0;
+            const saturation = 0.55 + 0.3 * Math.sin(wData.theta * 1.4);
+            const lightness = 0.58 + 0.2 * Math.cos(wData.theta * 1.7);
+            const color = new THREE.Color();
+            color.setHSL(hue, saturation, lightness);
+
+            if (wData.isInf) {
+                fibersGroup.add(createEquatorialFiber(color));
+            } else {
+                fibersGroup.add(createHopfFiber({ real: wData.real, imag: wData.imag }, color));
+            }
+        }
+
+        // ==================== 额外装饰：几个离散的Villarceau-like高亮圆 ====================
+        // 在特定环面上添加几条对比色圆
+        const highlightGroup = new THREE.Group();
+        mainGroup.add(highlightGroup);
+        const highlightData = [];
+
+        function createHighlightCircle(centerY, radius, normalTilt, color, opacity) {
+            const pts = [];
+            const nSeg = 380;
+            // 圆心在(0, centerY, 0)，圆在倾斜平面上
+            const cosT = Math.cos(normalTilt);
+            const sinT = Math.sin(normalTilt);
+            for (let i = 0; i <= nSeg; i++) {
+                const ang = (i / nSeg) * Math.PI * 2;
+                const localX = Math.cos(ang) * radius;
+                const localZ = Math.sin(ang) * radius;
+                // 绕X轴旋转normalTilt
+                const worldX = localX;
+                const worldY = centerY + localZ * sinT;
+                const worldZ = localZ * cosT;
+                pts.push(new THREE.Vector3(worldX, worldY, worldZ));
+            }
+            const g = new THREE.BufferGeometry().setFromPoints(pts);
+            g.setDrawRange(0, 0);
+            const m = new THREE.LineBasicMaterial({
+                color,
+                transparent: true,
+                opacity,
+                depthWrite: false,
+            });
+            const line = new THREE.Line(g, m);
+            allCurveData.push({ geometry: g, totalVertices: nSeg + 1 });
+            highlightData.push({ line, color, opacity });
+            return line;
+        }
+
+        // 几个倾斜的高亮圆
+        highlightGroup.add(createHighlightCircle(0.25, 1.15, 0.55, 0xf0d090, 0.6));
+        highlightGroup.add(createHighlightCircle(-0.2, 1.08, -0.5, 0xd0c0f0, 0.55));
+        highlightGroup.add(createHighlightCircle(0.05, 1.32, 0.7, 0xc0e8d8, 0.5));
+        highlightGroup.add(createHighlightCircle(-0.35, 0.95, -0.65, 0xf0c8b0, 0.52));
+
+        // ==================== 动画循环 ====================
+        const clock = new THREE.Clock();
+        let animationStartTime = performance.now() / 1000;
+
+        function getCycleTime() {
+            const now = performance.now() / 1000;
+            return (now - animationStartTime) % CYCLE_DURATION;
+        }
+
+        function easeInOutCubic(t) {
+            return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const cycleTime = getCycleTime();
+            const dt = Math.min(clock.getDelta(), 0.1);
+
+            // 旋转
+            mainGroup.rotation.y += 0.2 * dt;
+            mainGroup.rotation.x += 0.04 * dt;
+            mainGroup.rotation.z += 0.02 * Math.sin(cycleTime * 0.55) * dt;
+
+            // 相机微动
+            const sway = 0.13 * Math.sin(cycleTime * (Math.PI * 2 / 36));
+            camera.position.y = 0.5 + sway;
+            camera.lookAt(0, -0.04, 0);
+
+            // 绘制进度
+            let fraction;
+            if (cycleTime < DRAW_END) {
+                fraction = easeInOutCubic(cycleTime / DRAW_DURATION);
+            } else if (cycleTime < ERASE_START) {
+                fraction = 1.0;
+            } else if (cycleTime < CYCLE_DURATION) {
+                const elapsed = cycleTime - ERASE_START;
+                fraction = 1.0 - easeInOutCubic(elapsed / ERASE_DURATION);
+                fraction = Math.max(0, fraction);
+            } else {
+                fraction = 0;
+            }
+
+            // 更新所有曲线drawRange
+            for (const data of allCurveData) {
+                const count = Math.round(fraction * data.totalVertices);
+                data.geometry.setDrawRange(0, Math.max(0, Math.min(data.totalVertices, count)));
+            }
+
+            // 背景透明度
+            let bgOp;
+            if (cycleTime < FADE_IN_DURATION) {
+                bgOp = cycleTime / FADE_IN_DURATION;
+            } else if (cycleTime < FADE_OUT_START) {
+                bgOp = 1.0;
+            } else if (cycleTime < CYCLE_DURATION) {
+                bgOp = 1.0 - (cycleTime - FADE_OUT_START) / (CYCLE_DURATION - FADE_OUT_START);
+            } else {
+                bgOp = 0;
+            }
+            bgOp = Math.max(0, Math.min(1, bgOp));
+
+            starMat.opacity = 0.38 * bgOp;
+            glowMat.opacity = 0.5 * bgOp;
+            for (const m of sphereMats) {
+                m.opacity = (m.opacity <= 0.17 ? 0.16 : 0.22) * bgOp;
+            }
+            for (const m of torusMats) {
+                m.opacity = m.opacity * bgOp;
+            }
+
+            // 粒子微动
+            glowGroup.position.y = Math.sin(cycleTime * 1.05) * 0.03;
+            starsGroup.rotation.y += dt * 0.04;
+            starsGroup.rotation.x += dt * 0.025;
+
+            renderer.render(scene, camera);
+        }
+
+        // ==================== 响应式 ====================
+        window.addEventListener('resize', () => {
+            camera.aspect = container.clientWidth / container.clientHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        });
+
+        // 可选重置
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'r' || e.key === 'R') {
+                animationStartTime = performance.now() / 1000;
+                for (const data of allCurveData) {
+                    data.geometry.setDrawRange(0, 0);
+                }
+                mainGroup.rotation.set(0, 0, 0);
+            }
+        });
+
+        // 预热渲染
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+
+        console.log('🔮 Hopf纤维化动画已启动');
+        console.log(`   - ${actualNum} 条Hopf纤维圆 + 4 条高亮圆`);
+        console.log(`   - 3 个参考环面线框`);
+        console.log(`   - 周期：${CYCLE_DURATION.toFixed(1)}秒`);
+        console.log('   - 按 R 键可重置');
+    </script>
+</body>
+</html>

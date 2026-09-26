@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SPECTRUM · 折射光束</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #0d0d1a;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            right: 32px;
+            z-index: 2;
+            text-align: right;
+            pointer-events: none;
+            opacity: 0.55;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+
+        .overlay:hover {
+            opacity: 0.9;
+        }
+
+        .title {
+            color: rgba(240, 230, 255, 0.8);
+            font-size: 11px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 18px rgba(160, 120, 240, 0.4);
+        }
+
+        .hint {
+            color: rgba(200, 180, 230, 0.5);
+            font-size: 8px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+
+        @media (max-width: 768px) {
+            .overlay {
+                bottom: 18px;
+                right: 20px;
+            }
+            .title {
+                font-size: 9px;
+                letter-spacing: 0.45em;
+            }
+            .hint {
+                font-size: 7px;
+                letter-spacing: 0.25em;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="canvas"></canvas>
+
+    <div class="overlay">
+        <div class="title">Spectrum</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script>
+        (function() {
+            // ─── 画布初始化 ───────────────────────────────────────────────
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            let beams = [];            // 光束数组
+            let mouse = { x: -9999, y: -9999, active: false };
+            let time = 0;
+            let colorMode = 0;         // 色彩模式，点击切换
+            let colorShift = 0;        // 色相偏移
+
+            // ─── 性能参数 ───────────────────────────────────────────────
+            const BEAM_COUNT = () => Math.max(60, Math.min(140, Math.floor(W / 9)));
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                // 深色背景，杜绝白屏
+                ctx.fillStyle = '#0d0d1a';
+                ctx.fillRect(0, 0, W, H);
+            }
+
+            // ─── 初始化光束 ─────────────────────────────────────────────
+            function initBeams() {
+                const count = BEAM_COUNT();
+                beams = [];
+                const spacing = W / count;
+                for (let i = 0; i < count; i++) {
+                    const x = spacing * i + spacing / 2;
+                    // 每条光束的色相基于其位置分配，形成彩虹渐变
+                    const hue = 210 + (i / count) * 180; // 蓝到红
+                    beams.push({
+                        x: x,
+                        y: H + 10,       // 从底部出发
+                        hue: hue,
+                        width: 1.2,
+                        bendFactor: 0.8 + Math.random() * 0.4,
+                    });
+                }
+            }
+
+            // ─── 绘制光束 ───────────────────────────────────────────────
+            function drawBeams(ctx) {
+                // 首先清除画布（半透明拖尾）
+                ctx.fillStyle = 'rgba(13, 13, 26, 0.18)';
+                ctx.fillRect(0, 0, W, H);
+
+                // 鼠标影响因子
+                const mouseInfluence = mouse.active ? 1 : 0;
+                let mouseEffectX = 0;
+                let mouseEffectY = 0;
+                if (mouse.active) {
+                    mouseEffectX = (mouse.x - W / 2) / (W / 2) * 0.6;
+                    mouseEffectY = (mouse.y - H / 2) / (H / 2) * 0.6;
+                }
+
+                // 绘制每束光
+                for (let i = 0; i < beams.length; i++) {
+                    const beam = beams[i];
+                    const startX = beam.x + (mouseInfluence * mouseEffectX * 30);
+                    const startY = H + 10;
+
+                    // 光束经过鼠标位置时弯曲，产生折射
+                    const controlX = mouse.active ? mouse.x : startX + (W / 2 - startX) * 0.5;
+                    const controlY = mouse.active ? mouse.y : H * 0.4;
+
+                    // 折射引起的偏移（色散）
+                    const dispersion = (beam.hue - 270) / 180 * 60 * mouseInfluence;
+                    const endX = beam.x + dispersion + (mouseInfluence * mouseEffectX * 50);
+                    const endY = -10;
+
+                    // 计算颜色
+                    const hue = (beam.hue + colorShift) % 360;
+                    let sat, light, alpha;
+                    if (colorMode === 0) {
+                        sat = 80;
+                        light = 60;
+                        alpha = 0.6;
+                    } else if (colorMode === 1) {
+                        sat = 90;
+                        light = 55;
+                        alpha = 0.8;
+                    } else {
+                        sat = 70;
+                        light = 70;
+                        alpha = 0.5;
+                    }
+
+                    // 使用二次贝塞尔曲线绘制光束
+                    ctx.strokeStyle = `hsla(${hue}, ${sat}%, ${light}%, ${alpha})`;
+                    ctx.lineWidth = beam.width;
+                    ctx.lineCap = 'round';
+                    ctx.beginPath();
+                    ctx.moveTo(startX, startY);
+                    ctx.quadraticCurveTo(controlX, controlY, endX, endY);
+                    ctx.stroke();
+
+                    // 光束光晕（宽一点的透明线）
+                    const glowAlpha = alpha * 0.2;
+                    ctx.strokeStyle = `hsla(${hue}, ${sat}%, ${light + 10}%, ${glowAlpha})`;
+                    ctx.lineWidth = beam.width * 3;
+                    ctx.beginPath();
+                    ctx.moveTo(startX, startY);
+                    ctx.quadraticCurveTo(controlX, controlY, endX, endY);
+                    ctx.stroke();
+                }
+            }
+
+            // ─── 鼠标光晕 ───────────────────────────────────────────────
+            function drawCursorGlow(ctx) {
+                if (!mouse.active) return;
+                const radius = 70;
+                const hue = 230 + colorShift;
+                const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                gradient.addColorStop(0, `hsla(${hue}, 60%, 80%, 0.08)`);
+                gradient.addColorStop(0.7, `hsla(${hue}, 50%, 70%, 0.03)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // ─── 主循环 ─────────────────────────────────────────────────
+            let lastTime = 0;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+
+                time += dt * 0.001;
+
+                // 绘制光束（包含拖尾清除）
+                drawBeams(ctx);
+
+                // 绘制鼠标光晕
+                drawCursorGlow(ctx);
+
+                requestAnimationFrame(animate);
+            }
+
+            // ─── 交互事件 ───────────────────────────────────────────────
+            function onMouseMove(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                // 切换色彩模式
+                colorMode = (colorMode + 1) % 3;
+                // 同时调整色相偏移
+                colorShift += 20 + Math.random() * 30;
+                if (colorShift > 150) colorShift = -20;
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    colorMode = (colorMode + 1) % 3;
+                    colorShift += 20 + Math.random() * 30;
+                    if (colorShift > 150) colorShift = -20;
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onResize() {
+                setupCanvas();
+                // 重新调整光束数量
+                const targetCount = BEAM_COUNT();
+                if (targetCount !== beams.length) {
+                    const spacing = W / targetCount;
+                    const newBeams = [];
+                    for (let i = 0; i < targetCount; i++) {
+                        const x = spacing * i + spacing / 2;
+                        newBeams.push({
+                            x: x,
+                            y: H + 10,
+                            hue: 210 + (i / targetCount) * 180,
+                            width: 1.2,
+                            bendFactor: 0.8 + Math.random() * 0.4,
+                        });
+                    }
+                    beams = newBeams;
+                } else {
+                    // 更新位置
+                    const spacing = W / beams.length;
+                    for (let i = 0; i < beams.length; i++) {
+                        beams[i].x = spacing * i + spacing / 2;
+                        beams[i].y = H + 10;
+                    }
+                }
+                // 重置鼠标状态
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+                initBeams();
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            // 确保初始背景填充
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#0d0d1a';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+
+        })();
+    </script>
+</body>
+</html>

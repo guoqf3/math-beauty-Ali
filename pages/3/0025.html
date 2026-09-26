@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>双相脉动生物 · Amorphous Pulse</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{
+    height:100%;overflow:hidden;background:#02040a;
+    font-family:"Helvetica Neue",Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  canvas{display:block;position:fixed;inset:0;}
+
+  #ui{position:fixed;inset:0;pointer-events:none;z-index:5;}
+
+  /* ---------- 左上标题 ---------- */
+  #title{
+    position:absolute;top:0;left:0;
+    padding:40px 46px;
+    opacity:0;animation:fade 1.8s .4s ease forwards;
+  }
+  #title h1{
+    font-size:clamp(18px,2.4vw,30px);
+    font-weight:200;
+    letter-spacing:.42em;text-indent:.42em;
+    background:linear-gradient(96deg,#5ff0e0 0%,#6fa8ff 42%,#c07aff 74%,#ff9dd0 100%);
+    -webkit-background-clip:text;background-clip:text;
+    color:transparent;
+    margin-bottom:14px;
+    filter:drop-shadow(0 0 26px rgba(100,200,255,.45));
+  }
+  #title .en{
+    font-size:9.5px;letter-spacing:.50em;text-indent:.50em;
+    color:rgba(140,190,230,.34);
+  }
+
+  /* ---------- 左下：公式 ---------- */
+  #formula{
+    position:absolute;bottom:0;left:0;
+    padding:0 46px 34px;
+    opacity:0;animation:fade 1.8s 1.1s ease forwards;
+    font-family:"SF Mono",Consolas,Monaco,"Courier New",monospace;
+    font-size:clamp(8.5px,0.98vw,11.5px);
+    line-height:2.0;
+    letter-spacing:.02em;
+    color:rgba(140,175,215,.28);
+    max-width:min(800px, 88vw);
+  }
+  #formula .lab{
+    display:block;font-size:8.5px;
+    letter-spacing:.44em;text-indent:.44em;
+    color:rgba(120,160,200,.22);
+    margin-bottom:10px;
+  }
+  #formula .kw{color:rgba(120,220,230,.58);}
+  #formula .fn{color:rgba(140,205,255,.52);}
+  #formula .nm{color:rgba(255,205,180,.58);}
+  #formula .op{color:rgba(150,180,220,.26);}
+  #formula .cm{color:rgba(130,150,190,.20);font-style:italic;}
+
+  /* ---------- 右下 ---------- */
+  #hint{
+    position:absolute;bottom:0;right:0;
+    padding:0 46px 34px;
+    text-align:right;
+    opacity:0;animation:fade 1.8s 1.4s ease forwards;
+  }
+  #hint .big{
+    font-size:clamp(9.5px,1.0vw,12px);
+    letter-spacing:.34em;text-indent:.34em;
+    color:rgba(140,220,240,.40);
+    margin-bottom:10px;font-weight:300;
+  }
+  #hint .small{
+    font-family:"SF Mono",Consolas,Monaco,monospace;
+    font-size:8.5px;letter-spacing:.22em;
+    color:rgba(130,165,210,.22);
+    line-height:1.9;
+  }
+
+  @keyframes fade{to{opacity:1;}}
+
+  @media (max-width:640px){
+    #title{padding:20px 20px;}
+    #formula{padding:0 20px 18px;font-size:7.5px;}
+    #hint{padding:0 20px 18px;}
+    #hint .small{display:none;}
+  }
+</style>
+</head>
+<body>
+
+<canvas id="c"></canvas>
+
+<div id="ui">
+  <div id="title">
+    <h1>双相生物</h1>
+    <div class="en">AMORPHOUS PULSE · V2</div>
+  </div>
+
+  <div id="formula">
+    <span class="lab">TWO SHAPES, ONE CREATURE</span>
+    <div><span class="kw">r</span><span class="op">(θ,t,m) = </span><span class="fn">mix</span><span class="op">( </span><span class="nm">A</span><span class="op">(θ,t), </span><span class="nm">B</span><span class="op">(θ,t), </span><span class="nm">e</span><span class="op">(m) )</span></div>
+    <div><span class="nm">A</span><span class="op"> = 1 + .32·sin(3θ+t) + .13·sin(7θ−1.5t)</span></div>
+    <div><span class="nm">B</span><span class="op"> = 1 + .26·sin(5θ−t) + .11·sin(9θ+1.2t) + .05·sin(14θ−2t)</span></div>
+    <div><span class="nm">e</span><span class="op">(m) = m²(3−2m)   </span><span class="cm">// 平滑混合</span></div>
+    <div><span class="op">θ′ = θ + .18·sin(2θ−t) + .07·sin(4θ+t)   </span><span class="cm">// 空间扭曲</span></div>
+  </div>
+
+  <div id="hint">
+    <div class="big">双形共生</div>
+    <div class="small">
+      INNER · OUTER · WARP · FLOW<br>
+      TWO SHAPES INTERPOLATED ACROSS RADIUS
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+'use strict';
+
+/* =========================================================
+   0. 基础
+   ========================================================= */
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d');
+
+const TAU = Math.PI * 2;
+let W = 0, H = 0, DPR = 1;
+let CX = 0, CY = 0, R = 0;
+
+/* 移动端降级 */
+let MOBILE = false;
+let N, LAYERS, CILIA, DOTS;
+
+function resize(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+
+  canvas.width  = Math.round(W * DPR);
+  canvas.height = Math.round(H * DPR);
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  CX = W * 0.5;
+  CY = H * 0.5;
+  R  = Math.min(W, H) * 0.24;
+
+  MOBILE = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) || W < 720;
+  N       = MOBILE ? 240 : 420;
+  LAYERS  = MOBILE ? 14  : 24;
+  CILIA   = MOBILE ? 50  : 96;
+  DOTS    = MOBILE ? 34  : 64;
+}
+window.addEventListener('resize', resize);
+resize();
+
+/* =========================================================
+   1. ★ 核心数学 ★
+   两个形状 A、B 沿半径平滑混合，再叠加空间扭曲
+   ========================================================= */
+
+/* 内层形状：三瓣为主 */
+function shapeA(a, t){
+  return 1
+    + 0.32 * Math.sin(3 * a + t * 0.85)
+    + 0.13 * Math.sin(7 * a - t * 1.55)
+    + 0.05 * Math.sin(11 * a + t * 2.10);
+}
+
+/* 外层形状：五瓣为主，更碎更细 */
+function shapeB(a, t){
+  return 1
+    + 0.26 * Math.sin(5 * a - t * 0.65)
+    + 0.11 * Math.sin(9 * a + t * 1.25)
+    + 0.05 * Math.sin(14 * a - t * 2.00);
+}
+
+/* 混合：m=0 内层，m=1 外层 */
+function body(a, t, m){
+  const e = m * m * (3 - 2 * m);
+  return shapeA(a, t) * (1 - e) + shapeB(a, t) * e;
+}
+
+/* 角度扭曲 —— 层与层之间发生错切 */
+function warp(a, t, m){
+  return a
+    + 0.18 * Math.sin(2 * a - t * 0.55 + m * 1.2)
+    + 0.07 * Math.sin(4 * a + t * 0.75);
+}
+
+/* =========================================================
+   2. 内部器官 —— 三个独立脉动的光团
+   ========================================================= */
+const ORGANS = [
+  { orbit: 0.26, spdA:  0.42, spdB:  0.31, phase: 0.0, size: 0.16, hue: 178, pulse: 2.10 },
+  { orbit: 0.38, spdA: -0.29, spdB:  0.47, phase: 2.1, size: 0.12, hue: 232, pulse: 2.65 },
+  { orbit: 0.20, spdA:  0.55, spdB: -0.38, phase: 4.2, size: 0.10, hue: 305, pulse: 3.05 }
+];
+
+/* =========================================================
+   3. 主循环
+   ========================================================= */
+let T0 = performance.now();
+
+function frame(now){
+  requestAnimationFrame(frame);
+
+  const t = (now - T0) / 1000;
+
+  /* ---------- 清屏 ---------- */
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = '#02040a';
+  ctx.fillRect(0, 0, W, H);
+
+  /* ---------- 生物整体浮动 ---------- */
+  const fx = CX + Math.cos(t * 0.35) * R * 0.025;
+  const fy = CY + Math.sin(t * 0.45) * R * 0.045;
+
+  /* ---------- 背景辉光 ---------- */
+  const bg = ctx.createRadialGradient(fx, fy, 0, fx, fy, R * 2.6);
+  bg.addColorStop(0.00, 'rgba(30, 90, 130, 0.20)');
+  bg.addColorStop(0.45, 'rgba(20, 50, 105, 0.08)');
+  bg.addColorStop(1.00, 'rgba(4, 8, 22, 0)');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  /* ---------- 混合模式 ---------- */
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineJoin = 'round';
+  ctx.lineCap  = 'round';
+
+  /* ---------- 整体呼吸 ---------- */
+  const breath = 1 + 0.055 * Math.sin(t * 0.62);
+
+  /* =======================================================
+     4. 内部器官（先画，位于膜下）
+     ======================================================= */
+  for (let i = 0; i < ORGANS.length; i++){
+    const o = ORGANS[i];
+
+    const ang = t * o.spdA + o.phase;
+    const rr  = R * o.orbit * (0.55 + 0.45 * Math.sin(t * o.spdB + o.phase));
+
+    const ox = fx + Math.cos(ang) * rr;
+    const oy = fy + Math.sin(ang) * rr;
+
+    const pulse = 1 + 0.30 * Math.sin(t * o.pulse + o.phase);
+    const size  = R * o.size * pulse;
+
+    const g = ctx.createRadialGradient(ox, oy, 0, ox, oy, size * 4.2);
+    g.addColorStop(0.00, 'hsla(' + o.hue + ', 96%, 90%, 0.82)');
+    g.addColorStop(0.22, 'hsla(' + o.hue + ', 92%, 68%, 0.42)');
+    g.addColorStop(0.55, 'hsla(' + o.hue + ', 88%, 58%, 0.13)');
+    g.addColorStop(1.00, 'hsla(' + o.hue + ', 88%, 58%, 0)');
+
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(ox, oy, size * 4.2, 0, TAU);
+    ctx.fill();
+  }
+
+  /* =======================================================
+     5. 脉动膜层 —— 核心视觉
+     ======================================================= */
+  for (let i = 0; i < LAYERS; i++){
+    const m = i / (LAYERS - 1);
+
+    /* 尺寸沿半径递增 */
+    const scale = R * (0.11 + 0.94 * m) * breath;
+
+    /* 时间相位错位：波从内向外传递 */
+    const tLocal = t - (1 - m) * 0.55;
+
+    /* ---- 构建路径 ---- */
+    ctx.beginPath();
+    for (let j = 0; j <= N; j++){
+      const a      = (j / N) * TAU;
+      const rad    = scale * body(a, tLocal, m);
+      const warped = warp(a, tLocal, m);
+
+      const px = fx + Math.cos(warped) * rad;
+      const py = fy + Math.sin(warped) * rad;
+
+      if (j) ctx.lineTo(px, py);
+      else   ctx.moveTo(px, py);
+    }
+    ctx.closePath();
+
+    /* ---- 色相：青绿 → 蓝 → 紫 → 品红 ---- */
+    const hue = 175 + m * 150;
+    const sat = 88 + m * 10;
+    const lum = 58 + m * 18;
+
+    /* ---- 外层柔光 ---- */
+    const glowW = (15 - m * 6.5) * (1 + 0.20 * Math.sin(t * 2.1 + i * 0.4));
+    ctx.strokeStyle = 'hsla(' + hue.toFixed(1) + ',' + sat.toFixed(0) + '%,' +
+                      lum.toFixed(0) + '%,' + (0.028 + 0.030 * m).toFixed(3) + ')';
+    ctx.lineWidth = glowW;
+    ctx.stroke();
+
+    /* ---- 内核亮线 ---- */
+    ctx.strokeStyle = 'hsla(' + hue.toFixed(1) + ',' + sat.toFixed(0) + '%,' +
+                      Math.min(96, lum + 26).toFixed(0) + '%,' +
+                      (0.22 + 0.48 * m).toFixed(3) + ')';
+    ctx.lineWidth = 0.55 + m * 1.35;
+    ctx.stroke();
+  }
+
+  /* =======================================================
+     6. 边缘纤毛 —— 从外膜甩出的触须
+     ======================================================= */
+  const mOuter = 1;
+  ctx.beginPath();
+  for (let i = 0; i < CILIA; i++){
+    const a   = (i / CILIA) * TAU;
+    const kk  = i * 0.47;
+
+    const w   = warp(a, t, mOuter);
+    const r0  = R * 0.98 * breath * body(a, t, mOuter);
+    const len = R * (0.028 + 0.115 * (0.5 + 0.5 * Math.sin(t * 2.3 + kk)));
+    const r1  = r0 + len;
+
+    ctx.moveTo(fx + Math.cos(w) * r0, fy + Math.sin(w) * r0);
+    ctx.lineTo(fx + Math.cos(w) * r1, fy + Math.sin(w) * r1);
+  }
+  ctx.strokeStyle = 'hsla(300, 88%, 78%, 0.24)';
+  ctx.lineWidth = 0.95;
+  ctx.stroke();
+
+  /* 第二层纤毛：更长更淡，形成层次 */
+  ctx.beginPath();
+  for (let i = 0; i < Math.floor(CILIA * 0.6); i++){
+    const a   = (i / Math.floor(CILIA * 0.6)) * TAU + 0.05;
+    const kk  = i * 0.83 + 3.7;
+
+    const w   = warp(a, t + 0.3, mOuter);
+    const r0  = R * 0.96 * breath * body(a, t + 0.3, mOuter);
+    const len = R * (0.05 + 0.16 * (0.5 + 0.5 * Math.sin(t * 1.7 + kk)));
+    const r1  = r0 + len;
+
+    ctx.moveTo(fx + Math.cos(w) * r0, fy + Math.sin(w) * r0);
+    ctx.lineTo(fx + Math.cos(w) * r1, fy + Math.sin(w) * r1);
+  }
+  ctx.strokeStyle = 'hsla(200, 92%, 76%, 0.16)';
+  ctx.lineWidth = 0.7;
+  ctx.stroke();
+
+  /* =======================================================
+     7. 细胞核 —— 中心脉动光团
+     ======================================================= */
+  const coreR = R * 0.075 * (1 + 0.34 * Math.sin(t * 1.85));
+
+  const cg = ctx.createRadialGradient(fx, fy, 0, fx, fy, coreR * 5.5);
+  cg.addColorStop(0.00, 'rgba(255, 255, 250, 0.94)');
+  cg.addColorStop(0.16, 'rgba(180, 245, 255, 0.55)');
+  cg.addColorStop(0.42, 'rgba(120, 180, 255, 0.18)');
+  cg.addColorStop(1.00, 'rgba(120, 90, 240, 0)');
+  ctx.fillStyle = cg;
+  ctx.beginPath();
+  ctx.arc(fx, fy, coreR * 5.5, 0, TAU);
+  ctx.fill();
+
+  /* =======================================================
+     8. 共生粒子 —— 黄金角分布，环绕生物公转
+     ======================================================= */
+  const GOLDEN = 2.399963229728653;
+
+  for (let i = 0; i < DOTS; i++){
+    const a  = i * GOLDEN + t * (0.18 + (i % 7) * 0.082);
+    const rr = R * (0.16 + 0.94 * Math.pow((i % 17) / 17, 0.72)) * breath;
+
+    const px = fx + Math.cos(a) * rr;
+    const py = fy + Math.sin(a) * rr;
+
+    const size = 0.85 + 1.55 * Math.abs(Math.sin(t * 1.65 + i));
+    const hue  = (175 + (i % 14) * 11 + t * 24) % 360;
+
+    ctx.fillStyle = 'hsla(' + hue.toFixed(1) + ', 94%, 74%, 0.40)';
+    ctx.beginPath();
+    ctx.arc(px, py, size, 0, TAU);
+    ctx.fill();
+  }
+
+  /* =======================================================
+     9. 暗角
+     ======================================================= */
+  ctx.globalCompositeOperation = 'source-over';
+  const vg = ctx.createRadialGradient(
+    CX, CY, Math.min(W, H) * 0.30,
+    CX, CY, Math.max(W, H) * 0.80
+  );
+  vg.addColorStop(0, 'rgba(0,0,0,0)');
+  vg.addColorStop(1, 'rgba(0,0,0,0.72)');
+  ctx.fillStyle = vg;
+  ctx.fillRect(0, 0, W, H);
+}
+
+/* =========================================================
+   10. 启动
+   ========================================================= */
+T0 = performance.now();
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

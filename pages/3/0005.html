@@ -1,0 +1,793 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>正弦海浪 · 跃出海豚</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{
+    height:100%;overflow:hidden;background:#02060e;color:#fff;
+    font-family:"Helvetica Neue",Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif;
+    -webkit-font-smoothing:antialiased;cursor:crosshair;
+  }
+  canvas{display:block;position:fixed;inset:0;}
+
+  #ui{position:fixed;inset:0;pointer-events:none;z-index:5;}
+
+  #title{
+    position:absolute;top:0;left:0;
+    padding:42px 48px;opacity:0;
+    animation:fade 1.8s 0.3s ease forwards;
+  }
+  #title .en{
+    font-size:10px;letter-spacing:.52em;text-indent:.52em;
+    color:rgba(140,200,240,.36);font-weight:300;margin-bottom:14px;
+  }
+  #title h1{
+    font-size:clamp(22px,3.2vw,42px);
+    font-weight:200;letter-spacing:.32em;text-indent:.32em;
+    background:linear-gradient(96deg,#6ad8ff 0%,#7ab8ff 40%,#b99eff 72%,#ffd08a 100%);
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+    margin-bottom:14px;
+    filter:drop-shadow(0 0 30px rgba(100,200,255,.45));
+  }
+  #title .sub{
+    font-size:11px;letter-spacing:.22em;line-height:2.0;
+    color:rgba(160,205,240,.32);font-weight:300;
+  }
+
+  #stats{
+    position:absolute;bottom:0;left:0;
+    padding:0 48px 42px;
+    font-family:"SF Mono",Consolas,Monaco,"Courier New",monospace;
+    font-size:10px;letter-spacing:.14em;line-height:2.1;
+    color:rgba(150,200,240,.30);
+    opacity:0;animation:fade 1.8s 1.1s ease forwards;
+  }
+  #stats .k{color:rgba(180,190,255,.55);}
+  #stats .v{color:rgba(255,215,150,.72);}
+  #stats .lab{
+    display:block;font-size:8.5px;letter-spacing:.42em;text-indent:.42em;
+    color:rgba(130,185,230,.26);margin-bottom:8px;
+  }
+
+  #meter{
+    position:absolute;bottom:0;right:0;
+    padding:0 48px 42px;text-align:right;
+    font-family:"SF Mono",Consolas,Monaco,"Courier New",monospace;
+    font-size:10px;letter-spacing:.14em;line-height:2.1;
+    color:rgba(150,200,240,.30);
+    opacity:0;animation:fade 1.8s 1.4s ease forwards;
+  }
+  #meter .k{color:rgba(180,190,255,.55);}
+  #meter .v{color:rgba(255,215,150,.72);}
+
+  #hint{
+    position:absolute;bottom:0;left:50%;transform:translateX(-50%);
+    padding-bottom:46px;white-space:nowrap;
+    font-size:10px;letter-spacing:.28em;
+    color:rgba(160,205,240,.42);
+    opacity:0;animation:fade 1.8s 1.8s ease forwards;
+  }
+  #hint .arrow{
+    display:inline-block;
+    color:rgba(255,215,150,.80);
+    animation:bob 2.0s ease-in-out infinite;
+  }
+  @keyframes bob{
+    0%,100%{transform:translateY(0);}
+    50%{transform:translateY(-5px);}
+  }
+  @keyframes fade{to{opacity:1;}}
+
+  @media (max-width:640px){
+    #title{padding:22px 22px;}
+    #title .sub{font-size:9.5px;}
+    #stats{padding:0 22px 22px;font-size:8.5px;}
+    #meter{padding:0 22px 22px;font-size:8.5px;}
+    #hint{padding-bottom:26px;font-size:8.5px;}
+  }
+</style>
+</head>
+<body>
+
+<canvas id="c"></canvas>
+
+<div id="ui">
+  <div id="title">
+    <div class="en">SINE WAVE · LEAPING DOLPHIN</div>
+    <h1>正弦海浪</h1>
+    <div class="sub">
+      多层正弦波叠加 · 海豚随波峰跃出<br>
+      鼠标上下移动，改变海浪振幅
+    </div>
+  </div>
+
+  <div id="stats">
+    <span class="lab">WAVE FIELD</span>
+    <div><span class="k">h(x,t) = Σ aᵢ·sin(kᵢx − ωᵢt + φᵢ)</span></div>
+    <div><span class="k">波层数</span> <span class="v">5 层</span></div>
+    <div><span class="k">频率分量</span> <span class="v">3 / 层</span></div>
+    <div><span class="k">振幅缩放</span> <span class="v" id="ampVal">1.00×</span></div>
+  </div>
+
+  <div id="meter">
+    <div><span class="k">海豚 </span><span class="v" id="dolphinState">随波浮动</span></div>
+    <div><span class="k">跳跃高度 </span><span class="v" id="jumpVal">—</span></div>
+    <div><span class="k">鼠标 </span><span class="v" id="mouseVal">移动以控制</span></div>
+  </div>
+
+  <div id="hint">
+    <span class="arrow">▲</span> 鼠标上移 · 海浪汹涌 &nbsp;·&nbsp; 鼠标下移 · 海面平静 <span class="arrow">▼</span>
+  </div>
+</div>
+
+<script>
+(function(){
+'use strict';
+
+/* =========================================================
+   画布
+   ========================================================= */
+const TAU = Math.PI * 2;
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha: false });
+
+let W = 0, H = 0, DPR = 1, S = 0;
+let skyGrad = null, vignette = null;
+
+function resize(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width  = Math.round(W * DPR);
+  canvas.height = Math.round(H * DPR);
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  S = Math.min(W, H);
+
+  skyGrad = ctx.createLinearGradient(0, 0, 0, H);
+  skyGrad.addColorStop(0.00, '#01030a');
+  skyGrad.addColorStop(0.28, '#04101f');
+  skyGrad.addColorStop(0.52, '#072138');
+  skyGrad.addColorStop(0.72, '#0a2c48');
+  skyGrad.addColorStop(1.00, '#020610');
+
+  vignette = ctx.createRadialGradient(W * 0.5, H * 0.5, S * 0.25, W * 0.5, H * 0.5, S * 0.95);
+  vignette.addColorStop(0.00, 'rgba(0,0,0,0)');
+  vignette.addColorStop(0.62, 'rgba(0,4,12,0.20)');
+  vignette.addColorStop(1.00, 'rgba(0,0,4,0.68)');
+}
+window.addEventListener('resize', resize);
+
+/* =========================================================
+   波浪层定义
+   ========================================================= */
+const waveLayers = [
+  {
+    yBase: 0.38, amp: 0.013, spd: 0.42,
+    col1: '#0a1a2e', col2: '#0d2340',
+    crest: 'rgba(90,150,210,0.16)',
+    comps: [
+      { f: 0.0028, s: 0.34, a: 0.55, p: 0.0 },
+      { f: 0.0059, s: 0.51, a: 0.30, p: 1.4 },
+      { f: 0.0113, s: 0.79, a: 0.15, p: 2.9 }
+    ]
+  },
+  {
+    yBase: 0.46, amp: 0.020, spd: 0.52,
+    col1: '#0b2036', col2: '#0f2a4c',
+    crest: 'rgba(100,165,225,0.20)',
+    comps: [
+      { f: 0.0032, s: 0.38, a: 0.50, p: 0.6 },
+      { f: 0.0066, s: 0.57, a: 0.32, p: 2.0 },
+      { f: 0.0126, s: 0.88, a: 0.18, p: 3.4 }
+    ]
+  },
+  {
+    yBase: 0.56, amp: 0.030, spd: 0.62,
+    col1: '#0d2844', col2: '#12355c',
+    crest: 'rgba(115,185,240,0.26)',
+    comps: [
+      { f: 0.0036, s: 0.44, a: 0.48, p: 1.2 },
+      { f: 0.0074, s: 0.65, a: 0.33, p: 2.6 },
+      { f: 0.0141, s: 0.98, a: 0.19, p: 4.0 }
+    ]
+  },
+  {
+    yBase: 0.70, amp: 0.042, spd: 0.74,
+    col1: '#0f3252', col2: '#164470',
+    crest: 'rgba(135,205,250,0.32)',
+    comps: [
+      { f: 0.0040, s: 0.50, a: 0.46, p: 1.8 },
+      { f: 0.0083, s: 0.73, a: 0.34, p: 3.2 },
+      { f: 0.0157, s: 1.10, a: 0.20, p: 4.6 }
+    ]
+  },
+  {
+    yBase: 0.86, amp: 0.054, spd: 0.88,
+    col1: '#113b5e', col2: '#1a5488',
+    crest: 'rgba(160,220,255,0.40)',
+    comps: [
+      { f: 0.0045, s: 0.58, a: 0.44, p: 2.4 },
+      { f: 0.0092, s: 0.83, a: 0.35, p: 3.8 },
+      { f: 0.0176, s: 1.24, a: 0.21, p: 5.2 }
+    ]
+  }
+];
+
+/* =========================================================
+   振幅控制
+   ========================================================= */
+let targetAmp = 1.0;
+let ampScale = 1.0;
+let mouseActive = false;
+
+function setAmplitudeFromY(clientY){
+  const y = Math.max(0, Math.min(H, clientY));
+  targetAmp = 0.35 + (1 - y / H) * 1.95;   // 底部 0.35，顶部 2.30
+  mouseActive = true;
+}
+
+window.addEventListener('mousemove', e => setAmplitudeFromY(e.clientY));
+window.addEventListener('touchmove', e => {
+  if (e.touches.length) setAmplitudeFromY(e.touches[0].clientY);
+}, { passive: true });
+
+/* =========================================================
+   波浪高度函数
+   ========================================================= */
+function waveY(x, t, layer){
+  let h = 0;
+  const c = layer.comps;
+  for (let i = 0; i < c.length; i++){
+    h += c[i].a * Math.sin(x * c[i].f + t * c[i].s * layer.spd + c[i].p);
+  }
+  return H * layer.yBase - h * H * layer.amp * ampScale;
+}
+
+/* 取某层在 x 处的波面高度 */
+function surfaceY(x, t, layer){
+  return waveY(x, t, layer);
+}
+
+/* =========================================================
+   音频
+   ========================================================= */
+let audioCtx = null;
+let masterGain = null;
+let waveGain = null;
+let waveFilter = null;
+let audioStarted = false;
+
+function initAudio(){
+  if (audioStarted) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  try { audioCtx = new AC(); } catch(e){ return; }
+  audioStarted = true;
+
+  masterGain = audioCtx.createGain();
+  masterGain.gain.value = 0.60;
+  masterGain.connect(audioCtx.destination);
+
+  /* ---------- 白噪声缓冲 ---------- */
+  const bufLen = audioCtx.sampleRate * 4;
+  const buf = audioCtx.createBuffer(1, bufLen, audioCtx.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < bufLen; i++) d[i] = Math.random() * 2 - 1;
+
+  /* ---------- 海浪：噪声 → 低通 ---------- */
+  const noiseSrc = audioCtx.createBufferSource();
+  noiseSrc.buffer = buf;
+  noiseSrc.loop = true;
+
+  waveFilter = audioCtx.createBiquadFilter();
+  waveFilter.type = 'lowpass';
+  waveFilter.frequency.value = 680;
+  waveFilter.Q.value = 0.62;
+
+  const hp = audioCtx.createBiquadFilter();
+  hp.type = 'highpass';
+  hp.frequency.value = 90;
+
+  waveGain = audioCtx.createGain();
+  waveGain.gain.value = 0.0;
+
+  noiseSrc.connect(waveFilter);
+  waveFilter.connect(hp);
+  hp.connect(waveGain);
+  waveGain.connect(masterGain);
+  noiseSrc.start();
+
+  waveGain.gain.setTargetAtTime(0.055, audioCtx.currentTime, 1.6);
+
+  /* LFO1：拍岸的潮汐节奏 */
+  const lfo1 = audioCtx.createOscillator();
+  lfo1.frequency.value = 0.13;
+  const lfo1g = audioCtx.createGain();
+  lfo1g.gain.value = 0.028;
+  lfo1.connect(lfo1g);
+  lfo1g.connect(waveGain.gain);
+  lfo1.start();
+
+  /* LFO2：滤波摆动 */
+  const lfo2 = audioCtx.createOscillator();
+  lfo2.frequency.value = 0.085;
+  const lfo2g = audioCtx.createGain();
+  lfo2g.gain.value = 320;
+  lfo2.connect(lfo2g);
+  lfo2g.connect(waveFilter.frequency);
+  lfo2.start();
+
+  /* ---------- 低频涌浪轰鸣 ---------- */
+  const rumble = audioCtx.createOscillator();
+  rumble.type = 'sine';
+  rumble.frequency.value = 48;
+  const rumbleG = audioCtx.createGain();
+  rumbleG.gain.value = 0.0;
+  rumble.connect(rumbleG);
+  rumbleG.connect(masterGain);
+  rumble.start();
+  rumbleG.gain.setTargetAtTime(0.020, audioCtx.currentTime, 2.4);
+
+  const rLfo = audioCtx.createOscillator();
+  rLfo.frequency.value = 0.09;
+  const rLfoG = audioCtx.createGain();
+  rLfoG.gain.value = 0.012;
+  rLfo.connect(rLfoG);
+  rLfoG.connect(rumbleG.gain);
+  rLfo.start();
+
+  scheduleWhistle();
+}
+
+/* ---------- 海豚哨叫 ---------- */
+function playWhistle(){
+  if (!audioCtx) return;
+  const now = audioCtx.currentTime;
+
+  const osc = audioCtx.createOscillator();
+  osc.type = 'sine';
+
+  const f0 = 1600 + Math.random() * 1400;
+  const fPeak = f0 * (1.55 + Math.random() * 0.75);
+
+  osc.frequency.setValueAtTime(f0, now);
+  osc.frequency.exponentialRampToValueAtTime(fPeak, now + 0.14);
+  osc.frequency.exponentialRampToValueAtTime(f0 * 0.78, now + 0.42);
+
+  /* 颤音 */
+  const vib = audioCtx.createOscillator();
+  vib.frequency.value = 26 + Math.random() * 14;
+  const vibG = audioCtx.createGain();
+  vibG.gain.value = 55;
+  vib.connect(vibG);
+  vibG.connect(osc.frequency);
+  vib.start(now);
+  vib.stop(now + 0.5);
+
+  const g = audioCtx.createGain();
+  g.gain.setValueAtTime(0, now);
+  g.gain.linearRampToValueAtTime(0.028, now + 0.025);
+  g.gain.exponentialRampToValueAtTime(0.0006, now + 0.44);
+
+  /* 轻微延迟，像海面回声 */
+  const delay = audioCtx.createDelay(0.6);
+  delay.delayTime.value = 0.18;
+  const fb = audioCtx.createGain();
+  fb.gain.value = 0.18;
+  delay.connect(fb);
+  fb.connect(delay);
+
+  osc.connect(g);
+  g.connect(masterGain);
+  g.connect(delay);
+  delay.connect(masterGain);
+
+  osc.start(now);
+  osc.stop(now + 0.5);
+}
+
+let whistleTimer = null;
+function scheduleWhistle(){
+  const wait = 3.2 + Math.random() * 5.5;
+  whistleTimer = setTimeout(() => {
+    playWhistle();
+    if (Math.random() < 0.32) setTimeout(playWhistle, 160 + Math.random() * 260);
+    scheduleWhistle();
+  }, wait * 1000);
+}
+
+/* 首次交互时启动音频 */
+window.addEventListener('pointerdown', initAudio);
+window.addEventListener('keydown', initAudio);
+
+/* =========================================================
+   海豚
+   ========================================================= */
+const dolphin = {
+  xRatio: 0.62,
+  jumping: false,
+  jumpP: 0,
+  jumpDur: 1.15,
+  jumpH: 0,
+  angle: 0,
+  wavePrev: 0,
+  waveLast: 0,
+  idleTimer: 1.2,
+  splashCooldown: 0
+};
+
+const splashParticles = [];
+
+function spawnSplash(x, y, n, power){
+  for (let i = 0; i < n; i++){
+    const a = -Math.PI * 0.5 + (Math.random() - 0.5) * Math.PI * 1.1;
+    const sp = (0.5 + Math.random() * 1.2) * power;
+    splashParticles.push({
+      x: x, y: y,
+      vx: Math.cos(a) * sp * 60,
+      vy: Math.sin(a) * sp * 140 - 40,
+      r: 1.2 + Math.random() * 2.6,
+      life: 1.0,
+      decay: 1.4 + Math.random() * 0.9,
+      hue: 190 + Math.random() * 40
+    });
+  }
+}
+
+function triggerJump(){
+  dolphin.jumping = true;
+  dolphin.jumpP = 0;
+  dolphin.jumpDur = 1.05 + Math.random() * 0.35;
+  dolphin.jumpH = S * 0.20 * Math.min(2.6, ampScale) * (0.82 + Math.random() * 0.36);
+
+  const dx = W * dolphin.xRatio;
+  const dy = surfaceY(dx, performance.now() * 0.001, waveLayers[4]);
+  spawnSplash(dx, dy, 16, 0.85 + ampScale * 0.35);
+
+  playWhistle();
+}
+
+/* ---------- 海豚绘制 ---------- */
+function drawDolphin(x, y, scale, angle, alpha){
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+  ctx.scale(scale, scale);
+  ctx.globalAlpha = alpha;
+
+  /* 外发光 */
+  ctx.shadowColor = 'rgba(120, 210, 255, 0.75)';
+  ctx.shadowBlur = 26;
+
+  /* ---- 身体 ---- */
+  ctx.beginPath();
+  ctx.moveTo(0.50, -0.02);
+  ctx.bezierCurveTo(0.40, -0.10, 0.22, -0.15, 0.05, -0.14);
+  ctx.bezierCurveTo(-0.02, -0.14, -0.05, -0.26, -0.08, -0.30);
+  ctx.bezierCurveTo(-0.10, -0.28, -0.12, -0.14, -0.16, -0.12);
+  ctx.bezierCurveTo(-0.25, -0.10, -0.32, -0.08, -0.42, -0.05);
+  ctx.bezierCurveTo(-0.46, -0.10, -0.50, -0.20, -0.53, -0.22);
+  ctx.bezierCurveTo(-0.50, -0.14, -0.48, -0.06, -0.46, 0.00);
+  ctx.bezierCurveTo(-0.50, 0.06, -0.53, 0.12, -0.53, 0.16);
+  ctx.bezierCurveTo(-0.48, 0.10, -0.44, 0.06, -0.38, 0.04);
+  ctx.bezierCurveTo(-0.25, 0.10, -0.10, 0.12, 0.05, 0.09);
+  ctx.bezierCurveTo(0.22, 0.07, 0.38, 0.04, 0.50, -0.02);
+  ctx.closePath();
+
+  const grad = ctx.createLinearGradient(0, -0.30, 0, 0.16);
+  grad.addColorStop(0.00, '#6aa4d8');
+  grad.addColorStop(0.42, '#4480b4');
+  grad.addColorStop(0.78, '#2d5a88');
+  grad.addColorStop(1.00, '#1e3e60');
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  /* ---- 腹部浅色 ---- */
+  ctx.shadowBlur = 0;
+  ctx.beginPath();
+  ctx.moveTo(0.46, -0.01);
+  ctx.bezierCurveTo(0.34, 0.05, 0.16, 0.09, 0.00, 0.085);
+  ctx.bezierCurveTo(-0.14, 0.08, -0.24, 0.075, -0.34, 0.04);
+  ctx.bezierCurveTo(-0.24, 0.105, -0.10, 0.125, 0.05, 0.10);
+  ctx.bezierCurveTo(0.22, 0.08, 0.38, 0.04, 0.48, -0.01);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(215, 235, 250, 0.42)';
+  ctx.fill();
+
+  /* ---- 背鳍高光 ---- */
+  ctx.beginPath();
+  ctx.moveTo(-0.02, -0.155);
+  ctx.bezierCurveTo(-0.04, -0.22, -0.06, -0.26, -0.08, -0.29);
+  ctx.bezierCurveTo(-0.09, -0.24, -0.10, -0.18, -0.11, -0.14);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(150, 205, 245, 0.35)';
+  ctx.fill();
+
+  /* ---- 眼睛 ---- */
+  ctx.beginPath();
+  ctx.ellipse(0.31, -0.045, 0.026, 0.021, 0, 0, TAU);
+  ctx.fillStyle = '#08131e';
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.arc(0.32, -0.055, 0.0085, 0, TAU);
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
+  ctx.fill();
+
+  /* ---- 嘴线 ---- */
+  ctx.beginPath();
+  ctx.moveTo(0.50, -0.020);
+  ctx.bezierCurveTo(0.42, -0.005, 0.34, 0.010, 0.26, 0.020);
+  ctx.strokeStyle = 'rgba(20, 40, 65, 0.55)';
+  ctx.lineWidth = 0.007;
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+/* ---------- 更新海豚 ---------- */
+function updateDolphin(t, dt){
+  const dx = W * dolphin.xRatio;
+  const layer = waveLayers[4];
+  const wy = surfaceY(dx, t, layer);
+
+  /* 起伏跟随（非跳跃时） */
+  const slope = surfaceY(dx + 6, t, layer) - surfaceY(dx - 6, t, layer);
+  const waveAngle = Math.atan2(-slope, 12) * 0.85;
+
+  let y, angle, alpha = 1;
+
+  if (dolphin.jumping){
+    dolphin.jumpP += dt / dolphin.jumpDur;
+
+    if (dolphin.jumpP >= 1){
+      dolphin.jumping = false;
+      dolphin.jumpP = 0;
+      dolphin.idleTimer = 1.4 + Math.random() * 2.4;
+      spawnSplash(dx, wy, 20, 0.95 + ampScale * 0.45);
+    } else {
+      const p = dolphin.jumpP;
+      const h = 4 * p * (1 - p) * dolphin.jumpH;
+      y = wy - h;
+
+      /* 起跳 -60° → 顶点 0° → 落水 +60° */
+      angle = (p - 0.5) * Math.PI * 0.66;
+
+      /* 落水瞬间淡出 */
+      if (p > 0.88) alpha = 1 - (p - 0.88) / 0.12;
+      if (p < 0.08) alpha = p / 0.08;
+    }
+  }
+
+  if (!dolphin.jumping){
+    y = wy;
+    angle = waveAngle;
+    dolphin.idleTimer -= dt;
+    if (dolphin.idleTimer <= 0 && ampScale > 0.45){
+      triggerJump();
+    }
+  }
+
+  dolphin.angle = angle;
+
+  /* 海豚尺寸随振幅略有变化，让画面更有生命感 */
+  const scale = S * 0.185 * (0.94 + ampScale * 0.06);
+
+  drawDolphin(dx, y, scale, angle, alpha);
+
+  /* ---------- 水花粒子 ---------- */
+  for (let i = splashParticles.length - 1; i >= 0; i--){
+    const p = splashParticles[i];
+    p.life -= p.decay * dt;
+    if (p.life <= 0){
+      splashParticles.splice(i, 1);
+      continue;
+    }
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.vy += 320 * dt;
+    p.vx *= 0.985;
+
+    const a = p.life * 0.85;
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = 'hsla(' + p.hue + ', 90%, 78%, ' + a + ')';
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r * p.life, 0, TAU);
+    ctx.fill();
+  }
+}
+
+/* =========================================================
+   天空
+   ========================================================= */
+const stars = [];
+for (let i = 0; i < 140; i++){
+  stars.push({
+    x: Math.random(),
+    y: Math.random() * 0.46,
+    r: Math.random() * 1.2 + 0.22,
+    ph: Math.random() * TAU,
+    sp: 0.22 + Math.random() * 0.85
+  });
+}
+
+function drawSky(t){
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = skyGrad;
+  ctx.fillRect(0, 0, W, H);
+
+  /* 星星 */
+  ctx.globalCompositeOperation = 'lighter';
+  for (const s of stars){
+    const a = 0.14 + 0.40 * (0.5 + 0.5 * Math.sin(t * s.sp + s.ph));
+    ctx.fillStyle = 'rgba(210, 235, 255, ' + (a * 0.75) + ')';
+    ctx.beginPath();
+    ctx.arc(s.x * W, s.y * H, s.r, 0, TAU);
+    ctx.fill();
+  }
+
+  /* 月亮 */
+  const mx = W * 0.80, my = H * 0.16, mr = S * 0.045;
+  const mg = ctx.createRadialGradient(mx, my, 0, mx, my, mr * 5.5);
+  mg.addColorStop(0.00, 'rgba(255, 250, 230, 0.30)');
+  mg.addColorStop(0.14, 'rgba(230, 240, 255, 0.14)');
+  mg.addColorStop(0.45, 'rgba(180, 210, 255, 0.04)');
+  mg.addColorStop(1.00, 'rgba(150, 190, 255, 0)');
+  ctx.fillStyle = mg;
+  ctx.beginPath();
+  ctx.arc(mx, my, mr * 5.5, 0, TAU);
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.arc(mx, my, mr, 0, TAU);
+  ctx.fillStyle = 'rgba(245, 248, 255, 0.90)';
+  ctx.fill();
+
+  /* 月球表面阴影 */
+  ctx.beginPath();
+  ctx.arc(mx - mr * 0.30, my - mr * 0.28, mr * 0.22, 0, TAU);
+  ctx.fillStyle = 'rgba(210, 220, 240, 0.30)';
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(mx + mr * 0.28, my + mr * 0.18, mr * 0.15, 0, TAU);
+  ctx.fillStyle = 'rgba(210, 220, 240, 0.22)';
+  ctx.fill();
+
+  /* 月光柱在水面的反射带 */
+  const reflect = ctx.createLinearGradient(mx, H * 0.36, mx, H);
+  reflect.addColorStop(0.00, 'rgba(190, 215, 255, 0.055)');
+  reflect.addColorStop(0.55, 'rgba(160, 200, 255, 0.020)');
+  reflect.addColorStop(1.00, 'rgba(130, 180, 255, 0)');
+  ctx.fillStyle = reflect;
+  ctx.fillRect(mx - W * 0.10, H * 0.34, W * 0.20, H * 0.66);
+}
+
+/* =========================================================
+   绘制波浪
+   ========================================================= */
+function drawWaveLayer(layer, t, idx){
+  const step = Math.max(2, Math.floor(W / 240));
+
+  /* ---- 主体填充 ---- */
+  ctx.beginPath();
+  ctx.moveTo(0, H);
+
+  const pts = [];
+  for (let x = 0; x <= W + step; x += step){
+    const y = waveY(x, t, layer);
+    pts.push({ x, y });
+    ctx.lineTo(x, y);
+  }
+
+  ctx.lineTo(W, H);
+  ctx.closePath();
+
+  const grad = ctx.createLinearGradient(0, H * (layer.yBase - 0.15), 0, H);
+  grad.addColorStop(0.00, layer.col1);
+  grad.addColorStop(1.00, layer.col2);
+
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  /* ---- 波峰高光 ---- */
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.beginPath();
+  for (let i = 0; i < pts.length; i++){
+    const p = pts[i];
+    if (i === 0) ctx.moveTo(p.x, p.y);
+    else ctx.lineTo(p.x, p.y);
+  }
+  ctx.strokeStyle = layer.crest;
+  ctx.lineWidth = 1.4 + idx * 0.32;
+  ctx.stroke();
+
+  /* ---- 泡沫碎点（近层） ---- */
+  if (idx >= 3){
+    ctx.globalCompositeOperation = 'lighter';
+    const density = idx === 4 ? 68 : 38;
+    for (let k = 0; k < density; k++){
+      const px = ((k * 137.5 + t * 16 * (idx - 2)) % (W + 80)) - 40;
+      const py = waveY(px, t, layer);
+      const shimmer = 0.5 + 0.5 * Math.sin(t * 3.2 + k * 1.7 + idx);
+      const a = 0.06 + 0.16 * shimmer;
+      const r = 0.7 + 1.5 * shimmer * (idx === 4 ? 1.3 : 1.0);
+
+      ctx.fillStyle = 'rgba(215, 240, 255, ' + a + ')';
+      ctx.beginPath();
+      ctx.arc(px, py + 2 + 3 * shimmer, r, 0, TAU);
+      ctx.fill();
+    }
+  }
+}
+
+/* =========================================================
+   主循环
+   ========================================================= */
+let lastNow = performance.now();
+
+function frame(now){
+  const t  = now * 0.001;
+  const dt = Math.min((now - lastNow) * 0.001, 0.05);
+  lastNow = now;
+
+  /* 振幅平滑跟随 */
+  ampScale += (targetAmp - ampScale) * (1 - Math.exp(-3.6 * dt));
+
+  /* 背景 */
+  drawSky(t);
+
+  /* 波浪（远 → 近） */
+  for (let i = 0; i < waveLayers.length; i++){
+    drawWaveLayer(waveLayers[i], t, i);
+  }
+
+  /* 海豚 + 水花 */
+  updateDolphin(t, dt);
+
+  /* 暗角 */
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = vignette;
+  ctx.fillRect(0, 0, W, H);
+
+  /* HUD */
+  document.getElementById('ampVal').textContent = ampScale.toFixed(2) + '×';
+
+  const dEl = document.getElementById('dolphinState');
+  const jEl = document.getElementById('jumpVal');
+  const mEl = document.getElementById('mouseVal');
+
+  if (dEl){
+    dEl.textContent = dolphin.jumping ? '跃出水面' : '随波浮动';
+  }
+  if (jEl){
+    jEl.textContent = dolphin.jumping
+      ? (dolphin.jumpH / S * 100).toFixed(0) + '% 屏高'
+      : '—';
+  }
+  if (mEl){
+    mEl.textContent = mouseActive
+      ? (ampScale > 1.5 ? '汹涌' : ampScale > 0.9 ? '平稳' : '平静')
+      : '移动以控制';
+  }
+
+  requestAnimationFrame(frame);
+}
+
+/* =========================================================
+   启动
+   ========================================================= */
+resize();
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>几何流体交互</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #050505; /* 防加载时黑屏的兜底背景 */
+        }
+        #container {
+            width: 100vw;
+            height: 100vh;
+            display: block;
+        }
+        #hint {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: rgba(255, 255, 255, 0.4);
+            font-family: system-ui, sans-serif;
+            font-size: 14px;
+            letter-spacing: 2px;
+            pointer-events: none;
+            user-select: none;
+            z-index: 10;
+        }
+    </style>
+</head>
+<body>
+    <div id="container"></div>
+    <div id="hint">移动鼠标交互 · 点击释放图形</div>
+
+    <!-- 引入 PixiJS 7.x 版本 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.4.2/pixi.min.js"></script>
+    
+    <script>
+        // 1. 初始化 PixiJS 应用
+        const app = new PIXI.Application({
+            resizeTo: window,
+            backgroundColor: 0x050505, // 完美的黑底
+            antialias: true,
+            autoDensity: true,
+            resolution: window.devicePixelRatio || 1
+        });
+        document.getElementById('container').appendChild(app.view);
+
+        // 2. 提取图片风格的颜色
+        const colorPalette = [
+            0xFFFFFF, // 白
+            0xFFC0CB, // 浅粉
+            0xDA70D6, // 紫罗兰
+            0x9932CC, // 深紫
+            0xFF69B4, // 亮粉
+            0xBA55D3  // 中度紫
+        ];
+
+        // 3. 几何图形生成器（使用纹理生成规避性能瓶颈）
+        const shapeTextures = [];
+        function createBaseShapes() {
+            const g = new PIXI.Graphics();
+            
+            // 生成圆形/半圆
+            g.beginFill(0xFFFFFF);
+            g.drawCircle(0, 0, 50);
+            g.endFill();
+            shapeTextures.push(app.renderer.generateTexture(g));
+            g.clear();
+
+            // 生成圆角矩形/胶囊
+            g.beginFill(0xFFFFFF);
+            g.drawRoundedRect(-50, -25, 100, 50, 25);
+            g.endFill();
+            shapeTextures.push(app.renderer.generateTexture(g));
+            g.clear();
+
+            // 生成三角形
+            g.beginFill(0xFFFFFF);
+            g.moveTo(0, -50);
+            g.lineTo(50, 50);
+            g.lineTo(-50, 50);
+            g.endFill();
+            shapeTextures.push(app.renderer.generateTexture(g));
+            g.clear();
+
+            // 生成不规则多边形（模拟图片左侧的形状）
+            g.beginFill(0xFFFFFF);
+            g.moveTo(-40, -40);
+            g.lineTo(40, -20);
+            g.lineTo(60, 40);
+            g.lineTo(-50, 20);
+            g.endFill();
+            shapeTextures.push(app.renderer.generateTexture(g));
+            g.clear();
+
+            // 销毁临时图形，释放内存
+            g.destroy();
+        }
+        
+        createBaseShapes();
+
+        // 4. 创建主容器和对象池
+        const mainContainer = new PIXI.Container();
+        app.stage.addChild(mainContainer);
+
+        // 基础漂浮对象
+        const items = [];
+        const numItems = 30;
+
+        for (let i = 0; i < numItems; i++) {
+            createRandomShape(false);
+        }
+
+        // 创建图形函数
+        function createRandomShape(isExplosion, x, y) {
+            const texture = shapeTextures[Math.floor(Math.random() * shapeTextures.length)];
+            const sprite = new PIXI.Sprite(texture);
+            
+            // 随机缩放、旋转、速度
+            sprite.scale.set(0.5 + Math.random() * 1.5);
+            sprite.rotation = Math.random() * Math.PI * 2;
+            sprite.tint = colorPalette[Math.floor(Math.random() * colorPalette.length)];
+
+            if (isExplosion) {
+                // 如果是点击爆炸产生的
+                sprite.x = x;
+                sprite.y = y;
+                sprite.vx = (Math.random() - 0.5) * 12;
+                sprite.vy = (Math.random() - 0.5) * 12;
+                sprite.life = 0.8; // 生命周期
+                sprite.alpha = 1;
+                sprite.rotSpeed = (Math.random() - 0.5) * 0.2;
+                sprite.scale.set(0.2 + Math.random() * 0.8);
+            } else {
+                // 如果是初始随机分布的
+                sprite.x = Math.random() * app.screen.width;
+                sprite.y = Math.random() * app.screen.height;
+                sprite.vx = (Math.random() - 0.5) * 3.5; // 速度较快不拖沓
+                sprite.vy = (Math.random() - 0.5) * 3.5;
+                sprite.life = 1;
+                sprite.rotSpeed = (Math.random() - 0.5) * 0.05;
+            }
+
+            mainContainer.addChild(sprite);
+            items.push(sprite);
+        }
+
+        // 5. 交互逻辑
+        let pointer = { x: app.screen.width / 2, y: app.screen.height / 2 };
+        
+        window.addEventListener('mousemove', (e) => {
+            pointer.x = e.clientX;
+            pointer.y = e.clientY;
+        });
+
+        window.addEventListener('click', (e) => {
+            // 点击时快速生成一簇小图形粒子
+            for (let i = 0; i < 12; i++) {
+                createRandomShape(true, e.clientX, e.clientY);
+            }
+        });
+
+        // 6. 动画循环 (PixiJS Ticker)
+        app.ticker.add(() => {
+            const dt = app.ticker.deltaTime / 60;
+
+            for (let i = items.length - 1; i >= 0; i--) {
+                const item = items[i];
+
+                // 基础移动
+                item.x += item.vx * dt * 5;
+                item.y += item.vy * dt * 5;
+                item.rotation += item.rotSpeed * dt * 5;
+
+                // 鼠标引力/斥力交互
+                const dx = pointer.x - item.x;
+                const dy = pointer.y - item.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                
+                if (dist < 200) {
+                    // 吸引或排斥
+                    const force = (200 - dist) / 200;
+                    item.x += (dx / dist) * force * dt * 5;
+                    item.y += (dy / dist) * force * dt * 5;
+                }
+
+                // 屏幕边缘反弹（确保不跑出屏幕）
+                if (item.x < 0 || item.x > app.screen.width) item.vx *= -1;
+                if (item.y < 0 || item.y > app.screen.height) item.vy *= -1;
+                item.x = Math.max(0, Math.min(app.screen.width, item.x));
+                item.y = Math.max(0, Math.min(app.screen.height, item.y));
+
+                // 点击爆炸粒子的销毁逻辑
+                if (item.life < 1) {
+                    item.life -= dt;
+                    item.alpha = item.life;
+                    item.scale.set(item.scale.x * (1 - dt * 2));
+                    
+                    if (item.life <= 0) {
+                        mainContainer.removeChild(item);
+                        item.destroy();
+                        items.splice(i, 1);
+                    }
+                }
+            }
+
+            // 补充掉落消失的粒子，保证画面丰富度
+            if (items.length < 30) {
+                createRandomShape(false);
+            }
+        });
+
+        // 窗口缩放适配
+        window.addEventListener('resize', () => {
+            app.renderer.resize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,626 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>天球仪 · 光之环</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #07070f;
+            font-family: system-ui, sans-serif;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            user-select: none;
+        }
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+        #hint {
+            position: fixed;
+            bottom: 20px;
+            right: 24px;
+            color: rgba(255, 255, 255, 0.3);
+            font-size: 12px;
+            letter-spacing: 0.5px;
+            pointer-events: none;
+            z-index: 10;
+            transition: opacity 1.5s ease;
+            font-weight: 300;
+        }
+        #fps-badge {
+            position: fixed;
+            top: 16px;
+            left: 18px;
+            color: rgba(255, 255, 255, 0.25);
+            font-size: 11px;
+            pointer-events: none;
+            z-index: 10;
+            font-weight: 300;
+            letter-spacing: 0.5px;
+        }
+    </style>
+</head>
+<body>
+    <div id="fps-badge"></div>
+    <div id="hint">移动旋转 · 点击脉冲</div>
+
+    <script src="https://cdn.jsdelivr.net/npm/pixi.js@7.4.2/dist/pixi.min.js">
+    </script>
+    <script>
+        (function() {
+            'use strict';
+
+            // ─── 性能与安全检查 ───
+            if (!window.PIXI) {
+                console.warn('PixiJS 加载失败');
+                document.body.innerHTML = '<div style="color:#fff;text-align:center;padding-top:40vh;font-size:16px;">需要WebGL支持</div>';
+                return;
+            }
+
+            // ─── 常量定义 ───
+            const FOCAL_LENGTH = 1100;
+            const BASE_PARTICLE_SCALE = 0.085;
+            const STAR_COUNT = 480;
+            const PULSE_MAX_PARTICLES = 60;
+            const AUTO_ROTATE_SPEED = 0.22;
+            const MAX_VIEW_X = 0.6;
+            const MAX_VIEW_Y = 0.45;
+            const RINGS_CONFIG = [
+                { radius: 310, tiltX: 0, particles: 340, speed: 1.35, color: 0xFFD447, baseAlpha: 0.92 },
+                { radius: 275, tiltX: 0.52, particles: 290, speed: -1.1, color: 0xFF6B9D, baseAlpha: 0.88 },
+                { radius: 265, tiltX: -0.48, particles: 280, speed: 1.25, color: 0xB06BFF, baseAlpha: 0.86 },
+                { radius: 240, tiltX: 1.02, particles: 260, speed: -0.95, color: 0x4D9FFF, baseAlpha: 0.84 },
+                { radius: 235, tiltX: -1.05, particles: 250, speed: 1.15, color: 0x4DFFD9, baseAlpha: 0.82 },
+                { radius: 205, tiltX: 1.55, particles: 220, speed: -0.8, color: 0x6BFF6B, baseAlpha: 0.8 },
+                { radius: 175, tiltX: 0.78, particles: 180, speed: 1.45, color: 0xFF9D4D, baseAlpha: 0.78 },
+            ];
+            const TOTAL_RING_PARTICLES = RINGS_CONFIG.reduce((sum, r) => sum + r.particles, 0);
+            const TOTAL_PARTICLES = TOTAL_RING_PARTICLES + STAR_COUNT + PULSE_MAX_PARTICLES;
+
+            // ─── DOM 元素 ───
+            const fpsBadge = document.getElementById('fps-badge');
+            const hintEl = document.getElementById('hint');
+
+            // ─── PixiJS 应用初始化 ───
+            let app;
+            try {
+                app = new PIXI.Application({
+                    width: window.innerWidth,
+                    height: window.innerHeight,
+                    backgroundColor: 0x07070f,
+                    antialias: false,
+                    autoDensity: true,
+                    resolution: Math.min(window.devicePixelRatio || 1, 2),
+                    powerPreference: 'high-performance',
+                    forceCanvas: !isWebGLAvailable(),
+                });
+            } catch (err) {
+                console.error('PixiJS 初始化失败:', err);
+                document.body.innerHTML = '<div style="color:#fff;text-align:center;padding-top:40vh;font-size:16px;">初始化失败</div>';
+                return;
+            }
+
+            function isWebGLAvailable() {
+                try {
+                    const canvas = document.createElement('canvas');
+                    return !!(window.WebGLRenderingContext &&
+                        (canvas.getContext('webgl') || canvas.getContext('experimental-webgl')));
+                } catch (e) { return false; }
+            }
+
+            document.body.appendChild(app.view);
+            app.view.style.position = 'fixed';
+            app.view.style.top = '0';
+            app.view.style.left = '0';
+            app.view.style.width = '100%';
+            app.view.style.height = '100%';
+            app.view.style.display = 'block';
+
+            // ─── 发光纹理创建 ───
+            function createGlowTexture(size) {
+                const c = document.createElement('canvas');
+                c.width = size;
+                c.height = size;
+                const ctx = c.getContext('2d');
+                const half = size / 2;
+                const gradient = ctx.createRadialGradient(half, half, 0, half, half, half);
+                gradient.addColorStop(0.0, 'rgba(255,255,255,1)');
+                gradient.addColorStop(0.12, 'rgba(255,255,255,0.92)');
+                gradient.addColorStop(0.3, 'rgba(255,255,255,0.55)');
+                gradient.addColorStop(0.55, 'rgba(255,255,255,0.2)');
+                gradient.addColorStop(1.0, 'rgba(255,255,255,0)');
+                ctx.fillStyle = gradient;
+                ctx.fillRect(0, 0, size, size);
+                const tex = PIXI.Texture.from(c);
+                tex.baseTexture.scaleMode = PIXI.SCALE_MODES.LINEAR;
+                return tex;
+            }
+
+            const glowTex64 = createGlowTexture(64);
+            const glowTex128 = createGlowTexture(128);
+
+            // ─── 粒子容器 ───
+            const ringContainer = new PIXI.ParticleContainer(TOTAL_RING_PARTICLES, {
+                position: true,
+                scale: true,
+                tint: true,
+                alpha: true,
+            }, TOTAL_RING_PARTICLES, true);
+            ringContainer.blendMode = PIXI.BLEND_MODES.ADD;
+            app.stage.addChild(ringContainer);
+
+            const starContainer = new PIXI.ParticleContainer(STAR_COUNT, {
+                position: true,
+                scale: true,
+                tint: true,
+                alpha: true,
+            }, STAR_COUNT, true);
+            starContainer.blendMode = PIXI.BLEND_MODES.ADD;
+            app.stage.addChild(starContainer);
+
+            const pulseContainer = new PIXI.ParticleContainer(PULSE_MAX_PARTICLES, {
+                position: true,
+                scale: true,
+                tint: true,
+                alpha: true,
+            }, PULSE_MAX_PARTICLES, true);
+            pulseContainer.blendMode = PIXI.BLEND_MODES.ADD;
+            app.stage.addChild(pulseContainer);
+
+            // ─── 中心光晕 ───
+            const centerGlow = new PIXI.Sprite(glowTex128);
+            centerGlow.anchor.set(0.5);
+            centerGlow.tint = 0xFFF5E0;
+            centerGlow.alpha = 0.42;
+            centerGlow.scale.set(2.4);
+            centerGlow.blendMode = PIXI.BLEND_MODES.ADD;
+            app.stage.addChild(centerGlow);
+
+            const centerCore = new PIXI.Sprite(glowTex64);
+            centerCore.anchor.set(0.5);
+            centerCore.tint = 0xFFFFFF;
+            centerCore.alpha = 0.75;
+            centerCore.scale.set(0.55);
+            centerCore.blendMode = PIXI.BLEND_MODES.ADD;
+            app.stage.addChild(centerCore);
+
+            // ─── 数据结构 ───
+            const ringSprites = [];
+            const ringData = [];
+            const starSprites = [];
+            const starData = [];
+            const pulseSprites = [];
+            const pulseData = [];
+
+            let mouseX = 0;
+            let mouseY = 0;
+            let smoothMouseX = 0;
+            let smoothMouseY = 0;
+            let autoRotateY = 0;
+            let pulseActive = false;
+            let pulseTimer = 0;
+            const PULSE_DURATION = 1.1;
+            const PULSE_RING_SPEED = 2.8;
+            let time = 0;
+            let frameCount = 0;
+            let fpsLastTime = 0;
+
+            // ─── 初始化环粒子 ───
+            function initRings() {
+                for (let ri = 0; ri < RINGS_CONFIG.length; ri++) {
+                    const cfg = RINGS_CONFIG[ri];
+                    const n = cfg.particles;
+                    for (let i = 0; i < n; i++) {
+                        const sprite = new PIXI.Sprite(glowTex64);
+                        sprite.anchor.set(0.5);
+                        sprite.tint = cfg.color;
+                        sprite.alpha = cfg.baseAlpha;
+                        const initAngle = (i / n) * Math.PI * 2 + (Math.random() - 0.5) * 0.25;
+                        const flowSpeed = cfg.speed + (Math.random() - 0.5) * 0.35;
+                        const wobbleAmp = 4 + Math.random() * 8;
+                        const wobbleFreq = 2.5 + Math.random() * 3;
+                        const wobblePhase = Math.random() * Math.PI * 2;
+                        const pulsePhase = Math.random() * Math.PI * 2;
+                        const data = {
+                            ringIndex: ri,
+                            angle: initAngle,
+                            flowSpeed: flowSpeed,
+                            wobbleAmp: wobbleAmp,
+                            wobbleFreq: wobbleFreq,
+                            wobblePhase: wobblePhase,
+                            pulsePhase: pulsePhase,
+                        };
+                        ringData.push(data);
+                        ringSprites.push(sprite);
+                        ringContainer.addChild(sprite);
+                    }
+                }
+            }
+
+            // ─── 初始化背景星点 ───
+            function initStars() {
+                const w = window.innerWidth;
+                const h = window.innerHeight;
+                for (let i = 0; i < STAR_COUNT; i++) {
+                    const sprite = new PIXI.Sprite(glowTex64);
+                    sprite.anchor.set(0.5);
+                    const depth = 0.3 + Math.random() * 0.7;
+                    const tintChoice = Math.random();
+                    if (tintChoice < 0.6) sprite.tint = 0xCCCCFF;
+                    else if (tintChoice < 0.8) sprite.tint = 0xFFEECC;
+                    else sprite.tint = 0xAADDFF;
+                    sprite.alpha = 0.15 + Math.random() * 0.35;
+                    const scale = (0.025 + Math.random() * 0.055) * depth;
+                    sprite.scale.set(scale);
+                    const data = {
+                        x: Math.random() * w,
+                        y: Math.random() * h,
+                        vx: (Math.random() - 0.5) * 0.08,
+                        vy: (Math.random() - 0.5) * 0.06,
+                        depth: depth,
+                        twinklePhase: Math.random() * Math.PI * 2,
+                        twinkleSpeed: 0.4 + Math.random() * 1.2,
+                    };
+                    sprite.position.set(data.x, data.y);
+                    starData.push(data);
+                    starSprites.push(sprite);
+                    starContainer.addChild(sprite);
+                }
+            }
+
+            // ─── 脉冲粒子系统 ───
+            function spawnPulse(cx, cy) {
+                const count = 42;
+                for (let i = 0; i < count; i++) {
+                    if (pulseSprites.length >= PULSE_MAX_PARTICLES) break;
+                    const sprite = new PIXI.Sprite(glowTex64);
+                    sprite.anchor.set(0.5);
+                    const hue = Math.random();
+                    sprite.tint = hslToHex(hue * 360, 90, 65);
+                    sprite.alpha = 0.85;
+                    sprite.scale.set(0.05 + Math.random() * 0.04);
+                    const angle = (i / count) * Math.PI * 2 + (Math.random() - 0.5) * 0.15;
+                    const data = {
+                        angle: angle,
+                        dist: 4 + Math.random() * 18,
+                        speed: 180 + Math.random() * 260,
+                        decay: 1.6 + Math.random() * 0.8,
+                        cx: cx,
+                        cy: cy,
+                        life: 1.0,
+                        currentDist: 4 + Math.random() * 18,
+                    };
+                    sprite.position.set(
+                        cx + data.currentDist * Math.cos(angle),
+                        cy + data.currentDist * Math.sin(angle)
+                    );
+                    pulseData.push(data);
+                    pulseSprites.push(sprite);
+                    pulseContainer.addChild(sprite);
+                }
+            }
+
+            // ─── HSL 转十六进制 ───
+            function hslToHex(h, s, l) {
+                h = ((h % 360) + 360) % 360;
+                s = Math.max(0, Math.min(100, s)) / 100;
+                l = Math.max(0, Math.min(100, l)) / 100;
+                const c = (1 - Math.abs(2 * l - 1)) * s;
+                const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+                const m = l - c / 2;
+                let r = 0,
+                    g = 0,
+                    b = 0;
+                if (h < 60) { r = c;
+                    g = x;
+                    b = 0; } else if (h < 120) { r = x;
+                    g = c;
+                    b = 0; } else if (h < 180) { r = 0;
+                    g = c;
+                    b = x; } else if (h < 240) { r = 0;
+                    g = x;
+                    b = c; } else if (h < 300) { r = x;
+                    g = 0;
+                    b = c; } else { r = c;
+                    g = 0;
+                    b = x; }
+                const ri = Math.round((r + m) * 255);
+                const gi = Math.round((g + m) * 255);
+                const bi = Math.round((b + m) * 255);
+                return (ri << 16) | (gi << 8) | bi;
+            }
+
+            // ─── 3D 变换与投影 ───
+            function projectPoint(x, y, z, viewX, viewY, centerX, centerY) {
+                // 绕 Y 轴旋转（整体水平旋转）
+                let cosY = Math.cos(viewY);
+                let sinY = Math.sin(viewY);
+                let x1 = x * cosY + z * sinY;
+                let z1 = -x * sinY + z * cosY;
+                let y1 = y;
+
+                // 绕 X 轴旋转（整体俯仰旋转）
+                let cosX = Math.cos(viewX);
+                let sinX = Math.sin(viewX);
+                let y2 = y1 * cosX - z1 * sinX;
+                let z2 = y1 * sinX + z1 * cosX;
+                let x2 = x1;
+
+                // 透视投影
+                const scale = FOCAL_LENGTH / (FOCAL_LENGTH + z2);
+                const sx = x2 * scale + centerX;
+                const sy = y2 * scale + centerY;
+                return { sx, sy, scale, z: z2 };
+            }
+
+            // ─── 计算环上粒子的局部3D坐标 ───
+            function getRingLocalPoint(ringIndex, angle, wobbleAmp, wobbleFreq, wobblePhase, time) {
+                const cfg = RINGS_CONFIG[ringIndex];
+                const R = cfg.radius;
+                const tiltX = cfg.tiltX;
+                const wobbleOffset = wobbleAmp * Math.sin(angle * wobbleFreq + wobblePhase + time * 0.6);
+                // 环在 XZ 平面（y=0），绕 X 轴倾斜 tiltX
+                const lx = R * Math.cos(angle);
+                const ly = wobbleOffset;
+                const lz = R * Math.sin(angle);
+                // 绕 X 轴旋转 tiltX
+                const cosT = Math.cos(tiltX);
+                const sinT = Math.sin(tiltX);
+                const yTilt = ly * cosT - lz * sinT;
+                const zTilt = ly * sinT + lz * cosT;
+                const xTilt = lx;
+                return { x: xTilt, y: yTilt, z: zTilt };
+            }
+
+            // ─── 更新环粒子 ───
+            function updateRings(delta, viewX, viewY, centerX, centerY) {
+                const totalRings = RINGS_CONFIG.length;
+                for (let i = 0; i < ringSprites.length; i++) {
+                    const data = ringData[i];
+                    const sprite = ringSprites[i];
+                    data.angle += data.flowSpeed * delta * 0.65;
+                    if (data.angle > Math.PI * 2) data.angle -= Math.PI * 2;
+                    if (data.angle < 0) data.angle += Math.PI * 2;
+
+                    const lp = getRingLocalPoint(
+                        data.ringIndex, data.angle,
+                        data.wobbleAmp, data.wobbleFreq, data.wobblePhase, time
+                    );
+
+                    const proj = projectPoint(lp.x, lp.y, lp.z, viewX, viewY, centerX, centerY);
+                    const cfg = RINGS_CONFIG[data.ringIndex];
+                    const depthFactor = proj.scale;
+                    const alphaMod = 0.7 + 0.3 * Math.sin(data.angle * 2.5 + data.pulsePhase + time * 1.8);
+                    const pulseScale = 1 + 0.06 * Math.sin(data.pulsePhase + time * 2.2);
+
+                    sprite.position.set(proj.sx, proj.sy);
+                    sprite.scale.set(BASE_PARTICLE_SCALE * depthFactor * pulseScale);
+                    sprite.alpha = Math.max(0.05, Math.min(1, cfg.baseAlpha * depthFactor * alphaMod));
+                }
+            }
+
+            // ─── 更新背景星点 ───
+            function updateStars(delta, centerX, centerY) {
+                const w = window.innerWidth;
+                const h = window.innerHeight;
+                for (let i = 0; i < starSprites.length; i++) {
+                    const data = starData[i];
+                    const sprite = starSprites[i];
+                    data.x += data.vx * delta * 12;
+                    data.y += data.vy * delta * 12;
+                    if (data.x < -20) data.x = w + 20;
+                    if (data.x > w + 20) data.x = -20;
+                    if (data.y < -20) data.y = h + 20;
+                    if (data.y > h + 20) data.y = -20;
+
+                    const twinkle = 0.6 + 0.4 * Math.sin(data.twinklePhase + time * data.twinkleSpeed);
+                    sprite.position.set(data.x, data.y);
+                    sprite.alpha = (0.15 + Math.random() * 0.0) * data.depth * twinkle;
+                    sprite.scale.set((0.025 + Math.random() * 0.0 + 0.03) * data.depth * twinkle);
+                }
+            }
+
+            // ─── 更新脉冲粒子 ───
+            function updatePulse(delta) {
+                for (let i = pulseSprites.length - 1; i >= 0; i--) {
+                    const data = pulseData[i];
+                    const sprite = pulseSprites[i];
+                    data.life -= data.decay * delta;
+                    data.currentDist += data.speed * delta;
+                    if (data.life <= 0 || data.currentDist > 550) {
+                        pulseContainer.removeChild(sprite);
+                        sprite.destroy({ texture: false, children: false });
+                        pulseSprites.splice(i, 1);
+                        pulseData.splice(i, 1);
+                        continue;
+                    }
+                    const px = data.cx + data.currentDist * Math.cos(data.angle);
+                    const py = data.cy + data.currentDist * Math.sin(data.angle);
+                    const alpha = Math.max(0, data.life);
+                    const scale = 0.05 + 0.08 * data.life;
+                    sprite.position.set(px, py);
+                    sprite.alpha = alpha * 0.8;
+                    sprite.scale.set(scale);
+                }
+            }
+
+            // ─── 更新中心光晕 ───
+            function updateCenterGlow(centerX, centerY, viewX, viewY) {
+                const pulseGlow = 0.38 + 0.1 * Math.sin(time * 1.7) + 0.04 * Math.sin(time * 3.3);
+                centerGlow.position.set(centerX, centerY);
+                centerGlow.alpha = Math.max(0.2, Math.min(0.55, pulseGlow));
+                centerGlow.scale.set(2.2 + 0.25 * Math.sin(time * 1.2));
+                centerCore.position.set(centerX, centerY);
+                centerCore.scale.set(0.5 + 0.08 * Math.sin(time * 2.1));
+                centerCore.alpha = 0.7 + 0.15 * Math.sin(time * 1.4);
+            }
+
+            // ─── 主循环 ───
+            app.ticker.add((delta) => {
+                const dt = Math.min(delta / 60, 0.05);
+                time += dt;
+                frameCount++;
+
+                const w = window.innerWidth;
+                const h = window.innerHeight;
+                const cx = w / 2;
+                const cy = h / 2;
+
+                // 平滑鼠标追踪
+                smoothMouseX += (mouseX - smoothMouseX) * 0.06;
+                smoothMouseY += (mouseY - smoothMouseY) * 0.06;
+
+                // 自动旋转
+                autoRotateY += AUTO_ROTATE_SPEED * dt;
+
+                // 视角计算
+                const normX = (smoothMouseX / w) * 2 - 1;
+                const normY = (smoothMouseY / h) * 2 - 1;
+                const viewY = autoRotateY + normX * 0.75;
+                const viewX = normY * MAX_VIEW_X * 0.8;
+
+                // 更新所有粒子
+                updateRings(dt, viewX, viewY, cx, cy);
+                updateStars(dt, cx, cy);
+                updatePulse(dt);
+                updateCenterGlow(cx, cy, viewX, viewY);
+
+                // FPS 显示（每0.5秒更新）
+                if (time - fpsLastTime > 0.5) {
+                    const fps = Math.round(frameCount / (time - fpsLastTime));
+                    fpsBadge.textContent = fps + ' fps';
+                    frameCount = 0;
+                    fpsLastTime = time;
+                }
+
+                // 脉冲自动衰减（如果无活动）
+                if (pulseActive) {
+                    pulseTimer += dt;
+                    if (pulseTimer > PULSE_DURATION) {
+                        pulseActive = false;
+                        pulseTimer = 0;
+                    }
+                }
+            });
+
+            // ─── 鼠标与触摸交互 ───
+            function getCanvasCoords(e) {
+                const rect = app.view.getBoundingClientRect();
+                let clientX, clientY;
+                if (e.touches && e.touches.length > 0) {
+                    clientX = e.touches[0].clientX;
+                    clientY = e.touches[0].clientY;
+                } else {
+                    clientX = e.clientX;
+                    clientY = e.clientY;
+                }
+                return {
+                    x: clientX - rect.left,
+                    y: clientY - rect.top,
+                };
+            }
+
+            function onPointerMove(e) {
+                const coords = getCanvasCoords(e);
+                mouseX = coords.x;
+                mouseY = coords.y;
+            }
+
+            function onPointerDown(e) {
+                e.preventDefault();
+                const coords = getCanvasCoords(e);
+                mouseX = coords.x;
+                mouseY = coords.y;
+                spawnPulse(coords.x, coords.y);
+                pulseActive = true;
+                pulseTimer = 0;
+                // 微小的视觉反馈
+                centerCore.alpha = 0.95;
+                setTimeout(() => { centerCore.alpha = 0.7; }, 120);
+            }
+
+            function onPointerLeave() {
+                mouseX = window.innerWidth / 2;
+                mouseY = window.innerHeight / 2;
+            }
+
+            // 鼠标事件
+            app.view.addEventListener('mousemove', onPointerMove);
+            app.view.addEventListener('mousedown', onPointerDown);
+            document.addEventListener('mouseleave', onPointerLeave);
+
+            // 触摸事件
+            app.view.addEventListener('touchmove', onPointerMove, { passive: true });
+            app.view.addEventListener('touchstart', onPointerDown, { passive: false });
+            app.view.addEventListener('touchend', (e) => {
+                // 触摸结束后保持最后位置
+            });
+
+            // ─── 窗口大小调整 ───
+            function handleResize() {
+                const w = window.innerWidth;
+                const h = window.innerHeight;
+                app.renderer.resize(w, h);
+                // 重新分布星点位置以覆盖新尺寸
+                for (let i = 0; i < starData.length; i++) {
+                    const d = starData[i];
+                    if (d.x > w) d.x = Math.random() * w;
+                    if (d.y > h) d.y = Math.random() * h;
+                }
+            }
+            window.addEventListener('resize', handleResize);
+            window.addEventListener('orientationchange', () => {
+                setTimeout(handleResize, 300);
+            });
+
+            // ─── 键盘交互（可选，小彩蛋） ───
+            window.addEventListener('keydown', (e) => {
+                if (e.key === ' ' || e.key === 'Space') {
+                    e.preventDefault();
+                    const cx = window.innerWidth / 2;
+                    const cy = window.innerHeight / 2;
+                    spawnPulse(cx, cy);
+                    pulseActive = true;
+                    pulseTimer = 0;
+                }
+            });
+
+            // ─── 启动 ───
+            initRings();
+            initStars();
+
+            // 初始鼠标位置在中心
+            mouseX = window.innerWidth / 2;
+            mouseY = window.innerHeight / 2;
+            smoothMouseX = mouseX;
+            smoothMouseY = mouseY;
+
+            // 隐藏提示文字（3秒后淡出）
+            setTimeout(() => {
+                if (hintEl) {
+                    hintEl.style.opacity = '0';
+                    setTimeout(() => {
+                        if (hintEl) hintEl.style.display = 'none';
+                    }, 1600);
+                }
+            }, 3200);
+
+            // 启动后的第一次大小调整
+            handleResize();
+
+            console.log('✨ 天球仪 · 光之环 已启动 — 粒子总数:', TOTAL_PARTICLES);
+        })();
+    </script>
+</body>
+</html>

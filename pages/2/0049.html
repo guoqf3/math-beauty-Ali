@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LANTERN · 许愿天灯</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #080818;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            right: 32px;
+            z-index: 2;
+            text-align: right;
+            pointer-events: none;
+            opacity: 0.5;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+        .overlay:hover {
+            opacity: 0.85;
+        }
+        .title {
+            color: rgba(255, 220, 180, 0.8);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 20px rgba(255, 140, 60, 0.5);
+        }
+        .hint {
+            color: rgba(200, 170, 140, 0.5);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+        @media (max-width: 768px) {
+            .overlay {
+                bottom: 18px;
+                right: 20px;
+            }
+            .title {
+                font-size: 8px;
+                letter-spacing: 0.45em;
+            }
+            .hint {
+                font-size: 6px;
+                letter-spacing: 0.22em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="pixi-container" style="position:fixed;top:0;left:0;width:100%;height:100%;z-index:1;"></div>
+    <div class="overlay">
+        <div class="title">Lantern</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js"></script>
+    <script>
+        (function () {
+            if (typeof PIXI === 'undefined') {
+                document.body.style.background = '#080818';
+                const container = document.getElementById('pixi-container');
+                if (container) container.style.background = '#080818';
+                console.warn('PixiJS 加载失败');
+                return;
+            }
+
+            let app;
+            let bgSprite;
+            let starContainer;
+            let lanternContainer;
+            let glowContainer;
+            let lanterns = [];
+            let stars = [];
+            let mouse = { x: -9999, y: -9999, active: false };
+            let time = 0;
+            let colorShift = 0;
+            let maxLanterns = 22;
+            let mouseGlowSprite;
+            let cachedLanternTextures = [];
+            let cachedStarTexture;
+            let mouseGlowTexture;
+
+            // 灯笼基础色
+            const LANTERN_COLORS = [
+                { h: 28, s: 85, l: 65 },
+                { h: 35, s: 80, l: 62 },
+                { h: 18, s: 90, l: 60 },
+                { h: 42, s: 75, l: 62 },
+                { h: 22, s: 85, l: 58 },
+                { h: 8, s: 80, l: 60 },
+                { h: 50, s: 70, l: 65 },
+                { h: 32, s: 88, l: 63 },
+            ];
+
+            // ─── 纹理生成（只在初始化时调用一次） ──────────────────────
+            function generateLanternTexture(baseColor) {
+                const size = 96;
+                const canvas = document.createElement('canvas');
+                canvas.width = size;
+                canvas.height = size;
+                const ctx = canvas.getContext('2d');
+                const cx = size / 2;
+                const cy = size / 2 - 2;
+                const hue = baseColor.h;
+                const sat = baseColor.s;
+                const light = baseColor.l;
+
+                // 柔光晕
+                const glowGradient = ctx.createRadialGradient(cx, cy, 5, cx, cy, 40);
+                glowGradient.addColorStop(0, `hsla(${hue}, ${sat}%, ${light + 18}%, 0.6)`);
+                glowGradient.addColorStop(0.5, `hsla(${hue}, ${sat}%, ${light + 5}%, 0.18)`);
+                glowGradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = glowGradient;
+                ctx.fillRect(0, 0, size, size);
+
+                // 灯笼主体
+                const bodyGradient = ctx.createRadialGradient(cx - 6, cy - 8, 6, cx, cy, 22);
+                bodyGradient.addColorStop(0, `hsla(${hue}, ${sat}%, ${light + 28}%, 0.95)`);
+                bodyGradient.addColorStop(0.6, `hsla(${hue}, ${sat}%, ${light + 5}%, 0.7)`);
+                bodyGradient.addColorStop(1, `hsla(${hue}, ${sat}%, ${light - 15}%, 0.4)`);
+                ctx.fillStyle = bodyGradient;
+                ctx.beginPath();
+                ctx.ellipse(cx, cy, 20, 24, 0, 0, Math.PI * 2);
+                ctx.fill();
+
+                // 顶部 / 底部饰边
+                ctx.fillStyle = `hsla(${hue}, ${sat}%, ${light - 20}%, 0.75)`;
+                ctx.fillRect(cx - 10, cy - 28, 20, 3);
+                ctx.fillRect(cx - 10, cy + 25, 20, 3);
+                ctx.fillStyle = `hsla(${hue}, ${sat}%, ${light - 5}%, 0.55)`;
+                ctx.fillRect(cx - 6, cy - 32, 12, 3);
+                ctx.fillRect(cx - 6, cy + 29, 12, 3);
+
+                // 内部暖光
+                const innerGlow = ctx.createRadialGradient(cx, cy + 8, 2, cx, cy + 8, 14);
+                innerGlow.addColorStop(0, `hsla(${hue + 10}, 90%, ${light + 30}%, 0.9)`);
+                innerGlow.addColorStop(1, 'transparent');
+                ctx.fillStyle = innerGlow;
+                ctx.beginPath();
+                ctx.arc(cx, cy + 8, 14, 0, Math.PI * 2);
+                ctx.fill();
+
+                return PIXI.Texture.from(canvas);
+            }
+
+            function generateStarTexture() {
+                const size = 8;
+                const canvas = document.createElement('canvas');
+                canvas.width = size;
+                canvas.height = size;
+                const ctx = canvas.getContext('2d');
+                const gradient = ctx.createRadialGradient(4, 4, 0, 4, 4, 4);
+                gradient.addColorStop(0, 'rgba(255,255,255,0.9)');
+                gradient.addColorStop(0.5, 'rgba(255,255,255,0.3)');
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.fillRect(0, 0, size, size);
+                return PIXI.Texture.from(canvas);
+            }
+
+            function generateMouseGlowTexture() {
+                const size = 64;
+                const canvas = document.createElement('canvas');
+                canvas.width = size;
+                canvas.height = size;
+                const ctx = canvas.getContext('2d');
+                const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+                gradient.addColorStop(0, 'rgba(255,200,150,0.12)');
+                gradient.addColorStop(0.5, 'rgba(255,180,120,0.05)');
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.fillRect(0, 0, size, size);
+                return PIXI.Texture.from(canvas);
+            }
+
+            function generateBackgroundTexture() {
+                const w = 2, h = 256;
+                const canvas = document.createElement('canvas');
+                canvas.width = w;
+                canvas.height = h;
+                const ctx = canvas.getContext('2d');
+                const gradient = ctx.createLinearGradient(0, 0, 0, h);
+                gradient.addColorStop(0, '#0d0d2a');
+                gradient.addColorStop(0.4, '#080818');
+                gradient.addColorStop(0.7, '#0a0a1e');
+                gradient.addColorStop(1, '#0e0a14');
+                ctx.fillStyle = gradient;
+                ctx.fillRect(0, 0, w, h);
+                return PIXI.Texture.from(canvas);
+            }
+
+            // ─── PixiJS 初始化 ───────────────────────────────────────────
+            function initPixi() {
+                const container = document.getElementById('pixi-container');
+                const width = window.innerWidth;
+                const height = window.innerHeight;
+                const resolution = Math.min(window.devicePixelRatio || 1, 2);
+
+                app = new PIXI.Application({
+                    width,
+                    height,
+                    resolution,
+                    backgroundColor: 0x080818,
+                    antialias: true,
+                    autoDensity: true,
+                    powerPreference: 'high-performance',
+                });
+                container.appendChild(app.view);
+
+                // 背景
+                bgSprite = new PIXI.Sprite(generateBackgroundTexture());
+                bgSprite.width = width;
+                bgSprite.height = height;
+                bgSprite.alpha = 0.85;
+                app.stage.addChild(bgSprite);
+
+                // 星星层
+                starContainer = new PIXI.ParticleContainer(2000, {
+                    position: true,
+                    alpha: true,
+                    scale: true,
+                }, 2000, true);
+                starContainer.blendMode = PIXI.BLEND_MODES.ADD;
+                app.stage.addChild(starContainer);
+
+                // 灯笼层
+                lanternContainer = new PIXI.ParticleContainer(200, {
+                    position: true,
+                    rotation: true,
+                    scale: true,
+                    alpha: true,
+                }, 200, true);
+                lanternContainer.blendMode = PIXI.BLEND_MODES.ADD;
+                app.stage.addChild(lanternContainer);
+
+                // 光晕层
+                glowContainer = new PIXI.Container();
+                glowContainer.blendMode = PIXI.BLEND_MODES.ADD;
+                app.stage.addChild(glowContainer);
+
+                // 生成缓存纹理
+                cachedLanternTextures = LANTERN_COLORS.map(c => generateLanternTexture(c));
+                cachedStarTexture = generateStarTexture();
+                mouseGlowTexture = generateMouseGlowTexture();
+
+                // 初始化星星
+                initStars();
+                // 初始化灯笼
+                initLanterns();
+                // 鼠标光晕精灵
+                initMouseGlow();
+
+                setupEvents();
+                app.ticker.add(animate);
+                app.ticker.maxFPS = 60;
+            }
+
+            function initStars() {
+                stars = [];
+                starContainer.removeChildren();
+                const count = Math.min(500, Math.floor(app.screen.width * app.screen.height / 8000));
+                for (let i = 0; i < count; i++) {
+                    const sprite = new PIXI.Sprite(cachedStarTexture);
+                    sprite.anchor.set(0.5, 0.5);
+                    const size = 0.4 + Math.random() * 1.3;
+                    sprite.scale.set(size, size);
+                    sprite.x = Math.random() * app.screen.width;
+                    sprite.y = Math.random() * app.screen.height;
+                    const baseAlpha = 0.25 + Math.random() * 0.55;
+                    sprite.alpha = baseAlpha;
+                    starContainer.addChild(sprite);
+                    stars.push({
+                        sprite,
+                        twinkleSpeed: 0.2 + Math.random() * 0.8,
+                        twinklePhase: Math.random() * Math.PI * 2,
+                        baseAlpha,
+                    });
+                }
+            }
+
+            function initLanterns() {
+                lanterns = [];
+                lanternContainer.removeChildren();
+                const count = 6 + Math.floor(Math.random() * 3);
+                for (let i = 0; i < count; i++) {
+                    createLantern(false);
+                }
+            }
+
+            function initMouseGlow() {
+                mouseGlowSprite = new PIXI.Sprite(mouseGlowTexture);
+                mouseGlowSprite.anchor.set(0.5, 0.5);
+                mouseGlowSprite.width = 110;
+                mouseGlowSprite.height = 110;
+                mouseGlowSprite.alpha = 0;
+                glowContainer.addChild(mouseGlowSprite);
+            }
+
+            function createLantern(burstMode) {
+                const textureIndex = Math.floor(Math.random() * cachedLanternTextures.length);
+                const sprite = new PIXI.Sprite(cachedLanternTextures[textureIndex]);
+                sprite.anchor.set(0.5, 0.5);
+
+                const baseScale = burstMode ? (0.45 + Math.random() * 0.25) : (0.65 + Math.random() * 0.45);
+                const x = burstMode ? mouse.x + (Math.random() - 0.5) * 50 : Math.random() * app.screen.width;
+                const y = burstMode ? mouse.y + (Math.random() - 0.5) * 30 : app.screen.height * (0.4 + Math.random() * 0.55);
+                const baseColor = LANTERN_COLORS[textureIndex];
+
+                const lantern = {
+                    sprite,
+                    x,
+                    y,
+                    vx: (Math.random() - 0.5) * 0.5,
+                    vy: -(0.4 + Math.random() * 0.8),
+                    baseScale,
+                    scalePulse: Math.random() * Math.PI * 2,
+                    scalePulseSpeed: 0.2 + Math.random() * 0.4,
+                    rotation: (Math.random() - 0.5) * 0.12,
+                    rotationSpeed: (Math.random() - 0.5) * 0.015,
+                    swaySpeed: 0.15 + Math.random() * 0.35,
+                    swayPhase: Math.random() * Math.PI * 2,
+                    swayAmount: 0.4 + Math.random() * 0.9,
+                    riseSpeed: 0.4 + Math.random() * 0.9,
+                    alpha: 0.7 + Math.random() * 0.25,
+                    flickerSpeed: 0.6 + Math.random() * 1.0,
+                    flickerPhase: Math.random() * Math.PI * 2,
+                    burstMode: burstMode || false,
+                    burstLife: burstMode ? 1.0 : 0,
+                    burstDecay: 0.006 + Math.random() * 0.005,
+                };
+
+                sprite.x = x;
+                sprite.y = y;
+                sprite.rotation = lantern.rotation;
+                sprite.scale.set(baseScale, baseScale);
+                sprite.alpha = lantern.alpha;
+                lanternContainer.addChild(sprite);
+                lanterns.push(lantern);
+                return lantern;
+            }
+
+            function animate() {
+                time += 0.016;
+                const w = app.screen.width;
+                const h = app.screen.height;
+
+                // 更新鼠标光晕
+                if (mouseGlowSprite) {
+                    if (mouse.active && mouse.x > 0) {
+                        mouseGlowSprite.alpha = 0.7;
+                        mouseGlowSprite.x = mouse.x;
+                        mouseGlowSprite.y = mouse.y;
+                        const pulse = 1 + Math.sin(time * 2.2) * 0.18;
+                        mouseGlowSprite.scale.set(pulse, pulse);
+                    } else {
+                        mouseGlowSprite.alpha *= 0.9;
+                    }
+                }
+
+                // 更新灯笼
+                for (let i = lanterns.length - 1; i >= 0; i--) {
+                    const l = lanterns[i];
+                    const sway = Math.sin(time * l.swaySpeed + l.swayPhase) * l.swayAmount;
+                    l.vx += sway * 0.025;
+                    l.vy = -(0.35 + l.riseSpeed * 0.4);
+
+                    if (mouse.active && mouse.x > 0) {
+                        const dx = mouse.x - l.x;
+                        const dy = mouse.y - l.y;
+                        const distSq = dx * dx + dy * dy;
+                        const radius = 150;
+                        const radiusSq = radius * radius;
+                        if (distSq < radiusSq && distSq > 0.01) {
+                            const dist = Math.sqrt(distSq);
+                            const falloff = 1 - dist / radius;
+                            l.vx += dx / dist * falloff * 0.18;
+                            l.vy += dy / dist * falloff * 0.08;
+                        }
+                    }
+
+                    l.vx *= 0.96;
+                    l.vy *= 0.96;
+                    l.x += l.vx;
+                    l.y += l.vy;
+                    l.rotation += l.rotationSpeed + sway * 0.002;
+                    l.scalePulse += l.scalePulseSpeed;
+                    const pulse = Math.sin(l.scalePulse);
+                    const currentScale = l.baseScale * (0.92 + 0.08 * pulse);
+                    const flicker = 0.7 + 0.3 * Math.sin(time * l.flickerSpeed + l.flickerPhase);
+                    const alpha = l.alpha * flicker;
+
+                    if (l.burstMode) {
+                        l.burstLife -= l.burstDecay;
+                        if (l.burstLife <= 0.01) {
+                            lanternContainer.removeChild(l.sprite);
+                            l.sprite.destroy({ texture: false, children: true });
+                            lanterns.splice(i, 1);
+                            continue;
+                        }
+                    } else if (l.y < -35) {
+                        l.y = h + 40;
+                        l.x = Math.random() * w;
+                        l.vx = (Math.random() - 0.5) * 0.5;
+                        l.vy = -(0.4 + Math.random() * 0.7);
+                    }
+
+                    l.sprite.x = l.x;
+                    l.sprite.y = l.y;
+                    l.sprite.rotation = l.rotation;
+                    l.sprite.scale.set(currentScale, currentScale * (1 + pulse * 0.06));
+                    l.sprite.alpha = alpha * (l.burstMode ? l.burstLife : 1);
+                }
+
+                // 更新星星闪烁
+                for (const s of stars) {
+                    const twinkle = 0.65 + 0.35 * Math.sin(time * s.twinkleSpeed + s.twinklePhase);
+                    s.sprite.alpha = s.baseAlpha * twinkle;
+                }
+
+                // 更新背景
+                bgSprite.width = w;
+                bgSprite.height = h;
+            }
+
+            function releaseLanterns(x, y) {
+                const count = 2 + Math.floor(Math.random() * 2);
+                for (let i = 0; i < count; i++) {
+                    if (lanterns.length < maxLanterns) {
+                        createLantern(true);
+                    }
+                }
+            }
+
+            function setupEvents() {
+                const view = app.view;
+                view.addEventListener('mousemove', (e) => {
+                    mouse.x = e.clientX;
+                    mouse.y = e.clientY;
+                    mouse.active = true;
+                });
+                view.addEventListener('mouseleave', () => {
+                    mouse.active = false;
+                    mouse.x = -9999;
+                    mouse.y = -9999;
+                });
+                view.addEventListener('mousedown', (e) => {
+                    mouse.x = e.clientX;
+                    mouse.y = e.clientY;
+                    mouse.active = true;
+                    releaseLanterns(mouse.x, mouse.y);
+                    colorShift += 8 + Math.random() * 10;
+                    if (colorShift > 40) colorShift = -8;
+                });
+                view.addEventListener('touchmove', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        mouse.x = touch.clientX;
+                        mouse.y = touch.clientY;
+                        mouse.active = true;
+                    }
+                }, { passive: false });
+                view.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        mouse.x = touch.clientX;
+                        mouse.y = touch.clientY;
+                        mouse.active = true;
+                        releaseLanterns(mouse.x, mouse.y);
+                        colorShift += 8 + Math.random() * 10;
+                        if (colorShift > 40) colorShift = -8;
+                    }
+                }, { passive: false });
+                view.addEventListener('touchend', () => {
+                    mouse.active = false;
+                    mouse.x = -9999;
+                    mouse.y = -9999;
+                });
+                window.addEventListener('resize', () => {
+                    if (app) {
+                        app.renderer.resize(window.innerWidth, window.innerHeight);
+                        bgSprite.width = app.screen.width;
+                        bgSprite.height = app.screen.height;
+                    }
+                });
+            }
+
+            function init() {
+                try {
+                    initPixi();
+                    console.log('许愿天灯已启动（性能优化版）');
+                } catch (err) {
+                    console.error('初始化失败:', err);
+                    document.body.style.background = '#080818';
+                    const container = document.getElementById('pixi-container');
+                    if (container) container.style.background = '#080818';
+                }
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+            window.addEventListener('load', () => {
+                document.body.style.background = '#080818';
+                const container = document.getElementById('pixi-container');
+                if (container) container.style.background = '#080818';
+            });
+        })();
+    </script>
+</body>
+</html>

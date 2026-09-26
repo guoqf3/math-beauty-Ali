@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>环面纽结演化 · Torus Knots Deformation</title>
+    <style>
+        :root { --bg: #060a14; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: var(--bg); overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'Noto Serif SC', serif;
+            width: 100vw; height: 100vh; height: 100dvh;
+            -webkit-tap-highlight-color: transparent;
+            user-select: none; -webkit-user-select: none;
+        }
+        #canvas-container { position: fixed; inset: 0; z-index: 1; }
+        canvas { display: block; }
+        #title-overlay {
+            position: fixed; top: 2.5vh; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+        }
+        #title-overlay .title {
+            font-size: clamp(1.1rem, 2.5vw, 1.8rem); font-weight: 400;
+            letter-spacing: 0.07em; color: rgba(215, 225, 245, 0.93);
+            text-shadow: 0 0 45px rgba(160, 200, 255, 0.55), 0 0 85px rgba(130, 170, 240, 0.3);
+            line-height: 1.3;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.6rem, 1.3vw, 0.85rem); letter-spacing: 0.12em;
+            color: rgba(180, 195, 220, 0.72);
+            text-shadow: 0 0 20px rgba(140, 180, 220, 0.35); margin-top: 0.3vh; font-style: italic;
+        }
+        #formula-overlay {
+            position: fixed; bottom: 3vh; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+        }
+        #formula-overlay .formula {
+            font-size: clamp(0.65rem, 1.4vw, 0.88rem); letter-spacing: 0.04em;
+            color: rgba(190, 200, 225, 0.78); text-shadow: 0 0 30px rgba(150, 180, 220, 0.4);
+            font-style: italic; background: rgba(8, 14, 26, 0.55);
+            padding: 0.5vh 2.2vw; border-radius: 2rem;
+            border: 1px solid rgba(120, 150, 200, 0.22);
+            backdrop-filter: blur(5px); -webkit-backdrop-filter: blur(5px);
+        }
+        #formula-overlay .formula .highlight {
+            color: rgba(255, 175, 95, 0.9); font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="title-overlay">
+        <div class="title">环面纽结演化</div>
+        <div class="subtitle">Torus Knots · 参数连续形变与无理频率</div>
+    </div>
+    <div id="formula-overlay">
+        <div class="formula">
+            <span class="highlight">γ</span>(θ) = ((R+r cos qθ)cos pθ, (R+r cos qθ)sin pθ,  r sin qθ) | 
+            <span class="highlight">p</span>, q 随时间振荡
+        </div>
+    </div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.157.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // --- DOM 容器 ---
+        const container = document.getElementById('canvas-container');
+
+        // --- 场景初始化 ---
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(48, container.clientWidth / container.clientHeight, 0.1, 18);
+        camera.position.set(4.5, 1.2, 4.5);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x060a14, 1);
+        renderer.outputColorSpace = THREE.SRGBColorSpace;
+        container.appendChild(renderer.domElement);
+
+        // --- 星空背景 ---
+        const starCount = 700;
+        const starGeom = new THREE.BufferGeometry();
+        const starPositions = new Float32Array(starCount * 3);
+        const starSizes = new Float32Array(starCount);
+        for (let i = 0; i < starCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const r = 7.5 + Math.random() * 10;
+            starPositions[i*3]   = r * Math.sin(phi) * Math.cos(theta);
+            starPositions[i*3+1] = r * Math.sin(phi) * Math.sin(theta);
+            starPositions[i*3+2] = r * Math.cos(phi);
+            starSizes[i] = Math.random() * 1.5 + 0.1;
+        }
+        starGeom.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
+        starGeom.setAttribute('size', new THREE.BufferAttribute(starSizes, 1));
+        const stars = new THREE.Points(starGeom, new THREE.PointsMaterial({
+            color: 0x7d8eb5, size: 0.009, transparent: true, opacity: 0.55,
+            blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true
+        }));
+        scene.add(stars);
+
+        // --- 颜色定义 ---
+        const COLORS = [
+            new THREE.Color('#00c8f0'), // 青色
+            new THREE.Color('#f0a040'), // 金色
+            new THREE.Color('#f05078')  // 品红
+        ];
+
+        // --- 环面纽结参数 ---
+        const NUM_LINES = 90;            // 线条数量
+        const POINTS_PER_LINE = 300;     // 每条线采样点数
+        const R = 2.0;                   // 环面主半径
+        const r = 0.75;                  // 管半径
+        const THETA_WINDOW = 8 * Math.PI; // θ历史窗口长度（弧度）
+
+        // 每条线的元数据
+        const lineMetas = [];
+        for (let i = 0; i < NUM_LINES; i++) {
+            let colorGroup, baseP, baseQ;
+            if (i < 30) {
+                colorGroup = 0;
+                baseP = 2.0 + Math.random() * 1.5;    // p0 在2~3.5
+                baseQ = 2.0 + Math.random() * 1.5;    // q0 在2~3.5
+            } else if (i < 60) {
+                colorGroup = 1;
+                baseP = 1.0 + Math.random() * 2.0;    // 1~3
+                baseQ = 3.0 + Math.random() * 2.5;    // 3~5.5
+            } else {
+                colorGroup = 2;
+                baseP = 3.0 + Math.random() * 2.5;    // 3~5.5
+                baseQ = 1.0 + Math.random() * 2.0;    // 1~3
+            }
+            // p(t) = baseP + A_p * sin(ω1 * t + φ1)
+            // q(t) = baseQ + A_q * sin(ω2 * t + φ2)
+            const ampP = 0.15 + Math.random() * 0.35;
+            const ampQ = 0.15 + Math.random() * 0.35;
+            const omegaP = 0.2 + Math.random() * 0.5;
+            const omegaQ = 0.2 + Math.random() * 0.5;
+            const phaseP = Math.random() * Math.PI * 2;
+            const phaseQ = Math.random() * Math.PI * 2;
+            const speed = 0.5 + Math.random() * 0.8;   // θ推进速度
+            const initialThetaOffset = Math.random() * Math.PI * 2;
+            lineMetas.push({
+                baseP, baseQ, ampP, ampQ, omegaP, omegaQ, phaseP, phaseQ,
+                speed, colorGroup, thetaOffset: initialThetaOffset
+            });
+        }
+
+        // --- 创建线条BufferGeometry ---
+        const lineObjects = [];
+        for (let i = 0; i < NUM_LINES; i++) {
+            const positions = new Float32Array(POINTS_PER_LINE * 3);
+            const geom = new THREE.BufferGeometry();
+            geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            const mat = new THREE.LineBasicMaterial({
+                color: COLORS[lineMetas[i].colorGroup],
+                linewidth: 1,
+                transparent: true,
+                opacity: 0.82,
+                depthTest: true,
+                depthWrite: true,
+                blending: THREE.NormalBlending
+            });
+            const line = new THREE.Line(geom, mat);
+            line.frustumCulled = false;
+            scene.add(line);
+            lineObjects.push({ geom, positions });
+        }
+
+        // --- 计算环面纽结点 ---
+        function torusKnotPoint(theta, p, q) {
+            const cosQ = Math.cos(q * theta);
+            const sinQ = Math.sin(q * theta);
+            const rEff = r * cosQ;
+            const x = (R + rEff) * Math.cos(p * theta);
+            const y = (R + rEff) * Math.sin(p * theta);
+            const z = r * sinQ;
+            return { x, y, z };
+        }
+
+        // --- 更新所有线条（每帧调用）---
+        function updateLines(globalTime) {
+            for (let i = 0; i < NUM_LINES; i++) {
+                const m = lineMetas[i];
+                const { geom, positions } = lineObjects[i];
+                // 当前p, q
+                const pNow = m.baseP + m.ampP * Math.sin(m.omegaP * globalTime + m.phaseP);
+                const qNow = m.baseQ + m.ampQ * Math.sin(m.omegaQ * globalTime + m.phaseQ);
+                // 当前θ中心（视角跟随）
+                const thetaCenter = m.thetaOffset + m.speed * globalTime;
+                const thetaStep = THETA_WINDOW / (POINTS_PER_LINE - 1);
+                const thetaStart = thetaCenter - THETA_WINDOW / 2;
+                for (let j = 0; j < POINTS_PER_LINE; j++) {
+                    const theta = thetaStart + j * thetaStep;
+                    const pt = torusKnotPoint(theta, pNow, qNow);
+                    const idx = j * 3;
+                    positions[idx]   = pt.x;
+                    positions[idx+1] = pt.y;
+                    positions[idx+2] = pt.z;
+                }
+                geom.attributes.position.needsUpdate = true;
+                geom.setDrawRange(0, POINTS_PER_LINE);
+            }
+        }
+
+        // --- 动画状态 ---
+        let globalTime = 0;
+        let animId = null;
+        let lastTimestamp = performance.now();
+        let frameCount = 0;
+
+        // --- 动画循环 ---
+        function animate(now) {
+            animId = requestAnimationFrame(animate);
+            let dt = (now - lastTimestamp) / 1000;
+            if (dt <= 0) dt = 0.016;
+            if (dt > 0.2) dt = 0.2;
+            lastTimestamp = now;
+            globalTime += dt;
+
+            try {
+                updateLines(globalTime);
+            } catch (e) {
+                console.error(e);
+            }
+
+            // 相机环绕
+            const camAngle = globalTime * 0.12 + 0.5;
+            const camRadius = 4.8;
+            const camY = 1.0 + 0.7 * Math.sin(0.25 * globalTime + 2.0);
+            camera.position.set(
+                camRadius * Math.sin(camAngle),
+                camY,
+                camRadius * Math.cos(camAngle)
+            );
+            camera.lookAt(0, 0, 0);
+
+            // 星空旋转
+            stars.rotation.y += dt * 0.025;
+            stars.rotation.x += dt * 0.01;
+
+            renderer.render(scene, camera);
+            frameCount++;
+        }
+
+        // --- 首次渲染（立即显示画面）---
+        function renderInitialFrame() {
+            updateLines(0);
+            camera.position.set(4.5, 1.2, 4.5);
+            camera.lookAt(0, 0, 0);
+            renderer.render(scene, camera);
+        }
+
+        // --- 看门狗：防止动画卡死 ---
+        let lastWatchFrame = 0;
+        setInterval(() => {
+            if (frameCount === lastWatchFrame && frameCount > 5) {
+                console.warn('动画可能停滞，尝试重新启动…');
+                if (animId) cancelAnimationFrame(animId);
+                lastTimestamp = performance.now();
+                animId = requestAnimationFrame(animate);
+            }
+            lastWatchFrame = frameCount;
+        }, 2000);
+
+        // --- 窗口大小调整 ---
+        window.addEventListener('resize', () => {
+            camera.aspect = container.clientWidth / Math.max(container.clientHeight, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        });
+
+        // --- 启动 ---
+        renderInitialFrame();
+        setTimeout(() => {
+            lastTimestamp = performance.now();
+            animId = requestAnimationFrame(animate);
+        }, 100);
+
+        console.log('环面纽结演化动画已启动');
+    </script>
+</body>
+</html>

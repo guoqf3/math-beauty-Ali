@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>深海水母</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #050510;
+            font-family: system-ui, sans-serif;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            user-select: none;
+            cursor: default;
+        }
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+        #hint {
+            position: fixed;
+            bottom: 20px;
+            left: 24px;
+            color: rgba(255, 255, 255, 0.35);
+            font-size: 12px;
+            letter-spacing: 0.5px;
+            pointer-events: none;
+            z-index: 10;
+            transition: opacity 1.5s ease;
+            font-weight: 300;
+        }
+        #fps-badge {
+            position: fixed;
+            top: 16px;
+            right: 18px;
+            color: rgba(255, 255, 255, 0.25);
+            font-size: 11px;
+            pointer-events: none;
+            z-index: 10;
+            font-weight: 300;
+            letter-spacing: 0.5px;
+        }
+    </style>
+</head>
+<body>
+    <div id="fps-badge"></div>
+    <div id="hint">移动旋转 · 点击呼吸</div>
+
+    <script src="https://cdn.jsdelivr.net/npm/pixi.js@7.4.2/dist/pixi.min.js">
+    </script>
+    <script>
+        (function() {
+            'use strict';
+
+            // ─── 性能与安全检查 ───
+            if (!window.PIXI) {
+                console.warn('PixiJS 加载失败');
+                document.body.innerHTML = '<div style="color:#fff;text-align:center;padding-top:40vh;font-size:16px;">需要WebGL支持</div>';
+                return;
+            }
+
+            // ─── 常量定义 ───
+            const FOCAL_LENGTH = 1000;
+            const BASE_SCALE = 0.09;
+            const AUTO_ROTATE_SPEED = 0.25;
+            const VIEW_SENSITIVITY_X = 0.55;
+            const VIEW_SENSITIVITY_Y = 0.4;
+            const BELL_RADIUS = 190;
+            const BELL_HEIGHT = 140;
+            const TENTACLE_COUNT = 14;
+            const TENTACLE_SEGMENTS = 22;
+            const PARTICLES_PER_SEGMENT = 5;
+            const BELL_SURFACE_PARTICLES = 280;
+
+            // ─── 颜色主题 ───
+            const COLOR_THEMES = [
+                // 深海蓝
+                [0x4DFFD9, 0x4D9FFF, 0xB0FFEE, 0x7CD4FF, 0xCCFFFF],
+                // 幽紫
+                [0xB06BFF, 0x9B4DFF, 0xD9B0FF, 0xC48FFF, 0xE0CCFF],
+                // 暖金
+                [0xFFD447, 0xFFB85C, 0xFFE0A0, 0xFFCC80, 0xFFF5CC],
+                // 翡翠
+                [0x6BFFB0, 0x4DFFD9, 0xB0FFD9, 0x8DFFC8, 0xCCFFEE],
+                // 粉红
+                [0xFF9DCC, 0xFF6B9D, 0xFFB0D9, 0xFFC8E0, 0xFFE0F0],
+            ];
+            let currentThemeIndex = 0;
+
+            // ─── DOM 元素 ───
+            const fpsBadge = document.getElementById('fps-badge');
+            const hintEl = document.getElementById('hint');
+
+            // ─── PixiJS 应用初始化 ───
+            let app;
+            try {
+                app = new PIXI.Application({
+                    width: window.innerWidth,
+                    height: window.innerHeight,
+                    backgroundColor: 0x050510,
+                    antialias: false,
+                    autoDensity: true,
+                    resolution: Math.min(window.devicePixelRatio || 1, 2),
+                    powerPreference: 'high-performance',
+                    forceCanvas: !isWebGLAvailable(),
+                });
+            } catch (err) {
+                console.error('PixiJS 初始化失败:', err);
+                document.body.innerHTML = '<div style="color:#fff;text-align:center;padding-top:40vh;font-size:16px;">初始化失败</div>';
+                return;
+            }
+
+            function isWebGLAvailable() {
+                try {
+                    const canvas = document.createElement('canvas');
+                    return !!(window.WebGLRenderingContext &&
+                        (canvas.getContext('webgl') || canvas.getContext('experimental-webgl')));
+                } catch (e) { return false; }
+            }
+
+            document.body.appendChild(app.view);
+
+            // ─── 创建发光纹理 ───
+            function createGlowTexture(size) {
+                const c = document.createElement('canvas');
+                c.width = size;
+                c.height = size;
+                const ctx = c.getContext('2d');
+                const half = size / 2;
+                const gradient = ctx.createRadialGradient(half, half, 0, half, half, half);
+                gradient.addColorStop(0.0, 'rgba(255,255,255,1)');
+                gradient.addColorStop(0.12, 'rgba(255,255,255,0.92)');
+                gradient.addColorStop(0.35, 'rgba(255,255,255,0.55)');
+                gradient.addColorStop(0.65, 'rgba(255,255,255,0.2)');
+                gradient.addColorStop(1.0, 'rgba(255,255,255,0)');
+                ctx.fillStyle = gradient;
+                ctx.fillRect(0, 0, size, size);
+                const tex = PIXI.Texture.from(c);
+                tex.baseTexture.scaleMode = PIXI.SCALE_MODES.LINEAR;
+                return tex;
+            }
+
+            const glowTex64 = createGlowTexture(64);
+            const glowTex128 = createGlowTexture(128);
+
+            // ─── 计算总粒子数 ───
+            const totalParticles = BELL_SURFACE_PARTICLES + TENTACLE_COUNT * TENTACLE_SEGMENTS * PARTICLES_PER_SEGMENT;
+            console.log('总粒子数:', totalParticles);
+
+            // ─── 粒子容器 ───
+            const particleContainer = new PIXI.ParticleContainer(totalParticles, {
+                position: true,
+                scale: true,
+                tint: true,
+                alpha: true,
+            }, totalParticles, true);
+            particleContainer.blendMode = PIXI.BLEND_MODES.ADD;
+            app.stage.addChild(particleContainer);
+
+            // ─── 中心光晕 ───
+            const centerGlow = new PIXI.Sprite(glowTex128);
+            centerGlow.anchor.set(0.5);
+            centerGlow.tint = 0xFFFFFF;
+            centerGlow.alpha = 0.3;
+            centerGlow.scale.set(1.3);
+            centerGlow.blendMode = PIXI.BLEND_MODES.ADD;
+            app.stage.addChild(centerGlow);
+
+            const centerCore = new PIXI.Sprite(glowTex64);
+            centerCore.anchor.set(0.5);
+            centerCore.tint = 0xFFFFFF;
+            centerCore.alpha = 0.65;
+            centerCore.scale.set(0.4);
+            centerCore.blendMode = PIXI.BLEND_MODES.ADD;
+            app.stage.addChild(centerCore);
+
+            // ─── 粒子数据 ───
+            const sprites = [];
+            const particles = [];
+
+            let mouseX = 0;
+            let mouseY = 0;
+            let smoothMouseX = 0;
+            let smoothMouseY = 0;
+            let autoRotateY = 0;
+            let time = 0;
+            let frameCount = 0;
+            let fpsLastTime = 0;
+            let breathEnergy = 0;
+            let floatOffset = 0;
+
+            // ─── 音频上下文 ───
+            let audioCtx = null;
+            function ensureAudio() {
+                if (!audioCtx) {
+                    const AudioContext = window.AudioContext || window.webkitAudioContext;
+                    if (AudioContext) {
+                        audioCtx = new AudioContext();
+                    }
+                }
+                if (audioCtx && audioCtx.state === 'suspended') {
+                    audioCtx.resume();
+                }
+            }
+
+            function playBreathSound() {
+                if (!audioCtx) return;
+                const now = audioCtx.currentTime;
+                const duration = 0.55;
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(220, now);
+                osc.frequency.exponentialRampToValueAtTime(65, now + duration);
+                gain.gain.setValueAtTime(0.35, now);
+                gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+                osc.start(now);
+                osc.stop(now + duration);
+
+                const osc2 = audioCtx.createOscillator();
+                const gain2 = audioCtx.createGain();
+                osc2.type = 'triangle';
+                osc2.frequency.setValueAtTime(110, now);
+                osc2.frequency.exponentialRampToValueAtTime(50, now + duration * 0.75);
+                gain2.gain.setValueAtTime(0.1, now);
+                gain2.gain.exponentialRampToValueAtTime(0.001, now + duration * 0.85);
+                osc2.connect(gain2);
+                gain2.connect(audioCtx.destination);
+                osc2.start(now + 0.04);
+                osc2.stop(now + duration);
+            }
+
+            // ─── 构建水母几何体 ───
+            function getBellSurfacePoint(u, v, breath) {
+                // u: 0-1 从顶部到底部边缘, v: 0-1 环绕角度
+                const theta = u * Math.PI / 2; // 0到π/2
+                const phi = v * Math.PI * 2;
+                const bellR = BELL_RADIUS * (1 + breath * 0.1);
+                const bellH = BELL_HEIGHT * (1 + breath * 0.18);
+                // 钟形：使用抛物线轮廓
+                const paraboloidR = bellR * Math.sin(theta);
+                const paraboloidH = bellH * (1 - Math.cos(theta));
+                // 实际上是半球与抛物线的混合
+                const mix = 0.7;
+                const radiusAt = bellR * (mix * Math.sin(theta) + (1 - mix) * Math.sqrt(Math.sin(theta)));
+                const heightAt = bellH * (1 - Math.cos(theta)) * 0.8;
+                return {
+                    x: radiusAt * Math.cos(phi),
+                    y: heightAt - bellH * 0.3,
+                    z: radiusAt * Math.sin(phi),
+                };
+            }
+
+            function getTentaclePoint(tentacleIndex, t, breath, time) {
+                // t: 0-1 从钟形底部到触手尖端
+                const angle = tentacleIndex / TENTACLE_COUNT * Math.PI * 2;
+                const bellEdgeR = BELL_RADIUS * (1 + breath * 0.08);
+                const startX = bellEdgeR * Math.cos(angle);
+                const startZ = bellEdgeR * Math.sin(angle);
+                const startY = 0;
+                const tentacleLength = 280 + (tentacleIndex % 5) * 40;
+                const endX = startX * 0.3;
+                const endZ = startZ * 0.3;
+                const endY = -tentacleLength;
+
+                // 触手摆动
+                const sway = Math.sin(time * 0.8 + tentacleIndex * 0.7) * 28 * (1 + breath * 0.4);
+                const swayX = sway * Math.cos(angle + Math.PI / 2);
+                const swayZ = sway * Math.sin(angle + Math.PI / 2);
+
+                // 触手曲线：使用贝塞尔样条插值
+                const t2 = t * t;
+                const t3 = t2 * t;
+                const y = startY + (endY - startY) * (3 * t2 - 2 * t3);
+                const x = startX + (endX - startX) * t + swayX * Math.sin(t * Math.PI);
+                const z = startZ + (endZ - startZ) * t + swayZ * Math.sin(t * Math.PI);
+
+                return { x, y, z };
+            }
+
+            // ─── 初始化粒子 ───
+            function initParticles() {
+                // 钟形表面粒子
+                for (let i = 0; i < BELL_SURFACE_PARTICLES; i++) {
+                    const sprite = new PIXI.Sprite(glowTex64);
+                    sprite.anchor.set(0.5);
+                    const colorIdx = Math.floor(Math.random() * COLOR_THEMES[0].length);
+                    sprite.tint = COLOR_THEMES[0][colorIdx];
+                    sprite.alpha = 0.7 + Math.random() * 0.25;
+                    sprite.scale.set(BASE_SCALE * (0.75 + Math.random() * 0.3));
+
+                    const u = Math.random();
+                    const v = Math.random();
+                    const data = {
+                        type: 'bell',
+                        u: u,
+                        v: v,
+                        colorIdx: colorIdx,
+                        baseAlpha: 0.65 + Math.random() * 0.3,
+                        offsetSeed: Math.random() * Math.PI * 2,
+                    };
+                    particles.push(data);
+                    sprites.push(sprite);
+                    particleContainer.addChild(sprite);
+                }
+
+                // 触手粒子
+                for (let ti = 0; ti < TENTACLE_COUNT; ti++) {
+                    for (let seg = 0; seg < TENTACLE_SEGMENTS; seg++) {
+                        const t = seg / TENTACLE_SEGMENTS;
+                        for (let p = 0; p < PARTICLES_PER_SEGMENT; p++) {
+                            const sprite = new PIXI.Sprite(glowTex64);
+                            sprite.anchor.set(0.5);
+                            const colorIdx = Math.floor(Math.random() * COLOR_THEMES[0].length);
+                            sprite.tint = COLOR_THEMES[0][colorIdx];
+                            sprite.alpha = 0.55 + Math.random() * 0.3;
+                            sprite.scale.set(BASE_SCALE * (0.65 + Math.random() * 0.35));
+
+                            const phase = Math.random();
+                            const speedFactor = 0.6 + Math.random() * 0.8;
+                            const data = {
+                                type: 'tentacle',
+                                tentacleIndex: ti,
+                                t: t,
+                                phase: phase,
+                                speedFactor: speedFactor,
+                                colorIdx: colorIdx,
+                                baseAlpha: 0.55 + Math.random() * 0.3,
+                                offsetSeed: Math.random() * Math.PI * 2,
+                            };
+                            particles.push(data);
+                            sprites.push(sprite);
+                            particleContainer.addChild(sprite);
+                        }
+                    }
+                }
+                console.log('粒子初始化完成，数量:', sprites.length);
+            }
+
+            // ─── 3D 旋转与投影 ───
+            function rotatePoint(x, y, z, viewX, viewY) {
+                let cosY = Math.cos(viewY);
+                let sinY = Math.sin(viewY);
+                let x1 = x * cosY + z * sinY;
+                let z1 = -x * sinY + z * cosY;
+                let y1 = y;
+                let cosX = Math.cos(viewX);
+                let sinX = Math.sin(viewX);
+                let y2 = y1 * cosX - z1 * sinX;
+                let z2 = y1 * sinX + z1 * cosX;
+                let x2 = x1;
+                return { x: x2, y: y2, z: z2 };
+            }
+
+            function projectPoint(p, centerX, centerY) {
+                const scale = FOCAL_LENGTH / (FOCAL_LENGTH + p.z);
+                return {
+                    sx: p.x * scale + centerX,
+                    sy: p.y * scale + centerY,
+                    scale: scale
+                };
+            }
+
+            // ─── 更新粒子 ───
+            function updateParticles(delta, viewX, viewY, centerX, centerY) {
+                if (breathEnergy > 0) {
+                    breathEnergy = Math.max(0, breathEnergy - delta * 2.8);
+                }
+                // 水母漂浮偏移
+                floatOffset += delta * 0.45;
+
+                for (let i = 0; i < sprites.length; i++) {
+                    const data = particles[i];
+                    const sprite = sprites[i];
+
+                    let px, py, pz;
+                    const breath = breathEnergy;
+
+                    if (data.type === 'bell') {
+                        // 钟形表面，带有脉动
+                        const currentBreath = 0.05 * Math.sin(time * 1.8 + data.offsetSeed) + breath * 0.4;
+                        const pt = getBellSurfacePoint(data.u, data.v, currentBreath);
+                        px = pt.x;
+                        py = pt.y + Math.sin(time * 0.6 + data.offsetSeed) * 15;
+                        pz = pt.z;
+                    } else {
+                        // 触手粒子：沿触手流动
+                        const flowT = (data.t + time * data.speedFactor * 0.25 + data.phase) % 1.0;
+                        const currentBreath = 0.04 * Math.sin(time * 2.0 + data.offsetSeed) + breath * 0.35;
+                        const pt = getTentaclePoint(data.tentacleIndex, flowT, currentBreath, time);
+                        px = pt.x;
+                        py = pt.y + Math.sin(time * 0.7 + data.offsetSeed * 2) * 12;
+                        pz = pt.z;
+                    }
+
+                    // 整体垂直漂浮
+                    py += Math.sin(floatOffset) * 25;
+
+                    const rp = rotatePoint(px, py, pz, viewX, viewY);
+                    const proj = projectPoint(rp, centerX, centerY);
+
+                    const depthFactor = proj.scale;
+                    const pulseGlow = 1 + 0.06 * Math.sin(time * 2.3 + data.offsetSeed) + breath * 0.3;
+                    const alphaMod = 0.85 + 0.15 * Math.sin(time * 1.7 + i * 0.06);
+
+                    sprite.position.set(proj.sx, proj.sy);
+                    sprite.scale.set(BASE_SCALE * depthFactor * pulseGlow);
+                    sprite.alpha = Math.max(0.03, Math.min(1, data.baseAlpha * depthFactor * alphaMod + breath * 0.15));
+                }
+            }
+
+            // ─── 更新中心光晕 ───
+            function updateCenterGlow(centerX, centerY) {
+                const pulse = 0.22 + 0.1 * Math.sin(time * 1.4) + 0.05 * Math.sin(time * 3.7);
+                const breathPulse = breathEnergy > 0 ? breathEnergy * 0.5 : 0;
+                const floatY = Math.sin(floatOffset) * 25;
+                centerGlow.position.set(centerX, centerY + floatY * 0.3);
+                centerGlow.alpha = Math.max(0.12, Math.min(0.5, pulse + breathPulse));
+                centerGlow.scale.set(1.2 + 0.25 * Math.sin(time * 1.1) + breathEnergy * 0.6);
+                centerCore.position.set(centerX, centerY + floatY * 0.35);
+                centerCore.scale.set(0.35 + 0.05 * Math.sin(time * 2.1) + breathEnergy * 0.2);
+                centerCore.alpha = 0.55 + 0.2 * Math.sin(time * 1.5) + breathEnergy * 0.35;
+            }
+
+            // ─── 切换颜色主题 ───
+            function switchTheme() {
+                currentThemeIndex = (currentThemeIndex + 1) % COLOR_THEMES.length;
+                const theme = COLOR_THEMES[currentThemeIndex];
+                for (let i = 0; i < sprites.length; i++) {
+                    const data = particles[i];
+                    const color = theme[data.colorIdx % theme.length];
+                    sprites[i].tint = color;
+                }
+                centerCore.tint = theme[0];
+                centerGlow.tint = theme[1] || theme[0];
+            }
+
+            // ─── 触发呼吸脉冲 ───
+            function triggerBreath() {
+                breathEnergy = 1.0;
+                switchTheme();
+                playBreathSound();
+            }
+
+            // ─── 主循环 ───
+            app.ticker.add((delta) => {
+                const dt = Math.min(delta / 60, 0.05);
+                time += dt;
+                frameCount++;
+
+                const w = window.innerWidth;
+                const h = window.innerHeight;
+                const cx = w / 2;
+                const cy = h / 2;
+
+                smoothMouseX += (mouseX - smoothMouseX) * 0.06;
+                smoothMouseY += (mouseY - smoothMouseY) * 0.06;
+
+                autoRotateY += AUTO_ROTATE_SPEED * dt;
+
+                const normX = (smoothMouseX / w) * 2 - 1;
+                const normY = (smoothMouseY / h) * 2 - 1;
+                const viewY = autoRotateY + normX * VIEW_SENSITIVITY_X;
+                const viewX = normY * VIEW_SENSITIVITY_Y;
+
+                updateParticles(dt, viewX, viewY, cx, cy);
+                updateCenterGlow(cx, cy);
+
+                if (time - fpsLastTime > 0.5) {
+                    const fps = Math.round(frameCount / (time - fpsLastTime));
+                    fpsBadge.textContent = fps + ' fps';
+                    frameCount = 0;
+                    fpsLastTime = time;
+                }
+            });
+
+            // ─── 交互事件 ───
+            function getCanvasCoords(e) {
+                const rect = app.view.getBoundingClientRect();
+                let clientX, clientY;
+                if (e.touches && e.touches.length > 0) {
+                    clientX = e.touches[0].clientX;
+                    clientY = e.touches[0].clientY;
+                } else {
+                    clientX = e.clientX;
+                    clientY = e.clientY;
+                }
+                return { x: clientX - rect.left, y: clientY - rect.top };
+            }
+
+            function onPointerMove(e) {
+                const coords = getCanvasCoords(e);
+                mouseX = coords.x;
+                mouseY = coords.y;
+            }
+
+            function onPointerDown(e) {
+                e.preventDefault();
+                ensureAudio();
+                const coords = getCanvasCoords(e);
+                mouseX = coords.x;
+                mouseY = coords.y;
+                triggerBreath();
+            }
+
+            function onPointerLeave() {
+                mouseX = window.innerWidth / 2;
+                mouseY = window.innerHeight / 2;
+            }
+
+            app.view.addEventListener('mousemove', onPointerMove);
+            app.view.addEventListener('mousedown', onPointerDown);
+            document.addEventListener('mouseleave', onPointerLeave);
+
+            app.view.addEventListener('touchmove', onPointerMove, { passive: true });
+            app.view.addEventListener('touchstart', onPointerDown, { passive: false });
+
+            // ─── 窗口调整 ───
+            function handleResize() {
+                app.renderer.resize(window.innerWidth, window.innerHeight);
+            }
+            window.addEventListener('resize', handleResize);
+            window.addEventListener('orientationchange', () => {
+                setTimeout(handleResize, 300);
+            });
+
+            // ─── 键盘交互 ───
+            window.addEventListener('keydown', (e) => {
+                if (e.key === ' ' || e.key === 'Space') {
+                    e.preventDefault();
+                    ensureAudio();
+                    triggerBreath();
+                }
+            });
+
+            // ─── 启动 ───
+            initParticles();
+
+            mouseX = window.innerWidth / 2;
+            mouseY = window.innerHeight / 2;
+            smoothMouseX = mouseX;
+            smoothMouseY = mouseY;
+
+            setTimeout(() => {
+                if (hintEl) {
+                    hintEl.style.opacity = '0';
+                    setTimeout(() => {
+                        if (hintEl) hintEl.style.display = 'none';
+                    }, 1600);
+                }
+            }, 3200);
+
+            handleResize();
+            console.log('✨ 深海水母已启动 — 粒子数:', sprites.length);
+        })();
+    </script>
+</body>
+</html>

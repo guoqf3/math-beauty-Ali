@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HIVE · 蜂巢光阵</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #080812;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+        #pixi-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2;
+            text-align: center;
+            pointer-events: none;
+            opacity: 0.55;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+        .overlay:hover {
+            opacity: 0.9;
+        }
+        .title {
+            color: rgba(220, 230, 255, 0.75);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 25px rgba(140, 160, 240, 0.5);
+        }
+        .hint {
+            color: rgba(180, 190, 220, 0.45);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+        @media (max-width: 768px) {
+            .overlay { bottom: 18px; }
+            .title { font-size: 8px; letter-spacing: 0.45em; }
+            .hint { font-size: 6px; letter-spacing: 0.22em; }
+        }
+    </style>
+</head>
+<body>
+    <div id="pixi-container"></div>
+    <div class="overlay">
+        <div class="title">Hive</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js"></script>
+    <script>
+        (function() {
+            // ─── PixiJS 加载检测 ───────────────────────────────────────
+            if (typeof PIXI === 'undefined') {
+                document.body.style.background = '#080812';
+                document.getElementById('pixi-container').style.background = '#080812';
+                console.warn('PixiJS 加载失败，已显示备用背景');
+                return;
+            }
+
+            // ─── 全局状态 ──────────────────────────────────────────────
+            let app;
+            let container;
+            let hexagons = [];
+            let mouse = { x: -9999, y: -9999, active: false };
+            let time = 0;
+            let colorShift = 0;
+            let hexTexture;
+            let rippleGraphics;
+            let currentWave = 0;
+            let waveActive = false;
+
+            // ─── 配置 ──────────────────────────────────────────────────
+            const CONFIG = {
+                hexSize: 22,           // 六边形半径
+                gap: 3,               // 间距
+                colorBase: 220,        // 基础色相
+                colorRange: 60,        // 色相范围
+                saturation: 65,
+                lightness: 50,
+                alphaBase: 0.25,
+                alphaMax: 0.9,
+                mouseRadius: 220,
+                waveSpeed: 4.5,        // 波纹扩散速度
+                waveRadiusMax: 500,
+                blendMode: PIXI.BLEND_MODES.ADD,
+            };
+
+            // ─── 创建六边形纹理 ────────────────────────────────────────
+            function createHexTexture(size) {
+                const canvas = document.createElement('canvas');
+                const s = size * 2 + 8;
+                canvas.width = s;
+                canvas.height = s;
+                const ctx = canvas.getContext('2d');
+                const center = s / 2;
+                const r = size;
+
+                // 绘制六边形路径
+                const hexPath = (radius) => {
+                    ctx.beginPath();
+                    for (let i = 0; i < 6; i++) {
+                        const angle = (Math.PI / 3) * i - Math.PI / 6;
+                        const x = center + radius * Math.cos(angle);
+                        const y = center + radius * Math.sin(angle);
+                        if (i === 0) ctx.moveTo(x, y);
+                        else ctx.lineTo(x, y);
+                    }
+                    ctx.closePath();
+                };
+
+                // 外发光
+                const glowGrad = ctx.createRadialGradient(center, center, 0, center, center, r * 1.8);
+                glowGrad.addColorStop(0, 'rgba(255,255,255,0.35)');
+                glowGrad.addColorStop(0.6, 'rgba(255,255,255,0.08)');
+                glowGrad.addColorStop(1, 'rgba(255,255,255,0)');
+                ctx.fillStyle = glowGrad;
+                ctx.fillRect(0, 0, s, s);
+
+                // 六边形填充（半透明白，后续用tint着色）
+                hexPath(r * 0.75);
+                ctx.fillStyle = 'rgba(255,255,255,0.85)';
+                ctx.fill();
+
+                // 六边形边框
+                hexPath(r * 0.75);
+                ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+                ctx.lineWidth = 1.5;
+                ctx.stroke();
+
+                // 内发光点
+                const centerGrad = ctx.createRadialGradient(center, center, 0, center, center, r * 0.45);
+                centerGrad.addColorStop(0, 'rgba(255,255,255,0.9)');
+                centerGrad.addColorStop(1, 'rgba(255,255,255,0)');
+                ctx.fillStyle = centerGrad;
+                ctx.beginPath();
+                ctx.arc(center, center, r * 0.45, 0, Math.PI * 2);
+                ctx.fill();
+
+                return PIXI.Texture.from(canvas);
+            }
+
+            // ─── 初始化六边形网格 ──────────────────────────────────────
+            function initHexGrid() {
+                hexagons = [];
+                container.removeChildren();
+                rippleGraphics = new PIXI.Graphics();
+                rippleGraphics.blendMode = PIXI.BLEND_MODES.ADD;
+                container.addChild(rippleGraphics);
+
+                const w = app.screen.width;
+                const h = app.screen.height;
+                const hexR = CONFIG.hexSize;
+                const gap = CONFIG.gap;
+                const hexW = (hexR + gap) * Math.sqrt(3);
+                const hexH = (hexR + gap) * 2;
+
+                const cols = Math.ceil(w / hexW) + 1;
+                const rows = Math.ceil(h / (hexH * 0.75)) + 1;
+
+                for (let row = 0; row < rows; row++) {
+                    for (let col = 0; col < cols; col++) {
+                        const x = col * hexW + (row % 2) * hexW * 0.5;
+                        const y = row * hexH * 0.75;
+                        if (x > w + hexR || y > h + hexR) continue;
+
+                        const sprite = new PIXI.Sprite(hexTexture);
+                        sprite.anchor.set(0.5, 0.5);
+                        const baseScale = hexR / 16;
+                        sprite.scale.set(baseScale, baseScale);
+                        sprite.x = x;
+                        sprite.y = y;
+                        sprite.blendMode = PIXI.BLEND_MODES.ADD;
+
+                        // 颜色
+                        const colFactor = col / cols;
+                        const rowFactor = row / rows;
+                        const hue = CONFIG.colorBase + colFactor * CONFIG.colorRange + Math.random() * 10 - 5;
+                        const sat = CONFIG.saturation + Math.random() * 15;
+                        const light = CONFIG.lightness + Math.random() * 15;
+                        sprite.tint = hslToHex(hue, sat, light);
+                        sprite.alpha = CONFIG.alphaBase + Math.random() * 0.15;
+
+                        container.addChild(sprite);
+
+                        hexagons.push({
+                            sprite: sprite,
+                            x: x,
+                            y: y,
+                            hue: hue,
+                            sat: sat,
+                            light: light,
+                            alpha: CONFIG.alphaBase + Math.random() * 0.15,
+                            baseAlpha: CONFIG.alphaBase + Math.random() * 0.15,
+                            size: hexR,
+                            col: col,
+                            row: row,
+                            pulsePhase: Math.random() * Math.PI * 2,
+                            pulseSpeed: 0.4 + Math.random() * 0.8,
+                            waveDist: 9999,
+                        });
+                    }
+                }
+                console.log(`已创建 ${hexagons.length} 个六边形`);
+            }
+
+            // ─── HSL转十六进制 ────────────────────────────────────────
+            function hslToHex(hue, sat, light) {
+                const h = ((hue % 360) + 360) % 360;
+                const s = sat / 100;
+                const l = light / 100;
+                const c = (1 - Math.abs(2 * l - 1)) * s;
+                const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+                const m = l - c / 2;
+                let r, g, b;
+                if (h < 60) { r = c; g = x; b = 0; }
+                else if (h < 120) { r = x; g = c; b = 0; }
+                else if (h < 180) { r = 0; g = c; b = x; }
+                else if (h < 240) { r = 0; g = x; b = c; }
+                else if (h < 300) { r = x; g = 0; b = c; }
+                else { r = c; g = 0; b = x; }
+                const toHex = (val) => Math.round((val + m) * 255).toString(16).padStart(2, '0');
+                return parseInt(`${toHex(r)}${toHex(g)}${toHex(b)}`, 16);
+            }
+
+            // ─── 触发波纹 ──────────────────────────────────────────────
+            function triggerWave(x, y) {
+                currentWave = 0;
+                waveActive = true;
+                for (const hex of hexagons) {
+                    const dx = hex.x - x;
+                    const dy = hex.y - y;
+                    hex.waveDist = Math.sqrt(dx * dx + dy * dy);
+                }
+            }
+
+            // ─── 动画循环 ──────────────────────────────────────────────
+            function animate() {
+                time += 0.016;
+                const w = app.screen.width;
+                const h = app.screen.height;
+
+                // 波纹扩散
+                if (waveActive) {
+                    currentWave += CONFIG.waveSpeed * 0.016 * 60;
+                    if (currentWave > CONFIG.waveRadiusMax) {
+                        waveActive = false;
+                    }
+                }
+
+                // 更新六边形
+                for (const hex of hexagons) {
+                    const sprite = hex.sprite;
+                    hex.pulsePhase += hex.pulseSpeed * 0.016 * 60;
+
+                    // 基础呼吸效果
+                    const breathe = 0.6 + 0.4 * Math.sin(time * 1.2 + hex.pulsePhase);
+                    let alpha = hex.baseAlpha * breathe;
+                    let scaleMul = 1 + Math.sin(time * 0.8 + hex.pulsePhase) * 0.06;
+
+                    // 鼠标影响
+                    if (mouse.active && mouse.x > 0) {
+                        const dx = mouse.x - hex.x;
+                        const dy = mouse.y - hex.y;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        if (dist < CONFIG.mouseRadius) {
+                            const falloff = 1 - dist / CONFIG.mouseRadius;
+                            alpha = Math.max(alpha, hex.baseAlpha + falloff * (CONFIG.alphaMax - hex.baseAlpha));
+                            scaleMul += falloff * 0.25;
+                        }
+                    }
+
+                    // 波纹影响
+                    if (waveActive && hex.waveDist < currentWave + 60 && hex.waveDist > currentWave - 60) {
+                        const bandDist = Math.abs(hex.waveDist - currentWave);
+                        const bandIntensity = 1 - bandDist / 60;
+                        alpha = Math.max(alpha, CONFIG.alphaMax * bandIntensity);
+                        scaleMul += bandIntensity * 0.3;
+                    }
+
+                    // 更新精灵
+                    sprite.alpha = Math.max(0, Math.min(1, alpha));
+                    const s = (hex.size / 16) * scaleMul;
+                    sprite.scale.set(s, s);
+
+                    // 动态颜色
+                    const hueShift = Math.sin(time * 0.3 + hex.pulsePhase) * 10;
+                    sprite.tint = hslToHex(
+                        hex.hue + colorShift + hueShift,
+                        hex.sat,
+                        hex.light + Math.sin(time * 0.5 + hex.pulsePhase) * 8
+                    );
+                }
+
+                // 绘制鼠标光晕
+                rippleGraphics.clear();
+                if (mouse.active && mouse.x > 0) {
+                    rippleGraphics.beginFill(0xffffff, 0.04);
+                    rippleGraphics.drawCircle(mouse.x, mouse.y, CONFIG.mouseRadius);
+                    rippleGraphics.endFill();
+                }
+            }
+
+            // ─── 设置事件 ──────────────────────────────────────────────
+            function setupEvents() {
+                const view = app.view;
+
+                view.addEventListener('mousemove', (e) => {
+                    mouse.x = e.clientX;
+                    mouse.y = e.clientY;
+                    mouse.active = true;
+                });
+
+                view.addEventListener('mouseleave', () => {
+                    mouse.active = false;
+                    mouse.x = -9999;
+                    mouse.y = -9999;
+                });
+
+                view.addEventListener('mousedown', (e) => {
+                    mouse.x = e.clientX;
+                    mouse.y = e.clientY;
+                    mouse.active = true;
+                    triggerWave(mouse.x, mouse.y);
+                    // 切换色彩
+                    colorShift += 35 + Math.random() * 30;
+                    if (colorShift > 140) colorShift = -35;
+                    // 随机改变基础色相
+                    CONFIG.colorBase = (CONFIG.colorBase + 50 + Math.random() * 30) % 360;
+                    // 更新所有六边形的基础色相
+                    for (const hex of hexagons) {
+                        const colFactor = hex.col / (app.screen.width / ((CONFIG.hexSize + CONFIG.gap) * Math.sqrt(3)));
+                        hex.hue = CONFIG.colorBase + colFactor * CONFIG.colorRange;
+                    }
+                });
+
+                view.addEventListener('touchmove', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        mouse.x = touch.clientX;
+                        mouse.y = touch.clientY;
+                        mouse.active = true;
+                    }
+                }, { passive: false });
+
+                view.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        mouse.x = touch.clientX;
+                        mouse.y = touch.clientY;
+                        mouse.active = true;
+                        triggerWave(mouse.x, mouse.y);
+                        colorShift += 35 + Math.random() * 30;
+                        if (colorShift > 140) colorShift = -35;
+                    }
+                }, { passive: false });
+
+                view.addEventListener('touchend', () => {
+                    mouse.active = false;
+                    mouse.x = -9999;
+                    mouse.y = -9999;
+                });
+
+                window.addEventListener('resize', () => {
+                    if (app) {
+                        app.renderer.resize(window.innerWidth, window.innerHeight);
+                        // 重新初始化网格
+                        initHexGrid();
+                    }
+                });
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                try {
+                    const containerEl = document.getElementById('pixi-container');
+                    const resolution = Math.min(window.devicePixelRatio || 1, 2);
+
+                    app = new PIXI.Application({
+                        width: window.innerWidth,
+                        height: window.innerHeight,
+                        resolution: resolution,
+                        backgroundColor: 0x080812,
+                        antialias: true,
+                        autoDensity: true,
+                        powerPreference: 'high-performance',
+                    });
+
+                    containerEl.appendChild(app.view);
+
+                    container = new PIXI.Container();
+                    app.stage.addChild(container);
+
+                    // 创建纹理
+                    hexTexture = createHexTexture(CONFIG.hexSize);
+
+                    // 初始化网格
+                    initHexGrid();
+
+                    // 设置事件
+                    setupEvents();
+
+                    // 启动动画
+                    app.ticker.add(animate);
+
+                    console.log('蜂巢光阵已启动');
+                } catch (err) {
+                    console.error('初始化失败:', err);
+                    document.body.style.background = '#080812';
+                    document.getElementById('pixi-container').style.background = '#080812';
+                }
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.addEventListener('load', () => {
+                document.body.style.background = '#080812';
+                document.getElementById('pixi-container').style.background = '#080812';
+            });
+        })();
+    </script>
+</body>
+</html>

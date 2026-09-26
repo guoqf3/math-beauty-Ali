@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NEBULA · 粒子星云</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #06060f;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+        #pixi-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2;
+            text-align: center;
+            pointer-events: none;
+            opacity: 0.5;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+        .overlay:hover {
+            opacity: 0.85;
+        }
+        .title {
+            color: rgba(220, 230, 255, 0.75);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 20px rgba(130, 160, 240, 0.5);
+        }
+        .hint {
+            color: rgba(170, 185, 220, 0.45);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+        @media (max-width: 768px) {
+            .overlay { bottom: 18px; }
+            .title { font-size: 8px; letter-spacing: 0.45em; }
+            .hint { font-size: 6px; letter-spacing: 0.22em; }
+        }
+    </style>
+</head>
+<body>
+    <div id="pixi-container"></div>
+    <div class="overlay">
+        <div class="title">Nebula</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js"></script>
+    <script>
+        (function() {
+            if (typeof PIXI === 'undefined') {
+                document.body.style.background = '#06060f';
+                const container = document.getElementById('pixi-container');
+                if (container) container.style.background = '#06060f';
+                console.warn('PixiJS 加载失败，使用静态背景');
+                return;
+            }
+
+            // ─── 全局变量 ──────────────────────────────────────────────
+            let app;
+            let particleContainer;
+            let particles = [];
+            let mouse = { x: -9999, y: -9999, active: false, angle: 0, dist: 0 };
+            let time = 0;
+            let colorShift = 0;
+            let centerX, centerY;
+            let armCount = 3 + Math.floor(Math.random() * 2);
+            let targetArmCount = armCount;
+            let rotationSpeed = 0.003;
+            let spiralTightness = 2.5;
+            let mouseInfluence = 0;
+            let glowSprite;
+
+            const PARTICLE_COUNT = () => Math.max(800, Math.min(2200, Math.floor(window.innerWidth * window.innerHeight / 900)));
+
+            function initPixi() {
+                const container = document.getElementById('pixi-container');
+                const width = window.innerWidth;
+                const height = window.innerHeight;
+                const resolution = Math.min(window.devicePixelRatio || 1, 2);
+
+                app = new PIXI.Application({
+                    width,
+                    height,
+                    resolution,
+                    backgroundColor: 0x06060f,
+                    antialias: true,
+                    autoDensity: true,
+                    powerPreference: 'high-performance',
+                });
+
+                container.appendChild(app.view);
+
+                centerX = width / 2;
+                centerY = height / 2;
+
+                // 高性能粒子容器
+                particleContainer = new PIXI.ParticleContainer(3000, {
+                    position: true,
+                    rotation: true,
+                    scale: true,
+                    tint: true,
+                    alpha: true,
+                }, 3000, true);
+                particleContainer.blendMode = PIXI.BLEND_MODES.ADD;
+                app.stage.addChild(particleContainer);
+
+                createBackground();
+                createParticleTexture();
+                createGlowSprite();
+                initParticles();
+                setupEvents();
+
+                app.ticker.add(animate);
+                app.ticker.maxFPS = 60;
+            }
+
+            function createBackground() {
+                const bgCanvas = document.createElement('canvas');
+                bgCanvas.width = 2;
+                bgCanvas.height = 512;
+                const bgCtx = bgCanvas.getContext('2d');
+                const grad = bgCtx.createRadialGradient(1, 256, 0, 1, 256, 256);
+                grad.addColorStop(0, '#0d0d1e');
+                grad.addColorStop(0.5, '#080818');
+                grad.addColorStop(1, '#06060f');
+                bgCtx.fillStyle = grad;
+                bgCtx.fillRect(0, 0, 2, 512);
+
+                const texture = PIXI.Texture.from(bgCanvas);
+                const bgSprite = new PIXI.Sprite(texture);
+                bgSprite.width = app.screen.width;
+                bgSprite.height = app.screen.height;
+                bgSprite.alpha = 0.8;
+                app.stage.addChildAt(bgSprite, 0);
+            }
+
+            function createParticleTexture() {
+                const canvas = document.createElement('canvas');
+                canvas.width = 64;
+                canvas.height = 64;
+                const cctx = canvas.getContext('2d');
+                const grad = cctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+                grad.addColorStop(0, 'rgba(255, 255, 255, 1)');
+                grad.addColorStop(0.3, 'rgba(200, 220, 255, 0.7)');
+                grad.addColorStop(0.7, 'rgba(120, 140, 200, 0.25)');
+                grad.addColorStop(1, 'transparent');
+                cctx.fillStyle = grad;
+                cctx.fillRect(0, 0, 64, 64);
+
+                particleTexture = PIXI.Texture.from(canvas);
+            }
+
+            function createGlowSprite() {
+                const canvas = document.createElement('canvas');
+                canvas.width = 200;
+                canvas.height = 200;
+                const cctx = canvas.getContext('2d');
+                const grad = cctx.createRadialGradient(100, 100, 0, 100, 100, 100);
+                grad.addColorStop(0, 'rgba(140, 160, 240, 0.12)');
+                grad.addColorStop(0.5, 'rgba(100, 120, 200, 0.04)');
+                grad.addColorStop(1, 'transparent');
+                cctx.fillStyle = grad;
+                cctx.fillRect(0, 0, 200, 200);
+
+                const glowTexture = PIXI.Texture.from(canvas);
+                glowSprite = new PIXI.Sprite(glowTexture);
+                glowSprite.anchor.set(0.5, 0.5);
+                glowSprite.width = 250;
+                glowSprite.height = 250;
+                glowSprite.alpha = 0;
+                glowSprite.blendMode = PIXI.BLEND_MODES.ADD;
+                app.stage.addChild(glowSprite);
+            }
+
+            // ─── 粒子类 ─────────────────────────────────────────────────
+            class NebulaParticle {
+                constructor(spiralArm, radius, angle, verticalOffset) {
+                    this.arm = spiralArm;
+                    this.radius = radius;
+                    this.angle = angle;
+                    this.verticalOffset = verticalOffset;
+                    this.z = 0.2 + Math.random() * 0.8;
+                    this.size = 0.3 + Math.random() * 1.8;
+                    this.alpha = 0.15 + Math.random() * 0.5;
+                    this.tintSpeed = 0.3 + Math.random() * 0.7;
+                    this.tintPhase = Math.random() * Math.PI * 2;
+                    this.radiusJitter = (Math.random() - 0.5) * 35;
+                    this.angleJitter = (Math.random() - 0.5) * 0.25;
+                    this.verticalJitter = (Math.random() - 0.5) * 45;
+                    this.sprite = new PIXI.Sprite(particleTexture);
+                    this.sprite.anchor.set(0.5, 0.5);
+                    this.sprite.alpha = this.alpha;
+                    this.sprite.scale.set(this.size * this.z, this.size * this.z);
+                    this.hue = 210 + Math.random() * 60;
+                }
+
+                update(dt, t) {
+                    this.angle += rotationSpeed * (1 + this.z * 0.6) * dt;
+                    this.tintPhase += this.tintSpeed * 0.02 * dt;
+
+                    // 计算世界坐标
+                    const r = this.radius + this.radiusJitter + Math.sin(t * 0.4 + this.tintPhase) * 12;
+                    const a = this.angle + this.angleJitter;
+                    const spiralOffset = this.arm * (Math.PI * 2 / armCount);
+                    const x = centerX + Math.cos(a + spiralOffset) * r;
+                    const y = centerY + Math.sin(a + spiralOffset) * r * 0.7 + this.verticalOffset + this.verticalJitter;
+
+                    // 鼠标引力
+                    let dx = 0, dy = 0;
+                    if (mouse.active && mouse.x > 0) {
+                        dx = mouse.x - x;
+                        dy = mouse.y - y;
+                        const distSq = dx * dx + dy * dy;
+                        const radius = 300;
+                        if (distSq < radius * radius && distSq > 0.01) {
+                            const dist = Math.sqrt(distSq);
+                            const falloff = 1 - dist / radius;
+                            const shiftX = dx / dist * falloff * 40;
+                            const shiftY = dy / dist * falloff * 40;
+                            dx = shiftX;
+                            dy = shiftY;
+                            this.sprite.alpha = Math.min(0.9, this.alpha + falloff * 0.3);
+                        } else {
+                            dx = 0;
+                            dy = 0;
+                        }
+                    }
+
+                    // 颜色计算
+                    const hue = (this.hue + colorShift + Math.sin(t * 0.3 + this.tintPhase) * 25) % 360;
+                    const sat = 55 + Math.sin(t * 0.5 + this.tintPhase) * 20;
+                    const light = 50 + this.z * 25;
+                    this.sprite.tint = hslToHex(hue, sat, light);
+
+                    // 尺寸随深度和脉动变化
+                    const pulse = 0.8 + 0.2 * Math.sin(t * 2 + this.tintPhase);
+                    const scale = this.size * this.z * pulse;
+                    this.sprite.scale.set(scale, scale);
+
+                    // 更新精灵位置
+                    this.sprite.x = x + dx;
+                    this.sprite.y = y + dy;
+                }
+            }
+
+            function hslToHex(h, s, l) {
+                h = ((h % 360) + 360) % 360;
+                s /= 100;
+                l /= 100;
+                const c = (1 - Math.abs(2 * l - 1)) * s;
+                const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+                const m = l - c / 2;
+                let r, g, b;
+                if (h < 60) { r = c;
+                    g = x;
+                    b = 0; } else if (h < 120) { r = x;
+                    g = c;
+                    b = 0; } else if (h < 180) { r = 0;
+                    g = c;
+                    b = x; } else if (h < 240) { r = 0;
+                    g = x;
+                    b = c; } else if (h < 300) { r = x;
+                    g = 0;
+                    b = c; } else { r = c;
+                    g = 0;
+                    b = x; }
+                const toHex = (v) => Math.round((v + m) * 255).toString(16).padStart(2, '0');
+                return parseInt(`${toHex(r)}${toHex(g)}${toHex(b)}`, 16);
+            }
+
+            function initParticles() {
+                particleContainer.removeChildren();
+                particles = [];
+                const count = PARTICLE_COUNT();
+                const maxRadius = Math.min(centerX, centerY) * 0.85;
+
+                for (let i = 0; i < count; i++) {
+                    // 使用螺旋分布
+                    const arm = Math.floor(Math.random() * armCount);
+                    const radius = Math.pow(Math.random(), 0.6) * maxRadius;
+                    const angle = Math.random() * Math.PI * 2;
+                    const verticalOffset = (Math.random() - 0.5) * maxRadius * 0.5;
+                    const p = new NebulaParticle(arm, radius, angle, verticalOffset);
+                    particles.push(p);
+                    particleContainer.addChild(p.sprite);
+                }
+            }
+
+            function updateArmCount() {
+                if (Math.abs(targetArmCount - armCount) > 0.01) {
+                    armCount += (targetArmCount - armCount) * 0.04;
+                } else {
+                    armCount = targetArmCount;
+                }
+            }
+
+            function animate() {
+                time += 0.016;
+                const dt = 1.0;
+
+                updateArmCount();
+
+                // 更新鼠标
+                if (mouse.active && mouse.x > 0) {
+                    mouse.angle = Math.atan2(mouse.y - centerY, mouse.x - centerX);
+                    mouse.dist = Math.sqrt((mouse.x - centerX) ** 2 + (mouse.y - centerY) ** 2);
+                    mouseInfluence = Math.min(1, mouseInfluence + 0.03);
+                    glowSprite.alpha = 0.7;
+                    glowSprite.x = mouse.x;
+                    glowSprite.y = mouse.y;
+                } else {
+                    mouseInfluence = Math.max(0, mouseInfluence - 0.02);
+                    glowSprite.alpha *= 0.95;
+                }
+
+                // 鼠标影响旋转速度
+                const effectiveRotation = rotationSpeed * (1 + mouseInfluence * 0.5);
+
+                // 更新所有粒子
+                for (const p of particles) {
+                    p.update(dt, time);
+                }
+
+                // 平滑缩放光晕
+                const glowScale = 0.9 + Math.sin(time * 1.5) * 0.1;
+                glowSprite.scale.set(glowScale, glowScale);
+            }
+
+            function setupEvents() {
+                const view = app.view;
+
+                view.addEventListener('mousemove', (e) => {
+                    mouse.x = e.clientX;
+                    mouse.y = e.clientY;
+                    mouse.active = true;
+                });
+
+                view.addEventListener('mouseleave', () => {
+                    mouse.active = false;
+                    mouse.x = -9999;
+                    mouse.y = -9999;
+                });
+
+                view.addEventListener('mousedown', (e) => {
+                    mouse.x = e.clientX;
+                    mouse.y = e.clientY;
+                    mouse.active = true;
+                    // 切换旋臂数量
+                    targetArmCount = 2 + Math.floor(Math.random() * 4);
+                    // 色彩偏移
+                    colorShift += 25 + Math.random() * 35;
+                    if (colorShift > 160) colorShift = -25;
+                    // 短暂加速旋转
+                    rotationSpeed = 0.008;
+                    setTimeout(() => { rotationSpeed = 0.003; }, 800);
+                });
+
+                // 触摸事件
+                view.addEventListener('touchmove', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        mouse.x = touch.clientX;
+                        mouse.y = touch.clientY;
+                        mouse.active = true;
+                    }
+                }, { passive: false });
+
+                view.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        mouse.x = touch.clientX;
+                        mouse.y = touch.clientY;
+                        mouse.active = true;
+                        targetArmCount = 2 + Math.floor(Math.random() * 4);
+                        colorShift += 25 + Math.random() * 35;
+                        if (colorShift > 160) colorShift = -25;
+                        rotationSpeed = 0.008;
+                        setTimeout(() => { rotationSpeed = 0.003; }, 800);
+                    }
+                }, { passive: false });
+
+                view.addEventListener('touchend', () => {
+                    mouse.active = false;
+                    mouse.x = -9999;
+                    mouse.y = -9999;
+                });
+
+                view.addEventListener('touchcancel', () => {
+                    mouse.active = false;
+                    mouse.x = -9999;
+                    mouse.y = -9999;
+                });
+
+                window.addEventListener('resize', () => {
+                    if (!app) return;
+                    app.renderer.resize(window.innerWidth, window.innerHeight);
+                    centerX = app.screen.width / 2;
+                    centerY = app.screen.height / 2;
+                    // 重新初始化粒子
+                    initParticles();
+                });
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                try {
+                    initPixi();
+                    console.log('粒子星云已启动');
+                } catch (err) {
+                    console.error('初始化失败:', err);
+                    document.body.style.background = '#06060f';
+                    const container = document.getElementById('pixi-container');
+                    if (container) container.style.background = '#06060f';
+                }
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.addEventListener('load', () => {
+                document.body.style.background = '#06060f';
+                const container = document.getElementById('pixi-container');
+                if (container) container.style.background = '#06060f';
+            });
+        })();
+    </script>
+</body>
+</html>

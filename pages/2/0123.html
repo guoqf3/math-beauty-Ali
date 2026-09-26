@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MOSAIC · 像素波纹</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #08080d;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            left: 32px;
+            z-index: 2;
+            text-align: left;
+            pointer-events: none;
+            opacity: 0.5;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+
+        .overlay:hover {
+            opacity: 0.9;
+        }
+
+        .title {
+            color: rgba(210, 205, 240, 0.8);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 18px rgba(130, 120, 220, 0.5);
+        }
+
+        .hint {
+            color: rgba(170, 165, 200, 0.5);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+
+        @media (max-width: 768px) {
+            .overlay {
+                bottom: 18px;
+                left: 18px;
+            }
+            .title {
+                font-size: 8px;
+                letter-spacing: 0.5em;
+            }
+            .hint {
+                font-size: 6px;
+                letter-spacing: 0.25em;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="canvas"></canvas>
+
+    <div class="overlay">
+        <div class="title">Mosaic</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script>
+        (function() {
+            // ─── 画布初始化 ───────────────────────────────────────────────
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            let gridCols, gridRows;
+            const cellSize = 12; // 像素单元尺寸
+            let mouse = { x: -9999, y: -9999, active: false };
+            let shockwaves = [];
+            let time = 0;
+            let colorShift = 0; // 全局色相偏移
+
+            // ─── 初始化画布 ─────────────────────────────────────────────
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                // 填充深色背景，避免白屏
+                ctx.fillStyle = '#08080d';
+                ctx.fillRect(0, 0, W, H);
+
+                // 计算网格行列数
+                gridCols = Math.ceil(W / cellSize) + 1;
+                gridRows = Math.ceil(H / cellSize) + 1;
+            }
+
+            // ─── 冲击波类 ───────────────────────────────────────────────
+            function createShockwave(x, y) {
+                shockwaves.push({
+                    x: x,
+                    y: y,
+                    radius: 5,
+                    maxRadius: Math.max(W, H) * 0.8,
+                    strength: 1.0,
+                    decay: 0.008 + Math.random() * 0.004,
+                    growth: 6.5 + Math.random() * 2.5,
+                    hue: 210 + colorShift + Math.random() * 50,
+                });
+                // 限制数量，保持性能
+                if (shockwaves.length > 8) shockwaves.shift();
+            }
+
+            function updateShockwaves() {
+                for (let i = shockwaves.length - 1; i >= 0; i--) {
+                    const s = shockwaves[i];
+                    s.radius += s.growth;
+                    s.strength *= (1 - s.decay);
+                    if (s.strength <= 0.01 || s.radius > s.maxRadius) {
+                        shockwaves.splice(i, 1);
+                    }
+                }
+            }
+
+            // ─── 主渲染循环 ─────────────────────────────────────────────
+            function draw() {
+                // 半透明清除产生拖尾效果
+                ctx.fillStyle = 'rgba(8, 8, 13, 0.08)';
+                ctx.fillRect(0, 0, W, H);
+
+                // 计算每个单元格的颜色
+                const baseHue = 215 + colorShift;
+                const now = time;
+
+                for (let row = 0; row < gridRows; row++) {
+                    for (let col = 0; col < gridCols; col++) {
+                        const x = col * cellSize;
+                        const y = row * cellSize;
+                        const centerX = x + cellSize / 2;
+                        const centerY = y + cellSize / 2;
+
+                        // 基础相位：基于行列位置和时间
+                        const phase = (row * 0.08 + col * 0.06 + now * 0.6) % (Math.PI * 2);
+                        // 基础亮度：以正弦波创造流动感
+                        const baseLight = 22 + 14 * Math.sin(phase) + 6 * Math.cos(phase * 0.5 + now * 0.3);
+                        // 基础色相偏移：随位置变化
+                        const baseHueOffset = (row * 0.5 + col * 0.3 + now * 1.5) % 60;
+
+                        let hue = baseHue + baseHueOffset;
+                        let sat = 65 + 20 * Math.sin(phase * 1.3);
+                        let light = baseLight;
+                        let alpha = 0.85;
+
+                        // 鼠标影响：靠近鼠标的单元变亮、色相偏移
+                        if (mouse.active) {
+                            const dx = centerX - mouse.x;
+                            const dy = centerY - mouse.y;
+                            const distSq = dx * dx + dy * dy;
+                            const influenceRadius = 120;
+                            const infSq = influenceRadius * influenceRadius;
+                            if (distSq < infSq) {
+                                const dist = Math.sqrt(distSq);
+                                const influence = 1 - dist / influenceRadius;
+                                // 亮度提升
+                                light += influence * 30;
+                                // 色相向鼠标方向偏移
+                                hue += influence * 25 * Math.sin(now * 0.5 + dist * 0.05);
+                                // 饱和度略微提高
+                                sat += influence * 15;
+                            }
+                        }
+
+                        // 冲击波影响
+                        for (const s of shockwaves) {
+                            const dx = centerX - s.x;
+                            const dy = centerY - s.y;
+                            const distSq = dx * dx + dy * dy;
+                            const bandWidth = 30 + s.radius * 0.25;
+                            const innerR = Math.max(0, s.radius - bandWidth);
+                            const outerR = s.radius + bandWidth;
+                            const innerSq = innerR * innerR;
+                            const outerSq = outerR * outerR;
+                            if (distSq > innerSq && distSq < outerSq) {
+                                const dist = Math.sqrt(distSq);
+                                const factor = (1 - Math.abs(dist - s.radius) / bandWidth) * s.strength;
+                                // 冲击波增强亮度并使色相偏向冲击波自身色相
+                                light += factor * 40;
+                                hue = (hue * 0.3 + s.hue * 0.7) * factor + hue * (1 - factor);
+                                sat += factor * 20;
+                                alpha = Math.min(1, alpha + factor * 0.2);
+                            }
+                        }
+
+                        // 限制值范围
+                        light = Math.max(5, Math.min(95, light));
+                        sat = Math.max(30, Math.min(100, sat));
+                        hue = ((hue % 360) + 360) % 360;
+                        alpha = Math.min(1, Math.max(0.5, alpha));
+
+                        // 绘制单元格
+                        ctx.fillStyle = `hsla(${hue}, ${sat}%, ${light}%, ${alpha})`;
+                        ctx.fillRect(x, y, cellSize - 0.5, cellSize - 0.5);
+                    }
+                }
+
+                // 绘制鼠标光晕
+                if (mouse.active) {
+                    const radius = 70;
+                    const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                    gradient.addColorStop(0, `hsla(${215 + colorShift}, 70%, 75%, 0.08)`);
+                    gradient.addColorStop(0.7, `hsla(${215 + colorShift}, 60%, 60%, 0.02)`);
+                    gradient.addColorStop(1, 'transparent');
+                    ctx.fillStyle = gradient;
+                    ctx.beginPath();
+                    ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+
+                // 更新时间和冲击波
+                time += 0.016;
+                updateShockwaves();
+
+                requestAnimationFrame(draw);
+            }
+
+            // ─── 交互事件 ───────────────────────────────────────────────
+            function onMouseMove(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                createShockwave(mouse.x, mouse.y);
+                // 点击切换全局色相
+                colorShift += 40 + Math.random() * 20;
+                if (colorShift > 160) colorShift = -40;
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    createShockwave(mouse.x, mouse.y);
+                    colorShift += 40 + Math.random() * 20;
+                    if (colorShift > 160) colorShift = -40;
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onResize() {
+                setupCanvas();
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                requestAnimationFrame(draw);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#08080d';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+
+        })();
+    </script>
+</body>
+</html>

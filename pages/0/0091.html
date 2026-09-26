@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>透镜空间 · 循环群编织</title>
+    <style>
+        :root {
+            --bg: #06060c;
+            --gold: #d4a843;
+            --cyan: #45b7aa;
+            --magenta: #d4708a;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'SimSun', serif;
+            -webkit-font-smoothing: antialiased;
+            user-select: none;
+        }
+        #canvas-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+        }
+        canvas { display: block; }
+        .overlay-title {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 22px 20px 8px;
+            text-align: center;
+            background: linear-gradient(180deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.8) 55%, rgba(6,6,12,0) 100%);
+        }
+        .overlay-title h2 {
+            font-size: clamp(1.1rem, 2.2vw, 1.8rem);
+            font-weight: 400;
+            letter-spacing: 0.13em;
+            color: #e8d5b0;
+            text-shadow: 0 0 30px rgba(212,168,67,0.45), 0 0 60px rgba(212,168,67,0.18);
+            margin: 0 0 2px;
+            line-height: 1.3;
+        }
+        .overlay-title .sub {
+            font-size: clamp(0.65rem, 1.1vw, 0.85rem);
+            letter-spacing: 0.22em;
+            color: rgba(200,180,150,0.65);
+        }
+        .overlay-formula {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 8px 20px 18px;
+            text-align: center;
+            background: linear-gradient(0deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.82) 55%, rgba(6,6,12,0) 100%);
+        }
+        .formula-text {
+            font-size: clamp(0.6rem, 1.0vw, 0.8rem);
+            color: rgba(210,200,185,0.8);
+            letter-spacing: 0.03em;
+            line-height: 1.7;
+            font-style: italic;
+        }
+        .clr-gold { color: #d4a843; font-style: normal; font-weight: bold; }
+        .clr-cyan { color: #45b7aa; font-style: normal; font-weight: bold; }
+        .clr-magenta { color: #d4708a; font-style: normal; font-weight: bold; }
+        .formula-sep {
+            display: inline-block;
+            margin: 0 14px;
+            color: rgba(150,140,130,0.35);
+            font-style: normal;
+        }
+    </style>
+</head>
+<body>
+    <div class="overlay-title">
+        <h2>透镜空间 · 循环群编织</h2>
+        <div class="sub">Lens space L(p,q) geodesics · Cyclic group orbits</div>
+    </div>
+    <div class="overlay-formula">
+        <div class="formula-text">
+            <span class="clr-gold">γ(t) = (cos t e^{iω₁t}, sin t e^{iω₂t})</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-cyan">群作用: (z₁,z₂) ↦ (e^{2πi/p}z₁, e^{2πiq/p}z₂)</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-magenta">球极投影: π: S³ → R³</span>
+        </div>
+    </div>
+    <div id="canvas-container"></div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(48, container.clientWidth / container.clientHeight, 0.5, 22);
+        camera.position.set(3.5, 2.2, 7.0);
+        camera.lookAt(0, 0, 0);
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x06060c, 1);
+        container.appendChild(renderer.domElement);
+
+        // 手动时钟
+        let startTime = performance.now();
+        let elapsed = 0;
+        function tick() { elapsed = (performance.now() - startTime) * 0.001; return elapsed; }
+
+        const COLOR_GOLD = 0xd4a843;
+        const COLOR_CYAN = 0x45b7aa;
+        const COLOR_MAGENTA = 0xd4708a;
+
+        const SCALE = 2.6;
+        const MAX_R = 9.0;
+
+        // 球极投影 S³ → R³，投影点 (0,0,0,1)
+        function stereographic(x1, x2, x3, x4) {
+            const denom = 1 - x4;
+            if (Math.abs(denom) < 0.03) return null;
+            const pt = new THREE.Vector3(x1, x2, x3).multiplyScalar(SCALE / denom);
+            if (pt.length() > MAX_R) return null;
+            return pt;
+        }
+
+        // 生成透镜空间轨线：给定基曲线及群作用次数
+        function generateLensOrbits(p, q, baseCurves, stepsPerCurve) {
+            const rootGroup = new THREE.Group();
+            const omega = Math.PI * 2 / p;
+
+            baseCurves.forEach(base => {
+                const { omega1, omega2, color, numPhases } = base;
+                // 每个基曲线取 numPhases 个不同初始相位
+                for (let phaseIdx = 0; phaseIdx < numPhases; phaseIdx++) {
+                    const phaseShift = phaseIdx * Math.PI * 2 / numPhases;
+                    // 生成基曲线采样点
+                    const basePts = [];
+                    const tMax = Math.PI * 2;
+                    const dt = tMax / stepsPerCurve;
+                    for (let i = 0; i <= stepsPerCurve; i++) {
+                        const t = i * dt;
+                        const cosT = Math.cos(t);
+                        const sinT = Math.sin(t);
+                        const angle1 = omega1 * t + phaseShift;
+                        const angle2 = omega2 * t + phaseShift;
+                        const z1r = cosT * Math.cos(angle1);
+                        const z1i = cosT * Math.sin(angle1);
+                        const z2r = sinT * Math.cos(angle2);
+                        const z2i = sinT * Math.sin(angle2);
+                        basePts.push([z1r, z1i, z2r, z2i]);
+                    }
+
+                    // 对每个群元素 g=0..p-1，旋转基曲线
+                    for (let g = 0; g < p; g++) {
+                        const theta = g * omega;
+                        const rot1 = theta;
+                        const rot2 = q * theta;
+                        const cosR1 = Math.cos(rot1), sinR1 = Math.sin(rot1);
+                        const cosR2 = Math.cos(rot2), sinR2 = Math.sin(rot2);
+                        const projPts = [];
+                        for (const [x1, y1, x2, y2] of basePts) {
+                            // 应用群作用旋转
+                            const nx1 = x1 * cosR1 - y1 * sinR1;
+                            const ny1 = x1 * sinR1 + y1 * cosR1;
+                            const nx2 = x2 * cosR2 - y2 * sinR2;
+                            const ny2 = x2 * sinR2 + y2 * cosR2;
+                            const sp = stereographic(nx1, ny1, nx2, ny2);
+                            if (sp) projPts.push(sp);
+                        }
+                        if (projPts.length >= 2) {
+                            const geom = new THREE.BufferGeometry().setFromPoints(projPts);
+                            const mat = new THREE.LineBasicMaterial({
+                                color: color,
+                                transparent: true,
+                                opacity: 0.62,
+                                depthWrite: true,
+                                depthTest: true,
+                            });
+                            rootGroup.add(new THREE.Line(geom, mat));
+                        }
+                    }
+                }
+            });
+            return rootGroup;
+        }
+
+        // 基曲线定义 (ω1, ω2) 斜率
+        const p = 5, q = 2; // 透镜空间 L(5,2)
+        const baseCurves = [
+            { omega1: 1.2, omega2: 3.5, color: COLOR_GOLD, numPhases: 6 },
+            { omega1: 2.8, omega2: 1.7, color: COLOR_CYAN, numPhases: 6 },
+            { omega1: 4.3, omega2: 2.1, color: COLOR_MAGENTA, numPhases: 5 },
+            { omega1: 0.7, omega2: 5.0, color: COLOR_GOLD, numPhases: 5 },
+            { omega1: 3.0, omega2: 4.2, color: COLOR_CYAN, numPhases: 5 },
+            { omega1: 5.5, omega2: 0.9, color: COLOR_MAGENTA, numPhases: 4 },
+        ];
+
+        const rootGroup = generateLensOrbits(p, q, baseCurves, 280);
+        rootGroup.name = 'lens-space';
+        scene.add(rootGroup);
+
+        console.log('透镜空间轨线总数:', rootGroup.children.length);
+
+        // 背景星点
+        const starsGroup = new THREE.Group();
+        const starsGeom = new THREE.BufferGeometry();
+        const starsCount = 600;
+        const starsPos = new Float32Array(starsCount * 3);
+        for (let i = 0; i < starsCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const dist = 7 + Math.random() * 10;
+            starsPos[i * 3] = dist * Math.sin(phi) * Math.cos(theta);
+            starsPos[i * 3 + 1] = dist * Math.sin(phi) * Math.sin(theta);
+            starsPos[i * 3 + 2] = dist * Math.cos(phi);
+        }
+        starsGeom.setAttribute('position', new THREE.BufferAttribute(starsPos, 3));
+        const starsMat = new THREE.PointsMaterial({
+            color: 0x908878, size: 0.018, transparent: true, opacity: 0.55, depthWrite: false
+        });
+        starsGroup.add(new THREE.Points(starsGeom, starsMat));
+        scene.add(starsGroup);
+
+        // 动画循环
+        function animate() {
+            tick();
+            const t = elapsed;
+            rootGroup.rotation.x = t * 0.15;
+            rootGroup.rotation.y = t * 0.25;
+            rootGroup.rotation.z = t * 0.10;
+            starsGroup.rotation.y = t * 0.03;
+            starsGroup.rotation.x = t * 0.02;
+
+            const camRadius = 7.2;
+            const camAngle = t * 0.09;
+            const camHeight = 2.3 + Math.sin(t * 0.17) * 0.7;
+            camera.position.x = Math.cos(camAngle) * camRadius;
+            camera.position.z = Math.sin(camAngle) * camRadius;
+            camera.position.y = camHeight;
+            camera.lookAt(0, 0, 0);
+            renderer.render(scene, camera);
+            requestAnimationFrame(animate);
+        }
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth, h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth, h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 120));
+
+        console.log('✅ 透镜空间循环群编织动画已稳定运行');
+    </script>
+</body>
+</html>

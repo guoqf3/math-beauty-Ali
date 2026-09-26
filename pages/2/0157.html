@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>弹性星网 · 快速振荡</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #080a12;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            font-family: 'Segoe UI', system-ui, sans-serif;
+        }
+        .container {
+            position: relative;
+            border-radius: 28px;
+            overflow: hidden;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.9), 0 0 0 1px rgba(255, 255, 255, 0.04);
+            background: #080a12;
+        }
+        canvas {
+            display: block;
+            width: 1000px;
+            height: 600px;
+            cursor: grab;
+            background: radial-gradient(ellipse at 50% 50%, #0f131f, #030408);
+        }
+        canvas:active {
+            cursor: grabbing;
+        }
+        .fallback {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: rgba(255, 255, 255, 0.25);
+            font-size: 18px;
+            letter-spacing: 4px;
+            pointer-events: none;
+            text-align: center;
+            display: none;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 20px 40px;
+            border-radius: 60px;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(6px);
+        }
+        .credit {
+            position: absolute;
+            bottom: 20px;
+            right: 28px;
+            color: rgba(255, 255, 255, 0.12);
+            font-size: 13px;
+            letter-spacing: 2px;
+            font-weight: 300;
+            pointer-events: none;
+            backdrop-filter: blur(4px);
+            padding: 6px 16px;
+            border-radius: 40px;
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.02);
+        }
+        .hint {
+            position: absolute;
+            top: 20px;
+            left: 28px;
+            color: rgba(255, 255, 255, 0.12);
+            font-size: 13px;
+            font-weight: 300;
+            letter-spacing: 0.5px;
+            pointer-events: none;
+            backdrop-filter: blur(4px);
+            padding: 6px 16px;
+            border-radius: 40px;
+            background: rgba(0, 0, 0, 0.2);
+            border: 1px solid rgba(255, 255, 255, 0.02);
+        }
+        @media (max-width: 1024px) {
+            canvas {
+                width: 100%;
+                height: auto;
+                aspect-ratio: 1000 / 600;
+            }
+            .credit,
+            .hint {
+                display: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <canvas id="canvas" width="1000" height="600"></canvas>
+        <div class="fallback" id="fallback">✦ 弹性星网 · 请刷新页面 ✦</div>
+        <div class="hint"><i>✦ 拖拽 · 振荡星网</i></div>
+        <div class="credit">vibe <span>·</span> code</div>
+    </div>
+
+    <script>
+        // ============================================================
+        //  弹性星网 · 快速振荡
+        //  物理：高劲度弹簧网络 + 低阻尼，粒子高速振荡，
+        //  鼠标拖拽产生强烈变形，形成动态网状结构。
+        // ============================================================
+
+        console.log('✅ 弹性星网 加载开始');
+
+        // 全局错误捕获
+        window.addEventListener('error', function(e) {
+            const fallback = document.getElementById('fallback');
+            if (fallback) fallback.style.display = 'block';
+            console.error('全局错误:', e.message);
+        });
+
+        // ---------- 获取元素 ----------
+        const canvas = document.getElementById('canvas');
+        const fallback = document.getElementById('fallback');
+
+        if (!canvas) {
+            console.error('❌ Canvas 元素未找到');
+            if (fallback) fallback.style.display = 'block';
+            throw new Error('Canvas 元素不存在');
+        }
+
+        let ctx = null;
+        try {
+            ctx = canvas.getContext('2d');
+            if (!ctx) throw new Error('无法获取 2D 上下文');
+        } catch (err) {
+            console.error('❌ 上下文获取失败:', err.message);
+            if (fallback) fallback.style.display = 'block';
+            throw err;
+        }
+
+        console.log('✅ Canvas 就绪');
+
+        const W = 1000,
+            H = 600;
+
+        // ---------- 状态 ----------
+        let mouse = { x: -9999, y: -9999, active: false };
+        let time = 0;
+
+        // ---------- 弹性网格参数 ----------
+        const COLS = 22;
+        const ROWS = 14;
+        const SPACING = 42;
+        const STIFFNESS = 0.35; // 弹簧劲度 (高值 -> 快速振荡)
+        const DAMPING = 0.96; // 阻尼 (较低 -> 振荡衰减慢)
+        const MOUSE_ATTRACT = 0.7; // 鼠标引力强度
+        const MAX_SPEED = 12; // 速度上限
+
+        // ---------- 节点与边 ----------
+        let nodes = [];
+        let edges = [];
+
+        // 初始化节点 (网格布局)
+        const offsetX = (W - (COLS - 1) * SPACING) / 2;
+        const offsetY = (H - (ROWS - 1) * SPACING) / 2;
+
+        for (let r = 0; r < ROWS; r++) {
+            for (let c = 0; c < COLS; c++) {
+                const x = c * SPACING + offsetX;
+                const y = r * SPACING + offsetY;
+                // 随机微小偏移，打破对称
+                const randX = (Math.random() - 0.5) * 2;
+                const randY = (Math.random() - 0.5) * 2;
+                nodes.push({
+                    x: x + randX,
+                    y: y + randY,
+                    vx: (Math.random() - 0.5) * 2,
+                    vy: (Math.random() - 0.5) * 2,
+                    baseX: x,
+                    baseY: y,
+                    hue: 210 + Math.random() * 70, // 蓝-紫
+                    size: 2.0 + Math.random() * 1.5
+                });
+            }
+        }
+
+        // 建立边连接 (水平 & 垂直)
+        for (let i = 0; i < nodes.length; i++) {
+            if (i % COLS < COLS - 1) edges.push([i, i + 1]);
+            if (i < nodes.length - COLS) edges.push([i, i + COLS]);
+        }
+
+        console.log('✅ 网格初始化完成，节点:', nodes.length, '边:', edges.length);
+
+        // ---------- 物理更新 (高速振荡) ----------
+        function updatePhysics() {
+            // 1. 鼠标引力 (对每个节点)
+            if (mouse.active) {
+                for (let n of nodes) {
+                    const dx = mouse.x - n.x;
+                    const dy = mouse.y - n.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    if (dist < 260 && dist > 0.5) {
+                        const force = (1 - dist / 260) * MOUSE_ATTRACT;
+                        n.vx += (dx / dist) * force;
+                        n.vy += (dy / dist) * force;
+                    }
+                    // 中心附近微弱排斥，避免完全卡住
+                    if (dist < 18 && dist > 0.5) {
+                        const repel = (1 - dist / 18) * 0.3;
+                        n.vx -= (dx / dist) * repel;
+                        n.vy -= (dy / dist) * repel;
+                    }
+                }
+            }
+
+            // 2. 弹簧约束 (迭代2次增强稳定性，但为了速度只做2次)
+            for (let iter = 0; iter < 2; iter++) {
+                for (let [i, j] of edges) {
+                    const n1 = nodes[i];
+                    const n2 = nodes[j];
+                    const dx = n2.x - n1.x;
+                    const dy = n2.y - n1.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    if (dist < 0.001) continue;
+                    const diff = (dist - SPACING) / dist;
+                    const force = diff * STIFFNESS;
+                    const fx = dx * force;
+                    const fy = dy * force;
+                    n1.vx += fx;
+                    n1.vy += fy;
+                    n2.vx -= fx;
+                    n2.vy -= fy;
+                }
+            }
+
+            // 3. 阻尼 & 速度限制 & 位置更新
+            for (let n of nodes) {
+                n.vx *= DAMPING;
+                n.vy *= DAMPING;
+
+                const sp = Math.sqrt(n.vx * n.vx + n.vy * n.vy);
+                if (sp > MAX_SPEED) {
+                    n.vx = (n.vx / sp) * MAX_SPEED;
+                    n.vy = (n.vy / sp) * MAX_SPEED;
+                }
+
+                n.x += n.vx;
+                n.y += n.vy;
+
+                // 边界环绕 (无缝)
+                if (n.x < 0) n.x += W;
+                if (n.x > W) n.x -= W;
+                if (n.y < 0) n.y += H;
+                if (n.y > H) n.y -= H;
+            }
+        }
+
+        // ---------- 渲染 ----------
+        function draw() {
+            // 半透明背景：拖尾效果
+            ctx.fillStyle = 'rgba(8, 10, 18, 0.08)';
+            ctx.fillRect(0, 0, W, H);
+
+            // ---- 1. 绘制连接线 (高速振荡时的网状视觉) ----
+            for (let [i, j] of edges) {
+                const n1 = nodes[i];
+                const n2 = nodes[j];
+                const speed1 = Math.sqrt(n1.vx * n1.vx + n1.vy * n1.vy);
+                const speed2 = Math.sqrt(n2.vx * n2.vx + n2.vy * n2.vy);
+                const avgSpeed = (speed1 + speed2) / 2;
+                const hue = 210 + avgSpeed * 3 + (n1.hue + n2.hue) / 2 * 0.2;
+                const alpha = 0.25 + Math.min(avgSpeed * 0.04, 0.55);
+                const lineWidth = 1.0 + avgSpeed * 0.4;
+
+                ctx.shadowBlur = 12;
+                ctx.shadowColor = `hsla(${hue}, 100%, 70%, ${alpha * 0.15})`;
+                ctx.strokeStyle = `hsla(${hue}, 85%, 60%, ${alpha})`;
+                ctx.lineWidth = lineWidth;
+                ctx.beginPath();
+                ctx.moveTo(n1.x, n1.y);
+                ctx.lineTo(n2.x, n2.y);
+                ctx.stroke();
+            }
+
+            ctx.shadowBlur = 0;
+
+            // ---- 2. 绘制节点 (发光光晕) ----
+            for (let n of nodes) {
+                const speed = Math.sqrt(n.vx * n.vx + n.vy * n.vy);
+                const hue = n.hue + Math.sin(time * 0.01 + n.x * 0.01) * 10;
+                const lightness = 55 + Math.min(speed * 4, 30);
+                const size = n.size * (1 + speed * 0.06);
+
+                const grad = ctx.createRadialGradient(
+                    n.x - 1, n.y - 1, 0.5,
+                    n.x, n.y, size * 2.6
+                );
+                grad.addColorStop(0, `hsla(${hue}, 100%, 85%, 0.95)`);
+                grad.addColorStop(0.4, `hsla(${hue + 10}, 80%, 60%, 0.5)`);
+                grad.addColorStop(1, `hsla(${hue + 20}, 70%, 40%, 0)`);
+
+                ctx.shadowBlur = 25;
+                ctx.shadowColor = `hsla(${hue}, 100%, 60%, ${0.2 + speed * 0.02})`;
+                ctx.beginPath();
+                ctx.arc(n.x, n.y, size * 1.4, 0, Math.PI * 2);
+                ctx.fillStyle = grad;
+                ctx.fill();
+
+                // 核心高光
+                ctx.shadowBlur = 0;
+                ctx.beginPath();
+                ctx.arc(n.x - 0.5, n.y - 0.5, size * 0.25, 0, Math.PI * 2);
+                ctx.fillStyle = `hsla(0, 0%, 100%, ${0.3 + speed * 0.03})`;
+                ctx.fill();
+            }
+
+            // ---- 3. 鼠标光晕 ----
+            if (mouse.active) {
+                const grad = ctx.createRadialGradient(
+                    mouse.x, mouse.y, 0,
+                    mouse.x, mouse.y, 220
+                );
+                grad.addColorStop(0, 'rgba(180, 200, 255, 0.08)');
+                grad.addColorStop(0.5, 'rgba(100, 130, 255, 0.02)');
+                grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+                ctx.fillStyle = grad;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, 220, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        // ---------- 动画循环 ----------
+        let animFrameId = null;
+
+        function animate(timestamp) {
+            try {
+                time = timestamp || 0;
+                updatePhysics();
+                draw();
+                animFrameId = requestAnimationFrame(animate);
+            } catch (err) {
+                console.error('❌ 动画循环出错:', err.message);
+                if (fallback) fallback.style.display = 'block';
+                if (animFrameId) cancelAnimationFrame(animFrameId);
+            }
+        }
+
+        // ---------- 鼠标事件 ----------
+        function handleMouseMove(e) {
+            try {
+                const rect = canvas.getBoundingClientRect();
+                const scaleX = canvas.width / rect.width;
+                const scaleY = canvas.height / rect.height;
+                mouse.x = (e.clientX - rect.left) * scaleX;
+                mouse.y = (e.clientY - rect.top) * scaleY;
+                mouse.active = true;
+            } catch (err) {}
+        }
+
+        function handleMouseLeave() {
+            mouse.active = false;
+        }
+
+        canvas.addEventListener('mousemove', handleMouseMove);
+        canvas.addEventListener('mouseleave', handleMouseLeave);
+
+        // 触摸支持
+        canvas.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            try {
+                const rect = canvas.getBoundingClientRect();
+                const touch = e.touches[0];
+                const scaleX = canvas.width / rect.width;
+                const scaleY = canvas.height / rect.height;
+                mouse.x = (touch.clientX - rect.left) * scaleX;
+                mouse.y = (touch.clientY - rect.top) * scaleY;
+                mouse.active = true;
+            } catch (err) {}
+        }, { passive: false });
+
+        canvas.addEventListener('touchend', () => {
+            mouse.active = false;
+        });
+
+        // ---------- 窗口自适应 ----------
+        function resizeCanvas() {
+            try {
+                const container = canvas.parentElement;
+                const maxW = window.innerWidth - 40;
+                const maxH = window.innerHeight - 40;
+                const ratio = canvas.width / canvas.height;
+                let w = Math.min(1000, maxW);
+                let h = w / ratio;
+                if (h > maxH) {
+                    h = maxH;
+                    w = h * ratio;
+                }
+                canvas.style.width = w + 'px';
+                canvas.style.height = h + 'px';
+            } catch (err) {}
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // ---------- 启动动画 ----------
+        console.log('🚀 启动弹性星网动画');
+        try {
+            animate(0);
+        } catch (err) {
+            console.error('❌ 启动失败:', err.message);
+            if (fallback) fallback.style.display = 'block';
+        }
+
+        // 兜底检测：3秒后检查是否空白
+        setTimeout(() => {
+            if (fallback && !fallback.style.display) {
+                try {
+                    const imageData = ctx.getImageData(0, 0, W, H).data;
+                    let isBlank = true;
+                    for (let i = 0; i < 1000; i++) {
+                        if (imageData[i * 4 + 3] > 0) { isBlank = false; break; }
+                    }
+                    if (isBlank) {
+                        console.warn('⚠️ 检测到空白帧，显示备用文字');
+                        fallback.style.display = 'block';
+                    }
+                } catch (e) {
+                    fallback.style.display = 'block';
+                }
+            }
+        }, 3000);
+
+        console.log('✅ 弹性星网已就绪，拖拽感受快速振荡！');
+    </script>
+</body>
+</html>

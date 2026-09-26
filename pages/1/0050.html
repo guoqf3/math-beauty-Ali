@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>范德波尔极限环簇 · 非线性动力学之美</title>
+    <style>
+        :root { --bg: #02010e; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: var(--bg); overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'Noto Serif SC', serif;
+            height: 100vh; width: 100vw;
+            user-select: none; -webkit-user-select: none;
+            cursor: default; -webkit-tap-highlight-color: transparent;
+        }
+        #canvas-container { position: fixed; inset: 0; z-index: 1; }
+        canvas { display: block; }
+
+        #title-overlay {
+            position: fixed; top: clamp(16px, 3.5vh, 42px); left: 50%;
+            transform: translateX(-50%); z-index: 10; pointer-events: none;
+            text-align: center; white-space: nowrap;
+        }
+        #title-overlay h1 {
+            color: #e0cfb4; font-size: clamp(1.1rem, 2.1vw, 1.8rem); font-weight: 400;
+            letter-spacing: 0.08em;
+            text-shadow: 0 0 28px rgba(210,175,130,0.55), 0 0 75px rgba(185,145,100,0.25);
+            margin: 0;
+        }
+        #title-overlay .subtitle {
+            color: #bca689; font-size: clamp(0.64rem, 1.1vw, 0.88rem);
+            letter-spacing: 0.06em; margin-top: 0.28em;
+            text-shadow: 0 0 14px rgba(180,140,100,0.4);
+        }
+
+        #formula-overlay {
+            position: fixed; bottom: clamp(24px, 4.5vh, 54px); left: 50%;
+            transform: translateX(-50%); z-index: 10; pointer-events: none;
+            text-align: center; padding: 0 16px;
+        }
+        #formula-overlay .formula-box {
+            display: inline-block; background: rgba(14,10,20,0.72);
+            border: 1px solid rgba(165,140,110,0.28); border-radius: 12px;
+            padding: clamp(10px,1.4vh,16px) clamp(16px,3vw,28px);
+            backdrop-filter: blur(7px); -webkit-backdrop-filter: blur(7px);
+        }
+        #formula-overlay .formula-main {
+            color: #f1ddc3; font-size: clamp(0.68rem, 1.15vw, 1.0rem);
+            letter-spacing: 0.04em; line-height: 1.7;
+        }
+        #formula-overlay .formula-detail {
+            color: #a59279; font-size: clamp(0.52rem, 0.75vw, 0.68rem);
+            letter-spacing: 0.03em; margin-top: 0.22em; line-height: 1.5;
+        }
+
+        @media (max-width:600px) {
+            #title-overlay h1 { letter-spacing: 0.05em; }
+            #formula-overlay .formula-box { padding: 10px 16px; border-radius: 10px; }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+
+    <div id="title-overlay">
+        <h1>范德波尔极限环簇</h1>
+        <div class="subtitle">Van der Pol Limit Cycles · Nonlinear Oscillator</div>
+    </div>
+
+    <div id="formula-overlay">
+        <div class="formula-box">
+            <div class="formula-main">
+                ẋ = y, ẏ = μ(1 − x²)y − x
+            </div>
+            <div class="formula-detail">
+                μ ∈ [0.5, 5.0] | 稳定极限环 | 18条闭合轨道
+            </div>
+        </div>
+    </div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.157.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#02010e');
+        scene.fog = new THREE.Fog('#02010e', 7, 22);
+
+        const camera = new THREE.PerspectiveCamera(
+            46,
+            container.clientWidth / Math.max(container.clientHeight, 1),
+            0.3, 28
+        );
+        camera.position.set(0, 0.3, 8.0);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.2;
+        container.appendChild(renderer.domElement);
+
+        scene.add(new THREE.AmbientLight('#1e1e3a', 0.4));
+
+        // ==================== 主图案组 ====================
+        const mainGroup = new THREE.Group();
+        scene.add(mainGroup);
+
+        const curveCount = 18;
+        const allLines = [];
+
+        // 每条曲线存储自己的顶点数（因为周期不同，点数略有差异）
+        const vertexCounts = [];
+
+        const zEpsilon = 0.1;
+        const zOmegaBase = 4.5;
+
+        // ==================== Van der Pol 系统 ====================
+        function vdpDeriv(x, y, mu) {
+            return [
+                y,
+                mu * (1 - x * x) * y - x
+            ];
+        }
+
+        function rk4Step(x, y, mu, dt) {
+            const [k1x, k1y] = vdpDeriv(x, y, mu);
+            const [k2x, k2y] = vdpDeriv(x + 0.5 * dt * k1x, y + 0.5 * dt * k1y, mu);
+            const [k3x, k3y] = vdpDeriv(x + 0.5 * dt * k2x, y + 0.5 * dt * k2y, mu);
+            const [k4x, k4y] = vdpDeriv(x + dt * k3x, y + dt * k3y, mu);
+            return [
+                x + (dt / 6) * (k1x + 2 * k2x + 2 * k3x + k4x),
+                y + (dt / 6) * (k1y + 2 * k2y + 2 * k3y + k4y)
+            ];
+        }
+
+        // ==================== 生成单条极限环 ====================
+        function generateLimitCycle(mu, dt, preSteps, maxSamples) {
+            let x = 2.0, y = 0.0; // 初始点远离原点，收敛到极限环
+            // 预积分
+            for (let i = 0; i < preSteps; i++) {
+                [x, y] = rk4Step(x, y, mu, dt);
+            }
+
+            // 记录轨迹，寻找周期
+            const rawPoints = [];
+            // 记录约 maxSamples 个点，通过检测过零点来截取一周期
+            // 采样步数：积分直到收集到足够点并完成一个周期检测
+            let lastSign = Math.sign(y);
+            let crossCount = 0;
+            let startIndex = -1;
+            const maxRecord = maxSamples * 3; // 最多记录3倍点
+            for (let i = 0; i < maxRecord; i++) {
+                rawPoints.push({ x, y });
+                [x, y] = rk4Step(x, y, mu, dt);
+                const sign = Math.sign(y);
+                if (lastSign !== 0 && sign !== 0 && lastSign !== sign && y > 0) {
+                    // 过零点从负到正，且x>0（选择特定相位）
+                    if (x > 0 && crossCount === 0) {
+                        startIndex = i;
+                    }
+                    crossCount++;
+                    if (crossCount >= 2 && startIndex >= 0) {
+                        // 完成一个周期，截取从startIndex到i的点
+                        const periodPoints = rawPoints.slice(startIndex, i + 1);
+                        // 确保闭合：首尾衔接
+                        return periodPoints;
+                    }
+                }
+                lastSign = sign;
+            }
+            // 如果找不到，返回所有点并闭合
+            return rawPoints;
+        }
+
+        // ==================== 生成所有极限环数据 ====================
+        const muValues = Array.from({ length: curveCount }, (_, j) => 0.5 + (j / (curveCount - 1)) * 4.5);
+        const allCycles = [];
+        const dtBase = 0.04;
+        const preSteps = 5000;
+        const targetSamples = 2000;
+
+        for (let j = 0; j < curveCount; j++) {
+            const mu = muValues[j];
+            const cyclePoints = generateLimitCycle(mu, dtBase, preSteps, targetSamples);
+            // 转换为 Float32Array
+            const vertCount = cyclePoints.length;
+            vertexCounts.push(vertCount);
+            // 应用轻微的z轴调制和空间旋转将在后面进行，先存储原始2D点
+            allCycles.push(cyclePoints);
+        }
+
+        // 找到最大顶点数以统一部分逻辑（但每条线长度不同）
+        const maxVertexCount = Math.max(...vertexCounts);
+
+        // ==================== 空间旋转与z轴调制，并创建线条 ====================
+        function createLineFromCycle(cyclePoints, mu, index) {
+            const n = cyclePoints.length;
+            // 空间旋转参数
+            const rotY = (index / curveCount) * Math.PI * 2;
+            const rotX = (index * 0.65) % Math.PI;
+            const rotZ = (index * 0.32) % (Math.PI * 0.4);
+            const rotMatrix = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(rotX, rotY, rotZ));
+
+            const vertices = new Float32Array((n + 1) * 3); // +1用于闭合
+            const omegaZ = zOmegaBase + (index % 4);
+            const zPhase = index * 0.42;
+
+            // 首顶点
+            const p0 = cyclePoints[0];
+            const t0 = 0;
+            const z0 = zEpsilon * Math.sin(zPhase);
+            const vec0 = new THREE.Vector3(p0.x, p0.y, z0);
+            vec0.applyMatrix4(rotMatrix);
+            vertices[0] = vec0.x; vertices[1] = vec0.y; vertices[2] = vec0.z;
+
+            // 中间顶点
+            for (let i = 1; i < n; i++) {
+                const p = cyclePoints[i];
+                const frac = i / (n - 1);
+                const z = zEpsilon * Math.sin(omegaZ * frac * Math.PI * 2 + zPhase);
+                const vec = new THREE.Vector3(p.x, p.y, z);
+                vec.applyMatrix4(rotMatrix);
+                vertices[i * 3] = vec.x;
+                vertices[i * 3 + 1] = vec.y;
+                vertices[i * 3 + 2] = vec.z;
+            }
+
+            // 末顶点显式复制首顶点，完美闭合
+            const lastIdx = n * 3;
+            vertices[lastIdx] = vertices[0];
+            vertices[lastIdx + 1] = vertices[1];
+            vertices[lastIdx + 2] = vertices[2];
+
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+            geometry.setDrawRange(0, 0);
+
+            const hue = (index / curveCount) * 0.82 + 0.06;
+            const material = new THREE.LineBasicMaterial({
+                color: new THREE.Color().setHSL(hue, 0.88, 0.62),
+                transparent: true, opacity: 0.78,
+                linewidth: 1, blending: THREE.AdditiveBlending,
+                depthWrite: true, depthTest: true,
+            });
+
+            const line = new THREE.Line(geometry, material);
+            line.visible = false;
+            line.frustumCulled = false;
+            return { line, vertexCount: n + 1 };
+        }
+
+        const lineObjects = [];
+        for (let j = 0; j < curveCount; j++) {
+            const obj = createLineFromCycle(allCycles[j], muValues[j], j);
+            mainGroup.add(obj.line);
+            allLines.push(obj.line);
+            lineObjects.push(obj);
+        }
+
+        console.log(`✅ 已生成 ${curveCount} 条范德波尔极限环曲线`);
+
+        // ==================== 计算全局包围盒 ====================
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, minZ = Infinity, maxZ = -Infinity;
+        for (const obj of lineObjects) {
+            const positions = obj.line.geometry.attributes.position.array;
+            for (let i = 0; i < positions.length; i += 3) {
+                const vx = positions[i], vy = positions[i + 1], vz = positions[i + 2];
+                if (vx < minX) minX = vx; if (vx > maxX) maxX = vx;
+                if (vy < minY) minY = vy; if (vy > maxY) maxY = vy;
+                if (vz < minZ) minZ = vz; if (vz > maxZ) maxZ = vz;
+            }
+        }
+        const centerX = (minX + maxX) / 2, centerY = (minY + maxY) / 2, centerZ = (minZ + maxZ) / 2;
+        const rangeX = maxX - minX, rangeY = maxY - minY, rangeZ = maxZ - minZ;
+        const maxRange = Math.max(rangeX, rangeY, rangeZ, 0.1);
+        const targetScale = 5.0 / maxRange;
+
+        // 应用缩放和平移
+        for (const obj of lineObjects) {
+            const positions = obj.line.geometry.attributes.position.array;
+            for (let i = 0; i < positions.length; i += 3) {
+                positions[i] = (positions[i] - centerX) * targetScale;
+                positions[i + 1] = (positions[i + 1] - centerY) * targetScale;
+                positions[i + 2] = (positions[i + 2] - centerZ) * targetScale;
+            }
+            obj.line.geometry.attributes.position.needsUpdate = true;
+        }
+
+        // ==================== 动画状态机 ====================
+        const APPEAR_TIME = 15.0, PAUSE_TIME = 1.5, DISAPPEAR_TIME = 15.0;
+        const CYCLE_TOTAL = APPEAR_TIME + PAUSE_TIME + DISAPPEAR_TIME;
+
+        let animationStartTime = null, firstFrameDone = false;
+
+        function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+        function easeInCubic(t) { return t * t * t; }
+
+        function getProgress(elapsedSeconds) {
+            const cycle = elapsedSeconds % CYCLE_TOTAL;
+            if (cycle < APPEAR_TIME) {
+                return { progress: easeOutCubic(cycle / APPEAR_TIME), phase: 'appear' };
+            } else if (cycle < APPEAR_TIME + PAUSE_TIME) {
+                return { progress: 1.0, phase: 'pause' };
+            } else {
+                const t = (cycle - APPEAR_TIME - PAUSE_TIME) / DISAPPEAR_TIME;
+                return { progress: 1.0 - easeInCubic(t), phase: 'disappear' };
+            }
+        }
+
+        // ==================== 渲染循环 ====================
+        function animate(timestamp) {
+            requestAnimationFrame(animate);
+
+            if (animationStartTime === null) {
+                animationStartTime = timestamp;
+                // 第一帧强制空白
+                allLines.forEach(line => { line.visible = false; if (line.geometry) line.geometry.setDrawRange(0, 0); });
+                renderer.render(scene, camera);
+                firstFrameDone = true;
+                return;
+            }
+
+            const elapsed = (timestamp - animationStartTime) / 1000;
+            const { progress } = getProgress(elapsed);
+
+            // 每条曲线独立更新drawRange（因为长度不同）
+            for (let i = 0; i < allLines.length; i++) {
+                const line = allLines[i];
+                if (!line || !line.geometry) continue;
+                const totalPts = lineObjects[i].vertexCount;
+                const drawCount = Math.floor(progress * totalPts);
+                const shouldBeVisible = drawCount >= 2;
+                if (shouldBeVisible && drawCount >= 2) {
+                    line.visible = true;
+                    line.geometry.setDrawRange(0, Math.min(drawCount, totalPts));
+                } else {
+                    line.visible = false;
+                    line.geometry.setDrawRange(0, 0);
+                }
+            }
+
+            const rotY = elapsed * 0.03;
+            const rotX = Math.sin(elapsed * 0.055) * 0.028;
+            const rotZ = Math.cos(elapsed * 0.075) * 0.02;
+            mainGroup.rotation.set(rotX, rotY, rotZ);
+
+            camera.position.x = Math.sin(elapsed * 0.045) * 0.2;
+            camera.position.y = 0.3 + Math.cos(elapsed * 0.065) * 0.15;
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        function onResize() {
+            const w = container.clientWidth, h = container.clientHeight;
+            if (h <= 0) return;
+            camera.aspect = w / h; camera.updateProjectionMatrix();
+            renderer.setSize(w, h); renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        }
+        window.addEventListener('resize', onResize, { passive: true });
+        window.addEventListener('orientationchange', () => setTimeout(onResize, 150), { passive: true });
+
+        console.log('🚀 范德波尔极限环簇动画启动');
+        console.log(`   - 曲线数量: ${curveCount}`);
+        console.log(`   - 动画周期: ${CYCLE_TOTAL}s`);
+
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

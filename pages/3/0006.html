@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>蝴蝶效应 · 洛伦兹吸引子蝴蝶群</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    background: #04020c; overflow: hidden; touch-action: none;
+    font-family: "Helvetica Neue", Helvetica, Arial, "PingFang SC", sans-serif;
+    cursor: crosshair;
+  }
+  canvas { display: block; position: fixed; inset: 0; }
+
+  .hud {
+    position: fixed; left: 24px; bottom: 22px;
+    font: 11px/1.9 ui-monospace, Menlo, Consolas, monospace;
+    color: rgba(150, 170, 240, 0.34);
+    letter-spacing: 0.12em;
+    pointer-events: none; user-select: none;
+    z-index: 5;
+  }
+  .hud b { color: rgba(210, 190, 255, 0.86); font-weight: 500; letter-spacing: 0.20em; }
+  .hud i { color: rgba(180, 165, 245, 0.52); font-style: normal; }
+  .hud code {
+    color: rgba(255, 205, 140, 0.78);
+    font-family: inherit;
+    letter-spacing: 0.04em;
+  }
+  .hud .hint {
+    margin-top: 6px;
+    color: rgba(255, 190, 130, 0.70);
+    animation: blink 2.6s ease-in-out infinite;
+  }
+  @keyframes blink {
+    0%, 100% { opacity: 0.40; }
+    50%      { opacity: 1; }
+  }
+
+  #title {
+    position: fixed; top: 0; left: 0;
+    padding: 36px 42px;
+    pointer-events: none; user-select: none;
+    opacity: 0; animation: fadeIn 2s 0.3s ease forwards;
+    z-index: 5;
+  }
+  #title h1 {
+    margin: 0 0 10px;
+    font-size: clamp(20px, 3vw, 34px);
+    font-weight: 200;
+    letter-spacing: 0.34em; text-indent: 0.34em;
+    background: linear-gradient(96deg, #80b0ff 0%, #c09eff 40%, #ffc8a0 78%, #ffeecc 100%);
+    -webkit-background-clip: text; background-clip: text;
+    color: transparent;
+    filter: drop-shadow(0 0 28px rgba(150, 130, 240, 0.45));
+  }
+  #title .en {
+    font-size: 9px; letter-spacing: 0.52em; text-indent: 0.52em;
+    color: rgba(160, 180, 240, 0.34);
+    font-weight: 300;
+  }
+  @keyframes fadeIn { to { opacity: 1; } }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="title">
+  <h1>蝴蝶效应</h1>
+  <div class="en">LORENZ ATTRACTOR · BUTTERFLY SWARM</div>
+</div>
+
+<div class="hud">
+  <div><b>LORENZ SYSTEM</b></div>
+  <div><code>ẋ = σ(y−x) &nbsp; ẏ = x(ρ−z)−y &nbsp; ż = xy−βz</code></div>
+  <div><i>σ = 10 &nbsp; ρ = 28 &nbsp; β = 8/3 &nbsp;·&nbsp; 蝴蝶数量 <span id="cnt">22</span></i></div>
+  <div class="hint">移动鼠标扰动气流 · 点击开启风声与振翅音</div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* =========================================================
+     画布
+     ========================================================= */
+  const cvs = document.getElementById('c');
+  const ctx = cvs.getContext('2d', { alpha: false });
+  const TAU = Math.PI * 2;
+
+  let W = 0, H = 0, DPR = 1, cx = 0, cy = 0, S = 0;
+  let FOCAL = 1200;
+
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth;
+    H = window.innerHeight;
+    cvs.width  = Math.round(W * DPR);
+    cvs.height = Math.round(H * DPR);
+    cvs.style.width  = W + 'px';
+    cvs.style.height = H + 'px';
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+    cx = W * 0.5;
+    cy = H * 0.5 + H * 0.02;
+    S = Math.min(W, H);
+    FOCAL = S * 1.55;
+  }
+  window.addEventListener('resize', resize);
+
+  /* =========================================================
+     洛伦兹参数
+     ========================================================= */
+  const SIGMA = 10, RHO = 28, BETA = 8 / 3;
+  const Z_CENTER = 25;
+  const CAM_DIST = 95;
+
+  let viewAngle  = 0;
+  let pitchAngle = 0.34;
+
+  /* =========================================================
+     蝴蝶
+     ========================================================= */
+  const N_BUTTERFLIES = 22;
+  const TRAIL_LEN = 16;
+  const butterflies = [];
+
+  /* ---- 单个洛伦兹 RK4 步 ---- */
+  function lorenzStep(b, dt) {
+    const x = b.x, y = b.y, z = b.z;
+
+    const k1x = SIGMA * (y - x);
+    const k1y = x * (RHO - z) - y;
+    const k1z = x * y - BETA * z;
+
+    const ax = x + k1x * dt * 0.5;
+    const ay = y + k1y * dt * 0.5;
+    const az = z + k1z * dt * 0.5;
+    const k2x = SIGMA * (ay - ax);
+    const k2y = ax * (RHO - az) - ay;
+    const k2z = ax * ay - BETA * az;
+
+    const bx = x + k2x * dt * 0.5;
+    const by = y + k2y * dt * 0.5;
+    const bz = z + k2z * dt * 0.5;
+    const k3x = SIGMA * (by - bx);
+    const k3y = bx * (RHO - bz) - by;
+    const k3z = bx * by - BETA * bz;
+
+    const ux = x + k3x * dt;
+    const uy = y + k3y * dt;
+    const uz = z + k3z * dt;
+    const k4x = SIGMA * (uy - ux);
+    const k4y = ux * (RHO - uz) - uy;
+    const k4z = ux * uy - BETA * uz;
+
+    b.x += dt / 6 * (k1x + 2 * k2x + 2 * k3x + k4x);
+    b.y += dt / 6 * (k1y + 2 * k2y + 2 * k3y + k4y);
+    b.z += dt / 6 * (k1z + 2 * k2z + 2 * k3z + k4z);
+  }
+
+  /* ---- 初始化蝴蝶群 ---- */
+  function initButterflies() {
+    butterflies.length = 0;
+
+    for (let i = 0; i < N_BUTTERFLIES; i++) {
+      const b = {
+        // 从吸引子附近的不同位置出发
+        x: (Math.random() - 0.5) * 34,
+        y: (Math.random() - 0.5) * 34,
+        z: 10 + Math.random() * 35,
+
+        hue: 20 + (i / N_BUTTERFLIES) * 320 + (Math.random() - 0.5) * 18,
+        size: 9 + Math.random() * 7,
+
+        wingPhase: Math.random() * TAU,
+        wingSpeed: 16 + Math.random() * 12,
+
+        trail: [],
+        sx: 0, sy: 0, depth: 100,
+        px: 0, py: 0,
+        angle: 0,
+        hasPrev: false,
+
+        // 鼠标扰动冲量
+        ix: 0, iy: 0, iz: 0
+      };
+
+      // 预热：让蝴蝶落到吸引子上
+      const warm = 200 + Math.floor(Math.random() * 400);
+      for (let k = 0; k < warm; k++) lorenzStep(b, 0.006);
+
+      // 再随机演化一段，让它们散开
+      const spread = Math.floor(Math.random() * 300);
+      for (let k = 0; k < spread; k++) lorenzStep(b, 0.006);
+
+      butterflies.push(b);
+    }
+
+    document.getElementById('cnt').textContent = N_BUTTERFLIES;
+  }
+
+  /* =========================================================
+     投影
+     ========================================================= */
+  function project(x, y, z) {
+    const cosA = Math.cos(viewAngle), sinA = Math.sin(viewAngle);
+    const rx = x * cosA - y * sinA;
+    const ry = x * sinA + y * cosA;
+    const rz = z - Z_CENTER;
+
+    const cosP = Math.cos(pitchAngle), sinP = Math.sin(pitchAngle);
+    const ty = ry * cosP - rz * sinP;   // 深度方向
+    const tz = ry * sinP + rz * cosP;   // 垂直方向
+
+    const Zc = CAM_DIST - ty;
+    const s  = FOCAL / Math.max(28, Zc);
+
+    return {
+      sx: cx + rx * s,
+      sy: cy - tz * s,
+      s: s,
+      depth: Zc
+    };
+  }
+
+  /* =========================================================
+     鼠标 / 触摸
+     ========================================================= */
+  const mouse = {
+    x: -9999, y: -9999,
+    px: -9999, py: -9999,
+    speed: 0,
+    active: false
+  };
+
+  function updateMouse(e) {
+    const rect = cvs.getBoundingClientRect();
+    const nx = (e.clientX !== undefined ? e.clientX : e.touches[0].clientX) - rect.left;
+    const ny = (e.clientY !== undefined ? e.clientY : e.touches[0].clientY) - rect.top;
+    mouse.x = nx;
+    mouse.y = ny;
+    mouse.active = true;
+  }
+
+  window.addEventListener('pointermove', e => {
+    updateMouse(e);
+    const dx = mouse.x - mouse.px;
+    const dy = mouse.y - mouse.py;
+    mouse.speed = Math.min(60, Math.sqrt(dx * dx + dy * dy));
+  });
+
+  window.addEventListener('pointerdown', e => {
+    updateMouse(e);
+    initAudio();
+  });
+
+  window.addEventListener('pointerleave', () => {
+    mouse.active = false;
+    mouse.speed = 0;
+  });
+
+  /* =========================================================
+     音频 —— 风声 + 翅膀高频振动
+     ========================================================= */
+  let audioCtx = null;
+  let windGain = null;
+  let buzzGain = null;
+  let buzzFilter = null;
+  let lowGain = null;
+  let audioStarted = false;
+  let audioFrame = 0;
+
+  function initAudio() {
+    if (audioStarted) return;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+
+    try {
+      audioCtx = new AC();
+    } catch (err) {
+      return;
+    }
+    audioStarted = true;
+
+    /* ---- 噪声缓冲（3 秒白噪声） ---- */
+    const len = audioCtx.sampleRate * 3;
+    const buf = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+
+    /* ---- 风声：噪声 → 低通 ---- */
+    const windSrc = audioCtx.createBufferSource();
+    windSrc.buffer = buf;
+    windSrc.loop = true;
+
+    const windFilter = audioCtx.createBiquadFilter();
+    windFilter.type = 'lowpass';
+    windFilter.frequency.value = 280;
+    windFilter.Q.value = 0.8;
+
+    windGain = audioCtx.createGain();
+    windGain.gain.value = 0;
+
+    windSrc.connect(windFilter);
+    windFilter.connect(windGain);
+    windGain.connect(audioCtx.destination);
+    windSrc.start();
+
+    /* ---- 翅膀高频嗡嗡：噪声 → 带通 ---- */
+    const buzzSrc = audioCtx.createBufferSource();
+    buzzSrc.buffer = buf;
+    buzzSrc.loop = true;
+
+    buzzFilter = audioCtx.createBiquadFilter();
+    buzzFilter.type = 'bandpass';
+    buzzFilter.frequency.value = 2600;
+    buzzFilter.Q.value = 9;
+
+    buzzGain = audioCtx.createGain();
+    buzzGain.gain.value = 0;
+
+    buzzSrc.connect(buzzFilter);
+    buzzFilter.connect(buzzGain);
+    buzzGain.connect(audioCtx.destination);
+    buzzSrc.start();
+
+    /* ---- 低频躯体振动 ---- */
+    const lowOsc = audioCtx.createOscillator();
+    lowOsc.type = 'sine';
+    lowOsc.frequency.value = 165;
+    lowGain = audioCtx.createGain();
+    lowGain.gain.value = 0;
+    lowOsc.connect(lowGain);
+    lowGain.connect(audioCtx.destination);
+    lowOsc.start();
+
+    /* ---- 翅膀拍打颤音：22Hz 调制带通中心频率 ---- */
+    const trem = audioCtx.createOscillator();
+    trem.frequency.value = 22;
+    const tremGain = audioCtx.createGain();
+    tremGain.gain.value = 520;
+    trem.connect(tremGain);
+    tremGain.connect(buzzFilter.frequency);
+    trem.start();
+
+    /* ---- 风声缓慢起伏 ---- */
+    const windLfo = audioCtx.createOscillator();
+    windLfo.frequency.value = 0.11;
+    const windLfoGain = audioCtx.createGain();
+    windLfoGain.gain.value = 0.022;
+    windLfo.connect(windLfoGain);
+    windLfoGain.connect(windGain.gain);
+    windLfo.start();
+
+    /* ---- 淡入 ---- */
+    const now = audioCtx.currentTime;
+    windGain.gain.setTargetAtTime(0.052, now, 2.2);
+    buzzGain.gain.setTargetAtTime(0.010, now, 2.6);
+    lowGain.gain.setTargetAtTime(0.006, now, 3.0);
+
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+  }
+
+  /* 每帧调节音频（节流） */
+  function updateAudio() {
+    if (!audioStarted || !audioCtx) return;
+    audioFrame++;
+    if (audioFrame % 6 !== 0) return;
+
+    const t = audioCtx.currentTime;
+    const sp = mouse.speed;
+
+    // 鼠标越快 → 风越大、翅膀声越响
+    const windTarget = 0.045 + Math.min(0.055, sp * 0.0012);
+    const buzzTarget = 0.008 + Math.min(0.024, sp * 0.0007);
+
+    windGain.gain.setTargetAtTime(windTarget, t, 0.25);
+    buzzGain.gain.setTargetAtTime(buzzTarget, t, 0.20);
+  }
+
+  /* =========================================================
+     角度插值（处理环绕）
+     ========================================================= */
+  function lerpAngle(a, b, t) {
+    let d = b - a;
+    while (d >  Math.PI) d -= TAU;
+    while (d < -Math.PI) d += TAU;
+    return a + d * t;
+  }
+
+  /* =========================================================
+     绘制单只蝴蝶
+     ========================================================= */
+  function drawButterfly(b, p) {
+    const alpha = Math.min(1, 0.25 + (110 - p.depth) / 90);
+    const size  = b.size * (p.s / 13);
+    const flap  = 0.28 + 0.72 * Math.abs(Math.sin(b.wingPhase));
+
+    ctx.save();
+    ctx.translate(p.sx, p.sy);
+    ctx.rotate(b.angle + Math.PI * 0.5);   // 身体朝向飞行方向
+
+    const hue = b.hue;
+
+    /* ---- 前翅（左 + 右） ---- */
+    for (let side = -1; side <= 1; side += 2) {
+      ctx.beginPath();
+      ctx.ellipse(
+        size * 0.18,
+        side * size * 0.58 * flap,
+        size * 0.72,
+        size * 0.40 * flap,
+        side * 0.22,
+        0, TAU
+      );
+      ctx.fillStyle = 'hsla(' + hue + ', 95%, 68%, ' + (alpha * 0.52) + ')';
+      ctx.fill();
+    }
+
+    /* ---- 后翅 ---- */
+    for (let side = -1; side <= 1; side += 2) {
+      ctx.beginPath();
+      ctx.ellipse(
+        -size * 0.30,
+        side * size * 0.42 * flap,
+        size * 0.50,
+        size * 0.30 * flap,
+        side * 0.30,
+        0, TAU
+      );
+      ctx.fillStyle = 'hsla(' + (hue + 28) + ', 95%, 62%, ' + (alpha * 0.40) + ')';
+      ctx.fill();
+    }
+
+    /* ---- 身体 ---- */
+    ctx.beginPath();
+    ctx.ellipse(0, 0, size * 0.66, size * 0.085, 0, 0, TAU);
+    ctx.fillStyle = 'hsla(' + hue + ', 35%, 92%, ' + (alpha * 0.85) + ')';
+    ctx.fill();
+
+    /* ---- 头部光点 ---- */
+    ctx.beginPath();
+    ctx.arc(size * 0.56, 0, size * 0.12, 0, TAU);
+    ctx.fillStyle = 'hsla(' + hue + ', 100%, 90%, ' + alpha + ')';
+    ctx.fill();
+
+    ctx.restore();
+  }
+
+  /* =========================================================
+     主循环
+     ========================================================= */
+  let lastTime = performance.now();
+
+  function frame(now) {
+    const dt = Math.min((now - lastTime) / 1000, 0.05);
+    lastTime = now;
+    const t = now * 0.001;
+
+    /* ---- 视角缓慢旋转 ---- */
+    viewAngle += 0.13 * dt;
+
+    /* ---- 背景 ---- */
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = '#04020c';
+    ctx.fillRect(0, 0, W, H);
+
+    /* ---- 背景微光晕 ---- */
+    const bgG = ctx.createRadialGradient(cx, cy, 0, cx, cy, S * 0.85);
+    bgG.addColorStop(0.00, 'rgba(30, 18, 70, 0.55)');
+    bgG.addColorStop(0.45, 'rgba(12, 8, 38, 0.30)');
+    bgG.addColorStop(1.00, 'rgba(4, 2, 12, 0)');
+    ctx.fillStyle = bgG;
+    ctx.fillRect(0, 0, W, H);
+
+    /* ---- 推进洛伦兹系统 ---- */
+    const SUB = 4;
+    const STEP = 0.021;
+
+    for (let i = 0; i < butterflies.length; i++) {
+      const b = butterflies[i];
+      for (let k = 0; k < SUB; k++) lorenzStep(b, STEP);
+
+      /* 鼠标扰动 —— 随距离衰减的冲量 */
+      if (mouse.active) {
+        const dx = b.sx - mouse.x;
+        const dy = b.sy - mouse.y;
+        const d2 = dx * dx + dy * dy;
+        const RAD = 210;
+
+        if (d2 < RAD * RAD) {
+          const d = Math.sqrt(d2) + 0.001;
+          const f = (1 - d / RAD);
+          const strength = f * f * 0.85 * (1 + mouse.speed * 0.02);
+
+          // 世界坐标近似扰动
+          b.x += (dx / d) * strength * 0.9;
+          b.y += (dy / d) * strength * 0.9;
+          b.z += (dy / d) * strength * 0.55;
+        }
+      }
+
+      /* 翅膀扇动 */
+      b.wingPhase += b.wingSpeed * dt;
+
+      /* 投影 */
+      const p = project(b.x, b.y, b.z);
+      b.sx = p.sx;
+      b.sy = p.sy;
+      b.depth = p.depth;
+
+      /* 朝向 */
+      if (b.hasPrev) {
+        const vx = b.sx - b.px;
+        const vy = b.sy - b.py;
+        const sp = Math.sqrt(vx * vx + vy * vy);
+        if (sp > 0.4) {
+          const target = Math.atan2(vy, vx);
+          b.angle = lerpAngle(b.angle, target, 0.18);
+        }
+      }
+      b.px = b.sx;
+      b.py = b.sy;
+      b.hasPrev = true;
+
+      /* 拖尾 */
+      b.trail.push(b.sx, b.sy);
+      if (b.trail.length > TRAIL_LEN * 2) {
+        b.trail.splice(0, b.trail.length - TRAIL_LEN * 2);
+      }
+    }
+
+    /* ---- 按深度排序（远 → 近） ---- */
+    butterflies.sort((a, b) => b.depth - a.depth);
+
+    /* ---- 绘制拖尾 ---- */
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    for (let i = 0; i < butterflies.length; i++) {
+      const b = butterflies[i];
+      const tr = b.trail;
+      const n = tr.length / 2;
+
+      if (n < 3) continue;
+
+      for (let k = 1; k < n; k++) {
+        const u = k / n;
+        const a = u * u * 0.16;
+        const x0 = tr[(k - 1) * 2], y0 = tr[(k - 1) * 2 + 1];
+        const x1 = tr[k * 2],       y1 = tr[k * 2 + 1];
+
+        ctx.beginPath();
+        ctx.moveTo(x0, y0);
+        ctx.lineTo(x1, y1);
+        ctx.strokeStyle = 'hsla(' + b.hue + ', 95%, 70%, ' + a + ')';
+        ctx.lineWidth = u * 1.6 + 0.4;
+        ctx.stroke();
+      }
+    }
+
+    /* ---- 绘制蝴蝶 ---- */
+    for (let i = 0; i < butterflies.length; i++) {
+      drawButterfly(butterflies[i], {
+        sx: butterflies[i].sx,
+        sy: butterflies[i].sy,
+        s: FOCAL / Math.max(28, butterflies[i].depth),
+        depth: butterflies[i].depth
+      });
+    }
+
+    /* ---- 鼠标气流指示 ---- */
+    if (mouse.active) {
+      const g = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, 170);
+      g.addColorStop(0.00, 'rgba(180, 150, 255, 0.10)');
+      g.addColorStop(0.45, 'rgba(120, 100, 220, 0.035)');
+      g.addColorStop(1.00, 'rgba(80, 60, 180, 0)');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(mouse.x, mouse.y, 170, 0, TAU);
+      ctx.fill();
+    }
+
+    /* ---- 更新鼠标上一帧位置 ---- */
+    mouse.px = mouse.x;
+    mouse.py = mouse.y;
+    mouse.speed *= 0.92;
+
+    /* ---- 音频 ---- */
+    updateAudio();
+
+    ctx.globalCompositeOperation = 'source-over';
+    requestAnimationFrame(frame);
+  }
+
+  /* =========================================================
+     启动
+     ========================================================= */
+  resize();
+  initButterflies();
+  requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

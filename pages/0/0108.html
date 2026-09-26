@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Borromean 环 · 编织拓扑</title>
+    <style>
+        :root {
+            --bg: #06060c;
+            --gold: #d4a843;
+            --cyan: #45b7aa;
+            --magenta: #d4708a;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'SimSun', serif;
+            -webkit-font-smoothing: antialiased;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        #canvas-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+        }
+        canvas {
+            display: block;
+        }
+        .overlay-title {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 22px 20px 8px;
+            text-align: center;
+            background: linear-gradient(180deg, rgba(6, 6, 12, 0.95) 0%, rgba(6, 6, 12, 0.8) 55%, rgba(6, 6, 12, 0) 100%);
+        }
+        .overlay-title h2 {
+            font-size: clamp(1.1rem, 2.2vw, 1.8rem);
+            font-weight: 400;
+            letter-spacing: 0.13em;
+            color: #e8d5b0;
+            text-shadow: 0 0 30px rgba(212, 168, 67, 0.45), 0 0 60px rgba(212, 168, 67, 0.18);
+            margin: 0 0 2px;
+            line-height: 1.3;
+        }
+        .overlay-title .sub {
+            font-size: clamp(0.65rem, 1.1vw, 0.85rem);
+            letter-spacing: 0.22em;
+            color: rgba(200, 180, 150, 0.65);
+        }
+        .overlay-formula {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 8px 20px 18px;
+            text-align: center;
+            background: linear-gradient(0deg, rgba(6, 6, 12, 0.95) 0%, rgba(6, 6, 12, 0.82) 55%, rgba(6, 6, 12, 0) 100%);
+        }
+        .formula-text {
+            font-size: clamp(0.6rem, 1.0vw, 0.8rem);
+            color: rgba(210, 200, 185, 0.8);
+            letter-spacing: 0.03em;
+            line-height: 1.7;
+            font-style: italic;
+        }
+        .clr-gold { color: #d4a843; font-style: normal; font-weight: bold; }
+        .clr-cyan { color: #45b7aa; font-style: normal; font-weight: bold; }
+        .clr-magenta { color: #d4708a; font-style: normal; font-weight: bold; }
+        .formula-sep {
+            display: inline-block;
+            margin: 0 14px;
+            color: rgba(150, 140, 130, 0.35);
+            font-style: normal;
+        }
+    </style>
+</head>
+<body>
+    <div class="overlay-title">
+        <h2>Borromean 环 · 编织拓扑</h2>
+        <div class="sub">Pairwise unlinked · Totally linked · Spiral strands</div>
+    </div>
+    <div class="overlay-formula">
+        <div class="formula-text">
+            <span class="clr-gold">C₁(θ) = (cos θ, sin θ+½, 0)</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-cyan">C₂(θ) = (0, cos θ-¼, sin θ)</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-magenta">C₃(θ) = (sin θ, -¼, cos θ)</span>
+        </div>
+    </div>
+    <div id="canvas-container"></div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ---------- 场景初始化 ----------
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+
+        const camera = new THREE.PerspectiveCamera(48, container.clientWidth / container.clientHeight, 0.5, 25);
+        camera.position.set(3.5, 2.6, 7.5);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x06060c, 1);
+        container.appendChild(renderer.domElement);
+
+        const clock = new THREE.Clock();
+        clock.start();
+
+        // ---------- 颜色 ----------
+        const COLOR_GOLD = 0xd4a843;
+        const COLOR_CYAN = 0x45b7aa;
+        const COLOR_MAGENTA = 0xd4708a;
+
+        // ---------- 生成Borromean环螺旋线束 ----------
+        function createSpiralBundle(baseRing, normalVec, binormalVec, color, numStrands, turns, amplitude, numPoints) {
+            const group = new THREE.Group();
+            const dt = (2 * Math.PI) / numPoints;
+
+            for (let s = 0; s < numStrands; s++) {
+                const phase = (s / numStrands) * 2 * Math.PI;
+                const points = [];
+                for (let i = 0; i <= numPoints; i++) {
+                    const theta = i * dt;
+                    const base = baseRing(theta);
+                    const offsetN = normalVec(theta);
+                    const offsetB = binormalVec(theta);
+                    const angle = turns * theta + phase;
+                    const offset = offsetN.clone().multiplyScalar(Math.cos(angle) * amplitude)
+                        .add(offsetB.clone().multiplyScalar(Math.sin(angle) * amplitude));
+                    points.push(base.clone().add(offset));
+                }
+                const geom = new THREE.BufferGeometry().setFromPoints(points);
+                const mat = new THREE.LineBasicMaterial({
+                    color: color,
+                    transparent: true,
+                    opacity: 0.55,
+                    depthWrite: true,
+                    depthTest: true,
+                });
+                group.add(new THREE.Line(geom, mat));
+            }
+            return group;
+        }
+
+        // Borromean环的三个基环定义与局部标架
+        const radiusScale = 1.4;
+
+        // 环1 (金色) 在xy平面偏移中心(0,0.5,0)
+        const baseRing1 = (theta) => new THREE.Vector3(
+            Math.cos(theta) * radiusScale,
+            Math.sin(theta) * radiusScale + 0.5,
+            0
+        );
+        const normal1 = (theta) => new THREE.Vector3(0, 0, 1);
+        const binormal1 = (theta) => new THREE.Vector3(Math.cos(theta), Math.sin(theta), 0);
+
+        // 环2 (青色) 在yz平面偏移中心(0,-0.25,0)
+        const baseRing2 = (theta) => new THREE.Vector3(
+            0,
+            Math.cos(theta) * radiusScale - 0.25,
+            Math.sin(theta) * radiusScale
+        );
+        const normal2 = (theta) => new THREE.Vector3(1, 0, 0);
+        const binormal2 = (theta) => new THREE.Vector3(0, Math.cos(theta), Math.sin(theta));
+
+        // 环3 (品红) 在xz平面偏移中心(0,-0.25,0)
+        const baseRing3 = (theta) => new THREE.Vector3(
+            Math.sin(theta) * radiusScale,
+            -0.25,
+            Math.cos(theta) * radiusScale
+        );
+        const normal3 = (theta) => new THREE.Vector3(0, 1, 0);
+        const binormal3 = (theta) => new THREE.Vector3(Math.sin(theta), 0, Math.cos(theta));
+
+        const strands = 25;
+        const turns = 15;
+        const amplitude = 0.08;
+        const pointsPerRing = 1800;
+
+        const goldBundle = createSpiralBundle(baseRing1, normal1, binormal1, COLOR_GOLD, strands, turns, amplitude, pointsPerRing);
+        const cyanBundle = createSpiralBundle(baseRing2, normal2, binormal2, COLOR_CYAN, strands, turns, amplitude, pointsPerRing);
+        const magentaBundle = createSpiralBundle(baseRing3, normal3, binormal3, COLOR_MAGENTA, strands, turns, amplitude, pointsPerRing);
+
+        const rootGroup = new THREE.Group();
+        rootGroup.name = 'borromean';
+        rootGroup.add(goldBundle);
+        rootGroup.add(cyanBundle);
+        rootGroup.add(magentaBundle);
+        scene.add(rootGroup);
+
+        // ---------- 背景微星点 ----------
+        const starsGroup = new THREE.Group();
+        starsGroup.name = 'stars';
+        const starsGeom = new THREE.BufferGeometry();
+        const starsCount = 400;
+        const starsPositions = new Float32Array(starsCount * 3);
+        for (let i = 0; i < starsCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const dist = 7 + Math.random() * 10;
+            starsPositions[i * 3] = dist * Math.sin(phi) * Math.cos(theta);
+            starsPositions[i * 3 + 1] = dist * Math.sin(phi) * Math.sin(theta);
+            starsPositions[i * 3 + 2] = dist * Math.cos(phi);
+        }
+        starsGeom.setAttribute('position', new THREE.BufferAttribute(starsPositions, 3));
+        const starsMat = new THREE.PointsMaterial({
+            color: 0x908878,
+            size: 0.018,
+            transparent: true,
+            opacity: 0.5,
+            depthWrite: false,
+        });
+        starsGroup.add(new THREE.Points(starsGeom, starsMat));
+        scene.add(starsGroup);
+
+        // ---------- 动画循环 ----------
+        function animate() {
+            const elapsed = clock.getElapsedTime();
+
+            // 整体旋转
+            rootGroup.rotation.x = elapsed * 0.19;
+            rootGroup.rotation.y = elapsed * 0.31;
+            rootGroup.rotation.z = elapsed * 0.14;
+
+            // 背景星点
+            starsGroup.rotation.y = elapsed * 0.04;
+            starsGroup.rotation.x = elapsed * 0.025;
+
+            // 相机环绕
+            const camRadius = 7.8;
+            const camAngle = elapsed * 0.09;
+            const camHeight = 2.6 + Math.sin(elapsed * 0.16) * 0.8;
+            camera.position.x = Math.cos(camAngle) * camRadius;
+            camera.position.z = Math.sin(camAngle) * camRadius;
+            camera.position.y = camHeight;
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        renderer.setAnimationLoop(animate);
+
+        // ---------- 窗口缩放 ----------
+        function onResize() {
+            const w = container.clientWidth;
+            const h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }
+        window.addEventListener('resize', onResize);
+        window.addEventListener('orientationchange', () => setTimeout(onResize, 120));
+        onResize();
+
+        console.log('✨ Borromean环螺旋编织动画已启动');
+    </script>
+</body>
+</html>

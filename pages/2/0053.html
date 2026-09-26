@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SPECTRA · 光谱棱镜（修复版）</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #080818;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+        #pixi-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+            background: #080818;
+        }
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2;
+            text-align: center;
+            pointer-events: none;
+            opacity: 0.55;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+        .overlay:hover {
+            opacity: 0.9;
+        }
+        .title {
+            color: rgba(240, 235, 255, 0.8);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 20px rgba(160, 140, 250, 0.5);
+        }
+        .hint {
+            color: rgba(185, 175, 220, 0.5);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+        @media (max-width: 768px) {
+            .overlay { bottom: 18px; }
+            .title { font-size: 8px; letter-spacing: 0.45em; }
+            .hint { font-size: 6px; letter-spacing: 0.22em; }
+        }
+    </style>
+</head>
+<body>
+    <div id="pixi-container"></div>
+    <div class="overlay">
+        <div class="title">Spectra</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js"></script>
+    <script>
+        (function() {
+            // ─── PixiJS加载检测 ──────────────────────────────────────
+            if (typeof PIXI === 'undefined') {
+                document.body.style.background = '#080818';
+                document.getElementById('pixi-container').style.background = '#080818';
+                console.warn('PixiJS 加载失败，已显示背景');
+                return;
+            }
+
+            let app;
+            let rayContainer;
+            let photonContainer;
+            let prismGraphics;
+            let glowSprite;
+            let raysData = [];
+            let photonsData = [];
+            let mouse = { x: -9999, y: -9999, active: false };
+            let time = 0;
+            let colorShift = 0;
+            let prismShape = 0;
+            let rotationAngle = 0;
+            let targetRotation = 0;
+
+            const RAY_COUNT = 96;
+            const PHOTON_COUNT = 800;
+            const RAY_LENGTH_FACTOR = 0.48;
+
+            // ─── HSL转Hex ───────────────────────────────────────────
+            function hslToHex(h, s, l) {
+                h = ((h % 360) + 360) % 360;
+                s = Math.max(0, Math.min(100, s)) / 100;
+                l = Math.max(0, Math.min(100, l)) / 100;
+                const c = (1 - Math.abs(2 * l - 1)) * s;
+                const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+                const m = l - c / 2;
+                let r, g, b;
+                if (h < 60) { r = c; g = x; b = 0; }
+                else if (h < 120) { r = x; g = c; b = 0; }
+                else if (h < 180) { r = 0; g = c; b = x; }
+                else if (h < 240) { r = 0; g = x; b = c; }
+                else if (h < 300) { r = x; g = 0; b = c; }
+                else { r = c; g = 0; b = x; }
+                const toHex = (v) => Math.round((v + m) * 255).toString(16).padStart(2, '0');
+                return parseInt(`${toHex(r)}${toHex(g)}${toHex(b)}`, 16);
+            }
+
+            // ─── 初始化PixiJS应用 ──────────────────────────────────
+            function initPixi() {
+                const container = document.getElementById('pixi-container');
+                const width = window.innerWidth;
+                const height = window.innerHeight;
+                const resolution = Math.min(window.devicePixelRatio || 1, 2);
+
+                app = new PIXI.Application({
+                    width: width,
+                    height: height,
+                    resolution: resolution,
+                    backgroundColor: 0x080818,
+                    antialias: true,
+                    autoDensity: true,
+                    powerPreference: 'high-performance',
+                });
+
+                container.appendChild(app.view);
+
+                // 射线容器（放在屏幕中心，旋转它）
+                rayContainer = new PIXI.Container();
+                rayContainer.blendMode = PIXI.BLEND_MODES.ADD;
+                app.stage.addChild(rayContainer);
+
+                // 光子容器（同样放在中心，与射线同步旋转）
+                photonContainer = new PIXI.Container();
+                photonContainer.blendMode = PIXI.BLEND_MODES.ADD;
+                app.stage.addChild(photonContainer);
+
+                // 棱镜图形
+                prismGraphics = new PIXI.Graphics();
+                prismGraphics.blendMode = PIXI.BLEND_MODES.ADD;
+                app.stage.addChild(prismGraphics);
+
+                // 中心光晕
+                createGlowSprite();
+
+                // 创建内容
+                createRays();
+                createPhotons();
+
+                // 事件
+                setupEvents();
+
+                // 动画
+                app.ticker.add(animate);
+                app.ticker.maxFPS = 60;
+            }
+
+            // ─── 中心光晕 ─────────────────────────────────────────
+            function createGlowSprite() {
+                const canvas = document.createElement('canvas');
+                canvas.width = 256;
+                canvas.height = 256;
+                const ctx = canvas.getContext('2d');
+                const gradient = ctx.createRadialGradient(128, 128, 0, 128, 128, 128);
+                gradient.addColorStop(0, 'rgba(200, 180, 255, 0.3)');
+                gradient.addColorStop(0.3, 'rgba(160, 140, 240, 0.1)');
+                gradient.addColorStop(0.7, 'rgba(120, 100, 200, 0.03)');
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.fillRect(0, 0, 256, 256);
+
+                const texture = PIXI.Texture.from(canvas);
+                glowSprite = new PIXI.Sprite(texture);
+                glowSprite.anchor.set(0.5, 0.5);
+                glowSprite.width = 350;
+                glowSprite.height = 350;
+                glowSprite.blendMode = PIXI.BLEND_MODES.ADD;
+                glowSprite.alpha = 0.8;
+                glowSprite.zIndex = -1;
+                app.stage.addChild(glowSprite);
+            }
+
+            // ─── 创建光谱射线 ─────────────────────────────────────
+            function createRays() {
+                rayContainer.removeChildren();
+                raysData = [];
+                const maxR = Math.min(app.screen.width, app.screen.height) * RAY_LENGTH_FACTOR;
+
+                for (let i = 0; i < RAY_COUNT; i++) {
+                    const angle = (i / RAY_COUNT) * Math.PI * 2;
+                    const hue = (i / RAY_COUNT) * 360;
+                    const ray = new PIXI.Graphics();
+
+                    const segments = 20;
+                    const segLength = maxR / segments;
+                    for (let j = 0; j < segments; j++) {
+                        const r1 = j * segLength;
+                        const r2 = (j + 1) * segLength;
+                        const t = j / segments;
+                        const alpha = 0.35 * (1 - t * 0.7);
+                        const sat = 70 + t * 20;
+                        const light = 55 + t * 15;
+
+                        ray.lineStyle(1.5 - t * 0.5, hslToHex(hue, sat, light), alpha);
+                        const x1 = Math.cos(angle) * r1;
+                        const y1 = Math.sin(angle) * r1;
+                        const x2 = Math.cos(angle) * r2;
+                        const y2 = Math.sin(angle) * r2;
+                        ray.moveTo(x1, y1);
+                        ray.lineTo(x2, y2);
+                    }
+                    ray.alpha = 0.7;
+                    raysData.push({ graphics: ray, hue: hue });
+                    rayContainer.addChild(ray);
+                }
+            }
+
+            // ─── 创建光子粒子 ────────────────────────────────────
+            function createPhotons() {
+                photonContainer.removeChildren();
+                photonsData = [];
+                const maxR = Math.min(app.screen.width, app.screen.height) * RAY_LENGTH_FACTOR;
+
+                for (let i = 0; i < PHOTON_COUNT; i++) {
+                    const rayIndex = Math.floor(Math.random() * RAY_COUNT);
+                    const angle = (rayIndex / RAY_COUNT) * Math.PI * 2;
+                    const distance = Math.random() * maxR;
+                    const hue = (rayIndex / RAY_COUNT) * 360;
+                    const size = 1.2 + Math.random() * 2.8;
+                    const speed = 1 + Math.random() * 3;
+
+                    const photon = new PIXI.Sprite(generatePhotonTexture(hue));
+                    photon.anchor.set(0.5, 0.5);
+                    const scale = size / 16;
+                    photon.scale.set(scale, scale);
+                    photon.alpha = 0.5 + Math.random() * 0.5;
+
+                    photonsData.push({
+                        sprite: photon,
+                        rayIndex: rayIndex,
+                        distance: distance,
+                        speed: speed,
+                        size: size,
+                        hue: hue,
+                        phase: Math.random() * Math.PI * 2,
+                    });
+                    photonContainer.addChild(photon);
+                }
+            }
+
+            // ─── 生成光子纹理 ────────────────────────────────────
+            function generatePhotonTexture(hue) {
+                const canvas = document.createElement('canvas');
+                canvas.width = 16;
+                canvas.height = 16;
+                const ctx = canvas.getContext('2d');
+                const gradient = ctx.createRadialGradient(8, 8, 0, 8, 8, 8);
+                gradient.addColorStop(0, `hsl(${hue}, 80%, 80%)`);
+                gradient.addColorStop(0.5, `hsl(${hue}, 70%, 60%)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.fillRect(0, 0, 16, 16);
+                return PIXI.Texture.from(canvas);
+            }
+
+            // ─── 绘制棱镜 ────────────────────────────────────────
+            function drawPrism(cx, cy, size, rotation) {
+                prismGraphics.clear();
+                const alpha = 0.5;
+                const lineAlpha = 0.8;
+
+                switch (prismShape) {
+                    case 0: // 六边形
+                        prismGraphics.beginFill(hslToHex(200 + colorShift, 60, 60), alpha);
+                        prismGraphics.lineStyle(2, hslToHex(210 + colorShift, 80, 80), lineAlpha);
+                        prismGraphics.moveTo(cx + size * Math.cos(rotation), cy + size * Math.sin(rotation));
+                        for (let i = 1; i <= 6; i++) {
+                            const angle = rotation + (i / 6) * Math.PI * 2;
+                            prismGraphics.lineTo(cx + size * Math.cos(angle), cy + size * Math.sin(angle));
+                        }
+                        prismGraphics.closePath();
+                        prismGraphics.endFill();
+                        break;
+                    case 1: // 五边形
+                        prismGraphics.beginFill(hslToHex(220 + colorShift, 60, 60), alpha);
+                        prismGraphics.lineStyle(2, hslToHex(230 + colorShift, 80, 80), lineAlpha);
+                        prismGraphics.moveTo(cx + size * Math.cos(rotation), cy + size * Math.sin(rotation));
+                        for (let i = 1; i <= 5; i++) {
+                            const angle = rotation + (i / 5) * Math.PI * 2;
+                            prismGraphics.lineTo(cx + size * Math.cos(angle), cy + size * Math.sin(angle));
+                        }
+                        prismGraphics.closePath();
+                        prismGraphics.endFill();
+                        break;
+                    case 2: // 菱形
+                        prismGraphics.beginFill(hslToHex(240 + colorShift, 60, 60), alpha);
+                        prismGraphics.lineStyle(2, hslToHex(250 + colorShift, 80, 80), lineAlpha);
+                        const points = [
+                            { a: rotation, d: size },
+                            { a: rotation + Math.PI * 0.5, d: size * 0.7 },
+                            { a: rotation + Math.PI, d: size },
+                            { a: rotation + Math.PI * 1.5, d: size * 0.7 },
+                        ];
+                        prismGraphics.moveTo(cx + points[0].d * Math.cos(points[0].a), cy + points[0].d * Math.sin(points[0].a));
+                        for (const p of points) {
+                            prismGraphics.lineTo(cx + p.d * Math.cos(p.a), cy + p.d * Math.sin(p.a));
+                        }
+                        prismGraphics.closePath();
+                        prismGraphics.endFill();
+                        break;
+                    case 3: // 圆形
+                        prismGraphics.beginFill(hslToHex(260 + colorShift, 60, 60), 0.4);
+                        prismGraphics.lineStyle(2, hslToHex(270 + colorShift, 80, 80), 0.7);
+                        prismGraphics.drawCircle(cx, cy, size);
+                        prismGraphics.endFill();
+                        break;
+                }
+            }
+
+            // ─── 动画循环 ────────────────────────────────────────
+            function animate() {
+                time += 0.016;
+                const w = app.screen.width;
+                const h = app.screen.height;
+                const cx = w / 2;
+                const cy = h / 2;
+
+                // 鼠标旋转
+                if (mouse.active && mouse.x > 0) {
+                    targetRotation = Math.atan2(mouse.y - cy, mouse.x - cx);
+                }
+                let diff = targetRotation - rotationAngle;
+                while (diff > Math.PI) diff -= Math.PI * 2;
+                while (diff < -Math.PI) diff += Math.PI * 2;
+                rotationAngle += diff * 0.06;
+                rotationAngle += 0.002;
+
+                // 更新容器位置与旋转
+                rayContainer.position.set(cx, cy);
+                rayContainer.rotation = rotationAngle;
+                photonContainer.position.set(cx, cy);
+                photonContainer.rotation = rotationAngle;
+
+                // 更新光子粒子（相对于容器中心，沿射线方向移动）
+                const maxR = Math.min(cx, cy) * RAY_LENGTH_FACTOR;
+                for (const p of photonsData) {
+                    p.distance += p.speed * 0.6;
+                    if (p.distance > maxR) {
+                        p.distance = 0;
+                        p.rayIndex = Math.floor(Math.random() * RAY_COUNT);
+                        p.hue = (p.rayIndex / RAY_COUNT) * 360;
+                        p.speed = 1 + Math.random() * 3;
+                    }
+                    const angle = (p.rayIndex / RAY_COUNT) * Math.PI * 2;
+                    // 在容器局部坐标中，射线指向角度angle，距离为distance
+                    const px = Math.cos(angle) * p.distance;
+                    const py = Math.sin(angle) * p.distance;
+                    p.sprite.x = px;
+                    p.sprite.y = py;
+                    p.sprite.alpha = 0.4 + 0.5 * (1 - p.distance / maxR);
+                    const scale = p.size * (0.6 + 0.4 * (1 - p.distance / maxR)) / 16;
+                    p.sprite.scale.set(scale, scale);
+                    // 光子沿射线方向拉伸
+                    p.sprite.rotation = angle;
+                }
+
+                // 更新光晕
+                glowSprite.x = cx;
+                glowSprite.y = cy;
+                const glowPulse = 1 + Math.sin(time * 1.5) * 0.15;
+                glowSprite.scale.set(glowPulse, glowPulse);
+
+                // 绘制棱镜
+                drawPrism(cx, cy, Math.min(cx, cy) * 0.1, rotationAngle + Math.PI / 2);
+            }
+
+            // ─── 事件设置 ────────────────────────────────────────
+            function setupEvents() {
+                const view = app.view;
+
+                view.addEventListener('mousemove', (e) => {
+                    mouse.x = e.clientX;
+                    mouse.y = e.clientY;
+                    mouse.active = true;
+                });
+                view.addEventListener('mouseleave', () => {
+                    mouse.active = false;
+                    mouse.x = -9999;
+                    mouse.y = -9999;
+                });
+                view.addEventListener('mousedown', (e) => {
+                    mouse.x = e.clientX;
+                    mouse.y = e.clientY;
+                    mouse.active = true;
+                    prismShape = (prismShape + 1) % 4;
+                    colorShift += 25 + Math.random() * 30;
+                    if (colorShift > 150) colorShift = -25;
+                    targetRotation += Math.PI * 0.15;
+                });
+
+                view.addEventListener('touchmove', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        mouse.x = touch.clientX;
+                        mouse.y = touch.clientY;
+                        mouse.active = true;
+                    }
+                }, { passive: false });
+                view.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        mouse.x = touch.clientX;
+                        mouse.y = touch.clientY;
+                        mouse.active = true;
+                        prismShape = (prismShape + 1) % 4;
+                        colorShift += 25 + Math.random() * 30;
+                        if (colorShift > 150) colorShift = -25;
+                        targetRotation += Math.PI * 0.15;
+                    }
+                }, { passive: false });
+                view.addEventListener('touchend', () => {
+                    mouse.active = false;
+                    mouse.x = -9999;
+                    mouse.y = -9999;
+                });
+                view.addEventListener('touchcancel', () => {
+                    mouse.active = false;
+                    mouse.x = -9999;
+                    mouse.y = -9999;
+                });
+
+                window.addEventListener('resize', () => {
+                    if (app) {
+                        app.renderer.resize(window.innerWidth, window.innerHeight);
+                        createRays();
+                        createPhotons();
+                    }
+                });
+            }
+
+            // ─── 启动 ────────────────────────────────────────────
+            function init() {
+                try {
+                    initPixi();
+                    console.log('PixiJS 光谱棱镜已启动');
+                } catch (err) {
+                    console.error('初始化失败:', err);
+                    document.body.style.background = '#080818';
+                    document.getElementById('pixi-container').style.background = '#080818';
+                }
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.addEventListener('load', () => {
+                document.body.style.background = '#080818';
+                document.getElementById('pixi-container').style.background = '#080818';
+            });
+        })();
+    </script>
+</body>
+</html>

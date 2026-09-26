@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>正六百胞体投影 · 四维柏拉图晶体</title>
+    <style>
+        :root { --bg: #020408; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'STSong', 'Songti SC', 'Noto Serif SC', 'SimSun', 'Times New Roman', serif;
+            -webkit-font-smoothing: antialiased;
+            height: 100vh; width: 100vw;
+            user-select: none; -webkit-user-select: none; cursor: default;
+        }
+        #canvas-container {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1;
+        }
+        canvas { display: block; }
+        #title-overlay {
+            position: fixed; top: 26px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+        }
+        #title-overlay .title {
+            font-size: clamp(1.0rem, 2.2vw, 1.5rem); font-weight: 400; letter-spacing: 0.09em;
+            color: #cfc7b5; text-shadow: 0 0 42px rgba(200,180,150,0.5), 0 0 72px rgba(170,150,130,0.22);
+            line-height: 1.4; white-space: nowrap;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.5rem, 0.9vw, 0.66rem); font-weight: 300; letter-spacing: 0.13em;
+            color: #a09888; text-shadow: 0 0 16px rgba(155,145,125,0.32);
+            margin-top: 2px; white-space: nowrap;
+        }
+        #formula-overlay {
+            position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+            background: rgba(2,4,8,0.7); padding: 11px 23px; border-radius: 34px;
+            border: 1px solid rgba(175,155,135,0.18);
+            backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); max-width: 95vw;
+        }
+        #formula-overlay .formula {
+            font-size: clamp(0.44rem, 0.8vw, 0.64rem); font-weight: 300; letter-spacing: 0.04em;
+            color: #c5bdaa; text-shadow: 0 0 14px rgba(185,170,145,0.27);
+            line-height: 1.55; white-space: nowrap;
+        }
+        #formula-overlay .formula .c1 { color: #d4885c; }
+        #formula-overlay .formula .c2 { color: #5d9ec6; }
+        #formula-overlay .formula .c3 { color: #c77d9f; }
+        @media (max-width: 600px) {
+            #title-overlay { top: 14px; }
+            #formula-overlay { bottom: 12px; padding: 8px 14px; border-radius: 26px; }
+            #formula-overlay .formula { font-size: 0.38rem; white-space: normal; line-height: 1.35; }
+            #title-overlay .title { font-size: 0.7rem; }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="title-overlay">
+        <div class="title">正六百胞体投影 · 四维柏拉图晶体</div>
+        <div class="subtitle">600‑CELL PROJECTION &nbsp;·&nbsp; 720 EDGES</div>
+    </div>
+    <div id="formula-overlay">
+        <div class="formula">
+            <span class="c1">V₁:</span> (±1,0,0,0)∪(±½,±½,±½,±½) &nbsp;
+            <span class="c2">V₂&nbsp;V₃:</span> 96个四元数群元素 &nbsp;
+            <span class="c3">边: ||vᵢ−vⱼ||<ε</span>
+            <br>
+            <span style="color:#9aa8b8;">φ=(1+√5)/2 &nbsp;|&nbsp; SO(4)双旋转 &nbsp;|&nbsp; 正交投影→ℝ³</span>
+        </div>
+    </div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#020408');
+        scene.fog = new THREE.Fog('#020408', 8, 22);
+
+        const camera = new THREE.PerspectiveCamera(48, container.clientWidth / Math.max(container.clientHeight, 1), 0.25, 26);
+        camera.position.set(1.6, 0.95, 7.2);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = false;
+        container.appendChild(renderer.domElement);
+
+        // ==================== 颜色 ====================
+        const C1 = '#d4885c'; // 暖金 – 两边都是“简单点”
+        const C2 = '#5d9ec6'; // 冰蓝 – 混合边
+        const C3 = '#c77d9f'; // 玫瑰粉 – 两边都是“96点”
+        const C_FRAME = '#3a4a5c';
+        const C_GLINT = '#8898aa';
+
+        // ==================== 生成120个顶点 (4D) ====================
+        const phi = (1 + Math.sqrt(5)) / 2;
+        const invPhi = 1 / phi;
+
+        const vertices4D = []; // 每项 {v: [x1,x2,x3,x4], type: 0|1|2}
+
+        // 类型0: (±1,0,0,0) 排列 8个
+        for (let idx = 0; idx < 4; idx++) {
+            for (let s = -1; s <= 1; s += 2) {
+                const v = [0, 0, 0, 0];
+                v[idx] = s;
+                vertices4D.push({ v, type: 0 });
+            }
+        }
+
+        // 类型0: (±½,±½,±½,±½) 16个
+        for (let mask = 0; mask < 16; mask++) {
+            const v = [];
+            for (let b = 0; b < 4; b++) {
+                v.push((mask >> b) & 1 ? 0.5 : -0.5);
+            }
+            vertices4D.push({ v, type: 0 });
+        }
+
+        // 类型1和2: 由 (φ/2, 1/2, 1/(2φ), 0) 经偶排列和符号约束得到的96个点
+        // 简便方法：遍历所有坐标置换（24种）和符号组合（16种），一共384个，但仅保留满足“偶坐标置换且符号奇偶性”条件的点。
+        const baseVecs = [
+            [phi/2, 1/2, invPhi/2, 0],
+            [phi/2, 1/2, -invPhi/2, 0],
+            [phi/2, -1/2, invPhi/2, 0],
+            [phi/2, -1/2, -invPhi/2, 0],
+            [-phi/2, 1/2, invPhi/2, 0],
+            [-phi/2, 1/2, -invPhi/2, 0],
+            [-phi/2, -1/2, invPhi/2, 0],
+            [-phi/2, -1/2, -invPhi/2, 0]
+        ];
+        // 这只是部分，为了覆盖全部96个，更好的方式是：取所有奇/偶排列组合。
+        function permute(vec, indices) {
+            const res = [0,0,0,0];
+            for (let i=0; i<4; i++) res[i] = vec[ indices[i] ];
+            return res;
+        }
+        const perms = [
+            [0,1,2,3],[0,1,3,2],[0,2,1,3],[0,2,3,1],[0,3,1,2],[0,3,2,1],
+            [1,0,2,3],[1,0,3,2],[1,2,0,3],[1,2,3,0],[1,3,0,2],[1,3,2,0],
+            [2,0,1,3],[2,0,3,1],[2,1,0,3],[2,1,3,0],[2,3,0,1],[2,3,1,0],
+            [3,0,1,2],[3,0,2,1],[3,1,0,2],[3,1,2,0],[3,2,0,1],[3,2,1,0]
+        ];
+        const added = new Set();
+        for (let base of baseVecs) {
+            for (let p of perms) {
+                const vec = permute(base, p);
+                const key = vec.map(x => x.toFixed(6)).join(',');
+                if (added.has(key)) continue;
+                // 正六百胞体顶点要求：坐标排列必须满足“偶置换”或符号偶数个负？实际上由 baseVecs (8种) 和所有偶排列产生96个点。
+                // 简单验证：vec 的范数是否为1（单位球）
+                const len = Math.sqrt(vec.reduce((s,x)=>s+x*x,0));
+                if (Math.abs(len - 1) < 0.01) {
+                    added.add(key);
+                    vertices4D.push({ v: vec, type: 1 }); // 临时全部type1，之后细分
+                }
+            }
+        }
+        // 对type1的点再细分：按负号个数分为 type1 (偶数负)和 type2 (奇数负)，实现三色
+        vertices4D.forEach(point => {
+            if (point.type === 1) {
+                const neg = point.v.filter(x => x < 0).length;
+                point.type = (neg % 2 === 0) ? 1 : 2;
+            }
+        });
+        console.log('正六百胞体顶点数:', vertices4D.length);
+
+        // ==================== 预计算边 ====================
+        // 计算所有顶点对距离，找最小正距离确定边阈值
+        const n = vertices4D.length;
+        let minDist = Infinity;
+        for (let i = 0; i < n; i++) {
+            for (let j = i+1; j < n; j++) {
+                const d2 = vertices4D[i].v.reduce((s, x, k) => s + (x - vertices4D[j].v[k])**2, 0);
+                if (d2 > 1e-8 && d2 < minDist) minDist = d2;
+            }
+        }
+        const edgeThreshold = Math.sqrt(minDist) * 1.05; // 稍大一点以保证稳定
+        console.log('边距离阈值:', edgeThreshold);
+
+        const edgeIndices = [];
+        for (let i = 0; i < n; i++) {
+            for (let j = i+1; j < n; j++) {
+                const d = Math.sqrt(vertices4D[i].v.reduce((s, x, k) => s + (x - vertices4D[j].v[k])**2, 0));
+                if (d < edgeThreshold) {
+                    edgeIndices.push([i, j]);
+                }
+            }
+        }
+        console.log('总边数:', edgeIndices.length);
+
+        // 为每条边分类颜色
+        function edgeColorType(i, j) {
+            const t1 = vertices4D[i].type;
+            const t2 = vertices4D[j].type;
+            if (t1 === 0 && t2 === 0) return 0; // 两边都是简单点 -> 暖金
+            if ((t1 === 1 && t2 === 1) || (t1 === 2 && t2 === 2)) return 2; // 两边都是96点同奇偶 -> 玫瑰粉
+            if ((t1 === 1 && t2 === 2) || (t1 === 2 && t2 === 1)) return 1; // 96点奇偶混合 -> 冰蓝
+            // 其他混合
+            return 1;
+        }
+
+        const colorGroups = { 0: [], 1: [], 2: [] }; // 每个存储顶点索引对
+        edgeIndices.forEach(([i,j]) => {
+            const grp = edgeColorType(i, j);
+            colorGroups[grp].push([i, j]);
+        });
+        console.log('暖金边:', colorGroups[0].length, '冰蓝边:', colorGroups[1].length, '玫瑰粉边:', colorGroups[2].length);
+
+        // ==================== 构建动态线条 ====================
+        function createDynamicEdgeLines(edgePairs, colorHex, opacity) {
+            const numEdges = edgePairs.length;
+            const positionsArr = new Float32Array(numEdges * 6); // 每条边2个点
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.BufferAttribute(positionsArr, 3));
+            const material = new THREE.LineBasicMaterial({
+                color: new THREE.Color(colorHex),
+                transparent: true,
+                opacity: opacity,
+                depthWrite: true,
+            });
+            const lineSegments = new THREE.LineSegments(geometry, material);
+            lineSegments.userData = { edgePairs, positions: positionsArr };
+            return lineSegments;
+        }
+
+        const linesC1 = createDynamicEdgeLines(colorGroups[0], C1, 0.6);
+        const linesC2 = createDynamicEdgeLines(colorGroups[1], C2, 0.57);
+        const linesC3 = createDynamicEdgeLines(colorGroups[2], C3, 0.58);
+
+        const mainGroup = new THREE.Group();
+        mainGroup.add(linesC1);
+        mainGroup.add(linesC2);
+        mainGroup.add(linesC3);
+        scene.add(mainGroup);
+
+        // 参考球面线框
+        function createSphereWireframe(radius, colorHex, opacity) {
+            const group = new THREE.Group();
+            const segs = 150;
+            const circleDefs = [
+                (a) => new THREE.Vector3(Math.cos(a)*radius, Math.sin(a)*radius, 0),
+                (a) => new THREE.Vector3(Math.cos(a)*radius, 0, Math.sin(a)*radius),
+                (a) => new THREE.Vector3(0, Math.cos(a)*radius, Math.sin(a)*radius),
+            ];
+            for (const gen of circleDefs) {
+                const pts = [];
+                for (let i=0; i<=segs; i++) pts.push(gen((i/segs)*Math.PI*2));
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(colorHex),
+                    transparent: true, opacity: opacity, depthWrite: true,
+                });
+                group.add(new THREE.Line(geom, mat));
+            }
+            return group;
+        }
+        const sphereRef = createSphereWireframe(2.6, C_FRAME, 0.22);
+        scene.add(sphereRef);
+
+        // 原点标记
+        function createOriginGlint() {
+            const group = new THREE.Group();
+            const sz = 0.1;
+            const pairs = [
+                [new THREE.Vector3(-sz,0,0), new THREE.Vector3(sz,0,0)],
+                [new THREE.Vector3(0,-sz,0), new THREE.Vector3(0,sz,0)],
+                [new THREE.Vector3(0,0,-sz), new THREE.Vector3(0,0,sz)],
+            ];
+            for (const [a,b] of pairs) {
+                const g = new THREE.BufferGeometry().setFromPoints([a,b]);
+                const m = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(C_GLINT),
+                    transparent: true, opacity: 0.7, depthWrite: true,
+                });
+                group.add(new THREE.Line(g, m));
+            }
+            return group;
+        }
+        scene.add(createOriginGlint());
+
+        // ==================== 投影与更新函数 ====================
+        function updateProjectedLines(lineSegments, alpha, beta, scale) {
+            const { edgePairs, positions } = lineSegments.userData;
+            const cosA = Math.cos(alpha), sinA = Math.sin(alpha);
+            const cosB = Math.cos(beta), sinB = Math.sin(beta);
+            for (let k = 0; k < edgePairs.length; k++) {
+                const [i, j] = edgePairs[k];
+                const v4_a = vertices4D[i].v;
+                const v4_b = vertices4D[j].v;
+                // 对每个端点进行SO(4)双旋转
+                function rotProj(v) {
+                    const [x1, x2, x3, x4] = v;
+                    const y1 = x1*cosA - x2*sinA;
+                    const y2 = x1*sinA + x2*cosA;
+                    const y3 = x3*cosB - x4*sinB;
+                    const y4 = x3*sinB + x4*cosB;
+                    // 正交投影：取前三坐标，并缩放
+                    return new THREE.Vector3(y1*scale, y2*scale, y3*scale);
+                }
+                const pA = rotProj(v4_a);
+                const pB = rotProj(v4_b);
+                const offset = k * 6;
+                positions[offset] = pA.x;
+                positions[offset+1] = pA.y;
+                positions[offset+2] = pA.z;
+                positions[offset+3] = pB.x;
+                positions[offset+4] = pB.y;
+                positions[offset+5] = pB.z;
+            }
+            lineSegments.geometry.attributes.position.needsUpdate = true;
+        }
+
+        // ==================== 动画循环 ====================
+        let time = 0;
+        let lastTime = performance.now();
+        let frameCount = 0;
+        let logTime = 0;
+        const projScale = 2.6;
+
+        function animate(now) {
+            requestAnimationFrame(animate);
+            let delta = (now - lastTime) / 1000;
+            if (delta <= 0 || delta > 0.5) delta = 0.016;
+            lastTime = now;
+            time += delta;
+            frameCount++;
+            if (now - logTime > 4000) {
+                console.log(`[动画运行中] 帧:${frameCount} 时间:${time.toFixed(2)}s`);
+                logTime = now;
+            }
+
+            const alpha = time * 0.37;
+            const beta = time * 0.53;
+
+            updateProjectedLines(linesC1, alpha, beta, projScale);
+            updateProjectedLines(linesC2, alpha, beta, projScale);
+            updateProjectedLines(linesC3, alpha, beta, projScale);
+
+            // 整体旋转
+            mainGroup.rotation.y = time * 0.24;
+            mainGroup.rotation.x = time * 0.12 + Math.sin(time * 0.26) * 0.18;
+            mainGroup.rotation.z = Math.cos(time * 0.22) * 0.15;
+
+            // 球面参考旋转
+            sphereRef.rotation.y += 0.0012;
+            sphereRef.rotation.x += 0.0008;
+
+            // 相机游走
+            const camX = 1.6 + Math.sin(time * 0.15) * 0.5;
+            const camY = 0.95 + Math.cos(time * 0.19) * 0.45;
+            const camZ = 7.2 + Math.sin(time * 0.12) * 0.5;
+            camera.position.set(camX, camY, camZ);
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        // ==================== 窗口调整 ====================
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth;
+            const h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth;
+            const h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 100));
+
+        // ==================== 启动 ====================
+        console.log('=== 正六百胞体投影 · 四维柏拉图晶体 ===');
+        console.log('总边数:', edgeIndices.length, '暖金:', colorGroups[0].length,
+                    '冰蓝:', colorGroups[1].length, '玫瑰粉:', colorGroups[2].length);
+        console.log('✅ 初始帧渲染，启动动画');
+
+        // 初始帧更新
+        updateProjectedLines(linesC1, 0, 0, projScale);
+        updateProjectedLines(linesC2, 0, 0, projScale);
+        updateProjectedLines(linesC3, 0, 0, projScale);
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

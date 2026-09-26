@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>星云漩涡</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #020010;
+            font-family: sans-serif;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="nebulaCanvas"></canvas>
+    <script>
+        (function() {
+            'use strict';
+
+            const canvas = document.getElementById('nebulaCanvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            // ---------- 配置参数 ----------
+            const CONFIG = {
+                particleCount: 120,          // 星云粒子数量
+                baseRotationSpeed: 0.0006,   // 基础旋转速度
+                rotationVariation: 0.0004,   // 旋转速度变化幅度
+                radiusMin: 0.05,             // 最小半径（占屏幕比例）
+                radiusMax: 0.48,             // 最大半径
+                mouseAttractRadius: 200,     // 鼠标吸引半径
+                mouseAttractStrength: 0.08,  // 吸引强度
+                clickRepelRadius: 300,       // 点击排斥半径
+                clickRepelStrength: 25,      // 排斥强度
+                maxRipples: 4,               // 最大冲击波数量
+                rippleDuration: 1000,        // 冲击波持续时间(ms)
+                damping: 0.95,               // 速度阻尼
+                returnForce: 0.03,           // 回弹力量
+                particleSizeMin: 0.8,        // 粒子最小尺寸
+                particleSizeMax: 2.8,        // 粒子最大尺寸
+                glowRadiusFactor: 6,          // 光晕半径因子
+                hueBase: 200,                // 基础色相（蓝）
+                hueVariation: 100,           // 色相变化范围
+                saturation: 85,
+                lightness: 70,
+                backgroundFade: 0.15,        // 背景拖尾强度
+            };
+
+            let width = 0;
+            let height = 0;
+            let dpr = 1;
+            let centerX = 0;
+            let centerY = 0;
+            let mouseX = -9999;
+            let mouseY = -9999;
+            let mouseActive = false;
+            let targetMouseX = -9999;
+            let targetMouseY = -9999;
+            let smoothMouseX = -9999;
+            let smoothMouseY = -9999;
+            let particles = [];
+            let ripples = [];
+            let animationId = null;
+            let lastTime = 0;
+            let time = 0;
+
+            // ---------- 粒子类 ----------
+            class Particle {
+                constructor(centerX, centerY) {
+                    this.centerX = centerX;
+                    this.centerY = centerY;
+                    // 随机极坐标
+                    const angle = Math.random() * Math.PI * 2;
+                    const radius = Math.random() * (CONFIG.radiusMax - CONFIG.radiusMin) + CONFIG.radiusMin;
+                    const distance = radius * Math.min(width, height) * 0.5;
+                    this.originX = centerX + Math.cos(angle) * distance;
+                    this.originY = centerY + Math.sin(angle) * distance;
+                    this.x = this.originX;
+                    this.y = this.originY;
+                    this.vx = 0;
+                    this.vy = 0;
+                    this.angle = angle;
+                    this.radius = radius; // 相对半径 0-1
+                    this.angularSpeed = CONFIG.baseRotationSpeed * (1 + (Math.random() - 0.5) * CONFIG
+                        .rotationVariation * 2);
+                    this.size = Math.random() * (CONFIG.particleSizeMax - CONFIG.particleSizeMin) + CONFIG
+                        .particleSizeMin;
+                    this.hue = (CONFIG.hueBase + Math.random() * CONFIG.hueVariation) % 360;
+                    this.saturation = CONFIG.saturation;
+                    this.lightness = CONFIG.lightness;
+                    this.pulsePhase = Math.random() * Math.PI * 2;
+                    this.pulseSpeed = Math.random() * 1.5 + 0.5;
+                }
+
+                // 更新粒子位置
+                update(dt, now, time) {
+                    // 根据角速度旋转角度
+                    this.angle += this.angularSpeed * dt * 60;
+
+                    // 计算新的目标位置（基于中心和旋转角）
+                    const distance = this.radius * Math.min(width, height) * 0.5;
+                    const targetX = this.centerX + Math.cos(this.angle) * distance;
+                    const targetY = this.centerY + Math.sin(this.angle) * distance;
+
+                    // 鼠标吸引：将粒子拉向鼠标位置
+                    if (mouseActive && smoothMouseX > -1000) {
+                        const dx = smoothMouseX - this.x;
+                        const dy = smoothMouseY - this.y;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        if (dist < CONFIG.mouseAttractRadius && dist > 0.01) {
+                            const force = (CONFIG.mouseAttractRadius - dist) / CONFIG.mouseAttractRadius * CONFIG
+                                .mouseAttractStrength;
+                            this.vx += (dx / dist) * force * dt;
+                            this.vy += (dy / dist) * force * dt;
+                        }
+                    }
+
+                    // 点击冲击波影响
+                    for (const ripple of ripples) {
+                        const dx = this.x - ripple.x;
+                        const dy = this.y - ripple.y;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        const rippleRadius = ripple.maxRadius * ripple.progress;
+                        if (dist < rippleRadius && dist > 0.01) {
+                            const force = (1 - dist / rippleRadius) * ripple.strength * ripple.envelope;
+                            this.vx += (dx / dist) * force;
+                            this.vy += (dy / dist) * force;
+                        }
+                    }
+
+                    // 弹性回弹到目标位置
+                    const returnAccelX = (targetX - this.x) * CONFIG.returnForce;
+                    const returnAccelY = (targetY - this.y) * CONFIG.returnForce;
+                    this.vx += returnAccelX * dt;
+                    this.vy += returnAccelY * dt;
+
+                    // 阻尼
+                    this.vx *= CONFIG.damping;
+                    this.vy *= CONFIG.damping;
+
+                    // 更新位置
+                    this.x += this.vx * dt;
+                    this.y += this.vy * dt;
+
+                    // 边界限制，防止跑出屏幕太远
+                    const margin = 50;
+                    if (this.x < -margin) this.x = width + margin;
+                    else if (this.x > width + margin) this.x = -margin;
+                    if (this.y < -margin) this.y = height + margin;
+                    else if (this.y > height + margin) this.y = -margin;
+                }
+
+                // 获取亮度（根据鼠标距离和脉冲）
+                getBrightness() {
+                    let brightness = this.lightness;
+                    if (mouseActive && smoothMouseX > -1000) {
+                        const dx = this.x - smoothMouseX;
+                        const dy = this.y - smoothMouseY;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        if (dist < CONFIG.mouseAttractRadius) {
+                            brightness += (1 - dist / CONFIG.mouseAttractRadius) * 25;
+                        }
+                    }
+                    const pulse = Math.sin(time * this.pulseSpeed + this.pulsePhase) * 8;
+                    brightness += pulse;
+                    return Math.max(40, Math.min(98, brightness));
+                }
+
+                // 获取大小（考虑脉冲）
+                getSize() {
+                    const pulse = Math.sin(time * this.pulseSpeed + this.pulsePhase) * 0.4;
+                    return Math.max(0.5, this.size + pulse);
+                }
+            }
+
+            // ---------- 冲击波类 ----------
+            class Ripple {
+                constructor(x, y, startTime) {
+                    this.x = x;
+                    this.y = y;
+                    this.startTime = startTime;
+                    this.maxRadius = CONFIG.clickRepelRadius;
+                    this.strength = CONFIG.clickRepelStrength;
+                    this.duration = CONFIG.rippleDuration;
+                    this.progress = 0;
+                    this.envelope = 1;
+                }
+
+                update(now) {
+                    this.progress = Math.min(1, (now - this.startTime) / this.duration);
+                    this.envelope = Math.max(0, 1 - this.progress);
+                }
+
+                isExpired() {
+                    return this.progress >= 1;
+                }
+            }
+
+            // ---------- 初始化粒子 ----------
+            function initParticles() {
+                particles = [];
+                centerX = width / 2;
+                centerY = height / 2;
+                for (let i = 0; i < CONFIG.particleCount; i++) {
+                    particles.push(new Particle(centerX, centerY));
+                }
+            }
+
+            // ---------- 调整画布尺寸 ----------
+            function resizeCanvas() {
+                dpr = Math.min(window.devicePixelRatio || 1, 2);
+                width = window.innerWidth;
+                height = window.innerHeight;
+                canvas.width = Math.floor(width * dpr);
+                canvas.height = Math.floor(height * dpr);
+                canvas.style.width = width + 'px';
+                canvas.style.height = height + 'px';
+                ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                ctx.fillStyle = '#020010';
+                ctx.fillRect(0, 0, width, height);
+                initParticles();
+                // 立即绘制一帧
+                drawScene(performance.now());
+            }
+
+            // ---------- 绘制场景 ----------
+            function drawScene(now) {
+                // 背景拖尾效果：半透明覆盖，产生星云轨迹
+                ctx.fillStyle = 'rgba(2, 0, 16, ' + CONFIG.backgroundFade + ')';
+                ctx.fillRect(0, 0, width, height);
+
+                // 更新鼠标位置平滑
+                if (mouseActive) {
+                    smoothMouseX += (targetMouseX - smoothMouseX) * 0.14;
+                    smoothMouseY += (targetMouseY - smoothMouseY) * 0.14;
+                }
+
+                // 绘制鼠标周围的光晕
+                if (mouseActive && smoothMouseX > -1000) {
+                    const glowRadius = 120;
+                    const grad = ctx.createRadialGradient(smoothMouseX, smoothMouseY, 0, smoothMouseX, smoothMouseY,
+                        glowRadius);
+                    grad.addColorStop(0, 'rgba(100, 150, 255, 0.15)');
+                    grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+                    ctx.fillStyle = grad;
+                    ctx.beginPath();
+                    ctx.arc(smoothMouseX, smoothMouseY, glowRadius, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+
+                // 绘制所有粒子
+                for (const p of particles) {
+                    const size = p.getSize();
+                    const brightness = p.getBrightness();
+                    const alpha = 0.6 + (brightness - 50) * 0.01;
+
+                    // 绘制光晕
+                    const glowRadius = size * CONFIG.glowRadiusFactor;
+                    const glowGrad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, glowRadius);
+                    glowGrad.addColorStop(0, `hsla(${p.hue}, ${p.saturation}%, ${brightness}%, ${alpha * 0.35})`);
+                    glowGrad.addColorStop(1, `hsla(${p.hue}, ${p.saturation}%, ${brightness}%, 0)`);
+                    ctx.fillStyle = glowGrad;
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, glowRadius, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // 绘制核心亮点
+                    ctx.fillStyle = `hsla(${p.hue}, ${p.saturation}%, ${brightness}%, ${alpha})`;
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, size, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+
+                // 移除过期波纹
+                ripples = ripples.filter(r => !r.isExpired());
+                if (ripples.length > CONFIG.maxRipples) {
+                    ripples = ripples.slice(-CONFIG.maxRipples);
+                }
+            }
+
+            // ---------- 更新粒子 ----------
+            function updateParticles(now) {
+                const dt = Math.min(2, (now - lastTime) / 16.67) || 1;
+                time = now * 0.001;
+
+                // 更新波纹
+                for (const ripple of ripples) {
+                    ripple.update(now);
+                }
+
+                // 更新粒子
+                for (const p of particles) {
+                    p.update(dt, now, time);
+                }
+            }
+
+            // ---------- 动画循环 ----------
+            function animate(timestamp) {
+                const now = performance.now();
+                if (lastTime === 0) lastTime = now;
+                const dt = now - lastTime;
+                if (dt > 100) {
+                    lastTime = now - 16;
+                } else {
+                    lastTime = now;
+                }
+
+                updateParticles(now);
+                drawScene(now);
+
+                animationId = requestAnimationFrame(animate);
+            }
+
+            // ---------- 鼠标与触摸事件 ----------
+            function updateMousePosition(clientX, clientY) {
+                targetMouseX = clientX;
+                targetMouseY = clientY;
+                if (!mouseActive) {
+                    mouseActive = true;
+                    smoothMouseX = targetMouseX;
+                    smoothMouseY = targetMouseY;
+                }
+            }
+
+            function handleClick(clientX, clientY) {
+                const now = performance.now();
+                ripples.push(new Ripple(clientX, clientY, now));
+                if (ripples.length > CONFIG.maxRipples) {
+                    ripples = ripples.slice(-CONFIG.maxRipples);
+                }
+            }
+
+            function setupEvents() {
+                window.addEventListener('mousemove', (e) => {
+                    updateMousePosition(e.clientX, e.clientY);
+                }, { passive: true });
+
+                window.addEventListener('mouseleave', () => {
+                    mouseActive = false;
+                    smoothMouseX = -9999;
+                    smoothMouseY = -9999;
+                });
+
+                window.addEventListener('mousedown', (e) => {
+                    handleClick(e.clientX, e.clientY);
+                });
+
+                window.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        updateMousePosition(touch.clientX, touch.clientY);
+                        handleClick(touch.clientX, touch.clientY);
+                    }
+                }, { passive: false });
+
+                window.addEventListener('touchmove', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        updateMousePosition(touch.clientX, touch.clientY);
+                    }
+                }, { passive: false });
+
+                window.addEventListener('touchend', () => {
+                    mouseActive = false;
+                    smoothMouseX = -9999;
+                    smoothMouseY = -9999;
+                });
+
+                window.addEventListener('resize', () => {
+                    resizeCanvas();
+                });
+
+                document.addEventListener('visibilitychange', () => {
+                    if (document.hidden) {
+                        if (animationId) {
+                            cancelAnimationFrame(animationId);
+                            animationId = null;
+                        }
+                        lastTime = 0;
+                    } else {
+                        if (!animationId) {
+                            lastTime = 0;
+                            animationId = requestAnimationFrame(animate);
+                        }
+                    }
+                });
+            }
+
+            // ---------- 启动 ----------
+            function init() {
+                resizeCanvas();
+                setupEvents();
+                lastTime = 0;
+                animationId = requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.__nebula = {
+                config: CONFIG,
+                particles: particles,
+                ripples: ripples,
+            };
+        })();
+    </script>
+</body>
+</html>

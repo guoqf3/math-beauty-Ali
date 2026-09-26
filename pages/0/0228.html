@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>几何拓扑 · 空间交响</title>
+    <style>
+        :root {
+            --bg: #0a0a0f;
+            --gold: #e8b86d;
+            --blue: #6baed6;
+            --rose: #e8836d;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'Noto Serif SC', 'SimSun', serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            width: 100vw;
+            height: 100vh;
+            height: 100dvh;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            cursor: default;
+        }
+
+        #canvas-container {
+            position: fixed;
+            inset: 0;
+            z-index: 1;
+        }
+
+        canvas {
+            display: block;
+        }
+
+        .overlay {
+            position: fixed;
+            z-index: 10;
+            pointer-events: none;
+            left: 0;
+            right: 0;
+            text-align: center;
+        }
+
+        #title-overlay {
+            top: clamp(18px, 4.5vh, 40px);
+        }
+
+        #title-overlay .title {
+            font-size: clamp(1.1rem, 2.2vw, 1.55rem);
+            font-weight: 400;
+            letter-spacing: 0.18em;
+            color: var(--gold);
+            text-shadow: 0 0 28px rgba(232, 184, 109, 0.45), 0 0 60px rgba(232, 184, 109, 0.2);
+            line-height: 1.4;
+            transition: opacity 0.8s ease;
+        }
+
+        #title-overlay .subtitle {
+            font-size: clamp(0.65rem, 1.15vw, 0.82rem);
+            font-weight: 300;
+            letter-spacing: 0.22em;
+            color: rgba(200, 190, 170, 0.7);
+            margin-top: 0.35em;
+            text-shadow: 0 0 10px rgba(200, 180, 150, 0.25);
+            transition: opacity 0.8s ease;
+        }
+
+        #formula-overlay {
+            bottom: clamp(20px, 5vh, 48px);
+        }
+
+        #formula-overlay .formula {
+            font-size: clamp(0.85rem, 1.55vw, 1.15rem);
+            font-weight: 300;
+            letter-spacing: 0.1em;
+            color: rgba(210, 200, 185, 0.78);
+            text-shadow: 0 0 18px rgba(180, 170, 155, 0.3);
+            font-style: italic;
+            line-height: 1.5;
+            transition: opacity 0.8s ease;
+        }
+
+        #formula-overlay .formula .highlight-gold {
+            color: var(--gold);
+            text-shadow: 0 0 14px rgba(232, 184, 109, 0.5);
+        }
+        #formula-overlay .formula .highlight-blue {
+            color: var(--blue);
+            text-shadow: 0 0 14px rgba(107, 174, 214, 0.5);
+        }
+        #formula-overlay .formula .highlight-rose {
+            color: var(--rose);
+            text-shadow: 0 0 14px rgba(232, 131, 109, 0.5);
+        }
+
+        @media (max-width: 600px) {
+            #title-overlay .title {
+                letter-spacing: 0.12em;
+            }
+            #formula-overlay .formula {
+                letter-spacing: 0.05em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+
+    <div class="overlay" id="title-overlay">
+        <div class="title">几何拓扑 · 空间交响</div>
+        <div class="subtitle">多面体对偶 &nbsp;·&nbsp; 星形结构 &nbsp;·&nbsp; 欧拉特征</div>
+    </div>
+
+    <div class="overlay" id="formula-overlay">
+        <div class="formula">
+            <span class="highlight-gold">χ</span> = <span class="highlight-gold">V</span> −
+            <span class="highlight-blue">E</span> + <span class="highlight-rose">F</span> = 2
+            &nbsp;&nbsp;|&nbsp;&nbsp;
+            对偶性：<span class="highlight-gold">V</span> ↔ <span class="highlight-rose">F</span>
+            &nbsp;&nbsp;|&nbsp;&nbsp;
+            <span style="color:#bbb;">φ = (1+√5)/2</span>
+        </div>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 常量定义 ====================
+        const CYCLE_DURATION = 31.5; // 总周期：15 + 1.5 + 15 = 31.5 秒
+        const GROW_DURATION = 15.0; // 从无到有 15秒
+        const HOLD_DURATION = 1.5; // 停顿 1.5秒
+        const SHRINK_DURATION = 15.0; // 从有到无 15秒
+
+        // 几何体半径
+        const ICOSA_RADIUS = 2.35; // 正二十面体外接球半径
+        const ICOSA_STAR_RADIUS = 2.95; // 正二十面体星形面心延伸半径
+        const DODECA_RADIUS = 2.55; // 正十二面体外接球半径
+        const OCTA_RADIUS = 1.95; // 正八面体外接球半径
+
+        // 颜色定义
+        const COLOR_GOLD = new THREE.Color('#e8b86d');
+        const COLOR_BLUE = new THREE.Color('#6baed6');
+        const COLOR_ROSE = new THREE.Color('#e8836d');
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#0a0a0f');
+        scene.fog = new THREE.Fog('#0a0a0f', 8, 22);
+
+        // 摄像机
+        const camera = new THREE.PerspectiveCamera(
+            58, // FOV
+            container.clientWidth / Math.max(container.clientHeight, 1),
+            0.3,
+            35
+        );
+        camera.position.set(1.8, 2.1, 7.8);
+        camera.lookAt(0, 0.05, 0);
+
+        // 渲染器
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor('#0a0a0f', 1);
+        renderer.shadowMap.enabled = false;
+        container.appendChild(renderer.domElement);
+
+        // ==================== 光照（微弱环境光，虽线条不需光照但保留场景扩展性） ====================
+        const ambientLight = new THREE.AmbientLight(0x222233, 0.4);
+        scene.add(ambientLight);
+
+        // ==================== 主组 ====================
+        const mainGroup = new THREE.Group();
+        scene.add(mainGroup);
+
+        // 用于旋转的辅助组（实现多轴旋转）
+        const rotationGroupX = new THREE.Group();
+        const rotationGroupY = new THREE.Group();
+        mainGroup.add(rotationGroupX);
+        rotationGroupX.add(rotationGroupY);
+
+        // ==================== 辅助函数 ====================
+        /**
+         * 从BufferGeometry提取线框（使用EdgesGeometry）
+         */
+        function createWireframe(geometry, color) {
+            const edgesGeo = new THREE.EdgesGeometry(geometry, 15);
+            const material = new THREE.LineBasicMaterial({
+                color: color,
+                linewidth: 1,
+                transparent: true,
+                opacity: 0.92,
+                depthTest: true,
+                depthWrite: true,
+            });
+            const lineSegments = new THREE.LineSegments(edgesGeo, material);
+            return lineSegments;
+        }
+
+        /**
+         * 缓动函数：easeInOutCubic
+         */
+        function easeInOutCubic(t) {
+            return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+        }
+
+        // ==================== 构建正二十面体及其星形扩展（颜色1 - 暖金） ====================
+        const icosGroup = new THREE.Group();
+        rotationGroupY.add(icosGroup);
+
+        // 正二十面体几何体
+        const icosaGeo = new THREE.IcosahedronGeometry(ICOSA_RADIUS, 0);
+        const icosaWireframe = createWireframe(icosaGeo, COLOR_GOLD);
+        icosaWireframe.material.opacity = 0.9;
+        icosGroup.add(icosaWireframe);
+
+        // 正二十面体星形扩展：面心延伸到更大半径，连接面心到三个顶点
+        function buildIcosaStarLines(icosaGeometry, baseRadius, starRadius, color) {
+            const positions = icosaGeometry.attributes.position;
+            const index = icosaGeometry.index;
+
+            if (!index) {
+                console.warn('正二十面体几何体缺少索引，无法构建星形扩展');
+                return new THREE.Group();
+            }
+
+            // 提取所有三角形面
+            const faces = [];
+            for (let i = 0; i < index.count; i += 3) {
+                const i0 = index.getX(i);
+                const i1 = index.getX(i + 1);
+                const i2 = index.getX(i + 2);
+                const v0 = new THREE.Vector3(positions.getX(i0), positions.getY(i0), positions.getZ(i0));
+                const v1 = new THREE.Vector3(positions.getX(i1), positions.getY(i1), positions.getZ(i1));
+                const v2 = new THREE.Vector3(positions.getX(i2), positions.getY(i2), positions.getZ(i2));
+                faces.push({ v0, v1, v2, i0, i1, i2 });
+            }
+
+            // 为每个面构建3条星形线段（面心→顶点）
+            const starVertices = [];
+            faces.forEach(face => {
+                // 面心（三角形中心）
+                const centroid = new THREE.Vector3()
+                    .addVectors(face.v0, face.v1)
+                    .add(face.v2)
+                    .multiplyScalar(1 / 3);
+
+                // 归一化并延伸到星形半径
+                const centroidNormalized = centroid.clone().normalize();
+                const starCentroid = centroidNormalized.multiplyScalar(starRadius);
+
+                // 顶点在baseRadius处（归一化后乘以baseRadius确保精确）
+                const sv0 = face.v0.clone().normalize().multiplyScalar(baseRadius);
+                const sv1 = face.v1.clone().normalize().multiplyScalar(baseRadius);
+                const sv2 = face.v2.clone().normalize().multiplyScalar(baseRadius);
+
+                // 3条线段：面心→每个顶点
+                starVertices.push(
+                    starCentroid.x, starCentroid.y, starCentroid.z,
+                    sv0.x, sv0.y, sv0.z,
+                    starCentroid.x, starCentroid.y, starCentroid.z,
+                    sv1.x, sv1.y, sv1.z,
+                    starCentroid.x, starCentroid.y, starCentroid.z,
+                    sv2.x, sv2.y, sv2.z,
+                );
+            });
+
+            const starGeo = new THREE.BufferGeometry();
+            starGeo.setAttribute(
+                'position',
+                new THREE.Float32BufferAttribute(starVertices, 3)
+            );
+            const starMat = new THREE.LineBasicMaterial({
+                color: color,
+                linewidth: 1,
+                transparent: true,
+                opacity: 0.78,
+                depthTest: true,
+                depthWrite: true,
+            });
+            const starLines = new THREE.LineSegments(starGeo, starMat);
+            return starLines;
+        }
+
+        const icosaStarLines = buildIcosaStarLines(icosaGeo, ICOSA_RADIUS, ICOSA_STAR_RADIUS, COLOR_GOLD);
+        icosGroup.add(icosaStarLines);
+
+        // ==================== 构建正十二面体线框（颜色2 - 冷蓝） ====================
+        const dodecaGroup = new THREE.Group();
+        rotationGroupY.add(dodecaGroup);
+
+        const dodecaGeo = new THREE.DodecahedronGeometry(DODECA_RADIUS, 0);
+        const dodecaWireframe = createWireframe(dodecaGeo, COLOR_BLUE);
+        dodecaWireframe.material.opacity = 0.9;
+        dodecaGroup.add(dodecaWireframe);
+
+        // 正十二面体星形扩展（五边形面心延伸）
+        function buildDodecaStarLines(dodecaGeometry, baseRadius, starRadius, color) {
+            const positions = dodecaGeometry.attributes.position;
+            const index = dodecaGeometry.index;
+
+            if (!index) {
+                console.warn('正十二面体几何体缺少索引');
+                return new THREE.Group();
+            }
+
+            // 从三角化索引重建五边形面
+            // 正十二面体detail=0时，每个五边形被三角化为3个三角形
+            // 我们需要通过共享边来重建五边形
+            const allTriangles = [];
+            for (let i = 0; i < index.count; i += 3) {
+                const i0 = index.getX(i);
+                const i1 = index.getX(i + 1);
+                const i2 = index.getX(i + 2);
+                allTriangles.push({
+                    indices: [i0, i1, i2],
+                    vertices: [
+                        new THREE.Vector3(positions.getX(i0), positions.getY(i0), positions.getZ(i0)),
+                        new THREE.Vector3(positions.getX(i1), positions.getY(i1), positions.getZ(i1)),
+                        new THREE.Vector3(positions.getX(i2), positions.getY(i2), positions.getZ(i2)),
+                    ],
+                });
+            }
+
+            // 对于detail=0的正十二面体，有36个三角形（12个五边形×3）
+            // 通过找到共享两个顶点的三角形对来重建五边形
+            // 简化方法：收集每个面的所有唯一顶点
+            const pentagonFaces = [];
+            const usedTriangles = new Set();
+
+            for (let i = 0; i < allTriangles.length; i++) {
+                if (usedTriangles.has(i)) continue;
+                const triA = allTriangles[i];
+                const indicesA = new Set(triA.indices);
+                const pentagonIndices = new Set(triA.indices);
+                const pentagonVerts = [...triA.vertices];
+
+                // 寻找与triA共享2个顶点的三角形（属于同一个五边形）
+                let foundMore = true;
+                let iterations = 0;
+                while (foundMore && iterations < 10) {
+                    foundMore = false;
+                    iterations++;
+                    for (let j = 0; j < allTriangles.length; j++) {
+                        if (usedTriangles.has(j)) continue;
+                        if (j === i) continue;
+                        const triB = allTriangles[j];
+                        const sharedCount = triB.indices.filter(idx => pentagonIndices.has(idx)).length;
+                        if (sharedCount >= 2) {
+                            // 属于同一个五边形
+                            triB.indices.forEach(idx => pentagonIndices.add(idx));
+                            triB.vertices.forEach(v => {
+                                const exists = pentagonVerts.some(pv => pv.distanceToSquared(v) < 0.0001);
+                                if (!exists) pentagonVerts.push(v.clone());
+                            });
+                            usedTriangles.add(j);
+                            foundMore = true;
+                        }
+                    }
+                }
+                usedTriangles.add(i);
+
+                if (pentagonVerts.length >= 5) {
+                    // 取前5个顶点（或去重后恰好5个）
+                    const uniqueVerts = [];
+                    const seen = [];
+                    pentagonVerts.forEach(v => {
+                        const key = v.toArray().map(x => Math.round(x * 10000)).join(',');
+                        if (!seen.includes(key)) {
+                            seen.push(key);
+                            uniqueVerts.push(v.clone());
+                        }
+                    });
+                    if (uniqueVerts.length >= 5) {
+                        pentagonFaces.push(uniqueVerts.slice(0, 5));
+                    }
+                }
+            }
+
+            // 如果重建的五边形面不足12个，回退到使用所有三角形面的星形扩展
+            if (pentagonFaces.length < 10) {
+                // 回退：对每个三角形做星形扩展
+                const fallbackVertices = [];
+                allTriangles.forEach(tri => {
+                    const centroid = new THREE.Vector3()
+                        .addVectors(tri.vertices[0], tri.vertices[1])
+                        .add(tri.vertices[2])
+                        .multiplyScalar(1 / 3);
+                    const starCentroid = centroid.clone().normalize().multiplyScalar(starRadius);
+                    tri.vertices.forEach(v => {
+                        const sv = v.clone().normalize().multiplyScalar(baseRadius);
+                        fallbackVertices.push(
+                            starCentroid.x, starCentroid.y, starCentroid.z,
+                            sv.x, sv.y, sv.z,
+                        );
+                    });
+                });
+                const fbGeo = new THREE.BufferGeometry();
+                fbGeo.setAttribute('position', new THREE.Float32BufferAttribute(fallbackVertices, 3));
+                const fbMat = new THREE.LineBasicMaterial({
+                    color: color,
+                    linewidth: 1,
+                    transparent: true,
+                    opacity: 0.7,
+                    depthTest: true,
+                    depthWrite: true,
+                });
+                return new THREE.LineSegments(fbGeo, fbMat);
+            }
+
+            // 为每个五边形面构建星形线段
+            const starVertices = [];
+            pentagonFaces.forEach(faceVerts => {
+                const centroid = new THREE.Vector3();
+                faceVerts.forEach(v => centroid.add(v));
+                centroid.multiplyScalar(1 / faceVerts.length);
+                const starCentroid = centroid.clone().normalize().multiplyScalar(starRadius);
+
+                faceVerts.forEach(v => {
+                    const sv = v.clone().normalize().multiplyScalar(baseRadius);
+                    starVertices.push(
+                        starCentroid.x, starCentroid.y, starCentroid.z,
+                        sv.x, sv.y, sv.z,
+                    );
+                });
+            });
+
+            const starGeo = new THREE.BufferGeometry();
+            starGeo.setAttribute('position', new THREE.Float32BufferAttribute(starVertices, 3));
+            const starMat = new THREE.LineBasicMaterial({
+                color: color,
+                linewidth: 1,
+                transparent: true,
+                opacity: 0.72,
+                depthTest: true,
+                depthWrite: true,
+            });
+            return new THREE.LineSegments(starGeo, starMat);
+        }
+
+        const dodecaStarLines = buildDodecaStarLines(dodecaGeo, DODECA_RADIUS, 3.15, COLOR_BLUE);
+        dodecaGroup.add(dodecaStarLines);
+
+        // ==================== 构建三个互锁正八面体（颜色3 - 玫瑰） ====================
+        const octaGroup = new THREE.Group();
+        rotationGroupY.add(octaGroup);
+
+        function createOctahedronWireframe(radius, color, opacity = 0.88) {
+            const octaGeo = new THREE.OctahedronGeometry(radius, 0);
+            const edgesGeo = new THREE.EdgesGeometry(octaGeo, 15);
+            const material = new THREE.LineBasicMaterial({
+                color: color,
+                linewidth: 1,
+                transparent: true,
+                opacity: opacity,
+                depthTest: true,
+                depthWrite: true,
+            });
+            return new THREE.LineSegments(edgesGeo, material);
+        }
+
+        // 八面体1：默认方向（顶点在坐标轴上）
+        const octa1 = createOctahedronWireframe(OCTA_RADIUS, COLOR_ROSE, 0.9);
+        octaGroup.add(octa1);
+
+        // 八面体2：绕(1,1,0)方向旋转
+        const octa2Group = new THREE.Group();
+        octa2Group.rotation.set(Math.PI / 4.7, Math.PI / 5.8, Math.PI / 8.5);
+        const octa2 = createOctahedronWireframe(OCTA_RADIUS, COLOR_ROSE, 0.82);
+        octa2Group.add(octa2);
+        octaGroup.add(octa2Group);
+
+        // 八面体3：绕不同方向旋转
+        const octa3Group = new THREE.Group();
+        octa3Group.rotation.set(-Math.PI / 5.5, Math.PI / 4.2, -Math.PI / 7.3);
+        const octa3 = createOctahedronWireframe(OCTA_RADIUS, COLOR_ROSE, 0.82);
+        octa3Group.add(octa3);
+        octaGroup.add(octa3Group);
+
+        // ==================== 额外装饰：顶点间精细连接环（颜色3 - 玫瑰色，极细） ====================
+        // 在正二十面体的12个顶点之间添加一些额外的精细连接
+        function buildVertexRingLines(icosaGeometry, radius, color) {
+            const positions = icosaGeometry.attributes.position;
+            const index = icosaGeometry.index;
+            if (!index) return new THREE.Group();
+
+            // 收集唯一顶点
+            const uniqueVertices = [];
+            const seenKeys = new Set();
+            for (let i = 0; i < positions.count; i++) {
+                const v = new THREE.Vector3(positions.getX(i), positions.getY(i), positions.getZ(i));
+                const key = v.toArray().map(x => Math.round(x * 100000)).join(',');
+                if (!seenKeys.has(key)) {
+                    seenKeys.add(key);
+                    uniqueVertices.push(v.clone().normalize().multiplyScalar(radius));
+                }
+            }
+
+            // 连接每个顶点到其4个最近邻（在球面上）
+            const ringVertices = [];
+            uniqueVertices.forEach((v, i) => {
+                const neighbors = uniqueVertices
+                    .map((u, j) => ({ dist: v.distanceToSquared(u), index: j }))
+                    .filter(item => item.index !== i)
+                    .sort((a, b) => a.dist - b.dist)
+                    .slice(0, 4); // 取最近的4个邻居
+
+                neighbors.forEach(n => {
+                    if (n.index > i) { // 避免重复
+                        const u = uniqueVertices[n.index];
+                        ringVertices.push(v.x, v.y, v.z, u.x, u.y, u.z);
+                    }
+                });
+            });
+
+            const ringGeo = new THREE.BufferGeometry();
+            ringGeo.setAttribute('position', new THREE.Float32BufferAttribute(ringVertices, 3));
+            const ringMat = new THREE.LineBasicMaterial({
+                color: color,
+                linewidth: 1,
+                transparent: true,
+                opacity: 0.35,
+                depthTest: true,
+                depthWrite: false,
+            });
+            return new THREE.LineSegments(ringGeo, ringMat);
+        }
+
+        const vertexRingLines = buildVertexRingLines(icosaGeo, ICOSA_RADIUS, COLOR_ROSE);
+        icosGroup.add(vertexRingLines);
+
+        // ==================== 初期状态：scale = 0 ====================
+        mainGroup.scale.setScalar(0.0001);
+
+        // ==================== 动画循环 ====================
+        const startTime = performance.now();
+        let frameCount = 0;
+        let lastRenderTime = startTime;
+        let animationRunning = true;
+
+        function animate(timestamp) {
+            if (!animationRunning) return;
+
+            // 防止同一帧多次调用
+            const now = timestamp || performance.now();
+            const rawElapsed = (now - startTime) / 1000; // 秒
+            const cycleTime = rawElapsed % CYCLE_DURATION;
+
+            // 计算scale
+            let scale;
+            if (cycleTime < GROW_DURATION) {
+                // 0-15秒：从0到1
+                const t = cycleTime / GROW_DURATION;
+                const easedT = easeInOutCubic(Math.max(0, Math.min(1, t)));
+                scale = 0.0001 + easedT * (1 - 0.0001);
+            } else if (cycleTime < GROW_DURATION + HOLD_DURATION) {
+                // 15-16.5秒：保持1
+                scale = 1.0;
+            } else {
+                // 16.5-31.5秒：从1到0
+                const t = (cycleTime - GROW_DURATION - HOLD_DURATION) / SHRINK_DURATION;
+                const easedT = easeInOutCubic(Math.max(0, Math.min(1, t)));
+                scale = 1.0 - easedT * (1.0 - 0.0001);
+                if (scale < 0.0002) scale = 0.0001;
+            }
+
+            // 应用scale
+            mainGroup.scale.setScalar(Math.max(0.0001, scale));
+
+            // 旋转动画（持续进行，与scale无关）
+            const rotY = rawElapsed * 0.28; // 绕Y轴旋转 ~0.28 rad/s
+            const rotX = Math.sin(rawElapsed * 0.13) * 0.32; // 绕X轴摆动
+            const rotZ = Math.cos(rawElapsed * 0.17) * 0.18; // 绕Z轴微小摆动
+
+            rotationGroupX.rotation.set(rotX, 0, rotZ);
+            rotationGroupY.rotation.set(0, rotY, 0);
+
+            // 微妙的呼吸效果（仅在scale>0.3时明显）
+            if (scale > 0.3) {
+                const breathe = 1 + Math.sin(rawElapsed * 0.6) * 0.015 * (scale > 0.9 ? 1 : (scale - 0.3) / 0.6);
+                // 不对scale做额外修改，保持简洁
+            }
+
+            // 渲染
+            renderer.render(scene, camera);
+            frameCount++;
+            lastRenderTime = now;
+
+            // 继续循环
+            requestAnimationFrame(animate);
+        }
+
+        // ==================== 启动 ====================
+        // 先渲染一帧确保画面正确初始化
+        renderer.render(scene, camera);
+
+        // 延迟一帧启动动画循环，确保DOM完全就绪
+        requestAnimationFrame((timestamp) => {
+            // 使用当前时间重新校准起始时间
+            const calibratedStart = performance.now();
+            // 通过闭包更新startTime的引用方式——直接使用模块级变量
+            // 这里我们使用一个技巧：重新设置startTime
+            Object.assign({ _startAdjusted: calibratedStart }, {});
+            // 实际上直接使用已声明的startTime，它在模块作用域内
+            animate(calibratedStart);
+        });
+
+        // ==================== 窗口调整 ====================
+        function onResize() {
+            const w = container.clientWidth;
+            const h = container.clientHeight;
+            if (w <= 0 || h <= 0) return;
+
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+            // 调整后立即渲染一帧
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', onResize, { passive: true });
+        window.addEventListener('orientationchange', () => {
+            setTimeout(onResize, 150);
+        }, { passive: true });
+
+        // ==================== 可见性处理 ====================
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                // 页面隐藏时暂停渲染以节省资源
+                animationRunning = false;
+            } else {
+                // 页面恢复可见时重新开始
+                if (!animationRunning) {
+                    animationRunning = true;
+                    // 重新校准时间基准，避免出现跳帧
+                    const now = performance.now();
+                    const rawElapsed = (now - startTime) / 1000;
+                    const cycleTime = rawElapsed % CYCLE_DURATION;
+                    // 如果cycleTime在合理范围内，直接恢复
+                    requestAnimationFrame(animate);
+                }
+            }
+        });
+
+        // ==================== 控制台欢迎信息 ====================
+        console.log('%c✦ 几何拓扑 · 空间交响 ✦',
+            'color:#e8b86d;font-size:1.3em;font-family:Georgia,serif;');
+        console.log('%c正二十面体(12顶点,30边,20面) + 正十二面体(20顶点,30边,12面) + 三互锁正八面体',
+            'color:#aaa;font-size:0.85em;');
+        console.log('%c欧拉特征 χ=V−E+F=2 | 对偶多面体 V↔F | 黄金比例 φ=(1+√5)/2',
+            'color:#888;font-size:0.8em;');
+        console.log('%c动画周期: 增长15s → 停顿1.5s → 消隐15s → 循环',
+            'color:#666;font-size:0.75em;');
+    </script>
+</body>
+</html>

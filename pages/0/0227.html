@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>五重复合 · 对称交响</title>
+    <style>
+        :root {
+            --bg: #06060c;
+            --gold: #e0b870;
+            --blue: #5b9ecf;
+            --rose: #e07b6c;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'Noto Serif SC', 'SimSun', serif;
+            -webkit-font-smoothing: antialiased;
+            width: 100vw;
+            height: 100vh;
+            height: 100dvh;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            cursor: default;
+        }
+
+        #canvas-container {
+            position: fixed;
+            inset: 0;
+            z-index: 1;
+        }
+
+        canvas {
+            display: block;
+        }
+
+        .overlay {
+            position: fixed;
+            z-index: 10;
+            pointer-events: none;
+            left: 0;
+            right: 0;
+            text-align: center;
+        }
+
+        #title-overlay {
+            top: clamp(18px, 4.5vh, 40px);
+        }
+
+        #title-overlay .title {
+            font-size: clamp(1.05rem, 2.2vw, 1.55rem);
+            font-weight: 400;
+            letter-spacing: 0.2em;
+            color: var(--gold);
+            text-shadow: 0 0 28px rgba(224, 184, 112, 0.45), 0 0 60px rgba(224, 184, 112, 0.2);
+            line-height: 1.4;
+        }
+
+        #title-overlay .subtitle {
+            font-size: clamp(0.62rem, 1.15vw, 0.82rem);
+            font-weight: 300;
+            letter-spacing: 0.24em;
+            color: rgba(190, 180, 160, 0.7);
+            margin-top: 0.35em;
+            text-shadow: 0 0 10px rgba(190, 170, 140, 0.25);
+        }
+
+        #formula-overlay {
+            bottom: clamp(20px, 5vh, 48px);
+        }
+
+        #formula-overlay .formula {
+            font-size: clamp(0.82rem, 1.55vw, 1.1rem);
+            font-weight: 300;
+            letter-spacing: 0.08em;
+            color: rgba(200, 190, 175, 0.78);
+            text-shadow: 0 0 18px rgba(170, 160, 145, 0.3);
+            font-style: italic;
+            line-height: 1.5;
+        }
+
+        #formula-overlay .formula .clr-gold {
+            color: var(--gold);
+            text-shadow: 0 0 14px rgba(224, 184, 112, 0.5);
+        }
+        #formula-overlay .formula .clr-blue {
+            color: var(--blue);
+            text-shadow: 0 0 14px rgba(91, 158, 207, 0.5);
+        }
+        #formula-overlay .formula .clr-rose {
+            color: var(--rose);
+            text-shadow: 0 0 14px rgba(224, 123, 108, 0.5);
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+
+    <div class="overlay" id="title-overlay">
+        <div class="title">五重复合 · 对称交响</div>
+        <div class="subtitle">5个正四面体 &nbsp;·&nbsp; 十二面体骨架 &nbsp;·&nbsp; 星形延伸</div>
+    </div>
+
+    <div class="overlay" id="formula-overlay">
+        <div class="formula">
+            <span class="clr-gold">5{3,3}</span> 复合 &nbsp;|&nbsp;
+            对称群 <span class="clr-blue">I<sub>h</sub></span> &nbsp;|&nbsp;
+            顶点 <span class="clr-rose">20</span> &nbsp;|&nbsp;
+            边 <span class="clr-gold">30</span>+<span class="clr-blue">30</span> &nbsp;|&nbsp;
+            τ = (1+√5)/2
+        </div>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 常量 ====================
+        const TOTAL_DURATION = 31.5; // 15 + 1.5 + 15
+        const GROW_TIME = 15.0;
+        const HOLD_TIME = 1.5;
+        const SHRINK_TIME = 15.0;
+        const TARGET_RADIUS = 2.65; // 整体外接球半径
+
+        const COLOR_GOLD = new THREE.Color('#e0b870');
+        const COLOR_BLUE = new THREE.Color('#5b9ecf');
+        const COLOR_ROSE = new THREE.Color('#e07b6c');
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#06060c');
+        scene.fog = new THREE.Fog('#06060c', 7, 23);
+
+        const camera = new THREE.PerspectiveCamera(
+            55,
+            container.clientWidth / Math.max(container.clientHeight, 1),
+            0.4,
+            38
+        );
+        camera.position.set(1.9, 2.3, 8.2);
+        camera.lookAt(0, 0.04, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor('#06060c', 1);
+        container.appendChild(renderer.domElement);
+
+        // 微弱环境光（不影响线条但保留扩展）
+        scene.add(new THREE.AmbientLight(0x1a1a2a, 0.3));
+
+        // ==================== 主组与旋转组 ====================
+        const mainGroup = new THREE.Group();
+        scene.add(mainGroup);
+
+        const rotX = new THREE.Group();
+        const rotY = new THREE.Group();
+        mainGroup.add(rotX);
+        rotX.add(rotY);
+
+        // ==================== 黄金比例与顶点计算 ====================
+        const phi = (1 + Math.sqrt(5)) / 2;
+        const rawVertices = [
+            [1, 1, 1], [1, 1, -1], [1, -1, 1], [1, -1, -1],
+            [-1, 1, 1], [-1, 1, -1], [-1, -1, 1], [-1, -1, -1],
+            [0, 1 / phi, phi], [0, 1 / phi, -phi], [0, -1 / phi, phi], [0, -1 / phi, -phi],
+            [phi, 0, 1 / phi], [-phi, 0, 1 / phi], [phi, 0, -1 / phi], [-phi, 0, -1 / phi],
+            [1 / phi, phi, 0], [1 / phi, -phi, 0], [-1 / phi, phi, 0], [-1 / phi, -phi, 0]
+        ];
+
+        const scaleFactor = TARGET_RADIUS / Math.sqrt(3);
+        const scaledVertices = rawVertices.map(v =>
+            new THREE.Vector3(v[0] * scaleFactor, v[1] * scaleFactor, v[2] * scaleFactor)
+        );
+
+        // 第一个正四面体索引：[0,3,5,6] => (1,1,1), (1,-1,-1), (-1,1,-1), (-1,-1,1)
+        const tet0Indices = [0, 3, 5, 6];
+        const tet0Points = tet0Indices.map(i => scaledVertices[i].clone());
+
+        // 旋转轴：五重轴 (0, 1, phi)
+        const axis = new THREE.Vector3(0, 1, phi).normalize();
+        const angleStep = (2 * Math.PI) / 5;
+
+        // 生成五个四面体的顶点（每个4个点）
+        const tetraPointsList = [];
+        for (let k = 0; k < 5; k++) {
+            const angle = angleStep * k;
+            const rotMatrix = new THREE.Matrix4().makeRotationAxis(axis, angle);
+            const pts = tet0Points.map(p => p.clone().applyMatrix4(rotMatrix));
+            tetraPointsList.push(pts);
+        }
+
+        // ==================== 构建十二面体线框（金色） ====================
+        const dodecaGeo = new THREE.DodecahedronGeometry(TARGET_RADIUS, 0);
+        const dodecaEdges = new THREE.EdgesGeometry(dodecaGeo, 15);
+        const dodecaLine = new THREE.LineSegments(dodecaEdges,
+            new THREE.LineBasicMaterial({ color: COLOR_GOLD, linewidth: 1, transparent: true, opacity: 0.92 })
+        );
+        rotY.add(dodecaLine);
+
+        // ==================== 构建五个正四面体及星形线 ====================
+        function createTetraLines(points, color, opacity = 0.88) {
+            // 6条边
+            const pairs = [[0, 1], [0, 2], [0, 3], [1, 2], [1, 3], [2, 3]];
+            const edgeVerts = [];
+            pairs.forEach(([a, b]) => {
+                edgeVerts.push(points[a].x, points[a].y, points[a].z);
+                edgeVerts.push(points[b].x, points[b].y, points[b].z);
+            });
+            const edgeGeo = new THREE.BufferGeometry();
+            edgeGeo.setAttribute('position', new THREE.Float32BufferAttribute(edgeVerts, 3));
+            const edgeLines = new THREE.LineSegments(edgeGeo,
+                new THREE.LineBasicMaterial({ color, linewidth: 1, transparent: true, opacity })
+            );
+            return edgeLines;
+        }
+
+        function createTetraStarLines(points, color, opacity = 0.65) {
+            // 4个面：组合 (0,1,2) (0,1,3) (0,2,3) (1,2,3)
+            const faces = [[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]];
+            const starVerts = [];
+            faces.forEach(face => {
+                const centroid = new THREE.Vector3()
+                    .addVectors(points[face[0]], points[face[1]])
+                    .add(points[face[2]])
+                    .multiplyScalar(1 / 3);
+                // 面心到三个顶点
+                face.forEach(i => {
+                    starVerts.push(centroid.x, centroid.y, centroid.z);
+                    starVerts.push(points[i].x, points[i].y, points[i].z);
+                });
+            });
+            const starGeo = new THREE.BufferGeometry();
+            starGeo.setAttribute('position', new THREE.Float32BufferAttribute(starVerts, 3));
+            const starLines = new THREE.LineSegments(starGeo,
+                new THREE.LineBasicMaterial({ color, linewidth: 1, transparent: true, opacity })
+            );
+            return starLines;
+        }
+
+        // 分配颜色：前三个四面体蓝色，后两个玫瑰色
+        tetraPointsList.forEach((pts, idx) => {
+            const color = idx < 3 ? COLOR_BLUE : COLOR_ROSE;
+            const opacityEdge = idx < 3 ? 0.9 : 0.85;
+            const opacityStar = idx < 3 ? 0.68 : 0.62;
+            const edgeLines = createTetraLines(pts, color, opacityEdge);
+            const starLines = createTetraStarLines(pts, color, opacityStar);
+            rotY.add(edgeLines);
+            rotY.add(starLines);
+        });
+
+        // ==================== 额外顶点间精细连接（玫瑰色微光） ====================
+        function addVertexConnections(verticesArray, color, opacity = 0.28) {
+            // 对每个顶点连接最近邻的2-3个
+            const uniqueVerts = [];
+            const seen = new Set();
+            verticesArray.forEach(v => {
+                const key = `${v.x.toFixed(6)},${v.y.toFixed(6)},${v.z.toFixed(6)}`;
+                if (!seen.has(key)) {
+                    seen.add(key);
+                    uniqueVerts.push(v.clone());
+                }
+            });
+            const connVerts = [];
+            uniqueVerts.forEach((v, i) => {
+                const neighbors = uniqueVerts.map((u, j) => ({ dist: v.distanceToSquared(u), idx: j }))
+                    .filter(item => item.idx !== i)
+                    .sort((a, b) => a.dist - b.dist)
+                    .slice(0, 3);
+                neighbors.forEach(n => {
+                    if (n.idx > i) {
+                        const u = uniqueVerts[n.idx];
+                        connVerts.push(v.x, v.y, v.z, u.x, u.y, u.z);
+                    }
+                });
+            });
+            const geo = new THREE.BufferGeometry();
+            geo.setAttribute('position', new THREE.Float32BufferAttribute(connVerts, 3));
+            const lines = new THREE.LineSegments(geo,
+                new THREE.LineBasicMaterial({ color, linewidth: 1, transparent: true, opacity, depthWrite: false })
+            );
+            return lines;
+        }
+
+        const extraConn = addVertexConnections(scaledVertices, COLOR_ROSE, 0.32);
+        rotY.add(extraConn);
+
+        // ==================== 初始缩放几乎为零 ====================
+        mainGroup.scale.setScalar(0.0001);
+
+        // ==================== 动画循环 ====================
+        const startTime = performance.now();
+        let animFrameId;
+        let isPageVisible = true;
+
+        function easeInOutCubic(t) {
+            return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+        }
+
+        function animate(timestamp) {
+            if (!isPageVisible) {
+                animFrameId = requestAnimationFrame(animate);
+                return;
+            }
+
+            const now = timestamp || performance.now();
+            const elapsed = (now - startTime) / 1000;
+            const cycle = elapsed % TOTAL_DURATION;
+
+            let scale;
+            if (cycle < GROW_TIME) {
+                const t = Math.max(0, Math.min(1, cycle / GROW_TIME));
+                scale = 0.0001 + easeInOutCubic(t) * (1 - 0.0001);
+            } else if (cycle < GROW_TIME + HOLD_TIME) {
+                scale = 1.0;
+            } else {
+                const t = Math.max(0, Math.min(1, (cycle - GROW_TIME - HOLD_TIME) / SHRINK_TIME));
+                scale = 1.0 - easeInOutCubic(t) * (1.0 - 0.0001);
+                if (scale < 0.0002) scale = 0.0001;
+            }
+
+            mainGroup.scale.setScalar(Math.max(0.0001, scale));
+
+            // 动态旋转
+            const ry = elapsed * 0.31;
+            const rx = Math.sin(elapsed * 0.15) * 0.34;
+            const rz = Math.cos(elapsed * 0.19) * 0.2;
+            rotX.rotation.set(rx, 0, rz);
+            rotY.rotation.set(0, ry, 0);
+
+            renderer.render(scene, camera);
+            animFrameId = requestAnimationFrame(animate);
+        }
+
+        // 首次渲染，确保画面初始可见
+        renderer.render(scene, camera);
+
+        // 启动动画
+        animFrameId = requestAnimationFrame(animate);
+
+        // ==================== 窗口调整 ====================
+        function onResize() {
+            const w = container.clientWidth;
+            const h = container.clientHeight;
+            if (w <= 0 || h <= 0) return;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            renderer.render(scene, camera);
+        }
+        window.addEventListener('resize', onResize, { passive: true });
+        window.addEventListener('orientationchange', () => setTimeout(onResize, 150), { passive: true });
+
+        // ==================== 页面可见性处理 ====================
+        document.addEventListener('visibilitychange', () => {
+            isPageVisible = !document.hidden;
+            if (isPageVisible) {
+                // 恢复时立即渲染一帧，防止黑屏
+                renderer.render(scene, camera);
+            }
+        });
+
+        console.log('%c◇ 五重复合 · 对称交响 ◇', 'color:#e0b870;font-size:1.2em;');
+        console.log('%c5个正四面体内接于正十二面体 | 20顶点 30+30条边 | 星形延伸', 'color:#aaa;');
+        console.log('%c对称群 Ih  |  黄金比例 τ  |  对偶与复合拓扑', 'color:#888;');
+    </script>
+</body>
+</html>

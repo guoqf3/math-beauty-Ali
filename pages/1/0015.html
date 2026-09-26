@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>椭圆抛物面 · 碗形闭合曲线</title>
+    <style>
+        :root {
+            --bg: #050512;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'Noto Serif SC', 'STSong', 'KaiTi', '楷体', '华文楷体', '宋体', serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            height: 100vh;
+            width: 100vw;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+        #canvas-container {
+            position: fixed;
+            inset: 0;
+            z-index: 1;
+        }
+        canvas {
+            display: block;
+        }
+        .overlay {
+            position: fixed;
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+        #title-overlay {
+            top: clamp(12px, 3.5vh, 36px);
+        }
+        #title-overlay .title {
+            font-size: clamp(1.0rem, 2.0vw, 1.45rem);
+            font-weight: 400;
+            letter-spacing: 0.10em;
+            color: rgba(235, 228, 220, 0.92);
+            text-shadow: 0 0 24px rgba(190, 165, 140, 0.5), 0 0 6px rgba(170, 148, 125, 0.35);
+            line-height: 1.4;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.62rem, 1.15vw, 0.78rem);
+            font-weight: 300;
+            letter-spacing: 0.06em;
+            color: rgba(200, 192, 180, 0.7);
+            margin-top: 0.2em;
+            text-shadow: 0 0 13px rgba(155, 140, 120, 0.3);
+        }
+        #formula-overlay {
+            bottom: clamp(16px, 4vh, 44px);
+        }
+        #formula-overlay .formula {
+            font-size: clamp(0.54rem, 0.95vw, 0.74rem);
+            font-style: italic;
+            letter-spacing: 0.03em;
+            color: rgba(222, 214, 204, 0.84);
+            text-shadow: 0 0 20px rgba(155, 140, 125, 0.42), 0 0 5px rgba(165, 148, 130, 0.28);
+            line-height: 1.55;
+            background: rgba(10, 9, 16, 0.46);
+            padding: 0.38em 1.2em;
+            border-radius: 2em;
+            backdrop-filter: blur(5px);
+            -webkit-backdrop-filter: blur(5px);
+            border: 1px solid rgba(145, 125, 105, 0.20);
+        }
+        @media (max-width: 600px) {
+            #formula-overlay .formula {
+                padding: 0.26em 0.65em;
+                letter-spacing: 0.02em;
+                font-size: 0.46rem;
+            }
+            #title-overlay .title {
+                letter-spacing: 0.06em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+
+    <div class="overlay" id="title-overlay">
+        <div class="title">椭圆抛物面 · 碗形闭合曲线</div>
+        <div class="subtitle">Closed Loops on the Elliptic Paraboloid</div>
+    </div>
+
+    <div class="overlay" id="formula-overlay">
+        <div class="formula">
+            z = (x² + y²) / 2
+            &emsp;|&emsp;
+            (u,v) = (u₀ + r cos t , v₀ + r sin t)
+            &emsp;|&emsp; t ∈ [0, 2π]
+        </div>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 时间配置 ====================
+        const DRAW_DURATION = 15.0;
+        const HOLD_DURATION = 1.5;
+        const ERASE_DURATION = 15.0;
+        const CYCLE_DURATION = DRAW_DURATION + HOLD_DURATION + ERASE_DURATION;
+        const DRAW_END = DRAW_DURATION;
+        const ERASE_START = DRAW_END + HOLD_DURATION;
+        const FADE_IN_DURATION = 2.5;
+        const FADE_OUT_START = CYCLE_DURATION - 3.0;
+
+        const PARAB_A = 2.0; // z = (x²+y²)/a
+        const U_MAX = 2.2;
+        const CURVE_SEGMENTS = 820;
+        const TOTAL_VERTICES = CURVE_SEGMENTS + 1;
+
+        // ==================== 三种颜色 ====================
+        const COLOR_WARM_GOLD = new THREE.Color('#e8b86d');
+        const COLOR_ROSE = new THREE.Color('#e8a0b8');
+        const COLOR_CYAN = new THREE.Color('#7ec8e3');
+        const THREE_COLORS = [COLOR_WARM_GOLD, COLOR_ROSE, COLOR_CYAN];
+
+        // 椭圆抛物面点计算
+        function paraboloid(u, v) {
+            const x = u * Math.cos(v);
+            const y = u * Math.sin(v);
+            const z = (u * u) / PARAB_A;
+            return [x, y, z];
+        }
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x050512, 0.00006);
+
+        const camera = new THREE.PerspectiveCamera(47, container.clientWidth / container.clientHeight, 0.35, 18);
+        camera.position.set(1.0, 1.2, 4.6);
+        camera.lookAt(0, 0.35, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.16;
+        renderer.outputColorSpace = THREE.SRGBColorSpace;
+        container.appendChild(renderer.domElement);
+
+        // ==================== 主旋转组 ====================
+        const mainGroup = new THREE.Group();
+        scene.add(mainGroup);
+
+        // ==================== 星空背景粒子 ====================
+        const starsGroup = new THREE.Group();
+        mainGroup.add(starsGroup);
+        const starCount = 200;
+        const starPosArr = new Float32Array(starCount * 3);
+        for (let i = 0; i < starCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const r = 3.8 + Math.random() * 5.0;
+            starPosArr[i * 3] = Math.sin(phi) * Math.cos(theta) * r;
+            starPosArr[i * 3 + 1] = Math.sin(phi) * Math.sin(theta) * r;
+            starPosArr[i * 3 + 2] = Math.cos(phi) * r;
+        }
+        const starGeom = new THREE.BufferGeometry();
+        starGeom.setAttribute('position', new THREE.BufferAttribute(starPosArr, 3));
+        const starMat = new THREE.PointsMaterial({
+            color: 0xb4aec4,
+            size: 0.010,
+            transparent: true,
+            opacity: 0.28,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending,
+        });
+        const starPts = new THREE.Points(starGeom, starMat);
+        starsGroup.add(starPts);
+
+        // 曲面附近漂浮光点
+        const glowGroup = new THREE.Group();
+        mainGroup.add(glowGroup);
+        const glowCount = 88;
+        const glowArr = new Float32Array(glowCount * 3);
+        for (let i = 0; i < glowCount; i++) {
+            const u = Math.random() * U_MAX;
+            const v = Math.random() * Math.PI * 2;
+            const [x, y, z] = paraboloid(u, v);
+            glowArr[i * 3] = x + (Math.random() - 0.5) * 0.50;
+            glowArr[i * 3 + 1] = y + (Math.random() - 0.5) * 0.50;
+            glowArr[i * 3 + 2] = z + (Math.random() - 0.5) * 0.45;
+        }
+        const glowGeom = new THREE.BufferGeometry();
+        glowGeom.setAttribute('position', new THREE.BufferAttribute(glowArr, 3));
+        const glowMat = new THREE.PointsMaterial({
+            color: 0xf0e3cd,
+            size: 0.022,
+            transparent: true,
+            opacity: 0.42,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending,
+        });
+        const glowPts = new THREE.Points(glowGeom, glowMat);
+        glowGroup.add(glowPts);
+
+        // ==================== 椭圆抛物面参考线框 ====================
+        const surfaceWireGroup = new THREE.Group();
+        mainGroup.add(surfaceWireGroup);
+        const bgWireMats = [];
+
+        // v-曲线（水平圆）：固定u，v从0到2π
+        function createVCircle(uFixed, steps = 300) {
+            const pts = [];
+            for (let i = 0; i <= steps; i++) {
+                const v = (i / steps) * Math.PI * 2;
+                const [x, y, z] = paraboloid(uFixed, v);
+                pts.push(new THREE.Vector3(x, y, z));
+            }
+            const geom = new THREE.BufferGeometry().setFromPoints(pts);
+            const mat = new THREE.LineBasicMaterial({
+                color: 0x3a3650,
+                transparent: true,
+                opacity: 0.13,
+                depthWrite: false,
+            });
+            bgWireMats.push(mat);
+            return new THREE.Line(geom, mat);
+        }
+
+        // u-曲线（抛物线轮廓）：固定v，u从0到U_MAX
+        function createUCurve(vFixed, steps = 320) {
+            const pts = [];
+            for (let i = 0; i <= steps; i++) {
+                const u = (i / steps) * U_MAX;
+                const [x, y, z] = paraboloid(u, vFixed);
+                pts.push(new THREE.Vector3(x, y, z));
+            }
+            const geom = new THREE.BufferGeometry().setFromPoints(pts);
+            const mat = new THREE.LineBasicMaterial({
+                color: 0x3a3650,
+                transparent: true,
+                opacity: 0.13,
+                depthWrite: false,
+            });
+            bgWireMats.push(mat);
+            return new THREE.Line(geom, mat);
+        }
+
+        const U_STEP = 0.22;
+        const V_COUNT = 20;
+
+        // 生成水平圆
+        for (let u = U_STEP; u <= U_MAX + 0.001; u += U_STEP) {
+            surfaceWireGroup.add(createVCircle(u));
+        }
+        // 生成抛物线轮廓
+        for (let k = 0; k < V_COUNT; k++) {
+            const v = (k / V_COUNT) * Math.PI * 2;
+            surfaceWireGroup.add(createUCurve(v));
+        }
+        // 边缘强调圆
+        {
+            const rim = createVCircle(U_MAX);
+            rim.material.color.setHex(0x58527a);
+            rim.material.opacity = 0.19;
+            surfaceWireGroup.add(rim);
+        }
+        // 顶点附近小圆
+        {
+            const apex = createVCircle(0.18);
+            apex.material.color.setHex(0x5a5478);
+            apex.material.opacity = 0.17;
+            surfaceWireGroup.add(apex);
+        }
+
+        // ==================== 椭圆抛物面上的闭合曲线 ====================
+        const curvesGroup = new THREE.Group();
+        mainGroup.add(curvesGroup);
+        const allCurveData = [];
+
+        function createClosedParaboloidCurve(u0, v0, radius, color) {
+            const positions = new Float32Array(TOTAL_VERTICES * 3);
+            for (let i = 0; i <= CURVE_SEGMENTS; i++) {
+                const t = (i / CURVE_SEGMENTS) * Math.PI * 2;
+                let u = u0 + radius * Math.cos(t);
+                const v = v0 + radius * Math.sin(t);
+                u = Math.max(0.04, Math.min(U_MAX - 0.02, u));
+                const [x, y, z] = paraboloid(u, v);
+                positions[i * 3] = x;
+                positions[i * 3 + 1] = y;
+                positions[i * 3 + 2] = z;
+            }
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            geometry.setDrawRange(0, 0);
+
+            const material = new THREE.LineBasicMaterial({
+                color: color,
+                transparent: true,
+                opacity: 0.86,
+                depthWrite: false,
+            });
+            const line = new THREE.Line(geometry, material);
+            allCurveData.push({ geometry, totalVertices: TOTAL_VERTICES });
+            return line;
+        }
+
+        // 金色组：v₀=0，u₀从低到高分布
+        const goldParams = [
+            { u0: 0.40, v0: 0, r: 0.28 },
+            { u0: 0.62, v0: 0, r: 0.33 },
+            { u0: 0.85, v0: 0, r: 0.30 },
+            { u0: 1.10, v0: 0, r: 0.35 },
+            { u0: 1.38, v0: 0, r: 0.32 },
+            { u0: 1.68, v0: 0, r: 0.29 },
+        ];
+        // 玫瑰粉组：v₀=2π/3
+        const roseParams = [
+            { u0: 0.48, v0: 2 * Math.PI / 3, r: 0.30 },
+            { u0: 0.72, v0: 2 * Math.PI / 3, r: 0.34 },
+            { u0: 0.96, v0: 2 * Math.PI / 3, r: 0.28 },
+            { u0: 1.22, v0: 2 * Math.PI / 3, r: 0.36 },
+            { u0: 1.50, v0: 2 * Math.PI / 3, r: 0.31 },
+            { u0: 1.80, v0: 2 * Math.PI / 3, r: 0.27 },
+        ];
+        // 青蓝组：v₀=4π/3
+        const cyanParams = [
+            { u0: 0.35, v0: 4 * Math.PI / 3, r: 0.32 },
+            { u0: 0.56, v0: 4 * Math.PI / 3, r: 0.29 },
+            { u0: 0.78, v0: 4 * Math.PI / 3, r: 0.35 },
+            { u0: 1.02, v0: 4 * Math.PI / 3, r: 0.31 },
+            { u0: 1.28, v0: 4 * Math.PI / 3, r: 0.33 },
+            { u0: 1.56, v0: 4 * Math.PI / 3, r: 0.28 },
+        ];
+
+        goldParams.forEach(p => curvesGroup.add(createClosedParaboloidCurve(p.u0, p.v0, p.r, COLOR_WARM_GOLD)));
+        roseParams.forEach(p => curvesGroup.add(createClosedParaboloidCurve(p.u0, p.v0, p.r, COLOR_ROSE)));
+        cyanParams.forEach(p => curvesGroup.add(createClosedParaboloidCurve(p.u0, p.v0, p.r, COLOR_CYAN)));
+
+        const totalCurves = allCurveData.length; // 18条
+
+        // ==================== 动画循环 ====================
+        const clock = new THREE.Clock();
+        let animationStartTime = performance.now() / 1000;
+        clock.getDelta(); // 消耗初始累积时间
+
+        function getCycleTime() {
+            const now = performance.now() / 1000;
+            return (now - animationStartTime) % CYCLE_DURATION;
+        }
+
+        function easeInOutCubic(t) {
+            return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const cycleTime = getCycleTime();
+            const dt = Math.min(clock.getDelta(), 0.1);
+
+            // 主旋转
+            mainGroup.rotation.y += 0.22 * dt;
+            mainGroup.rotation.x += 0.055 * dt;
+            mainGroup.rotation.z += 0.013 * Math.sin(cycleTime * 0.52) * dt;
+
+            // 相机微动
+            const sway = 0.08 * Math.sin(cycleTime * (Math.PI * 2 / 34));
+            camera.position.y = 1.2 + sway;
+            camera.lookAt(0, 0.35, 0);
+
+            // 绘制进度
+            let fraction;
+            if (cycleTime < DRAW_END) {
+                fraction = easeInOutCubic(cycleTime / DRAW_DURATION);
+            } else if (cycleTime < ERASE_START) {
+                fraction = 1.0;
+            } else if (cycleTime < CYCLE_DURATION) {
+                const elapsed = cycleTime - ERASE_START;
+                fraction = 1.0 - easeInOutCubic(elapsed / ERASE_DURATION);
+                fraction = Math.max(0, fraction);
+            } else {
+                fraction = 0;
+            }
+
+            // 更新所有曲线绘制范围
+            for (const data of allCurveData) {
+                const count = Math.round(fraction * data.totalVertices);
+                data.geometry.setDrawRange(0, Math.max(0, Math.min(data.totalVertices, count)));
+            }
+
+            // 背景透明度渐变
+            let bgOp;
+            if (cycleTime < FADE_IN_DURATION) {
+                bgOp = cycleTime / FADE_IN_DURATION;
+            } else if (cycleTime < FADE_OUT_START) {
+                bgOp = 1.0;
+            } else if (cycleTime < CYCLE_DURATION) {
+                bgOp = 1.0 - (cycleTime - FADE_OUT_START) / (CYCLE_DURATION - FADE_OUT_START);
+            } else {
+                bgOp = 0;
+            }
+            bgOp = Math.max(0, Math.min(1, bgOp));
+
+            starMat.opacity = 0.28 * bgOp;
+            glowMat.opacity = 0.42 * bgOp;
+            for (const mat of bgWireMats) {
+                mat.opacity = (mat.opacity ?? 0.13) * bgOp;
+            }
+
+            // 粒子微动
+            glowGroup.position.z = Math.sin(cycleTime * 1.08) * 0.10;
+            starsGroup.rotation.y += dt * 0.020;
+            starsGroup.rotation.x += dt * 0.014;
+
+            renderer.render(scene, camera);
+        }
+
+        // ==================== 响应式处理 ====================
+        window.addEventListener('resize', () => {
+            camera.aspect = container.clientWidth / container.clientHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        });
+
+        // 可选重置键
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'r' || e.key === 'R') {
+                animationStartTime = performance.now() / 1000;
+                for (const data of allCurveData) {
+                    data.geometry.setDrawRange(0, 0);
+                }
+                mainGroup.rotation.set(0, 0, 0);
+            }
+        });
+
+        // 预热渲染，防止第一帧空白
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+
+        console.log('🥣 椭圆抛物面闭合曲线动画已启动');
+        console.log(`   - ${totalCurves} 条闭合曲线，3种颜色各${totalCurves / 3}条`);
+        console.log('   - 椭圆抛物面方程：z = (x² + y²)/2');
+        console.log('   - 参数化：x = u cos v, y = u sin v, z = u²/2');
+        console.log(`   - 采样点：${CURVE_SEGMENTS}，周期：${CYCLE_DURATION.toFixed(1)}秒`);
+        console.log('   - 碗形曲面线框 + 星空粒子 + 漂浮光点');
+        console.log('   - 按 R 键可重置');
+    </script>
+</body>
+</html>

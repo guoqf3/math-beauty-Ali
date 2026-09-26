@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>波普拼图交互</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #6495ED; /* 兜底背景色，与原图蓝色一致，防黑屏 */
+        }
+        #container {
+            width: 100vw;
+            height: 100vh;
+            display: block;
+        }
+        /* 极简提示，或无提示，此处留白以契合“画面不要有太多文字”的要求 */
+    </style>
+</head>
+<body>
+    <div id="container"></div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.4.2/pixi.min.js"></script>
+    
+    <script>
+        // 1. 初始化 PixiJS 应用，背景设为原图的淡蓝色
+        const app = new PIXI.Application({
+            resizeTo: window,
+            backgroundColor: 0x6495ED,
+            antialias: true,
+            autoDensity: true,
+            resolution: window.devicePixelRatio || 1
+        });
+        document.getElementById('container').appendChild(app.view);
+
+        // 2. 提取原图配色
+        const colors = [0xFFA500, 0xDDA0DD, 0xFFFFFF, 0x000000, 0x6495ED]; // 橙，淡紫，白，黑，蓝
+
+        // 3. 生成拼图纹理（预生成，大幅提升性能）
+        const textures = [];
+        
+        function createTextures() {
+            const g = new PIXI.Graphics();
+            
+            // 自定义拼图块形状（模仿原图边缘的凸起和凹陷）
+            // 形状1：带凸起的垂直块
+            g.lineStyle(4, 0x000000, 1); // 黑粗边
+            g.beginFill(0xFFFFFF);
+            g.moveTo(0, 0);
+            g.lineTo(40, 0);
+            g.lineTo(40, -20);
+            g.drawCircle(50, -20, 10); // 凸起
+            g.moveTo(60, -20);
+            g.lineTo(60, -100);
+            g.lineTo(0, -100);
+            g.closePath();
+            g.endFill();
+            textures.push(app.renderer.generateTexture(g));
+            g.clear();
+
+            // 形状2：横向块
+            g.lineStyle(4, 0x000000, 1);
+            g.beginFill(0xFFFFFF);
+            g.drawRoundedRect(0, 0, 100, 30, 10);
+            g.drawCircle(20, 30, 10); // 底部凸起
+            g.endFill();
+            textures.push(app.renderer.generateTexture(g));
+            g.clear();
+
+            // 形状3：带缺口的块
+            g.lineStyle(4, 0x000000, 1);
+            g.beginFill(0xFFFFFF);
+            g.moveTo(0, 0);
+            g.lineTo(40, 0);
+            g.lineTo(40, 30);
+            g.arc(50, 30, 10, Math.PI, 0, false); // 底部凹陷
+            g.moveTo(60, 30);
+            g.lineTo(60, -50);
+            g.lineTo(0, -50);
+            g.closePath();
+            g.endFill();
+            textures.push(app.renderer.generateTexture(g));
+            g.clear();
+
+            g.destroy();
+        }
+        createTextures();
+
+        // 4. 创建对象池
+        const particles = [];
+        const count = 40; 
+
+        for (let i = 0; i < count; i++) {
+            const texture = textures[Math.floor(Math.random() * textures.length)];
+            const sprite = new PIXI.Sprite(texture);
+            
+            sprite.tint = colors[Math.floor(Math.random() * colors.length)];
+            sprite.anchor.set(0.5);
+            sprite.x = Math.random() * app.screen.width;
+            sprite.y = Math.random() * app.screen.height;
+            sprite.vx = (Math.random() - 0.5) * 4; // 速度较快
+            sprite.vy = (Math.random() - 0.5) * 4;
+            sprite.rotSpeed = (Math.random() - 0.5) * 0.08;
+            
+            app.stage.addChild(sprite);
+            particles.push(sprite);
+        }
+
+        // 5. 交互变量
+        let mouse = { x: app.screen.width / 2, y: app.screen.height / 2 };
+
+        window.addEventListener('mousemove', (e) => {
+            mouse.x = e.clientX;
+            mouse.y = e.clientY;
+        });
+
+        // 点击重组/分散效果
+        window.addEventListener('click', () => {
+            particles.forEach(p => {
+                // 赋予一个随机的爆发速度，产生拼图碎裂效果
+                p.vx += (Math.random() - 0.5) * 20;
+                p.vy += (Math.random() - 0.5) * 20;
+                // 瞬间改变部分颜色，波普风
+                if (Math.random() > 0.5) {
+                    p.tint = colors[Math.floor(Math.random() * colors.length)];
+                }
+            });
+        });
+
+        // 6. 动画循环
+        app.ticker.add((delta) => {
+            // 使用 Delta Time 保证不同帧率下速度一致
+            const dt = delta / 60;
+
+            particles.forEach(p => {
+                // 基础移动
+                p.x += p.vx * dt;
+                p.y += p.vy * dt;
+                p.rotation += p.rotSpeed * dt;
+
+                // 鼠标引力/斥力（流体感）
+                const dx = mouse.x - p.x;
+                const dy = mouse.y - p.y;
+                const dist = Math.sqrt(dx * dx + dy * dy) + 0.001; // 防止除零报错
+
+                if (dist < 200) {
+                    const force = (200 - dist) / 200;
+                    // 这里模拟一种“漩涡排斥”的效果，非常吸睛
+                    const perpendicularForce = 1.5; 
+                    p.vx -= (dx / dist) * force * dt * 5;
+                    p.vy -= (dy / dist) * force * dt * 5;
+                    p.vx -= (dy / dist) * force * dt * perpendicularForce;
+                    p.vy += (dx / dist) * force * dt * perpendicularForce;
+                }
+
+                // 阻尼（防止一直加速飞出屏幕）
+                p.vx *= 0.98;
+                p.vy *= 0.98;
+
+                // 边界反弹（完美防止出界卡死）
+                if (p.x < 0 || p.x > app.screen.width) p.vx *= -1;
+                if (p.y < 0 || p.y > app.screen.height) p.vy *= -1;
+                
+                p.x = Math.max(0, Math.min(app.screen.width, p.x));
+                p.y = Math.max(0, Math.min(app.screen.height, p.y));
+            });
+        });
+
+        // 窗口调整
+        window.addEventListener('resize', () => {
+            app.renderer.resize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>

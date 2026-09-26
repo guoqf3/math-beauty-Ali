@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FRACTAL · 几何分形树</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #0b0b14;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2;
+            text-align: center;
+            pointer-events: none;
+            opacity: 0.55;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+
+        .overlay:hover {
+            opacity: 0.9;
+        }
+
+        .title {
+            color: rgba(210, 230, 220, 0.8);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 20px rgba(100, 220, 150, 0.5);
+        }
+
+        .hint {
+            color: rgba(160, 200, 180, 0.5);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+
+        @media (max-width: 768px) {
+            .overlay {
+                bottom: 18px;
+            }
+            .title {
+                font-size: 8px;
+                letter-spacing: 0.45em;
+            }
+            .hint {
+                font-size: 6px;
+                letter-spacing: 0.22em;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="canvas"></canvas>
+
+    <div class="overlay">
+        <div class="title">Fractal</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script>
+        (function() {
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            let trees = [];
+            let mouse = { x: -9999, y: -9999, active: false };
+            let time = 0;
+            let colorShift = 0;
+            let burstParticles = [];
+            let maxTrees = 12;
+            let maxDepth = 9;
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                ctx.fillStyle = '#0b0b14';
+                ctx.fillRect(0, 0, W, H);
+            }
+
+            // ─── 分形树类 ───────────────────────────────────────────────
+            class FractalTree {
+                constructor(x, y, hueBase) {
+                    this.x = x;
+                    this.y = y;
+                    this.hueBase = hueBase || (120 + Math.random() * 60);
+                    this.branches = [];
+                    this.age = 0;
+                    this.maxAge = 100 + Math.random() * 80;
+                    this.growthRate = 0.5 + Math.random() * 0.4;
+                    this.branchAngle = (Math.PI / 6) + Math.random() * 0.5;
+                    this.branchLength = 18 + Math.random() * 22;
+                    this.maxDepth = maxDepth;
+                    this.generateBranches();
+                }
+
+                generateBranches() {
+                    this.branches = [];
+                    const queue = [{
+                        x: this.x,
+                        y: this.y,
+                        angle: -Math.PI / 2,
+                        depth: 0,
+                        length: this.branchLength,
+                        thickness: 3.5,
+                        hueOffset: 0,
+                    }];
+
+                    while (queue.length > 0) {
+                        const b = queue.shift();
+                        if (b.depth >= this.maxDepth) continue;
+
+                        // 计算子分支端点
+                        const endX = b.x + Math.cos(b.angle) * b.length;
+                        const endY = b.y + Math.sin(b.angle) * b.length;
+
+                        this.branches.push({
+                            x1: b.x,
+                            y1: b.y,
+                            x2: endX,
+                            y2: endY,
+                            depth: b.depth,
+                            thickness: b.thickness,
+                            hueOffset: b.hueOffset,
+                        });
+
+                        // 生成子分支
+                        const childCount = b.depth < 2 ? 2 : 2;
+                        for (let i = 0; i < childCount; i++) {
+                            const dir = i === 0 ? -1 : 1;
+                            const angleOffset = this.branchAngle * (0.7 + Math.random() * 0.5);
+                            const newAngle = b.angle + dir * angleOffset + (Math.random() - 0.5) * 0.3;
+                            const newLength = b.length * (0.7 + Math.random() * 0.1);
+                            const newThickness = b.thickness * 0.65;
+                            queue.push({
+                                x: endX,
+                                y: endY,
+                                angle: newAngle,
+                                depth: b.depth + 1,
+                                length: newLength,
+                                thickness: newThickness,
+                                hueOffset: b.hueOffset + (Math.random() - 0.5) * 0.3,
+                            });
+                        }
+                    }
+                }
+
+                update(mouse, dt) {
+                    this.age += dt;
+                    // 鼠标影响：树冠朝向鼠标
+                    if (mouse.active) {
+                        const dx = mouse.x - this.x;
+                        const dy = mouse.y - this.y;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        if (dist > 20) {
+                            const targetAngle = Math.atan2(dy, dx);
+                            // 轻微调整分支角度（仅影响新生成的分支）
+                            this.branchAngle += (targetAngle - this.branchAngle) * 0.002;
+                            // 树会稍微向鼠标方向弯曲
+                            this.x += (mouse.x - this.x) * 0.0005;
+                            this.y += (mouse.y - this.y) * 0.0005;
+                        }
+                    }
+                }
+
+                draw(ctx, t) {
+                    const progress = Math.min(1, this.age / 40);
+                    const branchesToDraw = Math.floor(progress * this.branches.length);
+                    
+                    for (let i = 0; i < branchesToDraw; i++) {
+                        const b = this.branches[i];
+                        const branchProgress = Math.min(1, (this.age - i * 1.5) / 30);
+                        if (branchProgress <= 0) continue;
+                        
+                        const endX = b.x1 + (b.x2 - b.x1) * branchProgress;
+                        const endY = b.y1 + (b.y2 - b.y1) * branchProgress;
+                        
+                        const depthRatio = b.depth / this.maxDepth;
+                        const hue = this.hueBase + colorShift + b.hueOffset * 40;
+                        const sat = 50 + depthRatio * 30;
+                        const light = 35 + depthRatio * 40;
+                        const alpha = 0.4 + depthRatio * 0.6;
+                        const lineWidth = b.thickness * (0.4 + branchProgress * 0.6);
+
+                        ctx.strokeStyle = `hsla(${hue}, ${sat}%, ${light}%, ${alpha})`;
+                        ctx.lineWidth = lineWidth;
+                        ctx.lineCap = 'round';
+                        ctx.beginPath();
+                        ctx.moveTo(b.x1, b.y1);
+                        ctx.lineTo(endX, endY);
+                        ctx.stroke();
+
+                        // 在分支末端绘制光点
+                        if (branchProgress > 0.7 && b.depth > 3) {
+                            const dotAlpha = (branchProgress - 0.7) * 3 * alpha;
+                            const dotSize = 1.5 + depthRatio * 3;
+                            ctx.fillStyle = `hsla(${hue + 20}, ${sat + 15}%, ${light + 20}%, ${dotAlpha})`;
+                            ctx.beginPath();
+                            ctx.arc(endX, endY, dotSize, 0, Math.PI * 2);
+                            ctx.fill();
+                        }
+                    }
+                }
+            }
+
+            // ─── 初始化树木 ─────────────────────────────────────────────
+            function initTrees() {
+                trees = [];
+                const treeCount = 4 + Math.floor(Math.random() * 3);
+                for (let i = 0; i < treeCount; i++) {
+                    const x = W * (0.15 + Math.random() * 0.7);
+                    const y = H * (0.75 + Math.random() * 0.25);
+                    trees.push(new FractalTree(x, y, 100 + Math.random() * 80));
+                }
+            }
+
+            // ─── 点击爆发粒子（花苞绽放） ──────────────────────────────
+            function createBurst(x, y) {
+                const count = 25 + Math.floor(Math.random() * 20);
+                const baseHue = 120 + Math.random() * 80;
+                for (let i = 0; i < count; i++) {
+                    const angle = Math.random() * Math.PI * 2;
+                    const speed = 1.5 + Math.random() * 5;
+                    burstParticles.push({
+                        x, y,
+                        vx: Math.cos(angle) * speed,
+                        vy: Math.sin(angle) * speed,
+                        life: 0.7 + Math.random() * 0.7,
+                        maxLife: 1.4,
+                        size: 1.5 + Math.random() * 3,
+                        hue: baseHue + colorShift + Math.random() * 50 - 25,
+                        alpha: 0.8,
+                    });
+                }
+                if (burstParticles.length > 200) {
+                    burstParticles.splice(0, burstParticles.length - 200);
+                }
+            }
+
+            function updateBurstParticles(dt) {
+                for (let i = burstParticles.length - 1; i >= 0; i--) {
+                    const p = burstParticles[i];
+                    p.x += p.vx * dt;
+                    p.y += p.vy * dt;
+                    p.vx *= 0.95;
+                    p.vy *= 0.95;
+                    p.life -= 0.02 * dt;
+                    if (p.life <= 0) {
+                        burstParticles.splice(i, 1);
+                    }
+                }
+            }
+
+            function drawBurstParticles(ctx) {
+                for (const p of burstParticles) {
+                    const alpha = p.life * p.alpha;
+                    const size = p.size * p.life;
+                    const gradient = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, size * 2);
+                    gradient.addColorStop(0, `hsla(${p.hue}, 75%, 75%, ${alpha})`);
+                    gradient.addColorStop(1, 'transparent');
+                    ctx.fillStyle = gradient;
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, size * 2, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            // ─── 绘制落叶微粒 ───────────────────────────────────────────
+            let fallingLeaves = [];
+            function createFallingLeaf(x, y, hue) {
+                fallingLeaves.push({
+                    x, y,
+                    vx: (Math.random() - 0.5) * 1.5,
+                    vy: 0.5 + Math.random() * 1.5,
+                    life: 1.0,
+                    decay: 0.008 + Math.random() * 0.006,
+                    size: 1.5 + Math.random() * 2.5,
+                    hue: hue + Math.random() * 40 - 20,
+                    phase: Math.random() * Math.PI * 2,
+                });
+                if (fallingLeaves.length > 100) {
+                    fallingLeaves.shift();
+                }
+            }
+
+            function updateFallingLeaves(dt) {
+                for (let i = fallingLeaves.length - 1; i >= 0; i--) {
+                    const l = fallingLeaves[i];
+                    l.x += l.vx * dt + Math.sin(time * 2 + l.phase) * 0.3;
+                    l.y += l.vy * dt;
+                    l.vy += 0.008 * dt;
+                    l.life -= l.decay * dt;
+                    if (l.life <= 0 || l.y > H + 20) {
+                        fallingLeaves.splice(i, 1);
+                    }
+                }
+            }
+
+            function drawFallingLeaves(ctx) {
+                for (const l of fallingLeaves) {
+                    const alpha = l.life * 0.6;
+                    ctx.fillStyle = `hsla(${l.hue}, 60%, 60%, ${alpha})`;
+                    ctx.beginPath();
+                    ctx.arc(l.x, l.y, l.size * l.life, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            // ─── 鼠标光晕 ───────────────────────────────────────────────
+            function drawCursorGlow(ctx) {
+                if (!mouse.active) return;
+                const radius = 60;
+                const hue = 140 + colorShift;
+                const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                gradient.addColorStop(0, `hsla(${hue}, 60%, 70%, 0.06)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // ─── 主循环 ─────────────────────────────────────────────────
+            let lastTime = 0;
+            let accumulator = 0;
+            const fixedStep = 1000 / 60;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+
+                accumulator += dt;
+                const steps = Math.min(Math.floor(accumulator / fixedStep), 3);
+                accumulator -= steps * fixedStep;
+
+                for (let s = 0; s < steps; s++) {
+                    time += 0.016;
+                    const dtNorm = fixedStep / 1000 * 60;
+                    for (const tree of trees) {
+                        tree.update(mouse, dtNorm);
+                    }
+                    updateBurstParticles(dtNorm);
+                    updateFallingLeaves(dtNorm);
+                }
+
+                // 清除画布
+                ctx.fillStyle = '#0b0b14';
+                ctx.fillRect(0, 0, W, H);
+
+                // 绘制树木
+                for (const tree of trees) {
+                    tree.draw(ctx, time);
+                }
+
+                // 绘制落叶
+                drawFallingLeaves(ctx);
+
+                // 绘制爆发粒子
+                drawBurstParticles(ctx);
+
+                // 鼠标光晕
+                drawCursorGlow(ctx);
+
+                requestAnimationFrame(animate);
+            }
+
+            // ─── 交互事件 ───────────────────────────────────────────────
+            function onMouseMove(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                // 在点击位置创建新的树
+                if (trees.length >= maxTrees) {
+                    trees.shift();
+                }
+                trees.push(new FractalTree(mouse.x, mouse.y, 100 + Math.random() * 80));
+                // 花瓣爆发
+                createBurst(mouse.x, mouse.y);
+                // 切换色彩偏移
+                colorShift += 25 + Math.random() * 25;
+                if (colorShift > 80) colorShift = -20;
+                // 生成落叶
+                for (let i = 0; i < 8; i++) {
+                    createFallingLeaf(mouse.x, mouse.y, 120 + colorShift);
+                }
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    if (trees.length >= maxTrees) {
+                        trees.shift();
+                    }
+                    trees.push(new FractalTree(mouse.x, mouse.y, 100 + Math.random() * 80));
+                    createBurst(mouse.x, mouse.y);
+                    colorShift += 25 + Math.random() * 25;
+                    if (colorShift > 80) colorShift = -20;
+                    for (let i = 0; i < 8; i++) {
+                        createFallingLeaf(mouse.x, mouse.y, 120 + colorShift);
+                    }
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onResize() {
+                setupCanvas();
+                initTrees();
+                burstParticles = [];
+                fallingLeaves = [];
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+                initTrees();
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#0b0b14';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+        })();
+    </script>
+</body>
+</html>

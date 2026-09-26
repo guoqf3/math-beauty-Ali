@@ -1,0 +1,675 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>拓扑几何流形 - 数学线条动画</title>
+    <style>
+        :root {
+            --bg: #0a0a10;
+            --gold: #e8b86d;
+            --cyan: #4ecdc4;
+            --rose: #e8486b;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'SimSun', 'Noto Serif SC', serif;
+            -webkit-font-smoothing: antialiased;
+            height: 100vh;
+            width: 100vw;
+            cursor: default;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        #canvas-container {
+            position: fixed;
+            inset: 0;
+            z-index: 1;
+        }
+
+        canvas {
+            display: block;
+        }
+
+        /* 标题覆盖层 */
+        #title-overlay {
+            position: fixed;
+            top: 2.2vh;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+        }
+
+        #title-overlay h1 {
+            font-size: clamp(1.1rem, 2.4vw, 1.7rem);
+            font-weight: 400;
+            letter-spacing: 0.18em;
+            color: #e8d5b8;
+            text-shadow: 0 0 40px rgba(232, 184, 109, 0.45), 0 0 80px rgba(232, 184, 109, 0.2);
+            margin: 0;
+            line-height: 1.3;
+        }
+
+        #title-overlay .subtitle {
+            font-size: clamp(0.55rem, 1.1vw, 0.75rem);
+            letter-spacing: 0.22em;
+            color: #b8a590;
+            opacity: 0.7;
+            margin-top: 0.3vh;
+            font-style: italic;
+        }
+
+        /* 公式覆盖层 - 底部 */
+        #formula-overlay {
+            position: fixed;
+            bottom: 2.5vh;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+            background: rgba(10, 10, 16, 0.7);
+            backdrop-filter: blur(6px);
+            -webkit-backdrop-filter: blur(6px);
+            border: 1px solid rgba(180, 160, 140, 0.2);
+            border-radius: 16px;
+            padding: 1.2vh 2.8vw;
+            max-width: 92vw;
+        }
+
+        #formula-overlay .formula-main {
+            font-size: clamp(0.7rem, 1.5vw, 1.05rem);
+            color: #d4c5b0;
+            letter-spacing: 0.06em;
+            line-height: 1.6;
+            font-style: italic;
+        }
+
+        #formula-overlay .formula-detail {
+            font-size: clamp(0.5rem, 0.95vw, 0.7rem);
+            color: #9a8b7a;
+            letter-spacing: 0.08em;
+            margin-top: 0.3vh;
+            opacity: 0.8;
+        }
+
+        .accent-gold {
+            color: #e8b86d;
+        }
+        .accent-cyan {
+            color: #4ecdc4;
+        }
+        .accent-rose {
+            color: #e8486b;
+        }
+
+        /* 微妙的渐入效果 */
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+            }
+            to {
+                opacity: 1;
+            }
+        }
+
+        #title-overlay,
+        #formula-overlay {
+            animation: fadeIn 1.8s ease-out 0.3s both;
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+
+    <!-- 标题 -->
+    <div id="title-overlay">
+        <h1>拓扑 · 几何 · 流形</h1>
+        <div class="subtitle">纤维丛上的调和轨道</div>
+    </div>
+
+    <!-- 公式显示 -->
+    <div id="formula-overlay">
+        <div class="formula-main">
+            <span class="accent-gold">𝓎(θ,φ)</span> = Σ
+            <span class="accent-cyan">𝒴<sub>ℓ</sub><sup>m</sup></span>(θ,φ) ·
+            <span class="accent-rose">e<sup>iωt</sup></span>
+            &nbsp;⊗&nbsp;
+            <span class="accent-cyan">𝒯<sub>p,q</sub></span>
+            &nbsp;⊂&nbsp;
+            <span class="accent-gold">S³ → S²</span>
+        </div>
+        <div class="formula-detail">
+            球面调和展开 &nbsp;·&nbsp; Hopf纤维化投影 &nbsp;·&nbsp; 环面结纤维束 &nbsp;·&nbsp; 空间Lissajous编织
+        </div>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+
+        // 渲染器
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setClearColor(0x0a0a10, 1);
+        container.appendChild(renderer.domElement);
+
+        // 相机
+        const camera = new THREE.PerspectiveCamera(
+            58,
+            window.innerWidth / window.innerHeight,
+            0.5,
+            30
+        );
+        camera.position.set(3.2, 1.8, 7.5);
+        camera.lookAt(0, 0, 0);
+
+        // ==================== 颜色定义 ====================
+        const colorGold = new THREE.Color('#e8b86d');
+        const colorCyan = new THREE.Color('#4ecdc4');
+        const colorRose = new THREE.Color('#e8486b');
+
+        // ==================== 背景星点 ====================
+        const starsGeom = new THREE.BufferGeometry();
+        const starCount = 200;
+        const starPositions = new Float32Array(starCount * 3);
+        const starSizes = new Float32Array(starCount);
+        for (let i = 0; i < starCount; i++) {
+            // 分布在较大球壳内
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const radius = 6 + Math.random() * 8;
+            starPositions[i * 3] = radius * Math.sin(phi) * Math.cos(theta);
+            starPositions[i * 3 + 1] = radius * Math.sin(phi) * Math.sin(theta);
+            starPositions[i * 3 + 2] = radius * Math.cos(phi);
+            starSizes[i] = Math.random() * 1.6 + 0.3;
+        }
+        starsGeom.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
+        starsGeom.setAttribute('size', new THREE.BufferAttribute(starSizes, 1));
+        const starsMat = new THREE.PointsMaterial({
+            color: 0x443a2e,
+            size: 0.025,
+            transparent: true,
+            opacity: 0.55,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            sizeAttenuation: true,
+        });
+        const stars = new THREE.Points(starsGeom, starsMat);
+        scene.add(stars);
+
+        // ==================== 参考球壳线框（极淡） ====================
+        const refSphereGeom = new THREE.SphereGeometry(2.75, 48, 36);
+        const refSphereWire = new THREE.LineSegments(
+            new THREE.WireframeGeometry(refSphereGeom),
+            new THREE.LineBasicMaterial({
+                color: 0x2a2520,
+                transparent: true,
+                opacity: 0.18,
+                depthWrite: false,
+            })
+        );
+        scene.add(refSphereWire);
+
+        // 参考环面线框（极淡）
+        const refTorusGeom = new THREE.TorusGeometry(2.1, 0.85, 16, 40);
+        const refTorusWire = new THREE.LineSegments(
+            new THREE.WireframeGeometry(refTorusGeom),
+            new THREE.LineBasicMaterial({
+                color: 0x1e2528,
+                transparent: true,
+                opacity: 0.15,
+                depthWrite: false,
+            })
+        );
+        refTorusWire.rotation.x = Math.PI / 2;
+        scene.add(refTorusWire);
+
+        // ==================== 曲线系统 ====================
+        const allCurves = [];
+        const POINTS_PER_CURVE = 520;
+
+        /**
+         * 创建一条可更新的曲线
+         * @param {THREE.Color} color
+         * @param {Function} updateFn - (t, index, totalPoints, storeArray) => void
+         *   在storeArray中填入[x,y,z]三元组
+         * @returns {Object} {line, geometry, positions, updateFn}
+         */
+        function createCurve(color, updateFn) {
+            const geometry = new THREE.BufferGeometry();
+            const positions = new Float32Array(POINTS_PER_CURVE * 3);
+            // 初始填充
+            for (let i = 0; i < POINTS_PER_CURVE; i++) {
+                positions[i * 3] = 0;
+                positions[i * 3 + 1] = 0;
+                positions[i * 3 + 2] = 0;
+            }
+            geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+            const material = new THREE.LineBasicMaterial({
+                color: color,
+                linewidth: 1,
+                transparent: true,
+                opacity: 0.88,
+                depthTest: true,
+                depthWrite: true,
+            });
+
+            const line = new THREE.Line(geometry, material);
+            scene.add(line);
+
+            const curveObj = {
+                line,
+                geometry,
+                positions,
+                updateFn,
+            };
+            allCurves.push(curveObj);
+            return curveObj;
+        }
+
+        // ==================== 组1: 球面调和轨道 (暖金) ====================
+        // 在变形球面上运行的曲线，使用球面调和函数调制半径
+        const group1Count = 7;
+        for (let k = 0; k < group1Count; k++) {
+            const baseRotX = (k / group1Count) * Math.PI * 2 + 0.3;
+            const baseRotY = (k * 1.7) % (Math.PI * 2);
+            const baseRotZ = (k * 0.9 + 0.5) % (Math.PI * 2);
+            const freqOffset = k * 0.37;
+            const phaseOffset = k * 1.1;
+
+            createCurve(colorGold, (t, i, total, arr) => {
+                const s = (i / total) * Math.PI * 2;
+                const idx = i * 3;
+
+                // 球面调和函数调制
+                const theta = s;
+                const phi = Math.PI * 0.5 + 0.35 * Math.sin(s * 2.7 + t * 0.45 + phaseOffset);
+
+                // 使用多个球面调和分量
+                const Y32 = Math.sin(3 * theta) * Math.cos(2 * phi);
+                const Y43 = Math.cos(4 * theta) * Math.sin(3 * phi);
+                const Y21 = Math.sin(2 * theta) * Math.cos(1 * phi);
+
+                const modulation =
+                    0.32 * Math.sin(5 * s + t * 0.55 + freqOffset) * Math.cos(3 * phi + t * 0.35) +
+                    0.2 * Y32 * Math.cos(t * 0.4) +
+                    0.15 * Y43 * Math.sin(t * 0.5) +
+                    0.12 * Y21 * Math.cos(t * 0.6 + 1.2);
+
+                const baseRadius = 2.7 + modulation;
+                const r = Math.max(2.0, Math.min(3.4, baseRadius));
+
+                // 球面上的点
+                let x0 = r * Math.sin(phi) * Math.cos(theta);
+                let y0 = r * Math.sin(phi) * Math.sin(theta);
+                let z0 = r * Math.cos(phi);
+
+                // 应用旋转使不同曲线分布在不同平面
+                const cosX = Math.cos(baseRotX + t * 0.12);
+                const sinX = Math.sin(baseRotX + t * 0.12);
+                const cosY = Math.cos(baseRotY + t * 0.15);
+                const sinY = Math.sin(baseRotY + t * 0.15);
+                const cosZ = Math.cos(baseRotZ + t * 0.1);
+                const sinZ = Math.sin(baseRotZ + t * 0.1);
+
+                // 绕Z旋转
+                const x1 = x0 * cosZ - y0 * sinZ;
+                const y1 = x0 * sinZ + y0 * cosZ;
+                const z1 = z0;
+                // 绕X旋转
+                const y2 = y1 * cosX - z1 * sinX;
+                const z2 = y1 * sinX + z1 * cosX;
+                const x2 = x1;
+                // 绕Y旋转
+                const x3 = x2 * cosY + z2 * sinY;
+                const z3 = -x2 * sinY + z2 * cosY;
+                const y3 = y2;
+
+                arr[idx] = x3;
+                arr[idx + 1] = y3;
+                arr[idx + 2] = z3;
+            });
+        }
+
+        // ==================== 组2: 环面纤维螺旋 (青蓝) ====================
+        // 在隐形环面上的(p,q)螺旋纤维
+        const group2Count = 7;
+        const torusPairs = [
+            [5, 3],
+            [7, 4],
+            [8, 5],
+            [6, 5],
+            [9, 4],
+            [7, 3],
+            [8, 7],
+        ];
+        for (let k = 0; k < group2Count; k++) {
+            const p = torusPairs[k][0];
+            const q = torusPairs[k][1];
+            const rotOffsetX = k * 0.7;
+            const rotOffsetY = k * 0.55;
+            const phaseShift = k * 0.9;
+
+            createCurve(colorCyan, (t, i, total, arr) => {
+                const s = (i / total) * Math.PI * 2 * p;
+                const idx = i * 3;
+
+                // 呼吸式环面参数
+                const R = 2.05 + 0.25 * Math.sin(s * 0.7 + t * 0.35 + phaseShift) * Math.cos(t * 0.4);
+                const r_tube =
+                    0.78 + 0.15 * Math.cos(s * 0.9 + t * 0.5 + phaseShift) * Math.sin(t * 0.45);
+
+                // 环面结/螺旋公式
+                const innerAngle = (q / p) * s;
+                const cosInner = Math.cos(innerAngle);
+                const sinInner = Math.sin(innerAngle);
+                const cosS = Math.cos(s);
+                const sinS = Math.sin(s);
+
+                let x0 = (R + r_tube * cosInner) * cosS;
+                let y0 = (R + r_tube * cosInner) * sinS;
+                let z0 = r_tube * sinInner;
+
+                // 环面整体旋转
+                const rx = rotOffsetX + t * 0.18;
+                const ry = rotOffsetY + t * 0.22;
+                const cx = Math.cos(rx),
+                    sx = Math.sin(rx);
+                const cy = Math.cos(ry),
+                    sy = Math.sin(ry);
+
+                // 绕X
+                const y1 = y0 * cx - z0 * sx;
+                const z1 = y0 * sx + z0 * cx;
+                const x1 = x0;
+                // 绕Y
+                const x2 = x1 * cy + z1 * sy;
+                const z2 = -x1 * sy + z1 * cy;
+                const y2 = y1;
+
+                arr[idx] = x2;
+                arr[idx + 1] = y2;
+                arr[idx + 2] = z2;
+            });
+        }
+
+        // ==================== 组3: 空间Lissajous编织 (玫红) ====================
+        // 复杂的三维Lissajous轨道，带有非线性耦合
+        const group3Count = 6;
+        for (let k = 0; k < group3Count; k++) {
+            const ax = 2.3 + k * 0.25;
+            const ay = 1.9 + k * 0.3;
+            const az = 2.1 + k * 0.2;
+            const fx = 3.7 + k * 0.4;
+            const fy = 5.1 + k * 0.35;
+            const fz = 4.3 + k * 0.45;
+            const dx = k * 1.3;
+            const dy = k * 0.9;
+            const dz = k * 1.5;
+            const globalRotX = k * 0.8;
+            const globalRotY = k * 1.05;
+
+            createCurve(colorRose, (t, i, total, arr) => {
+                const s = (i / total) * Math.PI * 2;
+                const idx = i * 3;
+
+                // Lissajous轨道
+                let x0 = ax * Math.sin(fx * s + dx + t * 0.5);
+                let y0 = ay * Math.sin(fy * s + dy + t * 0.4);
+                let z0 = az * Math.sin(fz * s + dz + t * 0.55);
+
+                // 加入非线性耦合项使轨道更复杂
+                const coupling = 0.18 * Math.sin(x0 * 0.7 + y0 * 0.5 + t * 0.3);
+                x0 += coupling * Math.cos(z0 * 0.6);
+                y0 += coupling * Math.sin(x0 * 0.5);
+                z0 += 0.12 * Math.sin(x0 * 0.8 + y0 * 0.6 + t * 0.35);
+
+                // 全局旋转
+                const rx = globalRotX + t * 0.14;
+                const ry = globalRotY + t * 0.17;
+                const cx = Math.cos(rx),
+                    sx = Math.sin(rx);
+                const cy = Math.cos(ry),
+                    sy = Math.sin(ry);
+
+                const y1 = y0 * cx - z0 * sx;
+                const z1 = y0 * sx + z0 * cx;
+                const x1 = x0;
+                const x2 = x1 * cy + z1 * sy;
+                const z2 = -x1 * sy + z1 * cy;
+                const y2 = y1;
+
+                arr[idx] = x2;
+                arr[idx + 1] = y2;
+                arr[idx + 2] = z2;
+            });
+        }
+
+        // ==================== 额外: Hopf纤维化启发曲线 (混合色) ====================
+        // 少量曲线遵循Hopf纤维化的球极投影模式
+        const hopfCount = 4;
+        const hopfColors = [colorGold, colorCyan, colorRose, colorGold];
+        for (let k = 0; k < hopfCount; k++) {
+            const fiberPhase = k * Math.PI * 0.5;
+            const rotPlane = k * 1.2;
+            const col = hopfColors[k];
+
+            createCurve(col, (t, i, total, arr) => {
+                const s = (i / total) * Math.PI * 2;
+                const idx = i * 3;
+
+                // Hopf纤维化的球极投影：纤维在R³中表现为链接的圆和螺旋
+                // 使用参数化：纤维是S³中满足特定条件的圆
+                const alpha = s + fiberPhase + t * 0.3;
+                const beta = s * 2.3 + fiberPhase * 1.7 + t * 0.25;
+
+                // 球极投影到R³
+                const denominator = 1.0 - 0.35 * Math.cos(alpha);
+                const x0 = (2.5 * Math.cos(beta)) / denominator;
+                const y0 = (2.5 * Math.sin(beta)) / denominator;
+                const z0 = (2.5 * Math.sin(alpha)) / denominator;
+
+                // 绕不同轴旋转
+                const angle = rotPlane + t * 0.2;
+                const ca = Math.cos(angle),
+                    sa = Math.sin(angle);
+                const x1 = x0 * ca - z0 * sa;
+                const z1 = x0 * sa + z0 * ca;
+                const y1 = y0;
+
+                arr[idx] = x1;
+                arr[idx + 1] = y1;
+                arr[idx + 2] = z1;
+            });
+        }
+
+        // ==================== 总计曲线数 ====================
+        // group1: 7 + group2: 7 + group3: 6 + hopf: 4 = 24条曲线
+        console.log(
+            `已创建 ${allCurves.length} 条曲线，每条 ${POINTS_PER_CURVE} 个顶点，总计 ${allCurves.length * POINTS_PER_CURVE} 个顶点`
+        );
+
+        // ==================== 流动粒子系统 ====================
+        const particleCount = 18;
+        const particlesGeom = new THREE.BufferGeometry();
+        const particlePositionsArr = new Float32Array(particleCount * 3);
+        const particleColorsArr = new Float32Array(particleCount * 3);
+        const particleData = [];
+
+        // 为每个粒子分配一条曲线
+        for (let i = 0; i < particleCount; i++) {
+            const curveIndex = i % allCurves.length;
+            const progress = Math.random();
+            particleData.push({
+                curveIndex,
+                progress,
+                speed: 0.0008 + Math.random() * 0.0025,
+            });
+            // 初始颜色
+            const col = new THREE.Color();
+            if (i < 6) col.copy(colorGold);
+            else if (i < 12) col.copy(colorCyan);
+            else col.copy(colorRose);
+            particleColorsArr[i * 3] = col.r;
+            particleColorsArr[i * 3 + 1] = col.g;
+            particleColorsArr[i * 3 + 2] = col.b;
+            particlePositionsArr[i * 3] = 0;
+            particlePositionsArr[i * 3 + 1] = 0;
+            particlePositionsArr[i * 3 + 2] = 0;
+        }
+
+        particlesGeom.setAttribute('position', new THREE.BufferAttribute(particlePositionsArr, 3));
+        particlesGeom.setAttribute('color', new THREE.BufferAttribute(particleColorsArr, 3));
+
+        const particlesMat = new THREE.PointsMaterial({
+            size: 0.06,
+            vertexColors: true,
+            transparent: true,
+            opacity: 0.9,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            sizeAttenuation: true,
+        });
+        const particlesMesh = new THREE.Points(particlesGeom, particlesMat);
+        scene.add(particlesMesh);
+
+        // ==================== 动画循环 ====================
+        const clock = new THREE.Clock();
+        let animationTime = 0;
+        let frameCount = 0;
+        let lastLogTime = 0;
+
+        function animate(timestamp) {
+            requestAnimationFrame(animate);
+
+            const dt = Math.min(clock.getDelta(), 0.1); // 防止大帧跳跃
+            animationTime += dt;
+            frameCount++;
+
+            // 每5秒输出一次帧信息用于调试
+            if (timestamp - lastLogTime > 5000) {
+                lastLogTime = timestamp;
+                const fps = Math.round(frameCount / 5);
+                console.log(`运行中 - FPS: ${fps}, 时间: ${animationTime.toFixed(1)}s, 曲线: ${allCurves.length}条`);
+                frameCount = 0;
+            }
+
+            // 更新所有曲线
+            for (const curveObj of allCurves) {
+                const { positions, updateFn } = curveObj;
+                for (let i = 0; i < POINTS_PER_CURVE; i++) {
+                    updateFn(animationTime, i, POINTS_PER_CURVE, positions);
+                }
+                curveObj.geometry.attributes.position.needsUpdate = true;
+            }
+
+            // 更新流动粒子
+            for (let p = 0; p < particleCount; p++) {
+                const pd = particleData[p];
+                pd.progress += pd.speed;
+                if (pd.progress > 1.0) pd.progress -= 1.0;
+                if (pd.progress < 0) pd.progress += 1.0;
+
+                const curveObj = allCurves[pd.curveIndex];
+                const idx = Math.floor(pd.progress * (POINTS_PER_CURVE - 1));
+                const nextIdx = Math.min(idx + 1, POINTS_PER_CURVE - 1);
+                const frac = pd.progress * (POINTS_PER_CURVE - 1) - idx;
+                const pos = curveObj.positions;
+                const i3 = idx * 3;
+                const n3 = nextIdx * 3;
+                particlePositionsArr[p * 3] = pos[i3] + (pos[n3] - pos[i3]) * frac;
+                particlePositionsArr[p * 3 + 1] = pos[i3 + 1] + (pos[n3 + 1] - pos[i3 + 1]) * frac;
+                particlePositionsArr[p * 3 + 2] = pos[i3 + 2] + (pos[n3 + 2] - pos[i3 + 2]) * frac;
+            }
+            particlesGeom.attributes.position.needsUpdate = true;
+
+            // 更新参考球壳（微妙的呼吸）
+            const breathe = 1 + 0.04 * Math.sin(animationTime * 0.5) * Math.cos(animationTime * 0.35);
+            refSphereWire.scale.setScalar(breathe);
+            refSphereWire.rotation.x += dt * 0.08;
+            refSphereWire.rotation.y += dt * 0.06;
+
+            // 更新参考环面
+            refTorusWire.rotation.z += dt * 0.07;
+            const torusBreathe = 1 + 0.05 * Math.sin(animationTime * 0.55) * Math.cos(animationTime * 0.4);
+            refTorusWire.scale.setScalar(torusBreathe);
+
+            // 相机缓慢旋转
+            const camAngleH = animationTime * 0.13;
+            const camAngleV = 0.35 + 0.15 * Math.sin(animationTime * 0.2);
+            const camDistance = 7.2 + 0.6 * Math.sin(animationTime * 0.25) * Math.cos(animationTime * 0.3);
+            const camX = camDistance * Math.cos(camAngleV) * Math.sin(camAngleH);
+            const camY = camDistance * Math.sin(camAngleV);
+            const camZ = camDistance * Math.cos(camAngleV) * Math.cos(camAngleH);
+            camera.position.set(camX, camY, camZ);
+            camera.lookAt(
+                0.1 * Math.sin(animationTime * 0.15),
+                0.05 * Math.cos(animationTime * 0.18),
+                0
+            );
+
+            // 背景星点微动
+            stars.rotation.y += dt * 0.02;
+            stars.rotation.x += dt * 0.013;
+
+            // 渲染
+            renderer.render(scene, camera);
+        }
+
+        // ==================== 窗口大小响应 ====================
+        function onResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+        window.addEventListener('resize', onResize, { passive: true });
+
+        // 移动端方向变化也触发resize
+        window.addEventListener('orientationchange', () => {
+            setTimeout(onResize, 150);
+        }, { passive: true });
+
+        // ==================== 启动 ====================
+        console.log('拓扑几何流形动画初始化完成，开始渲染...');
+        console.log(`曲线总数: ${allCurves.length} | 顶点/曲线: ${POINTS_PER_CURVE} | 流动粒子: ${particleCount}`);
+
+        // 立即开始动画循环
+        requestAnimationFrame(animate);
+
+        // 防止页面在后台时动画停滞（恢复时重新获取时间）
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') {
+                clock.getDelta(); // 消耗累积的时间差
+            }
+        });
+
+        console.log('✅ 动画循环已启动 - 画面应持续运动');
+    </script>
+</body>
+</html>

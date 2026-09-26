@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DISPERSION · 光谱色散</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #0a0a18;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            right: 32px;
+            z-index: 2;
+            text-align: right;
+            pointer-events: none;
+            opacity: 0.55;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+
+        .overlay:hover {
+            opacity: 0.9;
+        }
+
+        .title {
+            color: rgba(220, 230, 255, 0.8);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 18px rgba(120, 140, 240, 0.4);
+        }
+
+        .hint {
+            color: rgba(170, 180, 220, 0.5);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+
+        @media (max-width: 768px) {
+            .overlay {
+                bottom: 18px;
+                right: 20px;
+            }
+            .title {
+                font-size: 8px;
+                letter-spacing: 0.45em;
+            }
+            .hint {
+                font-size: 6px;
+                letter-spacing: 0.22em;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="canvas"></canvas>
+
+    <div class="overlay">
+        <div class="title">Dispersion</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script>
+        (function() {
+            // ─── 画布初始化 ───────────────────────────────────────────────
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            let particles = [];
+            let mouse = { x: -9999, y: -9999, active: false };
+            let time = 0;
+            let dispersionStrength = 1.0;  // 色散强度，点击切换
+            let colorShift = 0;            // 整体颜色偏移
+
+            // ─── 性能参数 ───────────────────────────────────────────────
+            const PARTICLE_COUNT = () => Math.max(250, Math.min(500, Math.floor(W * H / 3000)));
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                // 深色背景，杜绝白屏
+                ctx.fillStyle = '#0a0a18';
+                ctx.fillRect(0, 0, W, H);
+            }
+
+            // ─── 粒子类 ─────────────────────────────────────────────────
+            class Particle {
+                constructor() {
+                    this.reset();
+                }
+
+                reset() {
+                    this.x = Math.random() * W;
+                    this.y = Math.random() * H;
+                    const angle = Math.random() * Math.PI * 2;
+                    const speed = 0.5 + Math.random() * 1.5;
+                    this.vx = Math.cos(angle) * speed;
+                    this.vy = Math.sin(angle) * speed;
+                    // 波长参数：0 = 紫，1 = 红，随机分布
+                    this.wavelength = Math.random();
+                    this.size = 1.2 + Math.random() * 1.8;
+                    this.life = 100 + Math.random() * 100;  // 用于渐隐
+                    this.maxLife = this.life;
+                }
+
+                update(dt, mouse, dispersionStrength, time) {
+                    // 根据位置和波长计算色散力
+                    // 模拟色散：不同波长受到不同的偏转角度
+                    const angleOffset = (this.wavelength - 0.5) * dispersionStrength * 0.6;
+
+                    // 基础流动方向：旋转场
+                    const flowAngle = Math.sin(this.x * 0.003 + time * 0.5) * 0.4 +
+                        Math.cos(this.y * 0.004 + time * 0.6) * 0.4;
+
+                    // 鼠标影响：像棱镜一样改变光线路径
+                    if (mouse.active) {
+                        const dx = mouse.x - this.x;
+                        const dy = mouse.y - this.y;
+                        const distSq = dx * dx + dy * dy;
+                        const influenceRadius = 200;
+                        const infSq = influenceRadius * influenceRadius;
+                        if (distSq < infSq) {
+                            const dist = Math.sqrt(distSq);
+                            const force = (1 - dist / influenceRadius) * 0.06;
+                            const normX = dx / (dist || 1);
+                            const normY = dy / (dist || 1);
+                            // 色散：不同波长偏转方向略有不同
+                            const dispersionAngle = (this.wavelength - 0.5) * dispersionStrength * 0.8;
+                            const cosA = Math.cos(dispersionAngle);
+                            const sinA = Math.sin(dispersionAngle);
+                            const rotatedNormX = normX * cosA - normY * sinA;
+                            const rotatedNormY = normX * sinA + normY * cosA;
+                            this.vx += rotatedNormX * force;
+                            this.vy += rotatedNormY * force;
+                        }
+                    }
+
+                    // 应用全局色散力：根据波长微调角度
+                    const dispersiveForce = (this.wavelength - 0.5) * dispersionStrength * 0.015;
+                    this.vx += Math.cos(flowAngle + angleOffset) * dispersiveForce;
+                    this.vy += Math.sin(flowAngle + angleOffset) * dispersiveForce;
+
+                    // 阻尼
+                    this.vx *= 0.98;
+                    this.vy *= 0.98;
+
+                    // 速度限制
+                    const maxSpeed = 3.5;
+                    const speedSq = this.vx * this.vx + this.vy * this.vy;
+                    if (speedSq > maxSpeed * maxSpeed) {
+                        const speed = Math.sqrt(speedSq);
+                        this.vx = (this.vx / speed) * maxSpeed;
+                        this.vy = (this.vy / speed) * maxSpeed;
+                    }
+
+                    this.x += this.vx * dt;
+                    this.y += this.vy * dt;
+
+                    // 寿命减少
+                    this.life -= 0.15 * dt;
+
+                    // 边界处理：环绕并重置速度方向随机
+                    if (this.x < -20) {
+                        this.x = W + 20;
+                        this.resetVelocity();
+                    }
+                    if (this.x > W + 20) {
+                        this.x = -20;
+                        this.resetVelocity();
+                    }
+                    if (this.y < -20) {
+                        this.y = H + 20;
+                        this.resetVelocity();
+                    }
+                    if (this.y > H + 20) {
+                        this.y = -20;
+                        this.resetVelocity();
+                    }
+
+                    // 如果寿命结束，重置粒子
+                    if (this.life <= 0) {
+                        this.reset();
+                    }
+                }
+
+                resetVelocity() {
+                    const angle = Math.random() * Math.PI * 2;
+                    const speed = 0.3 + Math.random() * 1.2;
+                    this.vx = Math.cos(angle) * speed;
+                    this.vy = Math.sin(angle) * speed;
+                }
+
+                draw(ctx, time) {
+                    // 根据波长映射到颜色：0->紫色(270)，0.5->绿色(150)，1->红色(0)
+                    // 使用正弦映射产生彩虹： hue = (1 - wavelength) * 300 + 180 ？
+                    // 更直观： 紫色(280) -> 蓝色(240) -> 青色(180) -> 绿色(120) -> 黄色(60) -> 红色(0)
+                    const hue = (1 - this.wavelength) * 280 + colorShift;
+                    const sat = 80 + Math.sin(time * 0.5 + this.wavelength * Math.PI * 2) * 15;
+                    const light = 55 + Math.sin(time * 0.8 + this.wavelength * 3) * 20;
+
+                    // 粒子渐隐：根据寿命比例
+                    const lifeRatio = Math.max(0, Math.min(1, this.life / this.maxLife));
+                    const alpha = 0.4 + lifeRatio * 0.6;
+
+                    // 绘制小线段以显示运动方向
+                    const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
+                    if (speed > 0.1) {
+                        const normX = this.vx / speed;
+                        const normY = this.vy / speed;
+                        const len = 2 + speed * 2.5;
+                        const endX = this.x + normX * len;
+                        const endY = this.y + normY * len;
+
+                        ctx.strokeStyle = `hsla(${hue}, ${sat}%, ${light}%, ${alpha})`;
+                        ctx.lineWidth = this.size * 0.8;
+                        ctx.lineCap = 'round';
+                        ctx.beginPath();
+                        ctx.moveTo(this.x, this.y);
+                        ctx.lineTo(endX, endY);
+                        ctx.stroke();
+                    }
+
+                    // 绘制小光点
+                    ctx.fillStyle = `hsla(${hue}, ${sat}%, ${light + 10}%, ${alpha * 0.9})`;
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, this.size * 0.5, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            // ─── 初始化粒子 ─────────────────────────────────────────────
+            function initParticles() {
+                const count = PARTICLE_COUNT();
+                particles = [];
+                for (let i = 0; i < count; i++) {
+                    particles.push(new Particle());
+                }
+            }
+
+            // ─── 鼠标光晕 ───────────────────────────────────────────────
+            function drawCursorGlow(ctx) {
+                if (!mouse.active) return;
+                const radius = 80;
+                const hue = 220 + colorShift;
+                const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                gradient.addColorStop(0, `hsla(${hue}, 60%, 75%, 0.06)`);
+                gradient.addColorStop(0.7, `hsla(${hue}, 50%, 70%, 0.02)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // ─── 主循环 ─────────────────────────────────────────────────
+            let lastTime = 0;
+            let accumulator = 0;
+            const fixedStep = 1000 / 60;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+
+                accumulator += dt;
+                const steps = Math.min(Math.floor(accumulator / fixedStep), 3);
+                accumulator -= steps * fixedStep;
+
+                for (let s = 0; s < steps; s++) {
+                    time += 0.016;
+                    const dtNorm = fixedStep / 1000 * 60;
+                    for (const p of particles) {
+                        p.update(dtNorm, mouse, dispersionStrength, time);
+                    }
+                }
+
+                // 半透明覆盖实现拖尾效果
+                ctx.fillStyle = 'rgba(10, 10, 24, 0.12)';
+                ctx.fillRect(0, 0, W, H);
+
+                // 绘制粒子
+                for (const p of particles) {
+                    p.draw(ctx, time);
+                }
+
+                // 鼠标光晕
+                drawCursorGlow(ctx);
+
+                requestAnimationFrame(animate);
+            }
+
+            // ─── 交互事件 ───────────────────────────────────────────────
+            function onMouseMove(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                // 切换色散强度：在0.5和1.5之间循环
+                dispersionStrength = dispersionStrength > 1.2 ? 0.5 : 1.5;
+                // 切换颜色偏移
+                colorShift += 30 + Math.random() * 30;
+                if (colorShift > 180) colorShift = -30;
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    dispersionStrength = dispersionStrength > 1.2 ? 0.5 : 1.5;
+                    colorShift += 30 + Math.random() * 30;
+                    if (colorShift > 180) colorShift = -30;
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onResize() {
+                setupCanvas();
+                // 调整粒子数量
+                const targetCount = PARTICLE_COUNT();
+                if (targetCount !== particles.length) {
+                    while (particles.length < targetCount) {
+                        particles.push(new Particle());
+                    }
+                    if (particles.length > targetCount) {
+                        particles.length = targetCount;
+                    }
+                }
+                // 重置鼠标状态
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+                initParticles();
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            // 确保初始背景填充
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#0a0a18';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+
+        })();
+    </script>
+</body>
+</html>

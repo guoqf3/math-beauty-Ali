@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>磁场粒子舞</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #05050f;
+            font-family: sans-serif;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="magnetCanvas"></canvas>
+    <script>
+        (function() {
+            'use strict';
+
+            const canvas = document.getElementById('magnetCanvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            // ---------- 配置参数 ----------
+            const CONFIG = {
+                particleCount: 160,           // 粒子数量
+                baseSpeed: 1.2,               // 基础速度因子
+                magneticForce: 0.6,           // 磁场力强度
+                randomForce: 0.08,            // 随机扰动强度
+                damping: 0.96,                // 速度阻尼
+                mouseInfluenceRadius: 300,    // 磁场作用半径
+                clickPolaritySwitch: true,    // 点击切换极性
+                glowSize: 6,                  // 光晕大小倍数
+                coreSizeMin: 1.0,             // 核心最小半径
+                coreSizeMax: 2.5,             // 核心最大半径
+                hueBase: 200,                 // 基础色相（蓝）
+                hueVelocity: 40,              // 速度对色相的影响范围
+                saturation: 85,
+                lightnessBase: 55,
+                lightnessMax: 85,
+                backgroundFade: 0.12,         // 拖尾强度（保留光迹）
+                polarity: 1,                  // 初始极性：1吸引，-1排斥
+            };
+
+            let width = 0;
+            let height = 0;
+            let dpr = 1;
+            let particles = [];
+            let mouseX = -9999;
+            let mouseY = -9999;
+            let mouseActive = false;
+            let targetMouseX = -9999;
+            let targetMouseY = -9999;
+            let smoothMouseX = -9999;
+            let smoothMouseY = -9999;
+            let animationId = null;
+            let lastTime = 0;
+            let time = 0;
+
+            // ---------- 粒子类 ----------
+            class Particle {
+                constructor(w, h) {
+                    this.x = Math.random() * w;
+                    this.y = Math.random() * h;
+                    const angle = Math.random() * Math.PI * 2;
+                    const speed = Math.random() * CONFIG.baseSpeed * 0.6;
+                    this.vx = Math.cos(angle) * speed;
+                    this.vy = Math.sin(angle) * speed;
+                    this.size = Math.random() * (CONFIG.coreSizeMax - CONFIG.coreSizeMin) + CONFIG.coreSizeMin;
+                    this.pulsePhase = Math.random() * Math.PI * 2;
+                    this.pulseSpeed = Math.random() * 1.5 + 0.5;
+                }
+
+                update(dt, now, time) {
+                    if (mouseActive && smoothMouseX > -1000) {
+                        const dx = smoothMouseX - this.x;
+                        const dy = smoothMouseY - this.y;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+
+                        if (dist < CONFIG.mouseInfluenceRadius && dist > 0.1) {
+                            // 磁场力：与距离平方成反比（简化），方向由极性决定
+                            const forceMagnitude = CONFIG.magneticForce * (1 - dist / CONFIG.mouseInfluenceRadius);
+                            // 极性：1为吸引，-1为排斥
+                            const direction = CONFIG.polarity;
+                            const fx = (dx / dist) * forceMagnitude * direction;
+                            const fy = (dy / dist) * forceMagnitude * direction;
+
+                            // 加入垂直分量，模拟磁场线弯曲
+                            const perpendicularX = -dy / dist;
+                            const perpendicularY = dx / dist;
+                            const bendStrength = forceMagnitude * 0.3;
+                            const bendX = perpendicularX * bendStrength;
+                            const bendY = perpendicularY * bendStrength;
+
+                            this.vx += (fx + bendX) * dt;
+                            this.vy += (fy + bendY) * dt;
+                        }
+                    }
+
+                    // 随机扰动
+                    this.vx += (Math.random() - 0.5) * CONFIG.randomForce * dt;
+                    this.vy += (Math.random() - 0.5) * CONFIG.randomForce * dt;
+
+                    // 阻尼
+                    this.vx *= CONFIG.damping;
+                    this.vy *= CONFIG.damping;
+
+                    // 限制最大速度
+                    const maxSpeed = CONFIG.baseSpeed * 3.5;
+                    const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
+                    if (speed > maxSpeed) {
+                        this.vx = (this.vx / speed) * maxSpeed;
+                        this.vy = (this.vy / speed) * maxSpeed;
+                    }
+
+                    // 更新位置
+                    this.x += this.vx * dt;
+                    this.y += this.vy * dt;
+
+                    // 边界处理
+                    const margin = 30;
+                    if (this.x < -margin) this.x = width + margin;
+                    else if (this.x > width + margin) this.x = -margin;
+                    if (this.y < -margin) this.y = height + margin;
+                    else if (this.y > height + margin) this.y = -margin;
+
+                    this.x = Math.max(-margin, Math.min(width + margin, this.x));
+                    this.y = Math.max(-margin, Math.min(height + margin, this.y));
+                }
+
+                // 获取当前粒子颜色（基于速度和脉冲）
+                getColor() {
+                    const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
+                    const normalizedSpeed = Math.min(1, speed / (CONFIG.baseSpeed * 3));
+                    const hue = CONFIG.hueBase + normalizedSpeed * CONFIG.hueVelocity;
+                    const pulse = Math.sin(time * this.pulseSpeed + this.pulsePhase) * 8;
+                    const lightness = CONFIG.lightnessBase + normalizedSpeed * (CONFIG.lightnessMax - CONFIG
+                        .lightnessBase) + pulse * 0.2;
+                    return {
+                        hue: hue % 360,
+                        sat: CONFIG.saturation,
+                        light: Math.max(30, Math.min(92, lightness)),
+                    };
+                }
+
+                // 获取当前大小
+                getSize() {
+                    const pulse = Math.sin(time * this.pulseSpeed + this.pulsePhase) * 0.3;
+                    return Math.max(0.5, this.size + pulse);
+                }
+            }
+
+            // ---------- 初始化粒子 ----------
+            function initParticles() {
+                particles = [];
+                for (let i = 0; i < CONFIG.particleCount; i++) {
+                    particles.push(new Particle(width, height));
+                }
+            }
+
+            // ---------- 调整画布尺寸 ----------
+            function resizeCanvas() {
+                dpr = Math.min(window.devicePixelRatio || 1, 2);
+                width = window.innerWidth;
+                height = window.innerHeight;
+                canvas.width = Math.floor(width * dpr);
+                canvas.height = Math.floor(height * dpr);
+                canvas.style.width = width + 'px';
+                canvas.style.height = height + 'px';
+                ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                ctx.fillStyle = '#05050f';
+                ctx.fillRect(0, 0, width, height);
+                initParticles();
+                drawScene(performance.now());
+            }
+
+            // ---------- 绘制场景 ----------
+            function drawScene(now) {
+                // 半透明背景实现拖尾
+                ctx.fillStyle = 'rgba(5, 5, 15, ' + CONFIG.backgroundFade + ')';
+                ctx.fillRect(0, 0, width, height);
+
+                // 混合模式：使光效叠加变亮
+                ctx.globalCompositeOperation = 'lighter';
+
+                // 平滑鼠标位置
+                if (mouseActive) {
+                    smoothMouseX += (targetMouseX - smoothMouseX) * 0.18;
+                    smoothMouseY += (targetMouseY - smoothMouseY) * 0.18;
+                }
+
+                // 绘制鼠标位置的光晕（表示磁铁）
+                if (mouseActive && smoothMouseX > -1000) {
+                    const magnetGlow = ctx.createRadialGradient(smoothMouseX, smoothMouseY, 0, smoothMouseX, smoothMouseY,
+                        40);
+                    const polarityColor = CONFIG.polarity === 1 ? 'rgba(80, 180, 255, 0.3)' : 'rgba(255, 120, 80, 0.3)';
+                    magnetGlow.addColorStop(0, polarityColor);
+                    magnetGlow.addColorStop(1, 'rgba(0,0,0,0)');
+                    ctx.fillStyle = magnetGlow;
+                    ctx.beginPath();
+                    ctx.arc(smoothMouseX, smoothMouseY, 40, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+
+                // 绘制所有粒子
+                for (const particle of particles) {
+                    const color = particle.getColor();
+                    const size = particle.getSize();
+                    const glowRadius = size * CONFIG.glowSize;
+
+                    // 外光晕
+                    const glowGrad = ctx.createRadialGradient(particle.x, particle.y, 0, particle.x, particle.y,
+                        glowRadius);
+                    glowGrad.addColorStop(0, `hsla(${color.hue}, ${color.sat}%, ${color.light}%, 0.45)`);
+                    glowGrad.addColorStop(0.5, `hsla(${color.hue}, ${color.sat}%, ${color.light}%, 0.2)`);
+                    glowGrad.addColorStop(1, `hsla(${color.hue}, ${color.sat}%, ${color.light}%, 0)`);
+                    ctx.fillStyle = glowGrad;
+                    ctx.beginPath();
+                    ctx.arc(particle.x, particle.y, glowRadius, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // 核心亮点
+                    ctx.fillStyle = `hsla(${color.hue}, 100%, 90%, 0.8)`;
+                    ctx.beginPath();
+                    ctx.arc(particle.x, particle.y, size, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+
+                // 恢复混合模式
+                ctx.globalCompositeOperation = 'source-over';
+            }
+
+            // ---------- 更新粒子 ----------
+            function updateParticles(now) {
+                const dt = Math.min(2, (now - lastTime) / 16.67) || 1;
+                time = now * 0.001;
+
+                for (const particle of particles) {
+                    particle.update(dt, now, time);
+                }
+            }
+
+            // ---------- 动画循环 ----------
+            function animate(timestamp) {
+                const now = performance.now();
+                if (lastTime === 0) lastTime = now;
+                const dt = now - lastTime;
+                if (dt > 100) {
+                    lastTime = now - 16;
+                } else {
+                    lastTime = now;
+                }
+
+                updateParticles(now);
+                drawScene(now);
+
+                animationId = requestAnimationFrame(animate);
+            }
+
+            // ---------- 交互事件 ----------
+            function updateMousePosition(clientX, clientY) {
+                targetMouseX = clientX;
+                targetMouseY = clientY;
+                if (!mouseActive) {
+                    mouseActive = true;
+                    smoothMouseX = targetMouseX;
+                    smoothMouseY = targetMouseY;
+                }
+            }
+
+            function handleClick(clientX, clientY) {
+                // 切换极性
+                CONFIG.polarity *= -1;
+                // 也可以添加一次小的能量脉冲
+                for (const particle of particles) {
+                    const dx = particle.x - clientX;
+                    const dy = particle.y - clientY;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    if (dist < 100 && dist > 0.01) {
+                        const impulse = 15 * (1 - dist / 100);
+                        particle.vx += (dx / dist) * impulse;
+                        particle.vy += (dy / dist) * impulse;
+                    }
+                }
+            }
+
+            function setupEvents() {
+                window.addEventListener('mousemove', (e) => {
+                    updateMousePosition(e.clientX, e.clientY);
+                }, { passive: true });
+
+                window.addEventListener('mouseleave', () => {
+                    mouseActive = false;
+                    smoothMouseX = -9999;
+                    smoothMouseY = -9999;
+                });
+
+                window.addEventListener('mousedown', (e) => {
+                    handleClick(e.clientX, e.clientY);
+                });
+
+                window.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        updateMousePosition(touch.clientX, touch.clientY);
+                        handleClick(touch.clientX, touch.clientY);
+                    }
+                }, { passive: false });
+
+                window.addEventListener('touchmove', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        updateMousePosition(touch.clientX, touch.clientY);
+                    }
+                }, { passive: false });
+
+                window.addEventListener('touchend', () => {
+                    mouseActive = false;
+                    smoothMouseX = -9999;
+                    smoothMouseY = -9999;
+                });
+
+                window.addEventListener('resize', () => {
+                    resizeCanvas();
+                });
+
+                document.addEventListener('visibilitychange', () => {
+                    if (document.hidden) {
+                        if (animationId) {
+                            cancelAnimationFrame(animationId);
+                            animationId = null;
+                        }
+                        lastTime = 0;
+                    } else {
+                        if (!animationId) {
+                            lastTime = 0;
+                            animationId = requestAnimationFrame(animate);
+                        }
+                    }
+                });
+            }
+
+            // ---------- 启动 ----------
+            function init() {
+                resizeCanvas();
+                setupEvents();
+                lastTime = 0;
+                animationId = requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.__magnetField = {
+                config: CONFIG,
+                particles: particles,
+            };
+        })();
+    </script>
+</body>
+</html>

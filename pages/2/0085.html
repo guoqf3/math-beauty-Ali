@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>INK · 数字水墨</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #0a0a14;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2;
+            text-align: center;
+            pointer-events: none;
+            opacity: 0.55;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+
+        .overlay:hover {
+            opacity: 0.9;
+        }
+
+        .title {
+            color: rgba(235, 220, 250, 0.8);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 20px rgba(160, 120, 230, 0.5);
+        }
+
+        .hint {
+            color: rgba(190, 175, 215, 0.5);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+
+        @media (max-width: 768px) {
+            .overlay {
+                bottom: 18px;
+            }
+            .title {
+                font-size: 8px;
+                letter-spacing: 0.45em;
+            }
+            .hint {
+                font-size: 6px;
+                letter-spacing: 0.22em;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="canvas"></canvas>
+
+    <div class="overlay">
+        <div class="title">Ink</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script>
+        (function() {
+            // ─── 画布初始化 ───────────────────────────────────────────────
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+
+            // 网格尺寸
+            let gridW, gridH;
+            let stepSize = 8;        // 每个格点对应的屏幕像素
+            let colorField;          // 存储每个格点的颜色 [r, g, b]
+            let bufferField;         // 双缓冲
+
+            // 离屏画布
+            let offscreenCanvas;
+            let offscreenCtx;
+            let imageData;
+
+            // 鼠标状态
+            let mouse = { x: -9999, y: -9999, active: false, gridX: -1, gridY: -1 };
+            let time = 0;
+            let colorShift = 0;      // 色彩偏移
+
+            // 扩散参数
+            const diffusionRate = 0.25;   // 扩散速度
+            const evaporationRate = 0.002; // 蒸发速度
+            const injectStrength = 0.55;  // 鼠标注入强度
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                ctx.fillStyle = '#0a0a14';
+                ctx.fillRect(0, 0, W, H);
+            }
+
+            // ─── 初始化颜色场 ────────────────────────────────────────────
+            function initColorField() {
+                const targetCells = 8000;
+                const area = W * H;
+                stepSize = Math.sqrt(area / targetCells);
+                stepSize = Math.max(6, Math.min(14, stepSize));
+
+                gridW = Math.ceil(W / stepSize);
+                gridH = Math.ceil(H / stepSize);
+                const cellCount = gridW * gridH;
+
+                colorField = new Float32Array(cellCount * 3);
+                bufferField = new Float32Array(cellCount * 3);
+
+                // 初始：全黑，略带微弱基础色调
+                for (let i = 0; i < cellCount; i++) {
+                    colorField[i * 3] = 4 + Math.random() * 3;
+                    colorField[i * 3 + 1] = 4 + Math.random() * 3;
+                    colorField[i * 3 + 2] = 8 + Math.random() * 4;
+                }
+
+                // 离屏画布
+                offscreenCanvas = document.createElement('canvas');
+                offscreenCanvas.width = gridW;
+                offscreenCanvas.height = gridH;
+                offscreenCtx = offscreenCanvas.getContext('2d');
+                imageData = offscreenCtx.createImageData(gridW, gridH);
+            }
+
+            // ─── 鼠标颜色注入 ────────────────────────────────────────────
+            function injectColor(gridX, gridY, strength, hueShift) {
+                const injectRadius = 2;
+                const injectRadiusSq = injectRadius * injectRadius;
+
+                for (let dy = -injectRadius; dy <= injectRadius; dy++) {
+                    for (let dx = -injectRadius; dx <= injectRadius; dx++) {
+                        const gx = gridX + dx;
+                        const gy = gridY + dy;
+                        if (gx < 0 || gx >= gridW || gy < 0 || gy >= gridH) continue;
+                        const distSq = dx * dx + dy * dy;
+                        if (distSq > injectRadiusSq) continue;
+
+                        const idx = gy * gridW + gx;
+                        const falloff = 1 - Math.sqrt(distSq) / injectRadius;
+                        const addStr = strength * falloff;
+
+                        // 根据当前时间生成变化的颜色
+                        const hue = (hueShift + Math.random() * 30) % 360;
+                        const sat = 0.6 + Math.random() * 0.3;
+                        const light = 0.65 + Math.random() * 0.25;
+
+                        // HSL转RGB
+                        const c = (1 - Math.abs(2 * light - 1)) * sat;
+                        const x = c * (1 - Math.abs((hue / 60) % 2 - 1));
+                        const m = light - c / 2;
+                        let r = 0, g = 0, b = 0;
+                        if (hue < 60) { r = c; g = x; b = 0; }
+                        else if (hue < 120) { r = x; g = c; b = 0; }
+                        else if (hue < 180) { r = 0; g = c; b = x; }
+                        else if (hue < 240) { r = 0; g = x; b = c; }
+                        else if (hue < 300) { r = x; g = 0; b = c; }
+                        else { r = c; g = 0; b = x; }
+
+                        colorField[idx * 3] = Math.min(1, colorField[idx * 3] + (r + m) * addStr);
+                        colorField[idx * 3 + 1] = Math.min(1, colorField[idx * 3 + 1] + (g + m) * addStr);
+                        colorField[idx * 3 + 2] = Math.min(1, colorField[idx * 3 + 2] + (b + m) * addStr);
+                    }
+                }
+            }
+
+            // ─── 扩散模拟步骤 ────────────────────────────────────────────
+            function simulateDiffusion() {
+                const w = gridW;
+                const h = gridH;
+
+                for (let j = 0; j < h; j++) {
+                    for (let i = 0; i < w; i++) {
+                        const idx = j * w + i;
+                        const idx3 = idx * 3;
+
+                        // 当前颜色
+                        let r = colorField[idx3];
+                        let g = colorField[idx3 + 1];
+                        let b = colorField[idx3 + 2];
+
+                        // 周围格点平均
+                        let avgR = r, avgG = g, avgB = b;
+                        let count = 1;
+
+                        if (i > 0) {
+                            const nIdx = (idx - 1) * 3;
+                            avgR += colorField[nIdx]; avgG += colorField[nIdx + 1]; avgB += colorField[nIdx + 2]; count++;
+                        }
+                        if (i < w - 1) {
+                            const nIdx = (idx + 1) * 3;
+                            avgR += colorField[nIdx]; avgG += colorField[nIdx + 1]; avgB += colorField[nIdx + 2]; count++;
+                        }
+                        if (j > 0) {
+                            const nIdx = (idx - w) * 3;
+                            avgR += colorField[nIdx]; avgG += colorField[nIdx + 1]; avgB += colorField[nIdx + 2]; count++;
+                        }
+                        if (j < h - 1) {
+                            const nIdx = (idx + w) * 3;
+                            avgR += colorField[nIdx]; avgG += colorField[nIdx + 1]; avgB += colorField[nIdx + 2]; count++;
+                        }
+
+                        avgR /= count;
+                        avgG /= count;
+                        avgB /= count;
+
+                        // 扩散
+                        const nr = r + (avgR - r) * diffusionRate;
+                        const ng = g + (avgG - g) * diffusionRate;
+                        const nb = b + (avgB - b) * diffusionRate;
+
+                        // 蒸发（微弱）
+                        const evapR = nr * (1 - evaporationRate);
+                        const evapG = ng * (1 - evaporationRate);
+                        const evapB = nb * (1 - evaporationRate);
+
+                        bufferField[idx3] = evapR;
+                        bufferField[idx3 + 1] = evapG;
+                        bufferField[idx3 + 2] = evapB;
+                    }
+                }
+
+                // 交换缓冲区
+                const temp = colorField;
+                colorField = bufferField;
+                bufferField = temp;
+            }
+
+            // ─── 渲染到离屏画布 ──────────────────────────────────────────
+            function renderToOffscreen() {
+                const data = imageData.data;
+                const totalCells = gridW * gridH;
+
+                for (let i = 0; i < totalCells; i++) {
+                    const idx3 = i * 3;
+                    const pixelIdx = i * 4;
+
+                    // 应用色彩偏移，增强视觉效果
+                    const r = colorField[idx3];
+                    const g = colorField[idx3 + 1];
+                    const b = colorField[idx3 + 2];
+
+                    // 轻微的Gamma校正
+                    const gamma = 0.85;
+                    const outR = Math.pow(Math.max(0, Math.min(1, r)), gamma);
+                    const outG = Math.pow(Math.max(0, Math.min(1, g)), gamma);
+                    const outB = Math.pow(Math.max(0, Math.min(1, b)), gamma);
+
+                    data[pixelIdx] = Math.round(outR * 255);
+                    data[pixelIdx + 1] = Math.round(outG * 255);
+                    data[pixelIdx + 2] = Math.round(outB * 255);
+                    data[pixelIdx + 3] = 255;
+                }
+
+                offscreenCtx.putImageData(imageData, 0, 0);
+            }
+
+            // ─── 鼠标光晕 ───────────────────────────────────────────────
+            function drawCursorGlow(ctx) {
+                if (!mouse.active) return;
+                const radius = 70;
+                const hue = 280 + Math.sin(time * 0.4) * 60;
+                const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                gradient.addColorStop(0, `hsla(${hue}, 70%, 80%, 0.06)`);
+                gradient.addColorStop(0.7, `hsla(${hue}, 60%, 70%, 0.02)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // ─── 更新鼠标网格坐标 ───────────────────────────────────────
+            function updateMouseGridCoords() {
+                if (mouse.active && mouse.x >= 0 && mouse.x <= W && mouse.y >= 0 && mouse.y <= H) {
+                    mouse.gridX = Math.floor(mouse.x / stepSize);
+                    mouse.gridY = Math.floor(mouse.y / stepSize);
+                } else {
+                    mouse.gridX = -1;
+                    mouse.gridY = -1;
+                }
+            }
+
+            // ─── 主循环 ─────────────────────────────────────────────────
+            let lastTime = 0;
+            let accumulator = 0;
+            const fixedStep = 1000 / 60;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+
+                accumulator += dt;
+                const steps = Math.min(Math.floor(accumulator / fixedStep), 3);
+                accumulator -= steps * fixedStep;
+
+                for (let s = 0; s < steps; s++) {
+                    time += 0.016;
+
+                    // 鼠标持续注入颜色
+                    if (mouse.active && mouse.gridX >= 0 && mouse.gridX < gridW && mouse.gridY >= 0 && mouse.gridY < gridH) {
+                        injectColor(mouse.gridX, mouse.gridY, injectStrength, colorShift + time * 12);
+                    }
+
+                    // 扩散模拟
+                    simulateDiffusion();
+                }
+
+                // 渲染到离屏画布
+                renderToOffscreen();
+
+                // 清除主画布
+                ctx.fillStyle = '#0a0a14';
+                ctx.fillRect(0, 0, W, H);
+
+                // 将离屏画布缩放绘制到主画布
+                ctx.imageSmoothingEnabled = true;
+                ctx.imageSmoothingQuality = 'high';
+                ctx.drawImage(offscreenCanvas, 0, 0, gridW, gridH, 0, 0, W, H);
+
+                // 绘制鼠标光晕
+                drawCursorGlow(ctx);
+
+                requestAnimationFrame(animate);
+            }
+
+            // ─── 交互事件 ───────────────────────────────────────────────
+            function onMouseMove(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                updateMouseGridCoords();
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+                mouse.gridX = -1;
+                mouse.gridY = -1;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                updateMouseGridCoords();
+
+                // 点击产生大面积注入
+                if (mouse.gridX >= 0 && mouse.gridX < gridW && mouse.gridY >= 0 && mouse.gridY < gridH) {
+                    injectColor(mouse.gridX, mouse.gridY, 1.2, colorShift + time * 15);
+                    // 周围区域也注入
+                    for (let dy = -3; dy <= 3; dy++) {
+                        for (let dx = -3; dx <= 3; dx++) {
+                            const gx = mouse.gridX + dx;
+                            const gy = mouse.gridY + dy;
+                            if (gx >= 0 && gx < gridW && gy >= 0 && gy < gridH) {
+                                injectColor(gx, gy, 0.7, colorShift + time * 15 + dx * 8);
+                            }
+                        }
+                    }
+                }
+
+                // 切换色彩偏移
+                colorShift += 35 + Math.random() * 35;
+                if (colorShift > 180) colorShift = -30;
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    updateMouseGridCoords();
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    updateMouseGridCoords();
+                    if (mouse.gridX >= 0 && mouse.gridX < gridW && mouse.gridY >= 0 && mouse.gridY < gridH) {
+                        injectColor(mouse.gridX, mouse.gridY, 1.2, colorShift + time * 15);
+                        for (let dy = -3; dy <= 3; dy++) {
+                            for (let dx = -3; dx <= 3; dx++) {
+                                const gx = mouse.gridX + dx;
+                                const gy = mouse.gridY + dy;
+                                if (gx >= 0 && gx < gridW && gy >= 0 && gy < gridH) {
+                                    injectColor(gx, gy, 0.7, colorShift + time * 15 + dx * 8);
+                                }
+                            }
+                        }
+                    }
+                    colorShift += 35 + Math.random() * 35;
+                    if (colorShift > 180) colorShift = -30;
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+                mouse.gridX = -1;
+                mouse.gridY = -1;
+            }
+
+            function onResize() {
+                setupCanvas();
+                initColorField();
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+                mouse.gridX = -1;
+                mouse.gridY = -1;
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+                initColorField();
+
+                // 初始注入几个颜色区域，避免画面过于空白
+                const seedCount = 6;
+                for (let s = 0; s < seedCount; s++) {
+                    const sx = Math.floor(Math.random() * gridW);
+                    const sy = Math.floor(Math.random() * gridH);
+                    injectColor(sx, sy, 0.5 + Math.random() * 0.4, Math.random() * 360);
+                }
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            // 确保初始背景填充
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#0a0a14';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+
+        })();
+    </script>
+</body>
+</html>

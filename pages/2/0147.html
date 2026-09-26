@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>熔岩气泡</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #1a0a02;
+            font-family: sans-serif;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="lavaCanvas"></canvas>
+    <script>
+        (function() {
+            'use strict';
+
+            const canvas = document.getElementById('lavaCanvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            // ---------- 配置 ----------
+            const CONFIG = {
+                bubbleCount: 70,          // 气泡数量
+                minRadius: 8,             // 最小半径
+                maxRadius: 38,            // 最大半径
+                baseRiseSpeed: 0.35,      // 基础上升速度
+                horizontalDrift: 0.25,    // 水平漂移幅度
+                mouseAttractRadius: 180,  // 鼠标吸引半径
+                mouseAttractStrength: 0.04, // 吸引强度
+                clickRepelRadius: 260,    // 点击排斥半径
+                clickRepelStrength: 16,   // 排斥强度
+                heatWaveDuration: 900,    // 热浪持续时间(ms)
+                maxHeatWaves: 5,          // 最大热浪数量
+                damping: 0.92,            // 速度阻尼
+                gravity: 0.02,            // 气泡上升加速度（模拟浮力）
+                colorHueMin: 10,          // 色相范围（红-橙）
+                colorHueMax: 45,
+                saturation: 95,
+                lightness: 60,
+                glowAlpha: 0.55,         // 光晕透明度
+                backgroundFade: 0.25,    // 背景拖尾强度（越高残影越明显）
+            };
+
+            let width = 0;
+            let height = 0;
+            let dpr = 1;
+            let bubbles = [];
+            let heatWaves = [];
+            let mouseX = -9999;
+            let mouseY = -9999;
+            let mouseActive = false;
+            let targetMouseX = -9999;
+            let targetMouseY = -9999;
+            let smoothMouseX = -9999;
+            let smoothMouseY = -9999;
+            let animationId = null;
+            let lastTime = 0;
+            let time = 0;
+
+            // ---------- 热浪类（点击脉冲） ----------
+            class HeatWave {
+                constructor(x, y, startTime) {
+                    this.x = x;
+                    this.y = y;
+                    this.startTime = startTime;
+                    this.duration = CONFIG.heatWaveDuration;
+                    this.maxRadius = CONFIG.clickRepelRadius;
+                    this.strength = CONFIG.clickRepelStrength;
+                }
+
+                getProgress(now) {
+                    return Math.min(1, (now - this.startTime) / this.duration);
+                }
+
+                isExpired(now) {
+                    return this.getProgress(now) >= 1;
+                }
+
+                getEnvelope() {
+                    const p = this.getProgress(performance.now());
+                    return Math.max(0, 1 - p);
+                }
+            }
+
+            // ---------- 气泡类 ----------
+            class Bubble {
+                constructor(x, y, radius, hue) {
+                    this.x = x;
+                    this.y = y;
+                    this.radius = radius;
+                    this.hue = hue;
+                    this.saturation = CONFIG.saturation;
+                    this.lightness = CONFIG.lightness;
+                    this.vx = 0;
+                    this.vy = 0;
+                    this.pulsePhase = Math.random() * Math.PI * 2;
+                    this.pulseSpeed = Math.random() * 1.2 + 0.4;
+                    this.alpha = 0.7 + Math.random() * 0.3;
+                }
+
+                // 更新气泡位置
+                update(dt, now, time) {
+                    // 浮力：持续向上的加速度
+                    this.vy -= CONFIG.gravity * dt * (this.radius / 25);
+                    // 随机水平漂移
+                    this.vx += (Math.random() - 0.5) * CONFIG.horizontalDrift * dt;
+                    // 鼠标吸引
+                    if (mouseActive && smoothMouseX > -1000) {
+                        const dx = smoothMouseX - this.x;
+                        const dy = smoothMouseY - this.y;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        if (dist < CONFIG.mouseAttractRadius && dist > 0.01) {
+                            const force = (CONFIG.mouseAttractRadius - dist) / CONFIG.mouseAttractRadius * CONFIG
+                                .mouseAttractStrength;
+                            this.vx += (dx / dist) * force * dt * 1.5;
+                            this.vy += (dy / dist) * force * dt * 1.5;
+                        }
+                    }
+
+                    // 热浪排斥
+                    for (const wave of heatWaves) {
+                        const dx = this.x - wave.x;
+                        const dy = this.y - wave.y;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        const progress = wave.getProgress(now);
+                        if (progress < 1) {
+                            const radius = wave.maxRadius * (0.3 + 0.7 * progress);
+                            if (dist < radius && dist > 0.01) {
+                                const envelope = 1 - progress;
+                                const force = (1 - dist / radius) * wave.strength * envelope;
+                                this.vx += (dx / dist) * force;
+                                this.vy += (dy / dist) * force;
+                            }
+                        }
+                    }
+
+                    // 阻尼
+                    this.vx *= CONFIG.damping;
+                    this.vy *= CONFIG.damping;
+
+                    // 位置更新
+                    this.x += this.vx * dt;
+                    this.y += this.vy * dt;
+
+                    // 边界处理：气泡可以循环（从底部出，顶部进）
+                    if (this.y < -this.radius * 2) {
+                        this.y = height + this.radius;
+                        this.x = Math.random() * width;
+                        this.vy = 0;
+                        this.vx = 0;
+                    }
+                    if (this.y > height + this.radius * 2) {
+                        this.y = -this.radius;
+                        this.x = Math.random() * width;
+                        this.vy = 0;
+                        this.vx = 0;
+                    }
+                    if (this.x < -this.radius * 2) {
+                        this.x = width + this.radius;
+                    }
+                    if (this.x > width + this.radius * 2) {
+                        this.x = -this.radius;
+                    }
+
+                    // 确保在边界内
+                    this.x = Math.max(-this.radius, Math.min(width + this.radius, this.x));
+                    this.y = Math.max(-this.radius, Math.min(height + this.radius, this.y));
+                }
+
+                // 获取当前渲染亮度
+                getLightness() {
+                    let light = this.lightness;
+                    if (mouseActive && smoothMouseX > -1000) {
+                        const dx = this.x - smoothMouseX;
+                        const dy = this.y - smoothMouseY;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        if (dist < CONFIG.mouseAttractRadius) {
+                            light += (1 - dist / CONFIG.mouseAttractRadius) * 20;
+                        }
+                    }
+                    const pulse = Math.sin(time * this.pulseSpeed + this.pulsePhase) * 10;
+                    light += pulse;
+                    return Math.max(30, Math.min(95, light));
+                }
+
+                // 获取当前半径（脉冲变化）
+                getRadius(time) {
+                    const pulse = Math.sin(time * this.pulseSpeed + this.pulsePhase) * 1.5;
+                    return this.radius + pulse;
+                }
+            }
+
+            // ---------- 初始化气泡 ----------
+            function initBubbles() {
+                bubbles = [];
+                for (let i = 0; i < CONFIG.bubbleCount; i++) {
+                    const radius = Math.random() * (CONFIG.maxRadius - CONFIG.minRadius) + CONFIG.minRadius;
+                    const x = Math.random() * width;
+                    const y = Math.random() * height;
+                    const hue = Math.random() * (CONFIG.colorHueMax - CONFIG.colorHueMin) + CONFIG.colorHueMin;
+                    bubbles.push(new Bubble(x, y, radius, hue));
+                }
+            }
+
+            // ---------- 调整画布尺寸 ----------
+            function resizeCanvas() {
+                dpr = Math.min(window.devicePixelRatio || 1, 2);
+                width = window.innerWidth;
+                height = window.innerHeight;
+                canvas.width = Math.floor(width * dpr);
+                canvas.height = Math.floor(height * dpr);
+                canvas.style.width = width + 'px';
+                canvas.style.height = height + 'px';
+                ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                // 初始填充背景色，避免白屏
+                ctx.fillStyle = '#1a0a02';
+                ctx.fillRect(0, 0, width, height);
+                initBubbles();
+                // 立即绘制一帧
+                drawScene(performance.now());
+            }
+
+            // ---------- 绘制场景 ----------
+            function drawScene(now) {
+                // 背景拖尾：半透明填充产生残影效果
+                ctx.fillStyle = 'rgba(26, 10, 2, ' + CONFIG.backgroundFade + ')';
+                ctx.fillRect(0, 0, width, height);
+
+                // 平滑鼠标位置
+                if (mouseActive) {
+                    smoothMouseX += (targetMouseX - smoothMouseX) * 0.13;
+                    smoothMouseY += (targetMouseY - smoothMouseY) * 0.13;
+                }
+
+                // 绘制鼠标周围光晕
+                if (mouseActive && smoothMouseX > -1000) {
+                    const glowRadius = 110;
+                    const grad = ctx.createRadialGradient(smoothMouseX, smoothMouseY, 0, smoothMouseX, smoothMouseY,
+                        glowRadius);
+                    grad.addColorStop(0, 'rgba(255, 120, 40, 0.2)');
+                    grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+                    ctx.fillStyle = grad;
+                    ctx.beginPath();
+                    ctx.arc(smoothMouseX, smoothMouseY, glowRadius, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+
+                // 绘制所有气泡
+                for (const bubble of bubbles) {
+                    const radius = bubble.getRadius(time);
+                    const lightness = bubble.getLightness();
+                    const alpha = bubble.alpha;
+
+                    // 绘制光晕（径向渐变）
+                    const glowRadius = radius * 2.5;
+                    const glowGrad = ctx.createRadialGradient(bubble.x, bubble.y, 0, bubble.x, bubble.y, glowRadius);
+                    glowGrad.addColorStop(0, `hsla(${bubble.hue}, ${bubble.saturation}%, ${lightness}%, ${alpha * 0.4})`);
+                    glowGrad.addColorStop(1, `hsla(${bubble.hue}, ${bubble.saturation}%, ${lightness}%, 0)`);
+                    ctx.fillStyle = glowGrad;
+                    ctx.beginPath();
+                    ctx.arc(bubble.x, bubble.y, glowRadius, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // 绘制气泡主体
+                    const bodyGrad = ctx.createRadialGradient(
+                        bubble.x - radius * 0.25, bubble.y - radius * 0.25, radius * 0.1,
+                        bubble.x, bubble.y, radius
+                    );
+                    bodyGrad.addColorStop(0, `hsla(${bubble.hue}, ${bubble.saturation}%, ${Math.min(lightness + 20, 98)}%, ${alpha})`);
+                    bodyGrad.addColorStop(0.7, `hsla(${bubble.hue}, ${bubble.saturation}%, ${lightness}%, ${alpha})`);
+                    bodyGrad.addColorStop(1, `hsla(${bubble.hue}, ${bubble.saturation}%, ${Math.max(lightness - 15, 20)}%, ${alpha * 0.7})`);
+
+                    ctx.fillStyle = bodyGrad;
+                    ctx.beginPath();
+                    ctx.arc(bubble.x, bubble.y, radius, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // 高光
+                    ctx.beginPath();
+                    ctx.arc(bubble.x - radius * 0.25, bubble.y - radius * 0.3, radius * 0.2, 0, Math.PI * 2);
+                    ctx.fillStyle = `hsla(0, 0%, 100%, 0.6)`;
+                    ctx.fill();
+                }
+
+                // 移除过期热浪
+                heatWaves = heatWaves.filter(w => !w.isExpired(now));
+                if (heatWaves.length > CONFIG.maxHeatWaves) {
+                    heatWaves = heatWaves.slice(-CONFIG.maxHeatWaves);
+                }
+            }
+
+            // ---------- 更新气泡 ----------
+            function updateBubbles(now) {
+                const dt = Math.min(2, (now - lastTime) / 16.67) || 1;
+                time = now * 0.001;
+
+                for (const bubble of bubbles) {
+                    bubble.update(dt, now, time);
+                }
+            }
+
+            // ---------- 动画循环 ----------
+            function animate(timestamp) {
+                const now = performance.now();
+                if (lastTime === 0) lastTime = now;
+                const dt = now - lastTime;
+                if (dt > 100) {
+                    lastTime = now - 16;
+                } else {
+                    lastTime = now;
+                }
+
+                updateBubbles(now);
+                drawScene(now);
+
+                animationId = requestAnimationFrame(animate);
+            }
+
+            // ---------- 鼠标与触摸事件 ----------
+            function updateMousePosition(clientX, clientY) {
+                targetMouseX = clientX;
+                targetMouseY = clientY;
+                if (!mouseActive) {
+                    mouseActive = true;
+                    smoothMouseX = targetMouseX;
+                    smoothMouseY = targetMouseY;
+                }
+            }
+
+            function handleClick(clientX, clientY) {
+                const now = performance.now();
+                heatWaves.push(new HeatWave(clientX, clientY, now));
+                if (heatWaves.length > CONFIG.maxHeatWaves) {
+                    heatWaves = heatWaves.slice(-CONFIG.maxHeatWaves);
+                }
+            }
+
+            function setupEvents() {
+                window.addEventListener('mousemove', (e) => {
+                    updateMousePosition(e.clientX, e.clientY);
+                }, { passive: true });
+
+                window.addEventListener('mouseleave', () => {
+                    mouseActive = false;
+                    smoothMouseX = -9999;
+                    smoothMouseY = -9999;
+                });
+
+                window.addEventListener('mousedown', (e) => {
+                    handleClick(e.clientX, e.clientY);
+                });
+
+                window.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        updateMousePosition(touch.clientX, touch.clientY);
+                        handleClick(touch.clientX, touch.clientY);
+                    }
+                }, { passive: false });
+
+                window.addEventListener('touchmove', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        updateMousePosition(touch.clientX, touch.clientY);
+                    }
+                }, { passive: false });
+
+                window.addEventListener('touchend', () => {
+                    mouseActive = false;
+                    smoothMouseX = -9999;
+                    smoothMouseY = -9999;
+                });
+
+                window.addEventListener('resize', () => {
+                    resizeCanvas();
+                });
+
+                document.addEventListener('visibilitychange', () => {
+                    if (document.hidden) {
+                        if (animationId) {
+                            cancelAnimationFrame(animationId);
+                            animationId = null;
+                        }
+                        lastTime = 0;
+                    } else {
+                        if (!animationId) {
+                            lastTime = 0;
+                            animationId = requestAnimationFrame(animate);
+                        }
+                    }
+                });
+            }
+
+            // ---------- 启动 ----------
+            function init() {
+                resizeCanvas();
+                setupEvents();
+                lastTime = 0;
+                animationId = requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.__lavaBubbles = {
+                config: CONFIG,
+                bubbles: bubbles,
+                heatWaves: heatWaves,
+            };
+        })();
+    </script>
+</body>
+</html>

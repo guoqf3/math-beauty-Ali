@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NEBULA · 螺旋星云</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #06060e;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            right: 32px;
+            z-index: 2;
+            text-align: right;
+            pointer-events: none;
+            opacity: 0.55;
+            transition: opacity 0.8s ease;
+            mix-blend-mode: screen;
+        }
+
+        .overlay:hover {
+            opacity: 0.9;
+        }
+
+        .title {
+            color: rgba(235, 225, 255, 0.8);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 18px rgba(140, 120, 220, 0.5);
+        }
+
+        .hint {
+            color: rgba(190, 180, 220, 0.5);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.35em;
+            text-transform: uppercase;
+        }
+
+        @media (max-width: 768px) {
+            .overlay {
+                bottom: 18px;
+                right: 20px;
+            }
+            .title {
+                font-size: 8px;
+                letter-spacing: 0.5em;
+            }
+            .hint {
+                font-size: 6px;
+                letter-spacing: 0.25em;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="canvas"></canvas>
+
+    <div class="overlay">
+        <div class="title">Nebula</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script>
+        (function() {
+            // ─── 画布初始化 ───────────────────────────────────────────────
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            let centerX, centerY;
+            let particles = [];
+            let shockwaves = [];
+            let mouse = { x: -9999, y: -9999, active: false, angle: 0, dist: 0 };
+            let time = 0;
+            let colorShift = 0;       // 点击切换色相
+            const MAX_PARTICLES = 280; // 性能优化
+
+            // 预设色相基础值
+            const HUES = [260, 190, 320, 40, 0, 150];
+            let hueIndex = 0;
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                centerX = W / 2;
+                centerY = H / 2;
+                // 填充深色背景，杜绝白屏
+                ctx.fillStyle = '#06060e';
+                ctx.fillRect(0, 0, W, H);
+            }
+
+            // ─── 螺旋粒子 ───────────────────────────────────────────────
+            class NebulaParticle {
+                constructor(index) {
+                    this.index = index;
+                    // 螺旋分布参数
+                    const spiralTightness = 4.5 + Math.random() * 3.5; // 螺旋紧密度
+                    const maxRadius = Math.min(W, H) * 0.45;
+                    this.maxRadius = maxRadius;
+                    // 初始半径（从中心向外分布，越靠外越稀疏）
+                    const t = Math.random();
+                    this.radius = Math.pow(t, 0.7) * maxRadius * (0.3 + Math.random() * 0.7);
+                    // 初始角度基于半径（螺旋）
+                    this.angle = this.radius * 0.03 + Math.random() * 0.5;
+                    // 旋转速度（随半径变化，内快外慢）
+                    this.angularSpeed = 0.25 + (1 - this.radius / maxRadius) * 0.45;
+                    this.angularSpeed *= (0.6 + Math.random() * 0.8);
+                    // 径向漂移（轻微）
+                    this.radialSpeed = (Math.random() - 0.5) * 0.15;
+                    // 粒子属性
+                    this.size = 0.8 + Math.random() * 1.5;
+                    this.baseBrightness = 0.7 + Math.random() * 0.3;
+                    this.hueOffset = Math.random() * 40 - 20;
+                    this.alpha = 0.5 + Math.random() * 0.5;
+                    // 轨迹拖尾（用于光尾）
+                    this.trail = [];
+                    this.maxTrail = 8;
+                }
+
+                update(dt, mouseInfo) {
+                    // 角度更新
+                    this.angle += this.angularSpeed * dt;
+                    // 轻微径向振荡
+                    const oscR = Math.sin(time * 0.6 + this.index) * 0.15;
+                    this.radius += this.radialSpeed * dt + oscR * 0.02;
+
+                    // 边界处理（半径限制）
+                    if (this.radius > this.maxRadius) {
+                        this.radius = this.maxRadius * 0.95;
+                        this.radialSpeed *= -0.5;
+                    } else if (this.radius < 10) {
+                        this.radius = 10;
+                        this.radialSpeed *= -0.5;
+                    }
+
+                    // 鼠标交互：引力/扰动
+                    if (mouseInfo.active) {
+                        const dx = mouseInfo.x - centerX;
+                        const dy = mouseInfo.y - centerY;
+                        const mouseDist = Math.sqrt(dx * dx + dy * dy);
+                        const mouseAngle = Math.atan2(dy, dx);
+
+                        // 粒子与鼠标之间的角度差
+                        const angleDiff = mouseAngle - this.angle;
+                        // 影响半径（在螺旋平面上的相对距离）
+                        const distToMouse = Math.abs(this.radius - mouseDist);
+                        const influenceRadius = 150;
+                        if (distToMouse < influenceRadius) {
+                            const strength = (1 - distToMouse / influenceRadius) * 0.35;
+                            // 角度拉动
+                            const anglePull = Math.sin(angleDiff) * strength * dt;
+                            this.angle += anglePull;
+                            // 半径拉动
+                            const radiusPull = (mouseDist - this.radius) * 0.01 * strength * dt;
+                            this.radius += radiusPull;
+                        }
+
+                        // 靠近鼠标时增亮
+                        const ddx = (centerX + this.radius * Math.cos(this.angle)) - mouseInfo.x;
+                        const ddy = (centerY + this.radius * Math.sin(this.angle)) - mouseInfo.y;
+                        const distSq = ddx * ddx + ddy * ddy;
+                        if (distSq < 80 * 80) {
+                            this.baseBrightness = Math.min(1.0, this.baseBrightness + 0.03);
+                        } else {
+                            this.baseBrightness = Math.max(0.7, this.baseBrightness * 0.998);
+                        }
+                    } else {
+                        this.baseBrightness = Math.max(0.7, this.baseBrightness * 0.999);
+                    }
+
+                    // 更新轨迹
+                    const x = centerX + this.radius * Math.cos(this.angle);
+                    const y = centerY + this.radius * Math.sin(this.angle);
+                    this.trail.push({ x, y, life: 1.0 });
+                    if (this.trail.length > this.maxTrail) {
+                        this.trail.shift();
+                    }
+                    // 轨迹淡化
+                    for (const t of this.trail) {
+                        t.life -= 0.08;
+                    }
+                    this.trail = this.trail.filter(t => t.life > 0);
+                }
+
+                draw(ctx) {
+                    // 绘制轨迹（光尾）
+                    for (let i = 0; i < this.trail.length; i++) {
+                        const t = this.trail[i];
+                        const alpha = t.life * this.alpha * 0.5;
+                        if (alpha <= 0.01) continue;
+                        const hue = HUES[hueIndex] + colorShift + this.hueOffset + Math.sin(this.angle * 0.8) * 20;
+                        const sat = 80;
+                        const light = 55 + this.baseBrightness * 20;
+                        ctx.fillStyle = `hsla(${hue}, ${sat}%, ${light}%, ${alpha})`;
+                        const size = this.size * (0.4 + t.life * 0.6);
+                        ctx.beginPath();
+                        ctx.arc(t.x, t.y, size, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+
+                    // 绘制粒子本体
+                    const x = centerX + this.radius * Math.cos(this.angle);
+                    const y = centerY + this.radius * Math.sin(this.angle);
+                    const hue = HUES[hueIndex] + colorShift + this.hueOffset + Math.sin(this.angle * 0.8 + time) * 25;
+                    const sat = 85;
+                    const light = 58 + this.baseBrightness * 22;
+                    const alpha = this.alpha;
+                    ctx.fillStyle = `hsla(${hue}, ${sat}%, ${light}%, ${alpha})`;
+                    ctx.beginPath();
+                    ctx.arc(x, y, this.size, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // 添加微小的光晕（用径向渐变，性能开销小）
+                    if (this.size > 1.2) {
+                        const glowRadius = this.size * 3;
+                        const gradient = ctx.createRadialGradient(x, y, 0, x, y, glowRadius);
+                        gradient.addColorStop(0, `hsla(${hue}, ${sat}%, ${light + 10}%, ${alpha * 0.25})`);
+                        gradient.addColorStop(1, 'transparent');
+                        ctx.fillStyle = gradient;
+                        ctx.beginPath();
+                        ctx.arc(x, y, glowRadius, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+                }
+            }
+
+            // ─── 初始化粒子 ─────────────────────────────────────────────
+            function initParticles() {
+                particles = [];
+                for (let i = 0; i < MAX_PARTICLES; i++) {
+                    particles.push(new NebulaParticle(i));
+                }
+            }
+
+            // ─── 冲击波（点击效果） ─────────────────────────────────────
+            function createShockwave(x, y) {
+                shockwaves.push({
+                    x, y,
+                    radius: 5,
+                    maxRadius: Math.max(W, H) * 0.5,
+                    life: 1.0,
+                    decay: 0.015 + Math.random() * 0.01,
+                    growth: 6.0 + Math.random() * 3.0,
+                    hue: HUES[hueIndex] + colorShift + Math.random() * 30,
+                });
+                if (shockwaves.length > 6) shockwaves.shift();
+            }
+
+            function updateShockwaves(dt) {
+                for (let i = shockwaves.length - 1; i >= 0; i--) {
+                    const s = shockwaves[i];
+                    s.radius += s.growth * dt;
+                    s.life -= s.decay * dt;
+                    if (s.life <= 0 || s.radius > s.maxRadius) {
+                        shockwaves.splice(i, 1);
+                    }
+                }
+            }
+
+            function drawShockwaves(ctx) {
+                for (const s of shockwaves) {
+                    const alpha = s.life * 0.4;
+                    const lineWidth = 1.5 + s.life * 2.5;
+                    ctx.strokeStyle = `hsla(${s.hue}, 85%, 70%, ${alpha})`;
+                    ctx.lineWidth = lineWidth;
+                    ctx.beginPath();
+                    ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2);
+                    ctx.stroke();
+
+                    // 第二圈
+                    if (s.radius > 20) {
+                        const alpha2 = s.life * 0.2;
+                        ctx.strokeStyle = `hsla(${s.hue + 30}, 80%, 80%, ${alpha2})`;
+                        ctx.lineWidth = lineWidth * 0.5;
+                        ctx.beginPath();
+                        ctx.arc(s.x, s.y, s.radius * 0.8, 0, Math.PI * 2);
+                        ctx.stroke();
+                    }
+                }
+            }
+
+            // ─── 鼠标光晕 ───────────────────────────────────────────────
+            function drawCursorGlow(ctx) {
+                if (!mouse.active) return;
+                const radius = 60;
+                const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                gradient.addColorStop(0, `hsla(${HUES[hueIndex] + colorShift}, 70%, 75%, 0.07)`);
+                gradient.addColorStop(0.7, `hsla(${HUES[hueIndex] + colorShift}, 60%, 70%, 0.02)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // ─── 主循环 ─────────────────────────────────────────────────
+            let lastTime = 0;
+            let accumulator = 0;
+            const fixedStep = 1000 / 60;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+
+                accumulator += dt;
+                const steps = Math.min(Math.floor(accumulator / fixedStep), 3);
+                accumulator -= steps * fixedStep;
+
+                const dtNorm = dt / 16.667; // 归一化
+
+                for (let s = 0; s < steps; s++) {
+                    time += 0.016;
+                    updateShockwaves(fixedStep / 1000 * 60);
+                    for (const p of particles) {
+                        p.update(1, mouse);
+                    }
+                }
+
+                // 拖尾背景
+                ctx.fillStyle = 'rgba(6, 6, 14, 0.08)';
+                ctx.fillRect(0, 0, W, H);
+
+                // 绘制粒子
+                for (const p of particles) {
+                    p.draw(ctx);
+                }
+
+                // 绘制冲击波
+                drawShockwaves(ctx);
+
+                // 鼠标光晕
+                drawCursorGlow(ctx);
+
+                requestAnimationFrame(animate);
+            }
+
+            // ─── 交互事件 ───────────────────────────────────────────────
+            function onMouseMove(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                // 计算鼠标相对中心的角度和距离（用于粒子交互）
+                const dx = mouse.x - centerX;
+                const dy = mouse.y - centerY;
+                mouse.angle = Math.atan2(dy, dx);
+                mouse.dist = Math.sqrt(dx * dx + dy * dy);
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                createShockwave(mouse.x, mouse.y);
+                // 切换色相
+                hueIndex = (hueIndex + 1) % HUES.length;
+                colorShift += 20 + Math.random() * 20;
+                if (colorShift > 80) colorShift = -20;
+                // 轻微扰动所有粒子
+                for (const p of particles) {
+                    p.angularSpeed *= 0.95 + Math.random() * 0.1;
+                }
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    const dx = mouse.x - centerX;
+                    const dy = mouse.y - centerY;
+                    mouse.angle = Math.atan2(dy, dx);
+                    mouse.dist = Math.sqrt(dx * dx + dy * dy);
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    createShockwave(mouse.x, mouse.y);
+                    hueIndex = (hueIndex + 1) % HUES.length;
+                    colorShift += 20 + Math.random() * 20;
+                    if (colorShift > 80) colorShift = -20;
+                    for (const p of particles) {
+                        p.angularSpeed *= 0.95 + Math.random() * 0.1;
+                    }
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onResize() {
+                setupCanvas();
+                // 调整粒子半径基准，避免超出边界
+                const oldMaxRadius = Math.min(W, H) * 0.45;
+                for (const p of particles) {
+                    p.maxRadius = oldMaxRadius;
+                    if (p.radius > p.maxRadius) {
+                        p.radius = p.maxRadius * 0.9;
+                    }
+                }
+                // 清空冲击波避免溢出
+                shockwaves = [];
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+                initParticles();
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            // 额外保险：初始背景填充
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#06060e';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+
+        })();
+    </script>
+</body>
+</html>

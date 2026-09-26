@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PULSE · 脉冲点阵</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #0a0a18;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            right: 32px;
+            z-index: 2;
+            text-align: right;
+            pointer-events: none;
+            opacity: 0.55;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+
+        .overlay:hover {
+            opacity: 0.9;
+        }
+
+        .title {
+            color: rgba(220, 230, 250, 0.8);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 18px rgba(100, 150, 240, 0.5);
+        }
+
+        .hint {
+            color: rgba(170, 180, 210, 0.5);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+
+        @media (max-width: 768px) {
+            .overlay {
+                bottom: 18px;
+                right: 20px;
+            }
+            .title {
+                font-size: 8px;
+                letter-spacing: 0.45em;
+            }
+            .hint {
+                font-size: 6px;
+                letter-spacing: 0.22em;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="canvas"></canvas>
+
+    <div class="overlay">
+        <div class="title">Pulse</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script>
+        (function() {
+            // ─── 画布初始化 ───────────────────────────────────────────────
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            let gridPoints = [];   // 存储每个点的 {x, y, baseHue, baseSat, baseLight}
+            let cols = 0, rows = 0;
+            let spacing = 36;     // 动态计算
+            let ripples = [];     // 点击波纹
+            let mouse = { x: -9999, y: -9999, active: false };
+            let time = 0;
+            let colorShift = 0;   // 点击切换色彩偏移
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                ctx.fillStyle = '#0a0a18';
+                ctx.fillRect(0, 0, W, H);
+            }
+
+            // ─── 初始化点阵 ─────────────────────────────────────────────
+            function initGrid() {
+                const targetPoints = 4200; // 目标点数，控制性能
+                const area = W * H;
+                spacing = Math.sqrt(area / targetPoints);
+                spacing = Math.max(24, Math.min(48, spacing));
+
+                cols = Math.ceil(W / spacing) + 1;
+                rows = Math.ceil(H / spacing) + 1;
+
+                // 限制最大点数
+                if (cols * rows > 5500) {
+                    const scale = Math.sqrt(5500 / (cols * rows));
+                    spacing *= (1 / scale);
+                    cols = Math.ceil(W / spacing) + 1;
+                    rows = Math.ceil(H / spacing) + 1;
+                }
+
+                gridPoints = [];
+                for (let j = 0; j < rows; j++) {
+                    for (let i = 0; i < cols; i++) {
+                        gridPoints.push({
+                            x: i * spacing,
+                            y: j * spacing,
+                            baseHue: 210 + Math.random() * 60 - 30,
+                        });
+                    }
+                }
+            }
+
+            // ─── 创建波纹 ───────────────────────────────────────────────
+            function createRipple(x, y) {
+                ripples.push({
+                    x: x,
+                    y: y,
+                    radius: 5,
+                    maxRadius: Math.max(W, H) * 0.6,
+                    strength: 1.0,
+                    decay: 0.012,
+                    growth: 4.5 + Math.random() * 2,
+                    hue: 220 + colorShift + Math.random() * 60 - 30,
+                });
+                if (ripples.length > 8) ripples.shift();
+            }
+
+            function updateRipples(dt) {
+                for (let i = ripples.length - 1; i >= 0; i--) {
+                    const r = ripples[i];
+                    r.radius += r.growth * dt;
+                    r.strength -= r.decay * dt;
+                    if (r.strength <= 0 || r.radius > r.maxRadius) {
+                        ripples.splice(i, 1);
+                    }
+                }
+            }
+
+            // ─── 绘制点阵 ───────────────────────────────────────────────
+            function drawGrid(ctx) {
+                const mouseRadius = 160;
+                const mouseRadiusSq = mouseRadius * mouseRadius;
+                const rippleInfluenceRadius = 180;
+
+                for (let i = 0; i < gridPoints.length; i++) {
+                    const p = gridPoints[i];
+                    const px = p.x;
+                    const py = p.y;
+
+                    // 基础亮度：微弱呼吸效果
+                    const breath = 0.08 + 0.04 * Math.sin(time * 2 + p.x * 0.02 + p.y * 0.02);
+                    let intensity = breath; // 0 ~ 0.12 左右
+
+                    // 鼠标影响
+                    if (mouse.active) {
+                        const dx = px - mouse.x;
+                        const dy = py - mouse.y;
+                        const distSq = dx * dx + dy * dy;
+                        if (distSq < mouseRadiusSq) {
+                            const dist = Math.sqrt(distSq);
+                            const falloff = 1 - dist / mouseRadius;
+                            intensity += falloff * 0.8;
+                        }
+                    }
+
+                    // 波纹影响
+                    for (const r of ripples) {
+                        const dx = px - r.x;
+                        const dy = py - r.y;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        const bandWidth = 40 + r.radius * 0.1;
+                        const innerR = Math.max(0, r.radius - bandWidth);
+                        const outerR = r.radius + bandWidth;
+                        if (dist > innerR && dist < outerR) {
+                            const bandIntensity = (1 - Math.abs(dist - r.radius) / bandWidth) * r.strength;
+                            intensity += bandIntensity * 0.9;
+                        }
+                    }
+
+                    // 限制强度
+                    intensity = Math.max(0, Math.min(1, intensity));
+
+                    // 颜色计算：基础色相 + 色彩偏移 + 强度偏移
+                    const hue = p.baseHue + colorShift + intensity * 25;
+                    const sat = 55 + intensity * 35;
+                    const light = 25 + intensity * 55;
+                    const alpha = 0.25 + intensity * 0.75;
+
+                    // 绘制小方块（比圆形更快）
+                    const size = 1.8 + intensity * 2.5;
+                    ctx.fillStyle = `hsla(${hue}, ${sat}%, ${light}%, ${alpha})`;
+                    ctx.fillRect(px - size / 2, py - size / 2, size, size);
+                }
+            }
+
+            // ─── 绘制波纹圆环 ───────────────────────────────────────────
+            function drawRipples(ctx) {
+                for (const r of ripples) {
+                    const alpha = r.strength * 0.3;
+                    ctx.strokeStyle = `hsla(${r.hue}, 70%, 75%, ${alpha})`;
+                    ctx.lineWidth = 1.8;
+                    ctx.beginPath();
+                    ctx.arc(r.x, r.y, r.radius, 0, Math.PI * 2);
+                    ctx.stroke();
+                }
+            }
+
+            // ─── 鼠标光晕 ───────────────────────────────────────────────
+            function drawCursorGlow(ctx) {
+                if (!mouse.active) return;
+                const radius = 90;
+                const hue = 220 + colorShift;
+                const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                gradient.addColorStop(0, `hsla(${hue}, 60%, 75%, 0.06)`);
+                gradient.addColorStop(0.7, `hsla(${hue}, 50%, 70%, 0.02)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // ─── 主循环 ─────────────────────────────────────────────────
+            let lastTime = 0;
+            let accumulator = 0;
+            const fixedStep = 1000 / 60;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+
+                accumulator += dt;
+                const steps = Math.min(Math.floor(accumulator / fixedStep), 3);
+                accumulator -= steps * fixedStep;
+
+                for (let s = 0; s < steps; s++) {
+                    time += 0.016;
+                    updateRipples(fixedStep / 1000 * 60);
+                }
+
+                // 清除画布（实心背景，无拖尾，避免累积过亮）
+                ctx.fillStyle = '#0a0a18';
+                ctx.fillRect(0, 0, W, H);
+
+                // 绘制点阵
+                drawGrid(ctx);
+
+                // 绘制波纹圆环
+                drawRipples(ctx);
+
+                // 鼠标光晕
+                drawCursorGlow(ctx);
+
+                requestAnimationFrame(animate);
+            }
+
+            // ─── 交互事件 ───────────────────────────────────────────────
+            function onMouseMove(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                createRipple(mouse.x, mouse.y);
+                // 切换色彩偏移
+                colorShift += 30 + Math.random() * 30;
+                if (colorShift > 140) colorShift = -30;
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    createRipple(mouse.x, mouse.y);
+                    colorShift += 30 + Math.random() * 30;
+                    if (colorShift > 140) colorShift = -30;
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onResize() {
+                setupCanvas();
+                initGrid();
+                ripples = [];
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+                initGrid();
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            // 确保初始背景填充
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#0a0a18';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+
+        })();
+    </script>
+</body>
+</html>

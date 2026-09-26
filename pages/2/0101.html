@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WOVEN · 流体编织</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #0b0b18;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2;
+            text-align: center;
+            pointer-events: none;
+            opacity: 0.55;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+
+        .overlay:hover {
+            opacity: 0.9;
+        }
+
+        .title {
+            color: rgba(225, 215, 245, 0.75);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 20px rgba(140, 120, 230, 0.4);
+        }
+
+        .hint {
+            color: rgba(185, 175, 215, 0.45);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+
+        @media (max-width: 768px) {
+            .overlay {
+                bottom: 18px;
+            }
+            .title {
+                font-size: 8px;
+                letter-spacing: 0.45em;
+            }
+            .hint {
+                font-size: 6px;
+                letter-spacing: 0.22em;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="canvas"></canvas>
+
+    <div class="overlay">
+        <div class="title">Woven</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script>
+        (function() {
+            // ─── 画布初始化 ───────────────────────────────────────────────
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            let threads = [];        // 每条线由一系列点组成
+            let ripples = [];        // 点击波纹扰动
+            let mouse = { x: -9999, y: -9999, active: false };
+            let time = 0;
+            let colorShift = 0;      // 点击切换色相偏移
+            let lineCount = 50;      // 线条数量
+            let segmentsPerThread = 60; // 每条线的分段数
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                // 深色背景，杜绝白屏
+                ctx.fillStyle = '#0b0b18';
+                ctx.fillRect(0, 0, W, H);
+            }
+
+            // ─── 初始化线条 ─────────────────────────────────────────────
+            function initThreads() {
+                threads = [];
+                lineCount = Math.max(28, Math.min(70, Math.floor(W / 28)));
+                segmentsPerThread = Math.max(35, Math.min(80, Math.floor(H / 12)));
+
+                for (let i = 0; i < lineCount; i++) {
+                    const yStart = (i / (lineCount - 1)) * H; // 均匀分布起点
+                    const hue = 200 + (i / lineCount) * 80;    // 蓝到紫渐变
+                    const points = [];
+                    for (let j = 0; j <= segmentsPerThread; j++) {
+                        const t = j / segmentsPerThread;
+                        const x = (t - 0.5) * W * 1.2 + W / 2;
+                        const y = yStart + Math.sin(t * Math.PI * 2) * 20;
+                        points.push({
+                            x: x,
+                            y: y,
+                            baseX: x,
+                            baseY: y,
+                            offsetX: 0,
+                            offsetY: 0,
+                            velocityX: 0,
+                            velocityY: 0,
+                        });
+                    }
+                    threads.push({
+                        points: points,
+                        hue: hue,
+                        amplitude: 20 + Math.random() * 35,
+                        frequency: 0.005 + Math.random() * 0.008,
+                        phase: Math.random() * Math.PI * 2,
+                        speed: 0.4 + Math.random() * 0.6,
+                        tension: 0.4 + Math.random() * 0.3,
+                    });
+                }
+            }
+
+            // ─── 更新线条形态（物理弹簧模型） ────────────────────────────
+            function updateThreads(dt) {
+                // 鼠标影响半径
+                const mouseRadius = 150;
+                const mouseRadiusSq = mouseRadius * mouseRadius;
+
+                // 波纹影响
+                for (const t of threads) {
+                    for (let i = 0; i < t.points.length; i++) {
+                        const p = t.points[i];
+                        const ratio = i / (t.points.length - 1);
+
+                        // 基础波浪运动
+                        const waveX = Math.sin(ratio * 8 + t.phase + time * t.speed) * t.amplitude;
+                        const waveY = Math.cos(ratio * 6 + t.phase * 1.3 + time * t.speed * 0.9) * t.amplitude * 0.7;
+                        const driftX = Math.sin(ratio * 3 + time * 0.5) * 25;
+                        const driftY = Math.cos(ratio * 4 + time * 0.7) * 25;
+
+                        let targetX = p.baseX + waveX + driftX;
+                        let targetY = p.baseY + waveY + driftY;
+
+                        // 鼠标斥力/吸引力（轻微排斥，让线条避开鼠标）
+                        if (mouse.active) {
+                            const dx = p.x - mouse.x;
+                            const dy = p.y - mouse.y;
+                            const distSq = dx * dx + dy * dy;
+                            if (distSq < mouseRadiusSq) {
+                                const dist = Math.sqrt(distSq);
+                                const force = (1 - dist / mouseRadius) * 1.5;
+                                const normX = dx / (dist || 1);
+                                const normY = dy / (dist || 1);
+                                targetX += normX * force * 35;
+                                targetY += normY * force * 35;
+                            }
+                        }
+
+                        // 波纹影响
+                        for (const r of ripples) {
+                            const dx = p.x - r.x;
+                            const dy = p.y - r.y;
+                            const dist = Math.sqrt(dx * dx + dy * dy);
+                            const bandWidth = 50 + r.radius * 0.15;
+                            const innerR = Math.max(0, r.radius - bandWidth);
+                            const outerR = r.radius + bandWidth;
+                            if (dist > innerR && dist < outerR) {
+                                const intensity = (1 - Math.abs(dist - r.radius) / bandWidth) * r.strength;
+                                const normX = dx / (dist || 1);
+                                const normY = dy / (dist || 1);
+                                targetX += normX * intensity * 28;
+                                targetY += normY * intensity * 28;
+                            }
+                        }
+
+                        // 弹簧模型
+                        const springForceX = (targetX - p.x) * t.tension * 0.08;
+                        const springForceY = (targetY - p.y) * t.tension * 0.08;
+                        p.velocityX += springForceX;
+                        p.velocityY += springForceY;
+                        p.velocityX *= 0.92;
+                        p.velocityY *= 0.92;
+                        p.x += p.velocityX * dt;
+                        p.y += p.velocityY * dt;
+                    }
+                }
+            }
+
+            // ─── 创建波纹 ───────────────────────────────────────────────
+            function createRipple(x, y) {
+                ripples.push({
+                    x: x,
+                    y: y,
+                    radius: 5,
+                    maxRadius: Math.max(W, H) * 0.6,
+                    strength: 1.0,
+                    decay: 0.012,
+                    growth: 4.2 + Math.random() * 1.8,
+                });
+                if (ripples.length > 6) ripples.shift();
+            }
+
+            function updateRipples(dt) {
+                for (let i = ripples.length - 1; i >= 0; i--) {
+                    const r = ripples[i];
+                    r.radius += r.growth * dt;
+                    r.strength -= r.decay * dt;
+                    if (r.strength <= 0 || r.radius > r.maxRadius) {
+                        ripples.splice(i, 1);
+                    }
+                }
+            }
+
+            // ─── 绘制线条 ───────────────────────────────────────────────
+            function drawThreads(ctx) {
+                for (const t of threads) {
+                    const hue = t.hue + colorShift + Math.sin(time * 0.4) * 15;
+                    const sat = 60 + Math.sin(time * 0.5 + t.phase) * 20;
+                    const light = 50 + Math.sin(time * 0.7 + t.phase) * 15;
+                    const alpha = 0.25 + 0.2 * Math.sin(time * 0.6 + t.phase);
+
+                    ctx.strokeStyle = `hsla(${hue}, ${sat}%, ${light}%, ${alpha})`;
+                    ctx.lineWidth = 0.7 + 0.4 * Math.sin(time * 1.2 + t.phase);
+                    ctx.lineCap = 'round';
+                    ctx.lineJoin = 'round';
+                    ctx.beginPath();
+                    const pts = t.points;
+                    if (pts.length > 0) {
+                        ctx.moveTo(pts[0].x, pts[0].y);
+                        for (let i = 1; i < pts.length; i++) {
+                            ctx.lineTo(pts[i].x, pts[i].y);
+                        }
+                    }
+                    ctx.stroke();
+                }
+            }
+
+            // ─── 绘制波纹圆环 ───────────────────────────────────────────
+            function drawRipples(ctx) {
+                for (const r of ripples) {
+                    const alpha = r.strength * 0.35;
+                    const hue = 230 + colorShift;
+                    ctx.strokeStyle = `hsla(${hue}, 70%, 75%, ${alpha})`;
+                    ctx.lineWidth = 1.5;
+                    ctx.beginPath();
+                    ctx.arc(r.x, r.y, r.radius, 0, Math.PI * 2);
+                    ctx.stroke();
+                }
+            }
+
+            // ─── 鼠标光晕 ───────────────────────────────────────────────
+            function drawCursorGlow(ctx) {
+                if (!mouse.active) return;
+                const radius = 100;
+                const hue = 230 + colorShift;
+                const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                gradient.addColorStop(0, `hsla(${hue}, 60%, 75%, 0.06)`);
+                gradient.addColorStop(0.7, `hsla(${hue}, 50%, 70%, 0.02)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // ─── 主循环 ─────────────────────────────────────────────────
+            let lastTime = 0;
+            let accumulator = 0;
+            const fixedStep = 1000 / 60;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+
+                accumulator += dt;
+                const steps = Math.min(Math.floor(accumulator / fixedStep), 3);
+                accumulator -= steps * fixedStep;
+
+                for (let s = 0; s < steps; s++) {
+                    time += 0.016;
+                    updateRipples(fixedStep / 1000 * 60);
+                    updateThreads(fixedStep / 1000 * 60);
+                }
+
+                // 半透明覆盖实现拖尾
+                ctx.fillStyle = 'rgba(11, 11, 24, 0.12)';
+                ctx.fillRect(0, 0, W, H);
+
+                // 绘制线条
+                drawThreads(ctx);
+
+                // 绘制波纹圆环
+                drawRipples(ctx);
+
+                // 鼠标光晕
+                drawCursorGlow(ctx);
+
+                requestAnimationFrame(animate);
+            }
+
+            // ─── 交互事件 ───────────────────────────────────────────────
+            function onMouseMove(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                createRipple(mouse.x, mouse.y);
+                // 切换色彩偏移
+                colorShift += 25 + Math.random() * 30;
+                if (colorShift > 140) colorShift = -25;
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    createRipple(mouse.x, mouse.y);
+                    colorShift += 25 + Math.random() * 30;
+                    if (colorShift > 140) colorShift = -25;
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onResize() {
+                setupCanvas();
+                initThreads();
+                ripples = [];
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+                initThreads();
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            // 确保初始背景填充
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#0b0b18';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+
+        })();
+    </script>
+</body>
+</html>

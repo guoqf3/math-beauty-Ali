@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TERRAIN · 动态地形</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #0a0c10;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        }
+
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2;
+            text-align: center;
+            pointer-events: none;
+            opacity: 0.6;
+            transition: opacity 0.5s ease;
+        }
+
+        .overlay:hover {
+            opacity: 1;
+        }
+
+        .title {
+            color: rgba(210, 220, 240, 0.9);
+            font-size: 12px;
+            font-weight: 300;
+            letter-spacing: 0.7em;
+            text-transform: uppercase;
+            margin-bottom: 4px;
+            text-shadow: 0 0 18px rgba(120, 160, 220, 0.4);
+        }
+
+        .hint {
+            color: rgba(170, 180, 210, 0.5);
+            font-size: 8px;
+            font-weight: 300;
+            letter-spacing: 0.25em;
+            text-transform: uppercase;
+        }
+
+        @media (max-width: 768px) {
+            .overlay {
+                bottom: 20px;
+            }
+            .title {
+                font-size: 10px;
+                letter-spacing: 0.5em;
+            }
+            .hint {
+                font-size: 7px;
+                letter-spacing: 0.2em;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="terrainCanvas"></canvas>
+
+    <div class="overlay">
+        <div class="title">Terrain</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script>
+        (function() {
+            // ─── 画布与上下文 ───────────────────────────────────────────────
+            const canvas = document.getElementById('terrainCanvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            // 网格密度（列数、行数），根据屏幕尺寸动态调整
+            let cols, rows;
+            let cellW, cellH;
+
+            // 地形数据
+            let heights = [];      // 二维数组，存储每个网格点的高度值
+            let time = 0;
+            let colorShift = 0;    // 颜色主题偏移
+
+            // 交互状态
+            let mouse = { x: -9999, y: -9999, active: false };
+            let ripples = [];      // 点击产生的波纹扰动
+
+            // ─── 性能自适应参数 ───────────────────────────────────────────
+            const MAX_COLS = 110;
+            const MAX_ROWS = 70;
+            const MIN_COLS = 50;
+            const MIN_ROWS = 35;
+            // 等高线数量
+            const CONTOUR_LEVELS = 18;
+
+            function getGridDensity() {
+                const area = W * H;
+                // 粗略估算：每约7000像素一个网格点
+                let targetCols = Math.round(Math.sqrt(area / 7000) * 1.8);
+                let targetRows = Math.round(Math.sqrt(area / 7000) * 1.2);
+                targetCols = Math.max(MIN_COLS, Math.min(MAX_COLS, targetCols));
+                targetRows = Math.max(MIN_ROWS, Math.min(MAX_ROWS, targetRows));
+                return { cols: targetCols, rows: targetRows };
+            }
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                ctx.fillStyle = '#0a0c10';
+                ctx.fillRect(0, 0, W, H);
+
+                const density = getGridDensity();
+                cols = density.cols;
+                rows = density.rows;
+                cellW = W / (cols - 1);
+                cellH = H / (rows - 1);
+                heights = [];
+                for (let r = 0; r < rows; r++) {
+                    heights[r] = new Array(cols).fill(0);
+                }
+            }
+
+            // ─── 噪声函数（简化值噪声 + 正弦波叠加，性能高效）────────────
+            // 使用伪随机哈希，避免复杂计算
+            function hash2D(x, y) {
+                // 将坐标映射到整数格点，用于生成随机值
+                const xi = Math.floor(x);
+                const yi = Math.floor(y);
+                // 使用正弦哈希，返回 0~1 的伪随机数
+                const seed = xi * 374761393 + yi * 668265263;
+                const s = Math.sin(seed) * 12789.123;
+                return s - Math.floor(s);
+            }
+
+            // 平滑插值
+            function smoothstep(t) {
+                return t * t * (3 - 2 * t);
+            }
+
+            // 2D 值噪声，输入坐标，输出 [-1, 1]
+            function valueNoise(x, y) {
+                const xi = Math.floor(x);
+                const yi = Math.floor(y);
+                const xf = x - xi;
+                const yf = y - yi;
+
+                const v00 = hash2D(xi, yi);
+                const v10 = hash2D(xi + 1, yi);
+                const v01 = hash2D(xi, yi + 1);
+                const v11 = hash2D(xi + 1, yi + 1);
+
+                const u = smoothstep(xf);
+                const v = smoothstep(yf);
+
+                const a = v00 * (1 - u) + v10 * u;
+                const b = v01 * (1 - u) + v11 * u;
+                const val = a * (1 - v) + b * v;
+                return (val - 0.5) * 2; // 映射到 [-1,1]
+            }
+
+            // 分形噪声（3个八度叠加），输出 [-1, 1]
+            function fbm(x, y, t) {
+                let amp = 1.0;
+                let freq = 1.0;
+                let sum = 0;
+                let norm = 0;
+                for (let oct = 0; oct < 3; oct++) {
+                    const nx = x * freq + t * 0.6 * (oct + 1);
+                    const ny = y * freq + t * 0.5 * (oct + 1);
+                    sum += amp * valueNoise(nx, ny);
+                    norm += amp;
+                    amp *= 0.5;
+                    freq *= 1.8;
+                }
+                return sum / norm;
+            }
+
+            // ─── 扰动系统（点击波纹）─────────────────────────────────────
+            function addRipple(x, y) {
+                ripples.push({
+                    x: x,
+                    y: y,
+                    radius: 10,
+                    maxRadius: Math.max(W, H) * 0.6,
+                    strength: 0.45 + Math.random() * 0.25,
+                    life: 1.0,
+                    decay: 0.012 + Math.random() * 0.005,
+                    growth: 3.2 + Math.random() * 1.5
+                });
+                if (ripples.length > 8) ripples.shift();
+            }
+
+            function updateRipples(dt) {
+                for (let i = ripples.length - 1; i >= 0; i--) {
+                    const r = ripples[i];
+                    r.radius += r.growth * dt;
+                    r.life -= r.decay * dt;
+                    r.strength *= 0.985;
+                    if (r.life <= 0 || r.radius > r.maxRadius || r.strength < 0.01) {
+                        ripples.splice(i, 1);
+                    }
+                }
+            }
+
+            // ─── 地形高度计算 ───────────────────────────────────────────
+            function computeHeights() {
+                // 频率参数，让地形特征尺度适合屏幕
+                const baseFreq = 0.004;
+                const mouseInfluence = 0.0008;
+                const mouseRadiusSq = 220 * 220;
+
+                for (let r = 0; r < rows; r++) {
+                    for (let c = 0; c < cols; c++) {
+                        const x = c * cellW;
+                        const y = r * cellH;
+                        // 基础分形噪声
+                        let h = fbm(x * baseFreq, y * baseFreq, time);
+
+                        // 鼠标影响：鼠标附近区域地形略微隆起或凹陷
+                        if (mouse.active) {
+                            const dx = x - mouse.x;
+                            const dy = y - mouse.y;
+                            const distSq = dx * dx + dy * dy;
+                            if (distSq < mouseRadiusSq) {
+                                const dist = Math.sqrt(distSq);
+                                const influence = (1 - dist / 220) * 0.35;
+                                // 使用正弦波调制，使鼠标附近产生柔和起伏
+                                h += Math.sin(dist * 0.08 - time * 2.5) * influence * 0.4;
+                            }
+                        }
+
+                        // 波纹扰动
+                        for (const ripple of ripples) {
+                            const dx = x - ripple.x;
+                            const dy = y - ripple.y;
+                            const distSq = dx * dx + dy * dy;
+                            const bandWidth = 100 + ripple.radius * 0.35;
+                            const innerR = Math.max(0, ripple.radius - bandWidth);
+                            const outerR = ripple.radius + bandWidth;
+                            const innerSq = innerR * innerR;
+                            const outerSq = outerR * outerR;
+                            if (distSq > innerSq && distSq < outerSq) {
+                                const dist = Math.sqrt(distSq);
+                                const falloff = 1 - Math.abs(dist - ripple.radius) / bandWidth;
+                                // 波纹作为正弦扰动，产生类似水波的效果
+                                h += Math.sin(dist * 0.06 - time * 5.0) * falloff * ripple.strength * 0.6;
+                            }
+                        }
+
+                        heights[r][c] = h;
+                    }
+                }
+            }
+
+            // ─── 颜色映射 ───────────────────────────────────────────────
+            function getColorForHeight(h, alpha = 1.0) {
+                // 将高度从 [-1,1] 映射到 [0,1]
+                const t = (h + 1) * 0.5;
+                // 基础色相：从深蓝(220°) 到 青(180°) 到 紫(260°) 到 粉(320°)
+                // 加入 colorShift 偏移，鼠标点击改变
+                let hue;
+                if (t < 0.5) {
+                    // 低处：深蓝到青
+                    const local = t * 2;
+                    hue = 220 + local * 30 + colorShift;
+                } else {
+                    // 高处：青到紫粉
+                    const local = (t - 0.5) * 2;
+                    hue = 250 + local * 60 + colorShift;
+                }
+                hue = ((hue % 360) + 360) % 360;
+                const sat = 65 + t * 25;
+                const light = 25 + t * 50;
+                return `hsla(${hue}, ${sat}%, ${light}%, ${alpha})`;
+            }
+
+            // ─── 绘制等高线（Marching Squares 简化版）────────────────────
+            function drawContours() {
+                // 等高线水平集合：在 [-1, 1] 范围内均匀取 CONTOUR_LEVELS 个值
+                const levels = [];
+                for (let i = 0; i < CONTOUR_LEVELS; i++) {
+                    levels.push(-0.95 + (i / (CONTOUR_LEVELS - 1)) * 1.9);
+                }
+
+                // 遍历每个网格单元，检查四条边是否跨越等高线
+                for (let r = 0; r < rows - 1; r++) {
+                    for (let c = 0; c < cols - 1; c++) {
+                        const x0 = c * cellW;
+                        const y0 = r * cellH;
+                        const x1 = (c + 1) * cellW;
+                        const y1 = (r + 1) * cellH;
+
+                        const h00 = heights[r][c];
+                        const h10 = heights[r][c + 1];
+                        const h01 = heights[r + 1][c];
+                        const h11 = heights[r + 1][c + 1];
+
+                        // 对每条等高线级别进行处理
+                        for (let li = 0; li < levels.length; li++) {
+                            const level = levels[li];
+                            // 检查四条边与 level 的交点
+                            const edges = [];
+
+                            // 上边 (h00 -> h10)
+                            if ((h00 - level) * (h10 - level) < 0) {
+                                const t = (level - h00) / (h10 - h00);
+                                edges.push({ x: x0 + t * cellW, y: y0 });
+                            }
+                            // 右边 (h10 -> h11)
+                            if ((h10 - level) * (h11 - level) < 0) {
+                                const t = (level - h10) / (h11 - h10);
+                                edges.push({ x: x1, y: y0 + t * cellH });
+                            }
+                            // 下边 (h01 -> h11)
+                            if ((h01 - level) * (h11 - level) < 0) {
+                                const t = (level - h01) / (h11 - h01);
+                                edges.push({ x: x0 + t * cellW, y: y1 });
+                            }
+                            // 左边 (h00 -> h01)
+                            if ((h00 - level) * (h01 - level) < 0) {
+                                const t = (level - h00) / (h01 - h00);
+                                edges.push({ x: x0, y: y0 + t * cellH });
+                            }
+
+                            // 通常有 2 个交点，连接它们形成线段
+                            if (edges.length >= 2) {
+                                // 绘制线段
+                                const p1 = edges[0];
+                                const p2 = edges[1];
+                                // 颜色根据高度映射，带透明度
+                                const alpha = 0.7; // 基础透明度
+                                ctx.strokeStyle = getColorForHeight(level, alpha);
+                                ctx.lineWidth = 0.8;
+                                ctx.lineCap = 'round';
+                                ctx.beginPath();
+                                ctx.moveTo(p1.x, p1.y);
+                                ctx.lineTo(p2.x, p2.y);
+                                ctx.stroke();
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ─── 绘制发光网格背景（增强视觉层次）────────────────────────
+            function drawGridGlow() {
+                // 绘制非常淡的网格线，增加结构感
+                ctx.strokeStyle = 'rgba(180, 200, 240, 0.04)';
+                ctx.lineWidth = 0.5;
+                ctx.beginPath();
+                for (let r = 0; r < rows; r++) {
+                    const y = r * cellH;
+                    ctx.moveTo(0, y);
+                    ctx.lineTo(W, y);
+                }
+                for (let c = 0; c < cols; c++) {
+                    const x = c * cellW;
+                    ctx.moveTo(x, 0);
+                    ctx.lineTo(x, H);
+                }
+                ctx.stroke();
+            }
+
+            // ─── 鼠标光晕 ───────────────────────────────────────────────
+            function drawCursorGlow() {
+                if (!mouse.active) return;
+                const radius = 120;
+                const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                gradient.addColorStop(0, 'hsla(210, 70%, 70%, 0.05)');
+                gradient.addColorStop(0.6, 'hsla(210, 60%, 60%, 0.015)');
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+
+                // 细环
+                ctx.strokeStyle = 'hsla(210, 70%, 75%, 0.15)';
+                ctx.lineWidth = 0.8;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, 16, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+
+            // ─── 主渲染循环 ───────────────────────────────────────────────
+            let lastTime = 0;
+
+            function render(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+
+                if (dt > 50) dt = 50; // 限制最大帧间隔
+                if (dt < 1) dt = 1;
+
+                const dtNorm = dt / 16.667; // 归一化
+                // 更新时间，控制动画速度
+                time += 0.006 * dtNorm;
+                // 更新波纹
+                updateRipples(dtNorm);
+
+                // 计算地形高度
+                computeHeights();
+
+                // 清空画布（使用不透明背景，避免拖尾，提高性能）
+                ctx.fillStyle = '#0a0c10';
+                ctx.fillRect(0, 0, W, H);
+
+                // 绘制淡网格
+                drawGridGlow();
+
+                // 绘制等高线
+                drawContours();
+
+                // 绘制鼠标光晕
+                drawCursorGlow();
+
+                requestAnimationFrame(render);
+            }
+
+            // ─── 交互事件 ───────────────────────────────────────────────
+            function onMouseMove(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                addRipple(mouse.x, mouse.y);
+                // 切换颜色主题
+                colorShift += 35 + Math.random() * 20;
+                if (colorShift > 180) colorShift = -180;
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    addRipple(mouse.x, mouse.y);
+                    colorShift += 35 + Math.random() * 20;
+                    if (colorShift > 180) colorShift = -180;
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onResize() {
+                setupCanvas();
+            }
+
+            // ─── 初始化与启动 ─────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+                // 预计算一帧地形，避免白屏
+                computeHeights();
+                // 绘制初始静态画面
+                ctx.fillStyle = '#0a0c10';
+                ctx.fillRect(0, 0, W, H);
+                drawGridGlow();
+                drawContours();
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                // 启动动画
+                requestAnimationFrame(render);
+            }
+
+            // 确保DOM加载后立即执行，避免白屏
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            // 额外后备：窗口加载完成后再次填充背景
+            window.addEventListener('load', () => {
+                ctx.fillStyle = '#0a0c10';
+                ctx.fillRect(0, 0, W, H);
+            });
+
+        })();
+    </script>
+</body>
+</html>

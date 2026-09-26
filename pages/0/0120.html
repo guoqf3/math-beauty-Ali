@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>射影直线编织 · 动态射影变换 · 球极投影几何</title>
+    <style>
+        :root {
+            --bg: #04040e;
+            --gold: #d6a745;
+            --cyan: #3dbca5;
+            --rose: #d94050;
+            --text: #cebc8a;
+            --text-dim: #887a58;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'SimSun', 'Noto Serif SC', 'Songti SC', serif;
+            -webkit-font-smoothing: antialiased;
+            height: 100vh;
+            width: 100vw;
+            cursor: default;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+        #canvas-container {
+            position: fixed;
+            inset: 0;
+            z-index: 1;
+        }
+        canvas {
+            display: block;
+        }
+        #title-overlay {
+            position: fixed;
+            top: 1.4vh;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+        }
+        #title-overlay h1 {
+            font-size: clamp(1rem, 2.1vw, 1.5rem);
+            font-weight: 400;
+            letter-spacing: 0.12em;
+            color: #e2cf9c;
+            text-shadow: 0 0 38px rgba(214, 167, 69, 0.45), 0 0 78px rgba(214, 167, 69, 0.14);
+            margin: 0;
+            line-height: 1.35;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.42rem, 0.86vw, 0.58rem);
+            letter-spacing: 0.2em;
+            color: #a08d6a;
+            opacity: 0.6;
+            margin-top: 0.25vh;
+            font-style: italic;
+        }
+        #formula-overlay {
+            position: fixed;
+            bottom: 2.0vh;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+            background: rgba(4, 4, 14, 0.62);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            border: 1px solid rgba(140, 118, 84, 0.17);
+            border-radius: 16px;
+            padding: 1vh 2.2vw;
+            max-width: 95vw;
+        }
+        #formula-overlay .formula-main {
+            font-size: clamp(0.55rem, 1.18vw, 0.8rem);
+            color: #cdb886;
+            letter-spacing: 0.05em;
+            line-height: 1.6;
+            font-style: italic;
+        }
+        #formula-overlay .formula-detail {
+            font-size: clamp(0.35rem, 0.7vw, 0.5rem);
+            color: #8a7a58;
+            letter-spacing: 0.08em;
+            margin-top: 0.2vh;
+            opacity: 0.7;
+        }
+        .accent-gold {
+            color: #d6a745;
+        }
+        .accent-cyan {
+            color: #3dbca5;
+        }
+        .accent-rose {
+            color: #d94050;
+        }
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateX(-50%) translateY(6px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(-50%) translateY(0);
+            }
+        }
+        #title-overlay,
+        #formula-overlay {
+            animation: fadeIn 1.4s ease-out 0.2s both;
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="title-overlay">
+        <h1>射影直线编织 · 动态射影变换 · 球极投影</h1>
+        <div class="subtitle">PGL(4,ℝ) 齐次作用 &nbsp;·&nbsp; 三族直线映射 &nbsp;·&nbsp; 球极逆投影弧网</div>
+    </div>
+    <div id="formula-overlay">
+        <div class="formula-main">
+            <span class="accent-gold">ℓ₁: p+t·e₁</span>
+            ⊗ <span class="accent-cyan">ℓ₂: q+t·e₂</span>
+            ⊗ <span class="accent-rose">ℓ₃: r+t·e₃</span>
+            ⊗ <span class="accent-rose">M(t)∈SL(4,ℝ)</span>
+        </div>
+        <div class="formula-detail">
+            齐次坐标射影变换 → 去齐次化 → 球极逆投影 · 直线变弧线编织
+        </div>
+    </div>
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ---------- 场景 ----------
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setClearColor(0x04040e, 1);
+        container.appendChild(renderer.domElement);
+
+        const camera = new THREE.PerspectiveCamera(54, window.innerWidth / window.innerHeight, 0.4, 32);
+        camera.position.set(2.3, 1.4, 7.8);
+        camera.lookAt(0, 0, 0);
+
+        const colorGold = new THREE.Color('#d6a745');
+        const colorCyan = new THREE.Color('#3dbca5');
+        const colorRose = new THREE.Color('#d94050');
+        const CLAMP_RADIUS = 2.75;
+
+        // 背景
+        const starsGeom = new THREE.BufferGeometry();
+        const starCount = 120;
+        const starPosArr = new Float32Array(starCount * 3);
+        const starSizesArr = new Float32Array(starCount);
+        for (let i = 0; i < starCount; i++) {
+            const th = Math.random() * Math.PI * 2;
+            const ph = Math.acos(2 * Math.random() - 1);
+            const rad = 5.4 + Math.random() * 8;
+            starPosArr[i * 3] = rad * Math.sin(ph) * Math.cos(th);
+            starPosArr[i * 3 + 1] = rad * Math.sin(ph) * Math.sin(th);
+            starPosArr[i * 3 + 2] = rad * Math.cos(ph);
+            starSizesArr[i] = Math.random() * 1.4 + 0.18;
+        }
+        starsGeom.setAttribute('position', new THREE.BufferAttribute(starPosArr, 3));
+        starsGeom.setAttribute('size', new THREE.BufferAttribute(starSizesArr, 1));
+        const starsMat = new THREE.PointsMaterial({
+            color: 0x2e2618,
+            size: 0.016,
+            transparent: true,
+            opacity: 0.42,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            sizeAttenuation: true,
+        });
+        const stars = new THREE.Points(starsGeom, starsMat);
+        scene.add(stars);
+
+        const refSphereGeom = new THREE.SphereGeometry(2.6, 46, 30);
+        const refSphereWire = new THREE.LineSegments(
+            new THREE.WireframeGeometry(refSphereGeom),
+            new THREE.LineBasicMaterial({ color: 0x17120c, transparent: true, opacity: 0.05, depthWrite: false })
+        );
+        scene.add(refSphereWire);
+        const refTorusGeom = new THREE.TorusGeometry(2.0, 0.52, 10, 24);
+        const refTorusWire = new THREE.LineSegments(
+            new THREE.WireframeGeometry(refTorusGeom),
+            new THREE.LineBasicMaterial({ color: 0x0f1416, transparent: true, opacity: 0.04, depthWrite: false })
+        );
+        refTorusWire.rotation.x = Math.PI / 2;
+        scene.add(refTorusWire);
+
+        // ---------- 4x4矩阵工具 ----------
+        function mat4Mul(A, B) {
+            const C = new Array(16).fill(0);
+            for (let i = 0; i < 4; i++)
+                for (let k = 0; k < 4; k++)
+                    for (let j = 0; j < 4; j++)
+                        C[i * 4 + j] += A[i * 4 + k] * B[k * 4 + j];
+            return C;
+        }
+
+        function mat4Identity() {
+            const m = new Array(16).fill(0);
+            for (let i = 0; i < 4; i++) m[i * 4 + i] = 1;
+            return m;
+        }
+
+        // SL(4) 生成: 在平面(p,q)上旋转θ的矩阵
+        function rot4(p, q, theta) {
+            const m = mat4Identity();
+            const c = Math.cos(theta),
+                s = Math.sin(theta);
+            m[p * 4 + p] = c;
+            m[p * 4 + q] = -s;
+            m[q * 4 + p] = s;
+            m[q * 4 + q] = c;
+            return m;
+        }
+
+        // 构建动态射影变换矩阵
+        function buildProjectiveMatrix(t) {
+            let M = mat4Identity();
+            // 在多个平面上旋转
+            M = mat4Mul(rot4(0, 1, t * 0.38), M);
+            M = mat4Mul(rot4(2, 3, t * 0.52), M);
+            M = mat4Mul(rot4(0, 3, t * 0.41), M);
+            M = mat4Mul(rot4(1, 2, t * 0.47), M);
+            M = mat4Mul(rot4(0, 2, t * 0.33), M);
+            M = mat4Mul(rot4(1, 3, t * 0.44), M);
+            return M;
+        }
+
+        // 齐次坐标 → 三维坐标 (去齐次化)
+        function dehomogenize(h) {
+            const w = h[3];
+            if (Math.abs(w) < 1e-10) return [h[0] * 1e6, h[1] * 1e6, h[2] * 1e6]; // 理想点，安全处理
+            const inv = 1 / w;
+            return [h[0] * inv, h[1] * inv, h[2] * inv];
+        }
+
+        // 球极逆投影
+        function invStereo(x, y, z) {
+            const r2 = x * x + y * y + z * z;
+            const denom = 1 + r2 / (2.5 * 2.5);
+            const inv = 1 / Math.max(denom, 1e-12);
+            return [(2 * x) * inv, (2 * y) * inv, ((1 - r2 / (2.5 * 2.5)) * 2.5) * inv];
+        }
+
+        function clampPt(p) {
+            let [x, y, z] = p;
+            if (!Number.isFinite(x)) x = 0;
+            if (!Number.isFinite(y)) y = 0;
+            if (!Number.isFinite(z)) z = 0;
+            const r = Math.sqrt(x * x + y * y + z * z);
+            if (r > CLAMP_RADIUS && r > 0.001) {
+                const s = CLAMP_RADIUS / r;
+                return [x * s, y * s, z * s];
+            }
+            return [x, y, z];
+        }
+
+        function applySo3(pt, R) {
+            return [
+                R[0] * pt[0] + R[1] * pt[1] + R[2] * pt[2],
+                R[3] * pt[0] + R[4] * pt[1] + R[5] * pt[2],
+                R[6] * pt[0] + R[7] * pt[1] + R[8] * pt[2],
+            ];
+        }
+
+        function so3Matrix(t) {
+            const angle = t * 0.22;
+            const ax = Math.cos(t * 0.15) * 0.5;
+            const ay = Math.sin(t * 0.12) * 0.45;
+            const az = Math.cos(t * 0.18 + 1.1) * 0.48;
+            const n = Math.sqrt(ax * ax + ay * ay + az * az) || 1;
+            const ux = ax / n,
+                uy = ay / n,
+                uz = az / n;
+            const c = Math.cos(angle),
+                s = Math.sin(angle),
+                t1 = 1 - c;
+            return [
+                c + ux * ux * t1,
+                ux * uy * t1 - uz * s,
+                ux * uz * t1 + uy * s,
+                uy * ux * t1 + uz * s,
+                c + uy * uy * t1,
+                uy * uz * t1 - ux * s,
+                uz * ux * t1 - uy * s,
+                uz * uy * t1 + ux * s,
+                c + uz * uz * t1,
+            ];
+        }
+
+        // ---------- 直线采样 ----------
+        function sampleLine3D(base, dir, tMin, tMax, n, M, R3) {
+            const pts = [];
+            for (let i = 0; i < n; i++) {
+                const t = tMin + (i / (n - 1)) * (tMax - tMin);
+                const h = [
+                    base[0] + t * dir[0],
+                    base[1] + t * dir[1],
+                    base[2] + t * dir[2],
+                    1,
+                ];
+                // 射影变换
+                const h2 = [
+                    M[0] * h[0] + M[1] * h[1] + M[2] * h[2] + M[3] * h[3],
+                    M[4] * h[0] + M[5] * h[1] + M[6] * h[2] + M[7] * h[3],
+                    M[8] * h[0] + M[9] * h[1] + M[10] * h[2] + M[11] * h[3],
+                    M[12] * h[0] + M[13] * h[1] + M[14] * h[2] + M[15] * h[3],
+                ];
+                let p = dehomogenize(h2);
+                p = invStereo(p[0], p[1], p[2]);
+                p = applySo3(p, R3);
+                p = clampPt(p);
+                pts.push(p);
+            }
+            return pts;
+        }
+
+        // 生成直线定义
+        function generateLineDefs(axis, range) {
+            const defs = [];
+            const step = range / 6;
+            for (let a = -range; a <= range; a += step) {
+                for (let b = -range; b <= range; b += step) {
+                    if (Math.abs(a) < 0.05 && Math.abs(b) < 0.05) continue; // 跳过过原点
+                    if (axis === 0) defs.push({ base: [0, a, b], dir: [1, 0, 0] });
+                    else if (axis === 1) defs.push({ base: [a, 0, b], dir: [0, 1, 0] });
+                    else defs.push({ base: [a, b, 0], dir: [0, 0, 1] });
+                }
+            }
+            return defs;
+        }
+
+        const goldDefs = generateLineDefs(0, 2.8);
+        const cyanDefs = generateLineDefs(1, 2.8);
+        const roseDefs = generateLineDefs(2, 2.8);
+
+        const POINTS_PER_LINE = 110;
+        const allCurves = [];
+
+        function createCurve(color) {
+            const geom = new THREE.BufferGeometry();
+            const positions = new Float32Array(POINTS_PER_LINE * 3);
+            geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            const mat = new THREE.LineBasicMaterial({
+                color,
+                linewidth: 1,
+                transparent: true,
+                opacity: 0.8,
+                depthTest: true,
+                depthWrite: true,
+            });
+            const line = new THREE.Line(geom, mat);
+            scene.add(line);
+            const obj = { line, geom, positions, def: null, updateFn: null };
+            allCurves.push(obj);
+            return obj;
+        }
+
+        function addLineFamily(defs, color) {
+            for (const def of defs) {
+                const curve = createCurve(color);
+                curve.def = def;
+                curve.updateFn = (M, R3) => {
+                    const pts = sampleLine3D(def.base, def.dir, -3.5, 3.5, POINTS_PER_LINE, M, R3);
+                    const pos = curve.positions;
+                    for (let i = 0; i < POINTS_PER_LINE; i++) {
+                        pos[i * 3] = pts[i][0];
+                        pos[i * 3 + 1] = pts[i][1];
+                        pos[i * 3 + 2] = pts[i][2];
+                    }
+                    curve.geom.attributes.position.needsUpdate = true;
+                };
+            }
+        }
+
+        addLineFamily(goldDefs, colorGold);
+        addLineFamily(cyanDefs, colorCyan);
+        addLineFamily(roseDefs, colorRose);
+
+        console.log(`✅ 射影直线总数: ${allCurves.length} (金${goldDefs.length}, 青${cyanDefs.length}, 玫红${roseDefs.length})`);
+
+        // ---------- 粒子 ----------
+        const particleCount = 22;
+        const particlesGeom = new THREE.BufferGeometry();
+        const particlePosArr = new Float32Array(particleCount * 3);
+        const particleColArr = new Float32Array(particleCount * 3);
+        const particleDataVal = [];
+        for (let i = 0; i < particleCount; i++) {
+            particleDataVal.push({
+                curveIndex: i % allCurves.length,
+                progress: Math.random(),
+                speed: 0.00055 + Math.random() * 0.0024,
+            });
+            const col = i < 8 ? colorGold : i < 15 ? colorCyan : colorRose;
+            particleColArr[i * 3] = col.r;
+            particleColArr[i * 3 + 1] = col.g;
+            particleColArr[i * 3 + 2] = col.b;
+        }
+        particlesGeom.setAttribute('position', new THREE.BufferAttribute(particlePosArr, 3));
+        particlesGeom.setAttribute('color', new THREE.BufferAttribute(particleColArr, 3));
+        const particlesMat = new THREE.PointsMaterial({
+            size: 0.044,
+            vertexColors: true,
+            transparent: true,
+            opacity: 0.83,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            sizeAttenuation: true,
+        });
+        const particlesMesh = new THREE.Points(particlesGeom, particlesMat);
+        scene.add(particlesMesh);
+
+        function updateParticles() {
+            for (let p = 0; p < particleCount; p++) {
+                const pd = particleDataVal[p];
+                pd.progress += pd.speed;
+                if (pd.progress >= 1.0) pd.progress -= 1.0;
+                if (pd.progress < 0) pd.progress += 1.0;
+                const curveObj = allCurves[pd.curveIndex];
+                if (!curveObj || !curveObj.positions) continue;
+                const posArr = curveObj.positions;
+                const floatIdx = pd.progress * (POINTS_PER_LINE - 1);
+                const idx0 = Math.floor(floatIdx);
+                const idx1 = Math.min(idx0 + 1, POINTS_PER_LINE - 1);
+                const frac = Math.max(0, Math.min(1, floatIdx - idx0));
+                const i0 = idx0 * 3,
+                    i1 = idx1 * 3;
+                particlePosArr[p * 3] = posArr[i0] + (posArr[i1] - posArr[i0]) * frac;
+                particlePosArr[p * 3 + 1] = posArr[i0 + 1] + (posArr[i1 + 1] - posArr[i0 + 1]) * frac;
+                particlePosArr[p * 3 + 2] = posArr[i0 + 2] + (posArr[i1 + 2] - posArr[i0 + 2]) * frac;
+            }
+            particlesGeom.attributes.position.needsUpdate = true;
+        }
+
+        // ---------- 统一更新 ----------
+        function updateAll(elapsed) {
+            const M = buildProjectiveMatrix(elapsed);
+            const R3 = so3Matrix(elapsed);
+            for (const curve of allCurves) {
+                try { if (curve.updateFn) curve.updateFn(M, R3); } catch (e) {}
+            }
+        }
+
+        // ---------- 动画循环 ----------
+        const startTime = performance.now();
+        let frameCount = 0,
+            lastLogTime = startTime;
+
+        function animate(nowTS) {
+            requestAnimationFrame(animate);
+            try {
+                const now = nowTS || performance.now();
+                const elapsed = (now - startTime) / 1000;
+                frameCount++;
+                if (now - lastLogTime > 5000) {
+                    const fps = Math.round(frameCount / ((now - lastLogTime) / 1000));
+                    console.log(`🔄 运行中 | FPS:${fps} | 时间:${elapsed.toFixed(1)}s`);
+                    frameCount = 0;
+                    lastLogTime = now;
+                }
+                updateAll(elapsed);
+                updateParticles();
+
+                const breathe = 1 + 0.04 * Math.sin(elapsed * 0.36);
+                refSphereWire.scale.setScalar(breathe);
+                refSphereWire.rotation.x += 0.0007;
+                refSphereWire.rotation.y += 0.00065;
+                refTorusWire.rotation.z += 0.00075;
+                refTorusWire.scale.setScalar(1 + 0.05 * Math.sin(elapsed * 0.41));
+
+                const camH = elapsed * 0.08;
+                const camV = 0.32 + 0.18 * Math.sin(elapsed * 0.15);
+                const camD = 7.5 + 0.6 * Math.sin(elapsed * 0.18);
+                camera.position.set(
+                    camD * Math.cos(camV) * Math.sin(camH),
+                    camD * Math.sin(camV),
+                    camD * Math.cos(camV) * Math.cos(camH)
+                );
+                camera.lookAt(0, 0, 0);
+                stars.rotation.y += 0.00018;
+                renderer.render(scene, camera);
+            } catch (e) {
+                console.error('动画循环错误（已恢复）:', e);
+            }
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }, { passive: true });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }, 150), { passive: true });
+
+        // 启动
+        console.log('🚀 射影直线编织动画初始化...');
+        updateAll(0);
+        updateParticles();
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+        console.log('✅ 动画循环已启动（PGL(4,ℝ)射影变换，永不停止）');
+    </script>
+</body>
+</html>

@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bessel节点编织 · 圆柱波干涉网</title>
+    <style>
+        :root {
+            --bg: #06060c;
+            --gold: #d4a843;
+            --cyan: #45b7aa;
+            --magenta: #d4708a;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'SimSun', serif;
+            -webkit-font-smoothing: antialiased;
+            user-select: none;
+        }
+        #canvas-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+        }
+        canvas { display: block; }
+        .overlay-title {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 22px 20px 8px;
+            text-align: center;
+            background: linear-gradient(180deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.8) 55%, rgba(6,6,12,0) 100%);
+        }
+        .overlay-title h2 {
+            font-size: clamp(1.1rem, 2.2vw, 1.8rem);
+            font-weight: 400;
+            letter-spacing: 0.13em;
+            color: #e8d5b0;
+            text-shadow: 0 0 30px rgba(212,168,67,0.45), 0 0 60px rgba(212,168,67,0.18);
+            margin: 0 0 2px;
+            line-height: 1.3;
+        }
+        .overlay-title .sub {
+            font-size: clamp(0.65rem, 1.1vw, 0.85rem);
+            letter-spacing: 0.22em;
+            color: rgba(200,180,150,0.65);
+        }
+        .overlay-formula {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 8px 20px 18px;
+            text-align: center;
+            background: linear-gradient(0deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.82) 55%, rgba(6,6,12,0) 100%);
+        }
+        .formula-text {
+            font-size: clamp(0.6rem, 1.0vw, 0.8rem);
+            color: rgba(210,200,185,0.8);
+            letter-spacing: 0.03em;
+            line-height: 1.7;
+        }
+        .clr-gold { color: #d4a843; font-weight: bold; }
+        .clr-cyan { color: #45b7aa; font-weight: bold; }
+        .clr-magenta { color: #d4708a; font-weight: bold; }
+        .formula-sep {
+            display: inline-block;
+            margin: 0 14px;
+            color: rgba(150,140,130,0.35);
+        }
+    </style>
+</head>
+<body>
+    <div class="overlay-title">
+        <h2>Bessel节点编织 · 圆柱波干涉网</h2>
+        <div class="sub">J₀(kr)·cos(nθ)·cos(ωt) nodal surfaces · Three slicing families</div>
+    </div>
+    <div class="overlay-formula">
+        <div class="formula-text">
+            <span class="clr-gold">u₁ = J₀(3√(x²+y²))·cos(2z)·cos(√2·t)</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-cyan">u₂ = J₀(2.5√(y²+z²))·cos(2x)·cos(√3·t)</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-magenta">u₃ = J₀(2√(z²+x²))·cos(2.5y)·cos(π·t)</span>
+        </div>
+    </div>
+    <div id="canvas-container"></div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(46, container.clientWidth / container.clientHeight, 0.5, 21);
+        camera.position.set(3.8, 2.8, 7.5);
+        camera.lookAt(0, 0, 0);
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x06060c, 1);
+        container.appendChild(renderer.domElement);
+
+        // 手动时钟——杜绝暂停
+        let startTime = performance.now();
+        const getElapsed = () => (performance.now() - startTime) * 0.001;
+
+        const COLOR_GOLD = 0xd4a843;
+        const COLOR_CYAN = 0x45b7aa;
+        const COLOR_MAGENTA = 0xd4708a;
+        const SCALE = 0.55;
+        const RANGE = 4.2;
+        const GRID_N = 68;
+        const H = 2 * RANGE / GRID_N;
+        const SLICES = 15;
+        const MAX_SEGS = 28000;
+        const UPDATE_INTERVAL = 0.10;
+
+        // Bessel J₀ 函数 (级数展开，对|x|<20足够精确)
+        function besselJ0(x) {
+            if (x < 0) x = -x;
+            if (x > 25) return Math.sqrt(2 / (Math.PI * x)) * Math.cos(x - Math.PI / 4);
+            let sum = 0, term = 1, m = 0;
+            const x2 = (x / 2) * (x / 2);
+            while (Math.abs(term) > 1e-12 && m < 30) {
+                sum += term;
+                m++;
+                term = -term * x2 / (m * m);
+            }
+            return sum;
+        }
+
+        // 三族波动函数
+        function fieldGold(x, y, z, t) {
+            const r = Math.sqrt(x * x + y * y);
+            return besselJ0(3.0 * r) * Math.cos(2.0 * z) * Math.cos(Math.sqrt(2) * t);
+        }
+        function fieldCyan(x, y, z, t) {
+            const r = Math.sqrt(y * y + z * z);
+            return besselJ0(2.5 * r) * Math.cos(2.0 * x) * Math.cos(Math.sqrt(3) * t);
+        }
+        function fieldMagenta(x, y, z, t) {
+            const r = Math.sqrt(z * z + x * x);
+            return besselJ0(2.0 * r) * Math.cos(2.5 * y) * Math.cos(Math.PI * t);
+        }
+
+        function traceZeroSegments(coordType, slicePos, t, fieldFn) {
+            const segs = [];
+            for (let i = 0; i < GRID_N; i++) {
+                const u1 = -RANGE + i * H, u2 = u1 + H;
+                for (let j = 0; j < GRID_N; j++) {
+                    const v1 = -RANGE + j * H, v2 = v1 + H;
+                    let f11, f12, f21, f22;
+                    if (coordType === 'z') {
+                        f11 = fieldFn(u1, v1, slicePos, t);
+                        f12 = fieldFn(u1, v2, slicePos, t);
+                        f21 = fieldFn(u2, v1, slicePos, t);
+                        f22 = fieldFn(u2, v2, slicePos, t);
+                    } else if (coordType === 'x') {
+                        f11 = fieldFn(slicePos, v1, u1, t);
+                        f12 = fieldFn(slicePos, v2, u1, t);
+                        f21 = fieldFn(slicePos, v1, u2, t);
+                        f22 = fieldFn(slicePos, v2, u2, t);
+                    } else {
+                        f11 = fieldFn(v1, slicePos, u1, t);
+                        f12 = fieldFn(v2, slicePos, u1, t);
+                        f21 = fieldFn(v1, slicePos, u2, t);
+                        f22 = fieldFn(v2, slicePos, u2, t);
+                    }
+                    const hp = f11 > 0 || f12 > 0 || f21 > 0 || f22 > 0;
+                    const hn = f11 < 0 || f12 < 0 || f21 < 0 || f22 < 0;
+                    if (!hp || !hn) continue;
+                    const pts = [];
+                    if (f11 * f21 < 0) { const r = Math.abs(f11) / (Math.abs(f11) + Math.abs(f21)); pts.push([u1 + r * H, v1]); }
+                    if (f11 * f12 < 0) { const r = Math.abs(f11) / (Math.abs(f11) + Math.abs(f12)); pts.push([u1, v1 + r * H]); }
+                    if (f21 * f22 < 0) { const r = Math.abs(f21) / (Math.abs(f21) + Math.abs(f22)); pts.push([u2, v1 + r * H]); }
+                    if (f12 * f22 < 0) { const r = Math.abs(f12) / (Math.abs(f12) + Math.abs(f22)); pts.push([u1 + r * H, v2]); }
+                    if (pts.length >= 2) for (let k = 0; k < pts.length - 1; k++) {
+                        const [ax, ay] = pts[k], [bx, by] = pts[k + 1];
+                        let p1, p2;
+                        if (coordType === 'z') { p1 = [ax, ay, slicePos]; p2 = [bx, by, slicePos]; }
+                        else if (coordType === 'x') { p1 = [slicePos, ax, ay]; p2 = [slicePos, bx, by]; }
+                        else { p1 = [ax, slicePos, ay]; p2 = [bx, slicePos, by]; }
+                        segs.push([p1, p2]);
+                    }
+                }
+            }
+            return segs;
+        }
+
+        function createSegments(color, opacity) {
+            const arr = new Float32Array(MAX_SEGS * 2 * 3);
+            const geom = new THREE.BufferGeometry();
+            geom.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+            const mat = new THREE.LineBasicMaterial({ color, transparent: true, opacity, depthWrite: true, depthTest: true });
+            const seg = new THREE.LineSegments(geom, mat);
+            seg.userData = { arr };
+            return seg;
+        }
+
+        const goldSeg = createSegments(COLOR_GOLD, 0.52);
+        const cyanSeg = createSegments(COLOR_CYAN, 0.52);
+        const magentaSeg = createSegments(COLOR_MAGENTA, 0.52);
+
+        const rootGroup = new THREE.Group();
+        rootGroup.name = 'bessel-weave';
+        rootGroup.add(goldSeg);
+        rootGroup.add(cyanSeg);
+        rootGroup.add(magentaSeg);
+        scene.add(rootGroup);
+
+        function updateSegments(seg, coordType, t, fieldFn) {
+            const arr = seg.userData.arr;
+            if (!arr) return;
+            let idx = 0;
+            for (let s = 0; s < SLICES; s++) {
+                const pos = -RANGE + (s + 0.5) * 2 * RANGE / SLICES;
+                const segs = traceZeroSegments(coordType, pos, t, fieldFn);
+                for (const [p1, p2] of segs) {
+                    if (idx + 6 > arr.length) break;
+                    const a = new THREE.Vector3(...p1).multiplyScalar(SCALE);
+                    const b = new THREE.Vector3(...p2).multiplyScalar(SCALE);
+                    if (a.length() < 8 && b.length() < 8) {
+                        arr[idx++] = a.x; arr[idx++] = a.y; arr[idx++] = a.z;
+                        arr[idx++] = b.x; arr[idx++] = b.y; arr[idx++] = b.z;
+                    }
+                }
+            }
+            seg.geometry.setDrawRange(0, idx / 3);
+            seg.geometry.attributes.position.needsUpdate = true;
+        }
+
+        // 立方体边框
+        const box = new THREE.BoxGeometry(RANGE * SCALE * 2, RANGE * SCALE * 2, RANGE * SCALE * 2);
+        rootGroup.add(new THREE.LineSegments(new THREE.EdgesGeometry(box), new THREE.LineBasicMaterial({
+            color: 0x403830, transparent: true, opacity: 0.14, depthWrite: true, depthTest: true
+        })));
+
+        // 背景星点
+        const starsGroup = new THREE.Group();
+        const starsGeom = new THREE.BufferGeometry();
+        const sc = 500;
+        const sp = new Float32Array(sc * 3);
+        for (let i = 0; i < sc; i++) {
+            const th = Math.random() * Math.PI * 2, ph = Math.acos(2 * Math.random() - 1), d = 6.5 + Math.random() * 10;
+            sp[i * 3] = d * Math.sin(ph) * Math.cos(th);
+            sp[i * 3 + 1] = d * Math.sin(ph) * Math.sin(th);
+            sp[i * 3 + 2] = d * Math.cos(ph);
+        }
+        starsGeom.setAttribute('position', new THREE.BufferAttribute(sp, 3));
+        starsGroup.add(new THREE.Points(starsGeom, new THREE.PointsMaterial({
+            color: 0x908878, size: 0.018, transparent: true, opacity: 0.55, depthWrite: false
+        })));
+        scene.add(starsGroup);
+
+        console.log('Bessel节点编织已就绪');
+
+        // 动画循环
+        let lastUpdate = -10, animId;
+        function loop() {
+            const t = getElapsed();
+            if (t - lastUpdate > UPDATE_INTERVAL) {
+                try {
+                    updateSegments(goldSeg, 'z', t, fieldGold);
+                    updateSegments(cyanSeg, 'x', t, fieldCyan);
+                    updateSegments(magentaSeg, 'y', t, fieldMagenta);
+                    lastUpdate = t;
+                } catch (e) { console.warn(e); }
+            }
+            rootGroup.rotation.x = t * 0.11;
+            rootGroup.rotation.y = t * 0.18;
+            rootGroup.rotation.z = t * 0.07;
+            starsGroup.rotation.y = t * 0.04;
+            starsGroup.rotation.x = t * 0.025;
+            const cr = 7.6, ca = t * 0.08, ch = 2.9 + Math.sin(t * 0.16) * 0.7;
+            camera.position.set(Math.cos(ca) * cr, ch, Math.sin(ca) * cr);
+            camera.lookAt(0, 0, 0);
+            renderer.render(scene, camera);
+        }
+        function schedule() {
+            animId = requestAnimationFrame(() => { try { loop(); } catch (e) { console.warn(e); } schedule(); });
+        }
+        const backup = setInterval(() => { if (animId !== undefined) { cancelAnimationFrame(animId); schedule(); } }, 3000);
+        updateSegments(goldSeg, 'z', 0, fieldGold);
+        updateSegments(cyanSeg, 'x', 0, fieldCyan);
+        updateSegments(magentaSeg, 'y', 0, fieldMagenta);
+        renderer.render(scene, camera);
+        schedule();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = container.clientWidth / Math.max(container.clientHeight, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            camera.aspect = container.clientWidth / Math.max(container.clientHeight, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        }, 120));
+        console.log('✅ Bessel圆柱波干涉节点编织动画已稳定运行');
+    </script>
+</body>
+</html>

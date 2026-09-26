@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QUANTUM · 量子光环</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #05050d;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+        #pixi-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2;
+            text-align: center;
+            pointer-events: none;
+            opacity: 0.5;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+        .overlay:hover {
+            opacity: 0.85;
+        }
+        .title {
+            color: rgba(210, 220, 250, 0.75);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 25px rgba(140, 160, 240, 0.5);
+        }
+        .hint {
+            color: rgba(170, 180, 215, 0.45);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+        @media (max-width: 768px) {
+            .overlay {
+                bottom: 18px;
+            }
+            .title {
+                font-size: 8px;
+                letter-spacing: 0.45em;
+            }
+            .hint {
+                font-size: 6px;
+                letter-spacing: 0.22em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="pixi-container"></div>
+    <div class="overlay">
+        <div class="title">Quantum</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js"></script>
+    <script>
+        (function() {
+            // 检查 PixiJS 是否加载成功
+            if (typeof PIXI === 'undefined') {
+                document.body.style.background = '#05050d';
+                document.getElementById('pixi-container').style.background = '#05050d';
+                console.warn('PixiJS 加载失败，已显示备用背景');
+                return;
+            }
+
+            // ─── 全局状态 ──────────────────────────────────────────────
+            let app;
+            let container;
+            let rings = [];
+            let dustSprites = [];
+            let mouse = { x: 0, y: 0, active: false, lerpX: 0, lerpY: 0 };
+            let time = 0;
+            let colorShift = 0;
+            let ringCount = 6;
+            let tiltX = 0.4;
+            let tiltY = 0.3;
+            let targetTiltX = 0.4;
+            let targetTiltY = 0.3;
+            let centerSprite;
+            let glowTexture, coreTexture;
+
+            // ─── 配置 ──────────────────────────────────────────────────
+            const CONFIG = {
+                particlesPerRing: 200,
+                baseRingRadius: 60,
+                ringSpacing: 36,
+                coreSize: 14,
+                blendMode: PIXI.BLEND_MODES.ADD,
+                maxDust: 70,
+            };
+
+            // ─── 初始化 PixiJS ──────────────────────────────────────────
+            function initPixi() {
+                const containerEl = document.getElementById('pixi-container');
+                const resolution = Math.min(window.devicePixelRatio || 1, 2);
+
+                try {
+                    app = new PIXI.Application({
+                        width: window.innerWidth,
+                        height: window.innerHeight,
+                        resolution: resolution,
+                        backgroundColor: 0x05050d,
+                        antialias: true,
+                        autoDensity: true,
+                        powerPreference: 'high-performance',
+                    });
+
+                    containerEl.appendChild(app.view);
+                    container = new PIXI.Container();
+                    app.stage.addChild(container);
+
+                    // 创建共享纹理（只创建一次）
+                    glowTexture = createGlowTexture();
+                    coreTexture = createCoreTexture();
+
+                    // 创建中心光晕
+                    centerSprite = new PIXI.Sprite(coreTexture);
+                    centerSprite.anchor.set(0.5, 0.5);
+                    centerSprite.blendMode = PIXI.BLEND_MODES.ADD;
+                    container.addChild(centerSprite);
+
+                    // 创建光环
+                    createRings();
+
+                    // 创建背景星尘
+                    createDust();
+
+                    // 设置事件
+                    setupEvents();
+
+                    // 启动动画
+                    app.ticker.add(animate);
+                } catch (err) {
+                    console.error('PixiJS 初始化失败:', err);
+                    document.body.style.background = '#05050d';
+                    containerEl.style.background = '#05050d';
+                }
+            }
+
+            // ─── 创建发光粒子纹理 ─────────────────────────────────────
+            function createGlowTexture() {
+                const size = 16;
+                const canvas = document.createElement('canvas');
+                canvas.width = size;
+                canvas.height = size;
+                const ctx = canvas.getContext('2d');
+                const gradient = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+                gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
+                gradient.addColorStop(0.35, 'rgba(255, 255, 255, 0.6)');
+                gradient.addColorStop(0.7, 'rgba(255, 255, 255, 0.2)');
+                gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+                ctx.fillStyle = gradient;
+                ctx.fillRect(0, 0, size, size);
+                return PIXI.Texture.from(canvas);
+            }
+
+            // ─── 创建中心光晕纹理 ─────────────────────────────────────
+            function createCoreTexture() {
+                const size = 64;
+                const canvas = document.createElement('canvas');
+                canvas.width = size;
+                canvas.height = size;
+                const ctx = canvas.getContext('2d');
+                const gradient = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+                gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
+                gradient.addColorStop(0.25, 'rgba(255, 255, 255, 0.7)');
+                gradient.addColorStop(0.6, 'rgba(255, 255, 255, 0.3)');
+                gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+                ctx.fillStyle = gradient;
+                ctx.fillRect(0, 0, size, size);
+                return PIXI.Texture.from(canvas);
+            }
+
+            // ─── HSL转十六进制 ──────────────────────────────────────────
+            function hslToHex(hue, sat, light) {
+                const h = ((hue % 360) + 360) % 360;
+                const s = sat / 100;
+                const l = light / 100;
+                const c = (1 - Math.abs(2 * l - 1)) * s;
+                const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+                const m = l - c / 2;
+                let r, g, b;
+                if (h < 60) { r = c;
+                    g = x;
+                    b = 0; } else if (h < 120) { r = x;
+                    g = c;
+                    b = 0; } else if (h < 180) { r = 0;
+                    g = c;
+                    b = x; } else if (h < 240) { r = 0;
+                    g = x;
+                    b = c; } else if (h < 300) { r = x;
+                    g = 0;
+                    b = c; } else { r = c;
+                    g = 0;
+                    b = x; }
+                const toHex = (val) => Math.round((val + m) * 255).toString(16).padStart(2, '0');
+                return parseInt(`${toHex(r)}${toHex(g)}${toHex(b)}`, 16);
+            }
+
+            // ─── 创建光环 ──────────────────────────────────────────────
+            function createRings() {
+                // 移除旧的光环容器
+                for (const ring of rings) {
+                    if (ring.container) {
+                        container.removeChild(ring.container);
+                        ring.container.destroy({ children: true, texture: false });
+                    }
+                }
+                rings = [];
+
+                const centerX = app.screen.width / 2;
+                const centerY = app.screen.height / 2;
+                const maxRadius = Math.min(app.screen.width, app.screen.height) * 0.38;
+                const baseRadius = Math.min(maxRadius / ringCount, CONFIG.baseRingRadius);
+
+                for (let r = 0; r < ringCount; r++) {
+                    const radius = baseRadius + r * CONFIG.ringSpacing;
+                    const particleCount = CONFIG.particlesPerRing;
+                    const ringContainer = new PIXI.ParticleContainer(particleCount, {
+                        position: true,
+                        scale: true,
+                        alpha: true,
+                        tint: true,
+                        rotation: true,
+                    }, particleCount, true);
+                    ringContainer.blendMode = PIXI.BLEND_MODES.ADD;
+
+                    const ringData = {
+                        container: ringContainer,
+                        particles: [],
+                        radius: radius,
+                        baseRadius: radius,
+                        angle: Math.random() * Math.PI * 2,
+                        rotationSpeed: (0.12 + r * 0.05) * (Math.random() < 0.5 ? 1 : -1),
+                        tiltXOffset: (Math.random() - 0.5) * 0.3,
+                        tiltYOffset: (Math.random() - 0.5) * 0.3,
+                        hue: 195 + r * 26 + Math.random() * 20,
+                        sat: 62 + Math.random() * 18,
+                        light: 55 + Math.random() * 15,
+                        alpha: 0.65 + r * 0.04,
+                        waveAmplitude: 2.5 + Math.random() * 6,
+                        waveFrequency: 1.5 + Math.random() * 2.5,
+                        waveSpeed: 0.4 + Math.random() * 1.0,
+                        wavePhase: Math.random() * Math.PI * 2,
+                    };
+
+                    for (let i = 0; i < particleCount; i++) {
+                        const sprite = new PIXI.Sprite(glowTexture);
+                        sprite.anchor.set(0.5, 0.5);
+                        const size = 0.7 + Math.random() * 2.2;
+                        sprite.scale.set(size, size);
+                        sprite.alpha = 0.35 + Math.random() * 0.5;
+                        sprite.tint = hslToHex(
+                            ringData.hue + Math.random() * 35 - 17,
+                            ringData.sat + Math.random() * 12,
+                            ringData.light + Math.random() * 18
+                        );
+                        ringContainer.addChild(sprite);
+                        ringData.particles.push({
+                            sprite: sprite,
+                            angleOffset: (i / particleCount) * Math.PI * 2,
+                            size: size,
+                            baseAlpha: sprite.alpha,
+                            hue: ringData.hue + Math.random() * 25 - 12,
+                            sat: ringData.sat + Math.random() * 12,
+                            light: ringData.light + Math.random() * 18,
+                        });
+                    }
+
+                    container.addChild(ringContainer);
+                    rings.push(ringData);
+                }
+            }
+
+            // ─── 创建背景星尘 ──────────────────────────────────────────
+            function createDust() {
+                for (const d of dustSprites) {
+                    container.removeChild(d.sprite);
+                    d.sprite.destroy({ texture: false });
+                }
+                dustSprites = [];
+
+                for (let i = 0; i < CONFIG.maxDust; i++) {
+                    const sprite = new PIXI.Sprite(glowTexture);
+                    sprite.anchor.set(0.5, 0.5);
+                    sprite.x = Math.random() * app.screen.width;
+                    sprite.y = Math.random() * app.screen.height;
+                    const size = 0.3 + Math.random() * 1.3;
+                    sprite.scale.set(size, size);
+                    sprite.alpha = 0.05 + Math.random() * 0.1;
+                    sprite.tint = hslToHex(210 + Math.random() * 70, 25 + Math.random() * 25, 40 + Math.random() * 25);
+                    container.addChild(sprite);
+                    dustSprites.push({
+                        sprite: sprite,
+                        x: sprite.x,
+                        y: sprite.y,
+                        vx: (Math.random() - 0.5) * 0.1,
+                        vy: (Math.random() - 0.5) * 0.1,
+                        twinkleSpeed: 0.25 + Math.random() * 0.6,
+                        twinklePhase: Math.random() * Math.PI * 2,
+                        baseAlpha: sprite.alpha,
+                    });
+                }
+            }
+
+            // ─── 动画循环 ──────────────────────────────────────────────
+            function animate() {
+                time += 0.016;
+                const cx = app.screen.width / 2;
+                const cy = app.screen.height / 2;
+
+                // 鼠标平滑过渡
+                if (mouse.active) {
+                    mouse.lerpX += (mouse.x - mouse.lerpX) * 0.06;
+                    mouse.lerpY += (mouse.y - mouse.lerpY) * 0.06;
+                    targetTiltX = 0.4 + (mouse.lerpY - cy) / (app.screen.height * 0.5) * 0.55;
+                    targetTiltY = 0.3 + (mouse.lerpX - cx) / (app.screen.width * 0.5) * 0.55;
+                } else {
+                    targetTiltX = 0.4 + Math.sin(time * 0.28) * 0.12;
+                    targetTiltY = 0.3 + Math.cos(time * 0.22) * 0.12;
+                }
+
+                tiltX += (targetTiltX - tiltX) * 0.04;
+                tiltY += (targetTiltY - tiltY) * 0.04;
+
+                // 更新中心光晕
+                const corePulse = 1 + Math.sin(time * 1.4) * 0.18;
+                const coreScale = (CONFIG.coreSize * corePulse) / 32;
+                centerSprite.scale.set(coreScale, coreScale);
+                centerSprite.x = cx;
+                centerSprite.y = cy;
+                centerSprite.alpha = 0.45 + Math.sin(time * 0.7) * 0.18;
+                centerSprite.tint = hslToHex(205 + colorShift + Math.sin(time * 0.45) * 22, 60, 68);
+
+                // 更新光环
+                for (const ring of rings) {
+                    ring.angle += ring.rotationSpeed * 0.016 * 60;
+                    ring.wavePhase += ring.waveSpeed * 0.016 * 60;
+
+                    const ringTiltX = tiltX + ring.tiltXOffset;
+                    const ringTiltY = tiltY + ring.tiltYOffset;
+                    const cosTiltX = Math.cos(ringTiltX);
+                    const sinTiltX = Math.sin(ringTiltX);
+                    const cosTiltY = Math.cos(ringTiltY);
+                    const sinTiltY = Math.sin(ringTiltY);
+
+                    for (const p of ring.particles) {
+                        const baseAngle = ring.angle + p.angleOffset;
+                        const wave = Math.sin(baseAngle * ring.waveFrequency + ring.wavePhase) * ring.waveAmplitude;
+                        const currentRadius = Math.max(5, ring.radius + wave);
+
+                        const x3d = currentRadius * Math.cos(baseAngle);
+                        const y3d = currentRadius * Math.sin(baseAngle);
+
+                        const y1 = y3d * cosTiltX;
+                        const z1 = y3d * sinTiltX;
+                        const x2 = x3d * cosTiltY + z1 * sinTiltY;
+                        const z2 = -x3d * sinTiltY + z1 * cosTiltY;
+
+                        const scaleFactor = 1 / (1 + z2 * 0.008);
+                        const worldX = cx + x2 * scaleFactor;
+                        const worldY = cy + y1 * scaleFactor;
+                        const worldScale = Math.max(0.1, p.size * scaleFactor);
+
+                        p.sprite.x = worldX;
+                        p.sprite.y = worldY;
+                        p.sprite.scale.set(worldScale, worldScale);
+                        p.sprite.alpha = p.baseAlpha * (0.65 + 0.35 * Math.sin(time * 1.3 + p.angleOffset));
+                        p.sprite.tint = hslToHex(
+                            p.hue + colorShift + Math.sin(time * 0.35 + p.angleOffset) * 16,
+                            p.sat,
+                            p.light + Math.sin(time * 0.55 + p.angleOffset) * 10
+                        );
+                    }
+                }
+
+                // 更新背景星尘
+                for (const d of dustSprites) {
+                    d.x += d.vx;
+                    d.y += d.vy;
+                    if (d.x < -10) d.x = app.screen.width + 10;
+                    if (d.x > app.screen.width + 10) d.x = -10;
+                    if (d.y < -10) d.y = app.screen.height + 10;
+                    if (d.y > app.screen.height + 10) d.y = -10;
+                    d.sprite.x = d.x;
+                    d.sprite.y = d.y;
+                    const twinkle = 0.55 + 0.45 * Math.sin(time * d.twinkleSpeed + d.twinklePhase);
+                    d.sprite.alpha = d.baseAlpha * twinkle;
+                }
+            }
+
+            // ─── 设置事件 ──────────────────────────────────────────────
+            function setupEvents() {
+                const view = app.view;
+
+                view.addEventListener('mousemove', (e) => {
+                    mouse.x = e.clientX;
+                    mouse.y = e.clientY;
+                    mouse.active = true;
+                });
+
+                view.addEventListener('mouseleave', () => {
+                    mouse.active = false;
+                });
+
+                view.addEventListener('mousedown', (e) => {
+                    mouse.x = e.clientX;
+                    mouse.y = e.clientY;
+                    mouse.active = true;
+                    ringCount = 4 + Math.floor(Math.random() * 5);
+                    colorShift += 35 + Math.random() * 35;
+                    if (colorShift > 150) colorShift = -35;
+                    createRings();
+                });
+
+                view.addEventListener('touchmove', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        mouse.x = touch.clientX;
+                        mouse.y = touch.clientY;
+                        mouse.active = true;
+                    }
+                }, { passive: false });
+
+                view.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        mouse.x = touch.clientX;
+                        mouse.y = touch.clientY;
+                        mouse.active = true;
+                        ringCount = 4 + Math.floor(Math.random() * 5);
+                        colorShift += 35 + Math.random() * 35;
+                        if (colorShift > 150) colorShift = -35;
+                        createRings();
+                    }
+                }, { passive: false });
+
+                view.addEventListener('touchend', () => {
+                    mouse.active = false;
+                });
+
+                window.addEventListener('resize', () => {
+                    if (app) {
+                        app.renderer.resize(window.innerWidth, window.innerHeight);
+                        createRings();
+                        createDust();
+                    }
+                });
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                initPixi();
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.addEventListener('load', () => {
+                document.body.style.background = '#05050d';
+                document.getElementById('pixi-container').style.background = '#05050d';
+            });
+        })();
+    </script>
+</body>
+</html>

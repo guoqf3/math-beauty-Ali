@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>双曲编织 · Poincaré球测地线</title>
+    <style>
+        :root {
+            --bg: #06060c;
+            --gold: #d4a843;
+            --cyan: #45b7aa;
+            --magenta: #d4708a;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'SimSun', serif;
+            -webkit-font-smoothing: antialiased;
+            user-select: none;
+        }
+        #canvas-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+        }
+        canvas { display: block; }
+        .overlay-title {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 22px 20px 8px;
+            text-align: center;
+            background: linear-gradient(180deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.8) 55%, rgba(6,6,12,0) 100%);
+        }
+        .overlay-title h2 {
+            font-size: clamp(1.1rem, 2.2vw, 1.8rem);
+            font-weight: 400;
+            letter-spacing: 0.13em;
+            color: #e8d5b0;
+            text-shadow: 0 0 30px rgba(212,168,67,0.45), 0 0 60px rgba(212,168,67,0.18);
+            margin: 0 0 2px;
+            line-height: 1.3;
+        }
+        .overlay-title .sub {
+            font-size: clamp(0.65rem, 1.1vw, 0.85rem);
+            letter-spacing: 0.22em;
+            color: rgba(200,180,150,0.65);
+        }
+        .overlay-formula {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 8px 20px 18px;
+            text-align: center;
+            background: linear-gradient(0deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.82) 55%, rgba(6,6,12,0) 100%);
+        }
+        .formula-text {
+            font-size: clamp(0.6rem, 1.0vw, 0.8rem);
+            color: rgba(210,200,185,0.8);
+            letter-spacing: 0.03em;
+            line-height: 1.7;
+        }
+        .clr-gold { color: #d4a843; font-weight: bold; }
+        .clr-cyan { color: #45b7aa; font-weight: bold; }
+        .clr-magenta { color: #d4708a; font-weight: bold; }
+        .formula-sep {
+            display: inline-block;
+            margin: 0 14px;
+            color: rgba(150,140,130,0.35);
+        }
+    </style>
+</head>
+<body>
+    <div class="overlay-title">
+        <h2>双曲编织 · Poincaré球测地线</h2>
+        <div class="sub">Geodesic foliations in the Poincaré ball model of ℍ³</div>
+    </div>
+    <div class="overlay-formula">
+        <div class="formula-text">
+            <span class="clr-gold">ds² = 4/(1−r²)²·(dx²+dy²+dz²)</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-cyan">测地线 ≡ 正交于∂𝔹³的圆弧</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-magenta">r < 1 , 边界球面 = ℂℙ¹</span>
+        </div>
+    </div>
+    <div id="canvas-container"></div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(46, container.clientWidth / container.clientHeight, 0.5, 22);
+        camera.position.set(3.0, 2.2, 6.8);
+        camera.lookAt(0, 0, 0);
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x06060c, 1);
+        container.appendChild(renderer.domElement);
+
+        let startTime = performance.now();
+        const getElapsed = () => (performance.now() - startTime) * 0.001;
+
+        const COLOR_GOLD = 0xd4a843;
+        const COLOR_CYAN = 0x45b7aa;
+        const COLOR_MAGENTA = 0xd4708a;
+        const BALL_RADIUS = 2.4;
+        const MAX_DIST = 0.94;
+        const STEPS = 220;
+
+        // 在Poincaré球内生成测地线圆弧
+        // 给定点p (3D向量，长度<1) 和切方向v (单位向量，与p不必正交)
+        // 求与单位球正交的圆弧（二维子空间中）
+        function generateGeodesicArc(p, v, steps) {
+            // 将v投影到与p正交的方向（切空间）并归一化
+            const pNorm = p.clone().normalize();
+            const vProj = v.clone().sub(pNorm.clone().multiplyScalar(v.dot(pNorm)));
+            if (vProj.length() < 1e-8) return [];
+            vProj.normalize();
+
+            // 在由p和vProj张成的二维子空间中，求解圆心c
+            // 方程： p·c = (1+|p|²)/2  和  (p-c)·v = 0 => c·v = p·v
+            const pDotV = p.clone().dot(vProj);
+            const pLen2 = p.lengthSq();
+            const rhs1 = (1 + pLen2) * 0.5;
+            // c = α * p + β * vProj
+            // p·c = α*pLen2 + β*pDotV = rhs1
+            // c·vProj = α*pDotV + β = pDotV
+            const det = pLen2 - pDotV * pDotV;
+            if (Math.abs(det) < 1e-8) return [];
+            const alpha = (rhs1 - pDotV * pDotV) / det;
+            const beta = pDotV - alpha * pDotV;
+            const center = p.clone().multiplyScalar(alpha).add(vProj.clone().multiplyScalar(beta));
+            const radius = Math.sqrt(center.lengthSq() - 1);
+            if (radius < 0.02) return [];
+
+            // 参数化圆弧：从p向两个方向延伸，直到碰到边界球面
+            const toCenter = center.clone().sub(p);
+            const startAngle = Math.atan2(toCenter.dot(vProj), toCenter.dot(p.clone().sub(center).normalize()));
+            // 实际上，计算p相对于圆心的极角
+            const pRel = p.clone().sub(center);
+            const baseAngle = Math.atan2(
+                pRel.clone().dot(vProj),
+                pRel.clone().dot(p.clone().sub(center).normalize())
+            );
+            // 简化：计算从p出发的两个方向
+            const perp = new THREE.Vector3().crossVectors(pRel.clone().normalize(), vProj).normalize();
+            // 圆弧参数化：center + radius * (cosθ * u + sinθ * w)，其中u = pRel.normalize()
+            const u = pRel.clone().normalize();
+            const w = vProj.clone();
+            const startTheta = 0;
+            const dTheta = 0.05;
+            const maxTheta = 3.5;
+
+            const pts = [];
+            // 正向
+            for (let i = 0; i <= steps; i++) {
+                const theta = startTheta + i * dTheta;
+                const pt = center.clone().add(
+                    u.clone().multiplyScalar(radius * Math.cos(theta))
+                ).add(
+                    w.clone().multiplyScalar(radius * Math.sin(theta))
+                );
+                if (pt.length() >= 0.98) break;
+                pts.push(pt.clone().multiplyScalar(BALL_RADIUS));
+            }
+            // 反向
+            const revPts = [];
+            for (let i = 1; i <= steps; i++) {
+                const theta = startTheta - i * dTheta;
+                const pt = center.clone().add(
+                    u.clone().multiplyScalar(radius * Math.cos(theta))
+                ).add(
+                    w.clone().multiplyScalar(radius * Math.sin(theta))
+                );
+                if (pt.length() >= 0.98) break;
+                revPts.push(pt.clone().multiplyScalar(BALL_RADIUS));
+            }
+            return [...revPts.reverse(), ...pts];
+        }
+
+        // 生成种子点
+        const rootGroup = new THREE.Group();
+        rootGroup.name = 'hyperbolic-weave';
+        scene.add(rootGroup);
+
+        const seeds = [];
+        const numSeeds = 65;
+        const phi_g = Math.PI * (3 - Math.sqrt(5));
+        for (let i = 0; i < numSeeds; i++) {
+            const y = 1 - (2 * i + 1) / numSeeds;
+            const rAtY = Math.sqrt(1 - y * y);
+            const theta = phi_g * i;
+            const dist = 0.15 + Math.random() * 0.65;
+            seeds.push(new THREE.Vector3(
+                dist * rAtY * Math.cos(theta),
+                dist * y,
+                dist * rAtY * Math.sin(theta)
+            ));
+        }
+
+        // 为每个种子分配颜色并生成测地线
+        seeds.forEach(p => {
+            const dist = p.length();
+            let color;
+            if (dist < 0.35) color = COLOR_GOLD;
+            else if (dist < 0.60) color = COLOR_CYAN;
+            else color = COLOR_MAGENTA;
+
+            // 随机方向
+            const v = new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize();
+            const pts = generateGeodesicArc(p, v, STEPS);
+            if (pts.length >= 2) {
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color, transparent: true, opacity: 0.52, depthWrite: true, depthTest: true,
+                });
+                rootGroup.add(new THREE.Line(geom, mat));
+            }
+            // 第二条测地线：不同方向
+            const v2 = new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize();
+            const pts2 = generateGeodesicArc(p, v2, STEPS);
+            if (pts2.length >= 2) {
+                const geom2 = new THREE.BufferGeometry().setFromPoints(pts2);
+                const mat2 = new THREE.LineBasicMaterial({
+                    color, transparent: true, opacity: 0.35, depthWrite: true, depthTest: true,
+                });
+                rootGroup.add(new THREE.Line(geom2, mat2));
+            }
+        });
+
+        // 边界球面参考线
+        const sphereGeom = new THREE.SphereGeometry(BALL_RADIUS * 0.995, 48, 32);
+        const sphereEdges = new THREE.EdgesGeometry(sphereGeom);
+        const sphereWire = new THREE.LineSegments(sphereEdges, new THREE.LineBasicMaterial({
+            color: 0x403830, transparent: true, opacity: 0.18, depthWrite: true, depthTest: true
+        }));
+        rootGroup.add(sphereWire);
+
+        console.log('双曲测地线编织总数:', rootGroup.children.length);
+
+        // 背景星点
+        const starsGroup = new THREE.Group();
+        const starsGeom = new THREE.BufferGeometry();
+        const starsCount = 500;
+        const starsPos = new Float32Array(starsCount * 3);
+        for (let i = 0; i < starsCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi2 = Math.acos(2 * Math.random() - 1);
+            const dist = 6.0 + Math.random() * 10;
+            starsPos[i * 3] = dist * Math.sin(phi2) * Math.cos(theta);
+            starsPos[i * 3 + 1] = dist * Math.sin(phi2) * Math.sin(theta);
+            starsPos[i * 3 + 2] = dist * Math.cos(phi2);
+        }
+        starsGeom.setAttribute('position', new THREE.BufferAttribute(starsPos, 3));
+        const starsMat = new THREE.PointsMaterial({
+            color: 0x908878, size: 0.018, transparent: true, opacity: 0.55, depthWrite: false,
+        });
+        starsGroup.add(new THREE.Points(starsGeom, starsMat));
+        scene.add(starsGroup);
+
+        // ---- 稳定动画循环 ----
+        function animate() {
+            const t = getElapsed();
+            rootGroup.rotation.x = t * 0.15;
+            rootGroup.rotation.y = t * 0.23;
+            rootGroup.rotation.z = t * 0.10;
+            starsGroup.rotation.y = t * 0.04;
+            starsGroup.rotation.x = t * 0.025;
+
+            const camRadius = 6.9;
+            const camAngle = t * 0.08;
+            const camHeight = 2.3 + Math.sin(t * 0.16) * 0.7;
+            camera.position.x = Math.cos(camAngle) * camRadius;
+            camera.position.z = Math.sin(camAngle) * camRadius;
+            camera.position.y = camHeight;
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+            requestAnimationFrame(animate);
+        }
+
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth,
+                h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth,
+                h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 120));
+
+        console.log('✅ 双曲空间Poincaré球测地线编织动画已稳定运行');
+    </script>
+</body>
+</html>

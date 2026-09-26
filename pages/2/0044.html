@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FLUID INK · 流体墨韵</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #080810;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+        #pixi-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2;
+            text-align: center;
+            pointer-events: none;
+            opacity: 0.55;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+        .overlay:hover {
+            opacity: 0.9;
+        }
+        .title {
+            color: rgba(230, 220, 250, 0.75);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 25px rgba(160, 120, 240, 0.5);
+        }
+        .hint {
+            color: rgba(180, 170, 210, 0.45);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+        @media (max-width: 768px) {
+            .overlay { bottom: 18px; }
+            .title { font-size: 8px; letter-spacing: 0.45em; }
+            .hint { font-size: 6px; letter-spacing: 0.22em; }
+        }
+    </style>
+</head>
+<body>
+    <div id="pixi-container"></div>
+    <div class="overlay">
+        <div class="title">Fluid Ink</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js"></script>
+    <script>
+        (function() {
+            // ─── PixiJS 加载检测 ───────────────────────────────────────
+            if (typeof PIXI === 'undefined') {
+                document.body.style.background = '#080810';
+                document.getElementById('pixi-container').style.background = '#080810';
+                console.warn('PixiJS 加载失败，已显示备用背景');
+                return;
+            }
+
+            // ─── 全局状态 ──────────────────────────────────────────────
+            let app;
+            let container;
+            let inkDrops = [];
+            let mouse = { x: -9999, y: -9999, active: false, vx: 0, vy: 0, lastX: -9999, lastY: -9999 };
+            let time = 0;
+            let colorShift = 0;
+            let glowTexture;
+            let rippleGraphics;
+
+            // ─── 颜色方案 ──────────────────────────────────────────────
+            const PALETTES = [
+                { base: 240, range: 40, sat: 65, light: 55 },  // 蓝紫
+                { base: 180, range: 50, sat: 60, light: 55 },  // 青绿
+                { base: 300, range: 50, sat: 65, light: 55 },  // 品红
+                { base: 20, range: 40, sat: 70, light: 55 },   // 暖橙
+                { base: 270, range: 60, sat: 60, light: 55 },  // 紫罗兰
+            ];
+            let currentPalette = 0;
+
+            // ─── 初始化PixiJS ─────────────────────────────────────────
+            function initPixi() {
+                const containerEl = document.getElementById('pixi-container');
+                const resolution = Math.min(window.devicePixelRatio || 1, 2);
+
+                app = new PIXI.Application({
+                    width: window.innerWidth,
+                    height: window.innerHeight,
+                    resolution: resolution,
+                    backgroundColor: 0x080810,
+                    antialias: true,
+                    autoDensity: true,
+                    powerPreference: 'high-performance',
+                });
+
+                containerEl.appendChild(app.view);
+
+                // 主容器
+                container = new PIXI.Container();
+                app.stage.addChild(container);
+
+                // 创建径向渐变纹理
+                glowTexture = createGlowTexture(128);
+
+                // 创建波纹图形层
+                rippleGraphics = new PIXI.Graphics();
+                rippleGraphics.blendMode = PIXI.BLEND_MODES.ADD;
+                container.addChild(rippleGraphics);
+
+                // 初始墨滴
+                initInkDrops();
+
+                // 设置事件
+                setupEvents();
+
+                // 启动动画
+                app.ticker.add(animate);
+            }
+
+            // ─── 创建径向渐变发光纹理 ────────────────────────────────
+            function createGlowTexture(size) {
+                const canvas = document.createElement('canvas');
+                canvas.width = size;
+                canvas.height = size;
+                const ctx = canvas.getContext('2d');
+                const center = size / 2;
+                const gradient = ctx.createRadialGradient(center, center, 0, center, center, center);
+                gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
+                gradient.addColorStop(0.15, 'rgba(255, 255, 255, 0.85)');
+                gradient.addColorStop(0.4, 'rgba(255, 255, 255, 0.4)');
+                gradient.addColorStop(0.7, 'rgba(255, 255, 255, 0.12)');
+                gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+                ctx.fillStyle = gradient;
+                ctx.fillRect(0, 0, size, size);
+                return PIXI.Texture.from(canvas);
+            }
+
+            // ─── 创建墨滴 ─────────────────────────────────────────────
+            function createInkDrop(x, y, hue, size, alpha) {
+                const sprite = new PIXI.Sprite(glowTexture);
+                sprite.anchor.set(0.5, 0.5);
+
+                const drop = {
+                    sprite: sprite,
+                    x: x !== undefined ? x : Math.random() * app.screen.width,
+                    y: y !== undefined ? y : Math.random() * app.screen.height,
+                    vx: (Math.random() - 0.5) * 0.3,
+                    vy: (Math.random() - 0.5) * 0.3,
+                    size: size || 25 + Math.random() * 45,
+                    maxSize: (size || 45) * (2.5 + Math.random() * 1.5),
+                    alpha: alpha || 0.25 + Math.random() * 0.4,
+                    maxAlpha: alpha ? alpha * 1.3 : 0.55 + Math.random() * 0.35,
+                    hue: hue !== undefined ? hue : PALETTES[currentPalette].base + Math.random() * PALETTES[currentPalette].range,
+                    saturation: PALETTES[currentPalette].sat + Math.random() * 20,
+                    lightness: PALETTES[currentPalette].light + Math.random() * 15,
+                    growthRate: 0.15 + Math.random() * 0.3,
+                    dissolveRate: 0.0015 + Math.random() * 0.003,
+                    pulsePhase: Math.random() * Math.PI * 2,
+                    pulseSpeed: 0.2 + Math.random() * 0.4,
+                    dissolving: false,
+                    dead: false,
+                };
+
+                sprite.x = drop.x;
+                sprite.y = drop.y;
+                const s = drop.size / 64;
+                sprite.scale.set(s, s);
+                sprite.alpha = drop.alpha;
+                sprite.blendMode = PIXI.BLEND_MODES.ADD;
+                sprite.tint = hslToHex(drop.hue, drop.saturation, drop.lightness);
+
+                container.addChild(sprite);
+                inkDrops.push(drop);
+                return drop;
+            }
+
+            // ─── 初始化墨滴 ────────────────────────────────────────────
+            function initInkDrops() {
+                inkDrops = [];
+                container.children.forEach(child => {
+                    if (child !== rippleGraphics) {
+                        child.destroy({ texture: false, children: true });
+                    }
+                });
+                inkDrops = [];
+                const count = 8 + Math.floor(Math.random() * 5);
+                for (let i = 0; i < count; i++) {
+                    createInkDrop();
+                }
+            }
+
+            // ─── HSL转十六进制 ────────────────────────────────────────
+            function hslToHex(hue, sat, light) {
+                const h = ((hue % 360) + 360) % 360;
+                const s = sat / 100;
+                const l = light / 100;
+                const c = (1 - Math.abs(2 * l - 1)) * s;
+                const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+                const m = l - c / 2;
+                let r, g, b;
+                if (h < 60) { r = c; g = x; b = 0; }
+                else if (h < 120) { r = x; g = c; b = 0; }
+                else if (h < 180) { r = 0; g = c; b = x; }
+                else if (h < 240) { r = 0; g = x; b = c; }
+                else if (h < 300) { r = x; g = 0; b = c; }
+                else { r = c; g = 0; b = x; }
+                const toHex = (val) => Math.round((val + m) * 255).toString(16).padStart(2, '0');
+                return parseInt(`${toHex(r)}${toHex(g)}${toHex(b)}`, 16);
+            }
+
+            // ─── 动画循环 ──────────────────────────────────────────────
+            function animate() {
+                time += 0.016;
+                const w = app.screen.width;
+                const h = app.screen.height;
+
+                // 更新鼠标速度
+                if (mouse.active && mouse.lastX > -9000) {
+                    mouse.vx = (mouse.x - mouse.lastX) * 0.06;
+                    mouse.vy = (mouse.y - mouse.lastY) * 0.06;
+                } else {
+                    mouse.vx *= 0.92;
+                    mouse.vy *= 0.92;
+                }
+                mouse.lastX = mouse.x;
+                mouse.lastY = mouse.y;
+
+                // 更新墨滴
+                for (let i = inkDrops.length - 1; i >= 0; i--) {
+                    const drop = inkDrops[i];
+                    drop.pulsePhase += drop.pulseSpeed * 0.016 * 60;
+
+                    // 生长
+                    if (!drop.dissolving && drop.size < drop.maxSize) {
+                        drop.size += drop.growthRate * 0.016 * 60;
+                    }
+                    if (!drop.dissolving && drop.size >= drop.maxSize * 0.95) {
+                        drop.dissolving = true;
+                    }
+                    if (drop.dissolving) {
+                        drop.size *= (1 - drop.dissolveRate * 0.016 * 60);
+                        drop.alpha *= (1 - drop.dissolveRate * 0.016 * 60 * 0.7);
+                        if (drop.alpha < 0.02 || drop.size < 2) {
+                            drop.dead = true;
+                        }
+                    }
+
+                    // 鼠标水流扰动
+                    if (mouse.active && mouse.x > 0) {
+                        const dx = mouse.x - drop.x;
+                        const dy = mouse.y - drop.y;
+                        const distSq = dx * dx + dy * dy;
+                        const radius = 200;
+                        const radiusSq = radius * radius;
+                        if (distSq < radiusSq && distSq > 0.01) {
+                            const dist = Math.sqrt(distSq);
+                            const falloff = 1 - dist / radius;
+                            // 流体推动
+                            drop.vx += mouse.vx * falloff * 0.12;
+                            drop.vy += mouse.vy * falloff * 0.12;
+                            // 径向推离
+                            drop.vx += (dx / dist) * falloff * 0.08;
+                            drop.vy += (dy / dist) * falloff * 0.08;
+                            // 被搅动时扩散更快
+                            drop.growthRate = Math.min(0.6, drop.growthRate + 0.002);
+                        }
+                    }
+
+                    // 阻尼
+                    drop.vx *= 0.96;
+                    drop.vy *= 0.96;
+
+                    // 速度限制
+                    const speed = Math.sqrt(drop.vx * drop.vx + drop.vy * drop.vy);
+                    const maxSpeed = 1.5;
+                    if (speed > maxSpeed) {
+                        drop.vx = (drop.vx / speed) * maxSpeed;
+                        drop.vy = (drop.vy / speed) * maxSpeed;
+                    }
+
+                    // 更新位置
+                    drop.x += drop.vx * 0.016 * 60;
+                    drop.y += drop.vy * 0.016 * 60;
+
+                    // 边界处理
+                    const margin = drop.size * 0.3;
+                    if (drop.x < margin) { drop.x = margin; drop.vx *= -0.4; }
+                    if (drop.x > w - margin) { drop.x = w - margin; drop.vx *= -0.4; }
+                    if (drop.y < margin) { drop.y = margin; drop.vy *= -0.4; }
+                    if (drop.y > h - margin) { drop.y = h - margin; drop.vy *= -0.4; }
+
+                    // 更新精灵
+                    drop.sprite.x = drop.x;
+                    drop.sprite.y = drop.y;
+                    const pulse = 1 + Math.sin(drop.pulsePhase) * 0.1;
+                    const s = (drop.size * pulse) / 64;
+                    drop.sprite.scale.set(s, s);
+                    drop.sprite.alpha = drop.alpha;
+                    drop.sprite.tint = hslToHex(
+                        drop.hue + colorShift + Math.sin(drop.pulsePhase) * 10,
+                        drop.saturation,
+                        drop.lightness
+                    );
+
+                    // 移除已死墨滴
+                    if (drop.dead) {
+                        container.removeChild(drop.sprite);
+                        drop.sprite.destroy({ texture: false, children: true });
+                        inkDrops.splice(i, 1);
+                    }
+                }
+
+                // 保持最低墨滴数量
+                if (inkDrops.length < 4) {
+                    createInkDrop();
+                }
+            }
+
+            // ─── 设置事件 ──────────────────────────────────────────────
+            function setupEvents() {
+                const view = app.view;
+
+                view.addEventListener('mousemove', (e) => {
+                    mouse.x = e.clientX;
+                    mouse.y = e.clientY;
+                    mouse.active = true;
+                });
+
+                view.addEventListener('mouseleave', () => {
+                    mouse.active = false;
+                    mouse.x = -9999;
+                    mouse.y = -9999;
+                    mouse.lastX = -9999;
+                    mouse.lastY = -9999;
+                    mouse.vx = 0;
+                    mouse.vy = 0;
+                });
+
+                view.addEventListener('mousedown', (e) => {
+                    mouse.x = e.clientX;
+                    mouse.y = e.clientY;
+                    mouse.active = true;
+                    // 切换调色板
+                    currentPalette = (currentPalette + 1) % PALETTES.length;
+                    colorShift += 25 + Math.random() * 25;
+                    if (colorShift > 120) colorShift = -25;
+                    // 在点击位置创建多个墨滴
+                    for (let i = 0; i < 4; i++) {
+                        const offsetX = (Math.random() - 0.5) * 60;
+                        const offsetY = (Math.random() - 0.5) * 60;
+                        createInkDrop(
+                            mouse.x + offsetX,
+                            mouse.y + offsetY,
+                            PALETTES[currentPalette].base + Math.random() * PALETTES[currentPalette].range,
+                            20 + Math.random() * 30,
+                            0.4 + Math.random() * 0.3
+                        );
+                    }
+                    // 限制总墨滴数
+                    if (inkDrops.length > 35) {
+                        const toRemove = inkDrops.splice(0, inkDrops.length - 35);
+                        for (const d of toRemove) {
+                            container.removeChild(d.sprite);
+                            d.sprite.destroy({ texture: false, children: true });
+                        }
+                    }
+                });
+
+                view.addEventListener('touchmove', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        mouse.x = touch.clientX;
+                        mouse.y = touch.clientY;
+                        mouse.active = true;
+                    }
+                }, { passive: false });
+
+                view.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        mouse.x = touch.clientX;
+                        mouse.y = touch.clientY;
+                        mouse.active = true;
+                        currentPalette = (currentPalette + 1) % PALETTES.length;
+                        colorShift += 25 + Math.random() * 25;
+                        if (colorShift > 120) colorShift = -25;
+                        for (let i = 0; i < 4; i++) {
+                            const offsetX = (Math.random() - 0.5) * 60;
+                            const offsetY = (Math.random() - 0.5) * 60;
+                            createInkDrop(
+                                mouse.x + offsetX,
+                                mouse.y + offsetY,
+                                PALETTES[currentPalette].base + Math.random() * PALETTES[currentPalette].range,
+                                20 + Math.random() * 30,
+                                0.4 + Math.random() * 0.3
+                            );
+                        }
+                        if (inkDrops.length > 35) {
+                            const toRemove = inkDrops.splice(0, inkDrops.length - 35);
+                            for (const d of toRemove) {
+                                container.removeChild(d.sprite);
+                                d.sprite.destroy({ texture: false, children: true });
+                            }
+                        }
+                    }
+                }, { passive: false });
+
+                view.addEventListener('touchend', () => {
+                    mouse.active = false;
+                    mouse.x = -9999;
+                    mouse.y = -9999;
+                    mouse.lastX = -9999;
+                    mouse.lastY = -9999;
+                    mouse.vx = 0;
+                    mouse.vy = 0;
+                });
+
+                window.addEventListener('resize', () => {
+                    if (app) {
+                        app.renderer.resize(window.innerWidth, window.innerHeight);
+                    }
+                });
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                try {
+                    initPixi();
+                    console.log('流体墨韵已启动');
+                } catch (err) {
+                    console.error('初始化失败:', err);
+                    document.body.style.background = '#080810';
+                    document.getElementById('pixi-container').style.background = '#080810';
+                }
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.addEventListener('load', () => {
+                document.body.style.background = '#080810';
+                document.getElementById('pixi-container').style.background = '#080810';
+            });
+        })();
+    </script>
+</body>
+</html>

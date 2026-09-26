@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>单叶双曲面调制曲线 · 空间几何之美</title>
+    <style>
+        :root {
+            --bg: #04040e;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'Noto Serif SC', 'STSong', 'KaiTi', '楷体', '华文楷体', '宋体', serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            height: 100vh;
+            width: 100vw;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+        #canvas-container {
+            position: fixed;
+            inset: 0;
+            z-index: 1;
+        }
+        canvas {
+            display: block;
+        }
+        .overlay {
+            position: fixed;
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+        #title-overlay {
+            top: clamp(10px, 3.2vh, 34px);
+        }
+        #title-overlay .title {
+            font-size: clamp(1.02rem, 2.0vw, 1.45rem);
+            font-weight: 400;
+            letter-spacing: 0.11em;
+            color: rgba(235, 228, 220, 0.92);
+            text-shadow: 0 0 24px rgba(190, 165, 140, 0.5), 0 0 6px rgba(170, 148, 125, 0.35);
+            line-height: 1.4;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.65rem, 1.2vw, 0.78rem);
+            font-weight: 300;
+            letter-spacing: 0.07em;
+            color: rgba(200, 192, 180, 0.7);
+            margin-top: 0.2em;
+            text-shadow: 0 0 13px rgba(155, 140, 120, 0.3);
+        }
+        #formula-overlay {
+            bottom: clamp(14px, 3.5vh, 40px);
+        }
+        #formula-overlay .formula {
+            font-size: clamp(0.66rem, 1.2vw, 0.88rem);
+            font-style: italic;
+            letter-spacing: 0.04em;
+            color: rgba(222, 214, 204, 0.84);
+            text-shadow: 0 0 20px rgba(155, 140, 125, 0.42), 0 0 5px rgba(165, 148, 130, 0.28);
+            line-height: 1.5;
+            background: rgba(10, 9, 16, 0.48);
+            padding: 0.38em 1.2em;
+            border-radius: 2em;
+            backdrop-filter: blur(5px);
+            -webkit-backdrop-filter: blur(5px);
+            border: 1px solid rgba(145, 125, 105, 0.22);
+        }
+        @media (max-width: 600px) {
+            #formula-overlay .formula {
+                padding: 0.3em 0.8em;
+                letter-spacing: 0.03em;
+                font-size: 0.6rem;
+            }
+            #title-overlay .title {
+                letter-spacing: 0.07em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+
+    <div class="overlay" id="title-overlay">
+        <div class="title">单叶双曲面调制曲线 · 空间几何之美</div>
+        <div class="subtitle">Modulated Curves on the Hyperboloid</div>
+    </div>
+
+    <div class="overlay" id="formula-overlay">
+        <div class="formula">
+            γ(v) = (a·cosh(u(v))·cos v , c·sinh(u(v)) , a·cosh(u(v))·sin v)
+            &emsp;|&emsp; u(v)=u₀+A·sin(nv) , v∈[0,2π]
+        </div>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 时间配置 ====================
+        const DRAW_DURATION = 15.0;
+        const HOLD_DURATION = 1.5;
+        const ERASE_DURATION = 15.0;
+        const CYCLE_DURATION = DRAW_DURATION + HOLD_DURATION + ERASE_DURATION;
+        const DRAW_END = DRAW_DURATION;
+        const ERASE_START = DRAW_END + HOLD_DURATION;
+        const FADE_IN_DURATION = 2.5;
+        const FADE_OUT_START = CYCLE_DURATION - 3.0;
+
+        // 单叶双曲面参数 (x²/a² + z²/a² - y²/c² = 1, 绕Y轴)
+        const HB_A = 1.16;     // 腰部半径
+        const HB_C = 0.7;      // 纵向缩放
+        const U_MAX = 1.35;    // u参数范围
+        const CURVE_SEGMENTS = 720;
+        const TOTAL_VERTICES = CURVE_SEGMENTS + 1;
+
+        // ==================== 三种颜色 ====================
+        const COLOR_WARM_GOLD = new THREE.Color('#e8b86d');
+        const COLOR_ROSE = new THREE.Color('#e8a0b8');
+        const COLOR_CYAN = new THREE.Color('#7ec8e3');
+        const THREE_COLORS = [COLOR_WARM_GOLD, COLOR_ROSE, COLOR_CYAN];
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x04040e, 0.00006);
+
+        const camera = new THREE.PerspectiveCamera(46, container.clientWidth / container.clientHeight, 0.4, 18);
+        camera.position.set(0.55, 0.7, 4.3);
+        camera.lookAt(0, 0.05, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.15;
+        renderer.outputColorSpace = THREE.SRGBColorSpace;
+        container.appendChild(renderer.domElement);
+
+        // ==================== 主旋转组 ====================
+        const mainGroup = new THREE.Group();
+        scene.add(mainGroup);
+
+        // ==================== 星空背景粒子 ====================
+        const starsGroup = new THREE.Group();
+        mainGroup.add(starsGroup);
+        const starCount = 200;
+        const starPosArr = new Float32Array(starCount * 3);
+        for (let i = 0; i < starCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const r = 2.2 + Math.random() * 3.6;
+            starPosArr[i * 3] = Math.sin(phi) * Math.cos(theta) * r;
+            starPosArr[i * 3 + 1] = Math.sin(phi) * Math.sin(theta) * r;
+            starPosArr[i * 3 + 2] = Math.cos(phi) * r;
+        }
+        const starGeom = new THREE.BufferGeometry();
+        starGeom.setAttribute('position', new THREE.BufferAttribute(starPosArr, 3));
+        const starMat = new THREE.PointsMaterial({
+            color: 0xbbb4ce,
+            size: 0.010,
+            transparent: true,
+            opacity: 0.30,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending,
+        });
+        const starPts = new THREE.Points(starGeom, starMat);
+        starsGroup.add(starPts);
+
+        // 双曲面附近漂浮光点
+        const glowGroup = new THREE.Group();
+        mainGroup.add(glowGroup);
+        const glowCount = 80;
+        const glowArr = new Float32Array(glowCount * 3);
+        for (let i = 0; i < glowCount; i++) {
+            const u = (Math.random() - 0.5) * 2 * U_MAX;
+            const v = Math.random() * Math.PI * 2;
+            const coshU = Math.cosh(u);
+            const sinhU = Math.sinh(u);
+            const x = HB_A * coshU * Math.cos(v);
+            const y = HB_C * sinhU;
+            const z = HB_A * coshU * Math.sin(v);
+            glowArr[i * 3] = x + (Math.random() - 0.5) * 0.3;
+            glowArr[i * 3 + 1] = y + (Math.random() - 0.5) * 0.3;
+            glowArr[i * 3 + 2] = z + (Math.random() - 0.5) * 0.3;
+        }
+        const glowGeom = new THREE.BufferGeometry();
+        glowGeom.setAttribute('position', new THREE.BufferAttribute(glowArr, 3));
+        const glowMat = new THREE.PointsMaterial({
+            color: 0xf0e4cc,
+            size: 0.023,
+            transparent: true,
+            opacity: 0.44,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending,
+        });
+        const glowPts = new THREE.Points(glowGeom, glowMat);
+        glowGroup.add(glowPts);
+
+        // ==================== 双曲面参考线框 ====================
+        const hyperboloidWireGroup = new THREE.Group();
+        mainGroup.add(hyperboloidWireGroup);
+        const hbWireMats = [];
+
+        // 纬线 (固定u, v从0到2π) —— 水平圆
+        function createHbLatLine(uVal) {
+            const pts = [];
+            const coshU = Math.cosh(uVal);
+            const sinhU = Math.sinh(uVal);
+            const r = HB_A * coshU;
+            const y = HB_C * sinhU;
+            const numPts = 240;
+            for (let i = 0; i <= numPts; i++) {
+                const v = (i / numPts) * Math.PI * 2;
+                pts.push(new THREE.Vector3(r * Math.cos(v), y, r * Math.sin(v)));
+            }
+            const g = new THREE.BufferGeometry().setFromPoints(pts);
+            const m = new THREE.LineBasicMaterial({
+                color: 0x494565,
+                transparent: true,
+                opacity: 0.13,
+                depthWrite: false,
+            });
+            hbWireMats.push(m);
+            return new THREE.Line(g, m);
+        }
+
+        // 经线 (固定v, u从-U_MAX到U_MAX) —— 双曲线
+        function createHbLongLine(vVal) {
+            const pts = [];
+            const numPts = 200;
+            for (let i = 0; i <= numPts; i++) {
+                const u = -U_MAX + (i / numPts) * 2 * U_MAX;
+                const coshU = Math.cosh(u);
+                const sinhU = Math.sinh(u);
+                pts.push(new THREE.Vector3(
+                    HB_A * coshU * Math.cos(vVal),
+                    HB_C * sinhU,
+                    HB_A * coshU * Math.sin(vVal)
+                ));
+            }
+            const g = new THREE.BufferGeometry().setFromPoints(pts);
+            const m = new THREE.LineBasicMaterial({
+                color: 0x494565,
+                transparent: true,
+                opacity: 0.13,
+                depthWrite: false,
+            });
+            hbWireMats.push(m);
+            return new THREE.Line(g, m);
+        }
+
+        // 创建纬线（约10条）
+        for (let i = 1; i <= 10; i++) {
+            const u = -U_MAX + (i / 11) * 2 * U_MAX;
+            hyperboloidWireGroup.add(createHbLatLine(u));
+        }
+        // 创建经线（约18条）
+        for (let i = 0; i < 18; i++) {
+            const v = (i / 18) * Math.PI * 2;
+            hyperboloidWireGroup.add(createHbLongLine(v));
+        }
+        // 腰部强调环 (u=0, 最小半径)
+        {
+            const waistPts = [];
+            const r = HB_A; // cosh(0)=1
+            const numPts = 280;
+            for (let i = 0; i <= numPts; i++) {
+                const v = (i / numPts) * Math.PI * 2;
+                waistPts.push(new THREE.Vector3(r * Math.cos(v), 0, r * Math.sin(v)));
+            }
+            const wG = new THREE.BufferGeometry().setFromPoints(waistPts);
+            const wM = new THREE.LineBasicMaterial({
+                color: 0x5e5a80,
+                transparent: true,
+                opacity: 0.22,
+                depthWrite: false,
+            });
+            hbWireMats.push(wM);
+            hyperboloidWireGroup.add(new THREE.Line(wG, wM));
+        }
+
+        // ==================== 双曲面调制曲线生成 ====================
+        const curvesGroup = new THREE.Group();
+        mainGroup.add(curvesGroup);
+        const allCurveData = [];
+
+        // 金色组 —— 腰部附近，大振幅
+        const goldParams = [
+            { u0: 0, n: 3, A: 0.42 },
+            { u0: 0.13, n: 4, A: 0.39 },
+            { u0: -0.13, n: 5, A: 0.37 },
+            { u0: 0.26, n: 6, A: 0.35 },
+            { u0: -0.26, n: 7, A: 0.33 },
+            { u0: 0.32, n: 8, A: 0.31 },
+        ];
+
+        // 玫瑰组 —— 中等高度，中等振幅
+        const roseParams = [
+            { u0: 0.50, n: 3, A: 0.27 },
+            { u0: -0.50, n: 4, A: 0.26 },
+            { u0: 0.58, n: 5, A: 0.25 },
+            { u0: -0.58, n: 6, A: 0.24 },
+            { u0: 0.66, n: 7, A: 0.23 },
+            { u0: -0.66, n: 8, A: 0.22 },
+        ];
+
+        // 青蓝组 —— 较高处，小振幅
+        const cyanParams = [
+            { u0: 0.80, n: 3, A: 0.17 },
+            { u0: -0.80, n: 4, A: 0.16 },
+            { u0: 0.90, n: 5, A: 0.15 },
+            { u0: -0.90, n: 6, A: 0.14 },
+            { u0: 0.98, n: 7, A: 0.13 },
+            { u0: -0.98, n: 8, A: 0.12 },
+        ];
+
+        const allParamGroups = [
+            { params: goldParams, color: COLOR_WARM_GOLD },
+            { params: roseParams, color: COLOR_ROSE },
+            { params: cyanParams, color: COLOR_CYAN },
+        ];
+
+        allParamGroups.forEach(group => {
+            group.params.forEach(({ u0, n, A }) => {
+                const positions = new Float32Array(TOTAL_VERTICES * 3);
+                for (let i = 0; i <= CURVE_SEGMENTS; i++) {
+                    const v = (i / CURVE_SEGMENTS) * Math.PI * 2;
+                    const u = u0 + A * Math.sin(n * v);
+                    const coshU = Math.cosh(u);
+                    const sinhU = Math.sinh(u);
+                    positions[i * 3] = HB_A * coshU * Math.cos(v);
+                    positions[i * 3 + 1] = HB_C * sinhU;
+                    positions[i * 3 + 2] = HB_A * coshU * Math.sin(v);
+                }
+                const geometry = new THREE.BufferGeometry();
+                geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+                geometry.setDrawRange(0, 0);
+                const material = new THREE.LineBasicMaterial({
+                    color: group.color,
+                    transparent: true,
+                    opacity: 0.82,
+                    depthWrite: false,
+                });
+                const line = new THREE.Line(geometry, material);
+                allCurveData.push({ geometry, totalVertices: TOTAL_VERTICES });
+                curvesGroup.add(line);
+            });
+        });
+
+        const totalCurves = allCurveData.length; // 18条
+
+        // ==================== 动画循环 ====================
+        const clock = new THREE.Clock();
+        let animationStartTime = performance.now() / 1000;
+        clock.getDelta(); // 消耗初始累积时间
+
+        function getCycleTime() {
+            const now = performance.now() / 1000;
+            return (now - animationStartTime) % CYCLE_DURATION;
+        }
+
+        function easeInOutCubic(t) {
+            return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const cycleTime = getCycleTime();
+            const dt = Math.min(clock.getDelta(), 0.1);
+
+            // 主旋转
+            mainGroup.rotation.y += 0.23 * dt;
+            mainGroup.rotation.x += 0.05 * dt;
+            mainGroup.rotation.z += 0.014 * Math.sin(cycleTime * 0.55) * dt;
+
+            // 相机微动
+            const sway = 0.10 * Math.sin(cycleTime * (Math.PI * 2 / 34));
+            camera.position.y = 0.7 + sway;
+            camera.lookAt(0, 0.05, 0);
+
+            // 绘制进度
+            let fraction;
+            if (cycleTime < DRAW_END) {
+                fraction = easeInOutCubic(cycleTime / DRAW_DURATION);
+            } else if (cycleTime < ERASE_START) {
+                fraction = 1.0;
+            } else if (cycleTime < CYCLE_DURATION) {
+                const elapsed = cycleTime - ERASE_START;
+                fraction = 1.0 - easeInOutCubic(elapsed / ERASE_DURATION);
+                fraction = Math.max(0, fraction);
+            } else {
+                fraction = 0;
+            }
+
+            // 更新所有曲线绘制范围
+            for (const data of allCurveData) {
+                const count = Math.round(fraction * data.totalVertices);
+                data.geometry.setDrawRange(0, Math.max(0, Math.min(data.totalVertices, count)));
+            }
+
+            // 背景透明度渐变
+            let bgOp;
+            if (cycleTime < FADE_IN_DURATION) {
+                bgOp = cycleTime / FADE_IN_DURATION;
+            } else if (cycleTime < FADE_OUT_START) {
+                bgOp = 1.0;
+            } else if (cycleTime < CYCLE_DURATION) {
+                bgOp = 1.0 - (cycleTime - FADE_OUT_START) / (CYCLE_DURATION - FADE_OUT_START);
+            } else {
+                bgOp = 0;
+            }
+            bgOp = Math.max(0, Math.min(1, bgOp));
+
+            starMat.opacity = 0.30 * bgOp;
+            glowMat.opacity = 0.44 * bgOp;
+            for (const mat of hbWireMats) {
+                mat.opacity = (mat.opacity ?? 0.13) * bgOp;
+            }
+
+            // 粒子微动
+            glowGroup.position.y = Math.sin(cycleTime * 1.1) * 0.022;
+            starsGroup.rotation.y += dt * 0.033;
+            starsGroup.rotation.x += dt * 0.020;
+
+            renderer.render(scene, camera);
+        }
+
+        // ==================== 响应式处理 ====================
+        window.addEventListener('resize', () => {
+            camera.aspect = container.clientWidth / container.clientHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        });
+
+        // 可选重置键
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'r' || e.key === 'R') {
+                animationStartTime = performance.now() / 1000;
+                for (const data of allCurveData) {
+                    data.geometry.setDrawRange(0, 0);
+                }
+                mainGroup.rotation.set(0, 0, 0);
+            }
+        });
+
+        // 预热渲染，防止第一帧空白
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+
+        console.log('🔭 单叶双曲面调制曲线动画已启动');
+        console.log(`   - ${totalCurves} 条闭合曲线，3种颜色各${totalCurves / 3}条`);
+        console.log(`   - 双曲面参数：腰部半径=${HB_A}，纵向缩放=${HB_C}`);
+        console.log(`   - 采样点：${CURVE_SEGMENTS}，周期：${CYCLE_DURATION.toFixed(1)}秒`);
+        console.log('   - 按 R 键可重置');
+    </script>
+</body>
+</html>

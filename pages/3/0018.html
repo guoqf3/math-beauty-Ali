@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>热传导的渐变画 · Thermal Diffusion</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{
+    height:100%;overflow:hidden;background:#030512;
+    font-family:"Helvetica Neue",Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  canvas{display:block;position:fixed;inset:0;}
+
+  /* ---------- 暗角 ---------- */
+  .vignette{
+    position:fixed;inset:0;pointer-events:none;z-index:3;
+    background:radial-gradient(ellipse at 50% 50%,
+      transparent 30%,
+      rgba(3,5,18,.28) 62%,
+      rgba(1,2,8,.80) 100%);
+  }
+
+  /* ---------- 界面 ---------- */
+  #ui{position:fixed;inset:0;pointer-events:none;z-index:5;}
+
+  #title{
+    position:absolute;top:0;left:0;
+    padding:38px 46px;
+    opacity:0;animation:fade 2.0s .4s ease forwards;
+  }
+  #title h1{
+    font-size:clamp(18px,2.4vw,30px);
+    font-weight:200;
+    letter-spacing:.44em;text-indent:.44em;
+    background:linear-gradient(96deg,#3a9fff 0%,#38d9d9 30%,#f5d442 62%,#ff8a3d 82%,#ff5c4d 100%);
+    -webkit-background-clip:text;background-clip:text;
+    color:transparent;
+    margin-bottom:14px;
+    filter:drop-shadow(0 0 26px rgba(90,200,255,.36));
+  }
+  #title .en{
+    font-size:9px;letter-spacing:.52em;text-indent:.52em;
+    color:rgba(130,190,240,.32);
+    margin-bottom:14px;
+  }
+  #title .sub{
+    font-size:10.5px;letter-spacing:.20em;line-height:1.9;
+    color:rgba(150,185,230,.26);font-weight:300;
+  }
+
+  /* ---------- 左下：热传导方程 ---------- */
+  #formula{
+    position:absolute;bottom:0;left:0;
+    padding:0 46px 34px;
+    opacity:0;animation:fade 2.0s 1.1s ease forwards;
+    font-family:"SF Mono",Consolas,Monaco,"Courier New",monospace;
+    font-size:clamp(9px,1.0vw,11.5px);
+    line-height:2.05;
+    letter-spacing:.02em;
+    color:rgba(150,180,225,.28);
+    max-width:min(760px,86vw);
+  }
+  #formula .lab{
+    display:block;font-size:8px;
+    letter-spacing:.44em;text-indent:.44em;
+    color:rgba(120,160,215,.20);
+    margin-bottom:10px;
+  }
+  #formula .kw{color:rgba(90,220,255,.55);}
+  #formula .fn{color:rgba(180,180,255,.50);}
+  #formula .nm{color:rgba(255,205,120,.58);}
+  #formula .op{color:rgba(140,175,220,.26);}
+  #formula .cm{color:rgba(110,140,190,.20);font-style:italic;}
+
+  /* ---------- 右下 ---------- */
+  #hint{
+    position:absolute;bottom:0;right:0;
+    padding:0 46px 34px;
+    text-align:right;
+    opacity:0;animation:fade 2.0s 1.4s ease forwards;
+  }
+  #hint .big{
+    font-size:clamp(9.5px,1.0vw,12px);
+    letter-spacing:.32em;text-indent:.32em;
+    color:rgba(255,200,130,.40);
+    margin-bottom:10px;font-weight:300;
+  }
+  #hint .small{
+    font-family:"SF Mono",Consolas,Monaco,monospace;
+    font-size:8.5px;letter-spacing:.20em;
+    color:rgba(135,170,220,.22);
+    line-height:1.9;
+  }
+  #hint .key{
+    display:inline-block;
+    padding:1px 6px;margin:0 2px;
+    border:1px solid rgba(135,170,220,.18);
+    border-radius:3px;
+    color:rgba(200,220,255,.42);
+  }
+
+  /* ---------- 色带图例 ---------- */
+  #legend{
+    position:absolute;top:0;right:0;
+    padding:38px 46px;
+    opacity:0;animation:fade 2.0s 1.0s ease forwards;
+    text-align:right;
+  }
+  #legend .lab{
+    font-size:8px;letter-spacing:.44em;text-indent:.44em;
+    color:rgba(120,160,215,.20);
+    margin-bottom:10px;
+  }
+  #legend .bar{
+    width:150px;height:6px;
+    border-radius:3px;
+    background:linear-gradient(90deg,
+      rgb(3,6,20) 0%,
+      rgb(10,42,105) 15%,
+      rgb(22,100,180) 30%,
+      rgb(40,180,210) 45%,
+      rgb(140,220,160) 60%,
+      rgb(250,210,80) 72%,
+      rgb(255,130,40) 85%,
+      rgb(240,60,50) 93%,
+      rgb(255,255,240) 100%);
+    margin-bottom:8px;
+    box-shadow:0 0 14px rgba(120,180,255,.20);
+  }
+  #legend .ends{
+    display:flex;justify-content:space-between;
+    font-family:"SF Mono",Consolas,Monaco,monospace;
+    font-size:8px;letter-spacing:.14em;
+    color:rgba(135,170,220,.30);
+  }
+
+  @keyframes fade{to{opacity:1;}}
+
+  @media (max-width:680px){
+    #title{padding:20px 20px;}
+    #formula{padding:0 20px 18px;font-size:8px;}
+    #hint{padding:0 20px 18px;}
+    #hint .small{display:none;}
+    #legend{padding:20px 20px;}
+    #legend .bar{width:100px;}
+  }
+</style>
+</head>
+<body>
+
+<canvas id="c"></canvas>
+<div class="vignette"></div>
+
+<div id="ui">
+  <div id="title">
+    <h1>热传导的渐变画</h1>
+    <div class="en">THERMAL DIFFUSION</div>
+    <div class="sub">二维热方程 · 有限差分 · 动态热源</div>
+  </div>
+
+  <div id="legend">
+    <div class="lab">TEMPERATURE</div>
+    <div class="bar"></div>
+    <div class="ends"><span>冷 0</span><span>热 1</span></div>
+  </div>
+
+  <div id="formula">
+    <span class="lab">HEAT EQUATION · EXPLICIT SCHEME</span>
+    <span class="kw">∂u</span><span class="op">/</span><span class="kw">∂t</span>
+    <span class="op">=</span> <span class="fn">α</span><span class="op">·</span><span class="fn">∇²u</span>
+    <span class="cm">&nbsp;&nbsp;// 连续形式</span><br>
+    <span class="kw">u</span><sub><span class="nm">i,j</span></sub><sup><span class="nm">n+1</span></sup>
+    <span class="op">=</span> <span class="kw">u</span><sub><span class="nm">i,j</span></sub><sup><span class="nm">n</span></sup>
+    <span class="op">+</span> <span class="fn">α</span><span class="op">·</span>
+    (<span class="kw">u</span><sub><span class="nm">L</span></sub>
+    <span class="op">+</span><span class="kw">u</span><sub><span class="nm">R</span></sub>
+    <span class="op">+</span><span class="kw">u</span><sub><span class="nm">U</span></sub>
+    <span class="op">+</span><span class="kw">u</span><sub><span class="nm">D</span></sub>
+    <span class="op">−</span><span class="nm">4</span><span class="kw">u</span><sub><span class="nm">i,j</span></sub>)
+    <span class="cm">&nbsp;&nbsp;// 显式差分，α ≤ 0.25</span>
+  </div>
+
+  <div id="hint">
+    <div class="big">拖动鼠标 留下热痕</div>
+    <div class="small">
+      <span class="key">拖动</span> 注入热量<br>
+      <span class="key">空格</span> 重置画面
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+'use strict';
+
+/* =========================================================
+   0. 基础
+   ========================================================= */
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d', { alpha:false });
+
+/* 离屏画布 —— 以网格分辨率渲染，再平滑放大 */
+const off    = document.createElement('canvas');
+const offCtx = off.getContext('2d', { alpha:false });
+
+let W = 0, H = 0, DPR = 1;
+let GRID_W = 0, GRID_H = 0;
+
+const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) ||
+                 window.innerWidth < 720;
+
+/* =========================================================
+   1. 物理参数
+   ========================================================= */
+const ALPHA  = 0.17;        // 热扩散系数（稳定需 ≤ 0.25）
+const DECAY  = 0.9975;      // 全局微衰减，防止热积累饱和
+const FIXED_DT = 1 / 60;    // 固定物理步长
+
+/* =========================================================
+   2. 热源定义 —— 轨道运动 + 脉冲强度
+   ========================================================= */
+const SOURCES = [
+  { cx: 0.50, cy: 0.50, rx: 0.26, ry: 0.24, sp:  0.31, ph: 0.0,
+    size: 5.0, strength: 0.0105, pulseSp: 0.9, pulsePh: 0.0 },
+  { cx: 0.50, cy: 0.50, rx: 0.34, ry: 0.30, sp: -0.21, ph: 2.1,
+    size: 4.2, strength: 0.0092, pulseSp: 1.3, pulsePh: 1.5 },
+  { cx: 0.50, cy: 0.50, rx: 0.20, ry: 0.34, sp:  0.43, ph: 4.3,
+    size: 4.5, strength: 0.0098, pulseSp: 0.7, pulsePh: 3.0 },
+  { cx: 0.50, cy: 0.50, rx: 0.36, ry: 0.18, sp:  0.17, ph: 1.2,
+    size: 3.5, strength: 0.0080, pulseSp: 1.6, pulsePh: 5.2 }
+];
+
+/* =========================================================
+   3. 颜色查找表 —— 冷 → 热
+   ========================================================= */
+const R = new Uint8Array(256);
+const G = new Uint8Array(256);
+const B = new Uint8Array(256);
+
+(function buildColorMap(){
+  const stops = [
+    [0.00, [  3,   6,  20]],   // 深空
+    [0.15, [ 10,  42, 105]],   // 深海蓝
+    [0.30, [ 22, 100, 180]],   // 宝蓝
+    [0.45, [ 40, 180, 210]],   // 青
+    [0.60, [140, 220, 160]],   // 薄荷绿
+    [0.72, [250, 210,  80]],   // 金黄
+    [0.85, [255, 130,  40]],   // 橙
+    [0.93, [240,  60,  50]],   // 红
+    [1.00, [255, 255, 240]]    // 白热
+  ];
+
+  for (let i = 0; i < 256; i++){
+    const t = i / 255;
+
+    let a = stops[0], b = stops[stops.length - 1];
+    for (let s = 0; s < stops.length - 1; s++){
+      if (t >= stops[s][0] && t <= stops[s + 1][0]){
+        a = stops[s]; b = stops[s + 1];
+        break;
+      }
+    }
+
+    const span = (b[0] - a[0]) || 1;
+    let k = (t - a[0]) / span;
+    k = k * k * (3 - 2 * k);   // smoothstep
+
+    R[i] = Math.round(a[1][0] + (b[1][0] - a[1][0]) * k);
+    G[i] = Math.round(a[1][1] + (b[1][1] - a[1][1]) * k);
+    B[i] = Math.round(a[1][2] + (b[1][2] - a[1][2]) * k);
+  }
+})();
+
+/* =========================================================
+   4. 高度场与缓冲
+   ========================================================= */
+let u = null;        // 温度场
+let uNext = null;    // 下一时刻
+let imgData = null;
+let img32 = null;
+
+/* =========================================================
+   5. 尺寸
+   ========================================================= */
+function resize(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+
+  canvas.width  = Math.round(W * DPR);
+  canvas.height = Math.round(H * DPR);
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  /* ---- 网格尺寸 ---- */
+  const cells = isMobile ? 22000 : 58000;
+  const aspect = W / H;
+
+  GRID_H = Math.round(Math.sqrt(cells / aspect));
+  GRID_W = Math.round(cells / GRID_H);
+
+  GRID_W = Math.max(80, Math.min(360, GRID_W));
+  GRID_H = Math.max(60, Math.min(260, GRID_H));
+
+  /* ---- 分配 ---- */
+  const n = GRID_W * GRID_H;
+  u     = new Float32Array(n);
+  uNext = new Float32Array(n);
+
+  /* ---- 离屏画布 ---- */
+  off.width  = GRID_W;
+  off.height = GRID_H;
+  imgData = offCtx.createImageData(GRID_W, GRID_H);
+  img32   = new Uint32Array(imgData.data.buffer);
+
+  initHeat();
+}
+
+window.addEventListener('resize', resize);
+
+/* =========================================================
+   6. 热量注入
+   ========================================================= */
+function addHeat(sx, sy, radius, amount){
+  const r2 = radius * radius;
+  const invR2 = 1 / (r2 * 0.5);
+
+  const x0 = Math.max(1, Math.floor(sx - radius));
+  const x1 = Math.min(GRID_W - 2, Math.ceil(sx + radius));
+  const y0 = Math.max(1, Math.floor(sy - radius));
+  const y1 = Math.min(GRID_H - 2, Math.ceil(sy + radius));
+
+  for (let j = y0; j <= y1; j++){
+    const row = j * GRID_W;
+    const dy = j - sy;
+    for (let i = x0; i <= x1; i++){
+      const dx = i - sx;
+      const d2 = dx * dx + dy * dy;
+      if (d2 > r2) continue;
+
+      const f = Math.exp(-d2 * invR2);
+      u[row + i] += amount * f;
+    }
+  }
+}
+
+/* ---------- 初始化：撒几团热斑 ---------- */
+function initHeat(){
+  u.fill(0);
+  uNext.fill(0);
+
+  for (let k = 0; k < 5; k++){
+    addHeat(
+      Math.random() * GRID_W,
+      Math.random() * GRID_H,
+      6 + Math.random() * 6,
+      0.55
+    );
+  }
+}
+
+/* =========================================================
+   7. 物理步进 —— 显式差分
+   ========================================================= */
+let simT = 0;
+
+function physicsStep(){
+  simT += FIXED_DT;
+
+  /* ---------- 轨道热源 ---------- */
+  for (let s = 0; s < SOURCES.length; s++){
+    const src = SOURCES[s];
+
+    const px = (src.cx + src.rx * Math.cos(simT * src.sp + src.ph)) * GRID_W;
+    const py = (src.cy + src.ry * Math.sin(simT * src.sp * 0.83 + src.ph * 1.3)) * GRID_H;
+
+    const pulse  = 0.5 + 0.5 * Math.sin(simT * src.pulseSp + src.pulsePh);
+    const amount = src.strength * (0.35 + 0.65 * pulse);
+
+    addHeat(px, py, src.size, amount);
+  }
+
+  /* ---------- 鼠标热源 ---------- */
+  if (mouse.down && mouse.inside){
+    addHeat(mouse.gx, mouse.gy, 5.5, 0.030);
+  }
+
+  /* ---------- 扩散 ---------- */
+  const w = GRID_W, h = GRID_H;
+  const a = ALPHA, d = DECAY;
+
+  for (let j = 1; j < h - 1; j++){
+    const row = j * w;
+    for (let i = 1; i < w - 1; i++){
+      const idx = row + i;
+      const c = u[idx];
+
+      const lap = u[idx - 1] + u[idx + 1] +
+                  u[idx - w] + u[idx + w] - 4 * c;
+
+      let v = (c + a * lap) * d;
+      if (v < 0) v = 0;
+
+      uNext[idx] = v;
+    }
+  }
+
+  /* ---------- 冷边界（散热器） ---------- */
+  const lastRow = (h - 1) * w;
+  for (let i = 0; i < w; i++){
+    uNext[i] = 0;
+    uNext[lastRow + i] = 0;
+  }
+  for (let j = 0; j < h; j++){
+    uNext[j * w] = 0;
+    uNext[j * w + w - 1] = 0;
+  }
+
+  /* ---------- 交换缓冲 ---------- */
+  const tmp = u;
+  u = uNext;
+  uNext = tmp;
+}
+
+/* =========================================================
+   8. 渲染 —— 温度映射到颜色
+   ========================================================= */
+function render(){
+  const data = img32;
+  const n = GRID_W * GRID_H;
+
+  for (let i = 0; i < n; i++){
+    let v = u[i];
+    if (v < 0) v = 0;
+    else if (v > 1) v = 1;
+
+    const ci = (v * 255) | 0;
+
+    data[i] =
+      (255 << 24) |
+      (B[ci] << 16) |
+      (G[ci] << 8)  |
+      (R[ci]);
+  }
+
+  offCtx.putImageData(imgData, 0, 0);
+
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(off, 0, 0, W, H);
+}
+
+/* =========================================================
+   9. 主循环
+   ========================================================= */
+let lastTS = 0;
+let acc = 0;
+
+function loop(now){
+  requestAnimationFrame(loop);
+
+  if (!lastTS){ lastTS = now; return; }
+
+  let dt = (now - lastTS) / 1000;
+  lastTS = now;
+
+  if (dt > 0.10) dt = 0.10;
+  if (dt < 0)    dt = 0;
+
+  acc += dt;
+  let steps = 0;
+  while (acc >= FIXED_DT && steps < 4){
+    physicsStep();
+    acc -= FIXED_DT;
+    steps++;
+  }
+  if (steps === 4) acc = 0;
+
+  render();
+}
+
+/* =========================================================
+   10. 交互
+   ========================================================= */
+const mouse = { gx: 0, gy: 0, down: false, inside: false };
+
+function updateMouse(e){
+  const rect = canvas.getBoundingClientRect();
+  mouse.gx = (e.clientX - rect.left) / rect.width  * GRID_W;
+  mouse.gy = (e.clientY - rect.top)  / rect.height * GRID_H;
+  mouse.inside = true;
+}
+
+canvas.addEventListener('pointerdown', (e) => {
+  mouse.down = true;
+  updateMouse(e);
+  /* 按下瞬间打一团热斑 */
+  addHeat(mouse.gx, mouse.gy, 6.5, 0.45);
+});
+
+canvas.addEventListener('pointermove', (e) => {
+  updateMouse(e);
+});
+
+canvas.addEventListener('pointerup',    () => { mouse.down = false; });
+canvas.addEventListener('pointerleave', () => { mouse.down = false; mouse.inside = false; });
+
+/* 空格重置 */
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space'){
+    e.preventDefault();
+    initHeat();
+  }
+});
+
+/* =========================================================
+   11. 启动
+   ========================================================= */
+resize();
+
+ctx.fillStyle = '#030512';
+ctx.fillRect(0, 0, W, H);
+
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,615 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIOLUM · 深海荧光</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #04070f;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2;
+            text-align: center;
+            pointer-events: none;
+            opacity: 0.5;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+        .overlay:hover {
+            opacity: 0.85;
+        }
+        .title {
+            color: rgba(160, 220, 240, 0.7);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 20px rgba(80, 180, 220, 0.5);
+        }
+        .hint {
+            color: rgba(120, 170, 190, 0.45);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+        @media (max-width: 768px) {
+            .overlay { bottom: 18px; }
+            .title { font-size: 8px; letter-spacing: 0.45em; }
+            .hint { font-size: 6px; letter-spacing: 0.22em; }
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <div class="overlay">
+        <div class="title">Biolum</div>
+        <div class="hint">move · click</div>
+    </div>
+    <script>
+        (function() {
+            // ─── 画布初始化 ─────────────────────────────────────────────
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            let organisms = [];
+            let mouse = { x: -9999, y: -9999, active: false, prevX: -9999, prevY: -9999 };
+            let time = 0;
+            let colorShift = 0;
+            let bubbles = [];
+            let glowTrails = [];
+
+            // ─── 性能参数 ───────────────────────────────────────────────
+            const ORGANISM_COUNT = () => Math.max(50, Math.min(140, Math.floor(W * H / 9000)));
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                // 深海背景
+                ctx.fillStyle = '#04070f';
+                ctx.fillRect(0, 0, W, H);
+            }
+
+            // ─── Web Audio 音频系统 ───────────────────────────────────
+            let audioCtx = null;
+            let masterGain = null;
+            let musicGain = null;
+            let sfxGain = null;
+            let musicStarted = false;
+            let lastSfxTime = 0;
+            let lastMoveSfxTime = 0;
+
+            function initAudio() {
+                if (audioCtx) return;
+                try {
+                    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                    masterGain = audioCtx.createGain();
+                    masterGain.gain.value = 0.5;
+                    masterGain.connect(audioCtx.destination);
+
+                    musicGain = audioCtx.createGain();
+                    musicGain.gain.value = 0.3;
+                    musicGain.connect(masterGain);
+
+                    sfxGain = audioCtx.createGain();
+                    sfxGain.gain.value = 0.6;
+                    sfxGain.connect(masterGain);
+
+                    startBackgroundMusic();
+                } catch (e) {
+                    console.warn('Web Audio init failed:', e);
+                }
+            }
+
+            function startBackgroundMusic() {
+                if (musicStarted) return;
+                musicStarted = true;
+
+                const now = audioCtx.currentTime;
+
+                // 低频Pad音 (两个振荡器叠加)
+                const osc1 = audioCtx.createOscillator();
+                osc1.type = 'sine';
+                osc1.frequency.value = 55; // A1
+                const osc2 = audioCtx.createOscillator();
+                osc2.type = 'sine';
+                osc2.frequency.value = 82.41; // E2
+
+                const osc1Gain = audioCtx.createGain();
+                osc1Gain.gain.value = 0.4;
+                const osc2Gain = audioCtx.createGain();
+                osc2Gain.gain.value = 0.25;
+
+                osc1.connect(osc1Gain);
+                osc2.connect(osc2Gain);
+                osc1Gain.connect(musicGain);
+                osc2Gain.connect(musicGain);
+
+                // 缓慢的LFO调制音量，产生呼吸感
+                const lfo = audioCtx.createOscillator();
+                lfo.type = 'sine';
+                lfo.frequency.value = 0.1;
+                const lfoGain = audioCtx.createGain();
+                lfoGain.gain.value = 0.2;
+                lfo.connect(lfoGain);
+                lfoGain.connect(osc1Gain.gain);
+                lfo.connect(osc1Gain.gain);
+
+                const lfo2 = audioCtx.createOscillator();
+                lfo2.type = 'sine';
+                lfo2.frequency.value = 0.07;
+                const lfo2Gain = audioCtx.createGain();
+                lfo2Gain.gain.value = 0.15;
+                lfo2.connect(lfo2Gain);
+                lfo2Gain.connect(osc2Gain.gain);
+
+                osc1.start(now);
+                osc2.start(now);
+                lfo.start(now);
+                lfo2.start(now);
+            }
+
+            function playMoveSfx() {
+                if (!audioCtx) return;
+                const now = audioCtx.currentTime;
+                if (now - lastMoveSfxTime < 0.3) return; // 限制频率
+                lastMoveSfxTime = now;
+
+                const osc = audioCtx.createOscillator();
+                osc.type = 'sine';
+                osc.frequency.value = 800 + Math.random() * 400;
+                const gain = audioCtx.createGain();
+                gain.gain.setValueAtTime(0.08, now);
+                gain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+                osc.connect(gain);
+                gain.connect(sfxGain);
+                osc.start(now);
+                osc.stop(now + 0.15);
+            }
+
+            function playClickSfx() {
+                if (!audioCtx) return;
+                const now = audioCtx.currentTime;
+
+                // 气泡上升音效：频率从低到高
+                const osc = audioCtx.createOscillator();
+                osc.type = 'sine';
+                const startFreq = 300 + Math.random() * 100;
+                const endFreq = 1200 + Math.random() * 500;
+                osc.frequency.setValueAtTime(startFreq, now);
+                osc.frequency.exponentialRampToValueAtTime(endFreq, now + 0.4);
+
+                const gain = audioCtx.createGain();
+                gain.gain.setValueAtTime(0.15, now);
+                gain.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
+
+                osc.connect(gain);
+                gain.connect(sfxGain);
+                osc.start(now);
+                osc.stop(now + 0.45);
+            }
+
+            // ─── 浮游生物粒子 ─────────────────────────────────────────
+            class Organism {
+                constructor() {
+                    this.x = Math.random() * W;
+                    this.y = Math.random() * H;
+                    this.vx = (Math.random() - 0.5) * 0.5;
+                    this.vy = (Math.random() - 0.5) * 0.5;
+                    this.size = 1.5 + Math.random() * 3.5;
+                    // 生物发光色：蓝绿、青、淡紫
+                    const roll = Math.random();
+                    if (roll < 0.5) {
+                        this.hue = 160 + Math.random() * 40; // 蓝绿
+                    } else if (roll < 0.8) {
+                        this.hue = 220 + Math.random() * 30; // 蓝
+                    } else {
+                        this.hue = 270 + Math.random() * 30; // 淡紫
+                    }
+                    this.saturation = 60 + Math.random() * 35;
+                    this.lightness = 50 + Math.random() * 30;
+                    this.alpha = 0.3 + Math.random() * 0.5;
+                    this.twinkleSpeed = 0.2 + Math.random() * 0.8;
+                    this.twinklePhase = Math.random() * Math.PI * 2;
+                    this.glowIntensity = 0; // 鼠标激发时的额外亮度
+                    this.driftAngle = Math.random() * Math.PI * 2;
+                    this.driftSpeed = 0.1 + Math.random() * 0.3;
+                }
+
+                update(dt, mouse, t) {
+                    // 缓慢随机游走
+                    this.driftAngle += (Math.random() - 0.5) * 0.1;
+                    this.vx += Math.cos(this.driftAngle) * this.driftSpeed * 0.02;
+                    this.vy += Math.sin(this.driftAngle) * this.driftSpeed * 0.02;
+
+                    // 阻尼
+                    this.vx *= 0.98;
+                    this.vy *= 0.98;
+
+                    // 鼠标激发：靠近的粒子加速并增亮
+                    if (mouse.active) {
+                        const dx = mouse.x - this.x;
+                        const dy = mouse.y - this.y;
+                        const distSq = dx * dx + dy * dy;
+                        const radius = 220;
+                        const radiusSq = radius * radius;
+                        if (distSq < radiusSq && distSq > 0.01) {
+                            const dist = Math.sqrt(distSq);
+                            const force = (1 - dist / radius) * 0.6;
+                            this.vx += (dx / dist) * force * 0.8;
+                            this.vy += (dy / dist) * force * 0.8;
+                            this.glowIntensity = Math.min(1, this.glowIntensity + force * 0.15);
+                        }
+                    }
+                    // 衰减额外亮度
+                    this.glowIntensity *= 0.97;
+
+                    this.x += this.vx * dt;
+                    this.y += this.vy * dt;
+
+                    // 边界环绕
+                    if (this.x < -20) this.x = W + 20;
+                    if (this.x > W + 20) this.x = -20;
+                    if (this.y < -20) this.y = H + 20;
+                    if (this.y > H + 20) this.y = -20;
+                }
+
+                draw(ctx, t) {
+                    const twinkle = 0.6 + 0.4 * Math.sin(t * this.twinkleSpeed + this.twinklePhase);
+                    const glow = Math.min(1, this.glowIntensity);
+                    const alpha = (this.alpha + glow * 0.5) * twinkle;
+                    const light = this.lightness + glow * 25;
+                    const size = this.size + glow * 2;
+
+                    // 光晕
+                    const radius = size * 3;
+                    const gradient = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, radius);
+                    gradient.addColorStop(0, `hsla(${this.hue}, ${this.saturation}%, ${light + 20}%, ${alpha})`);
+                    gradient.addColorStop(0.4, `hsla(${this.hue}, ${this.saturation}%, ${light}%, ${alpha * 0.4})`);
+                    gradient.addColorStop(1, 'transparent');
+                    ctx.fillStyle = gradient;
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, radius, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // 核心亮点
+                    ctx.fillStyle = `hsla(${this.hue}, ${this.saturation}%, ${light + 30}%, ${alpha * 0.9})`;
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, size * 0.7, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            function initOrganisms() {
+                const count = ORGANISM_COUNT();
+                organisms = [];
+                for (let i = 0; i < count; i++) {
+                    organisms.push(new Organism());
+                }
+            }
+
+            // ─── 荧光气泡 ─────────────────────────────────────────────
+            function createBubble(x, y) {
+                bubbles.push({
+                    x: x,
+                    y: y,
+                    vx: (Math.random() - 0.5) * 1.5,
+                    vy: -1 - Math.random() * 3,
+                    radius: 2 + Math.random() * 4,
+                    life: 1.0,
+                    decay: 0.01 + Math.random() * 0.015,
+                    hue: 170 + Math.random() * 60,
+                    alpha: 0.8,
+                });
+                if (bubbles.length > 80) bubbles.shift();
+            }
+
+            function updateBubbles(dt) {
+                for (let i = bubbles.length - 1; i >= 0; i--) {
+                    const b = bubbles[i];
+                    b.x += b.vx * dt;
+                    b.y += b.vy * dt;
+                    b.vy -= 0.02 * dt; // 气泡上升减速
+                    b.vx *= 0.99;
+                    b.life -= b.decay * dt;
+                    if (b.life <= 0) {
+                        bubbles.splice(i, 1);
+                    }
+                }
+            }
+
+            function drawBubbles(ctx) {
+                for (const b of bubbles) {
+                    const alpha = b.life * b.alpha;
+                    const radius = b.radius * b.life;
+                    const gradient = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, radius * 2);
+                    gradient.addColorStop(0, `hsla(${b.hue}, 70%, 70%, ${alpha})`);
+                    gradient.addColorStop(0.5, `hsla(${b.hue}, 60%, 60%, ${alpha * 0.5})`);
+                    gradient.addColorStop(1, 'transparent');
+                    ctx.fillStyle = gradient;
+                    ctx.beginPath();
+                    ctx.arc(b.x, b.y, radius * 2, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            // ─── 发光轨迹（鼠标移动产生的光痕） ────────────────────────
+            function addGlowTrail(x, y) {
+                glowTrails.push({
+                    x: x,
+                    y: y,
+                    life: 0.8,
+                    decay: 0.02,
+                    size: 3 + Math.random() * 4,
+                    hue: 180 + Math.random() * 50,
+                });
+                if (glowTrails.length > 120) glowTrails.shift();
+            }
+
+            function updateGlowTrails(dt) {
+                for (let i = glowTrails.length - 1; i >= 0; i--) {
+                    const t = glowTrails[i];
+                    t.life -= t.decay * dt;
+                    if (t.life <= 0) glowTrails.splice(i, 1);
+                }
+            }
+
+            function drawGlowTrails(ctx) {
+                for (const t of glowTrails) {
+                    const alpha = t.life * 0.6;
+                    const radius = t.size * t.life * 2;
+                    const gradient = ctx.createRadialGradient(t.x, t.y, 0, t.x, t.y, radius);
+                    gradient.addColorStop(0, `hsla(${t.hue}, 70%, 70%, ${alpha})`);
+                    gradient.addColorStop(1, 'transparent');
+                    ctx.fillStyle = gradient;
+                    ctx.beginPath();
+                    ctx.arc(t.x, t.y, radius, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            // ─── 主循环 ─────────────────────────────────────────────────
+            let lastTime = 0;
+            let accumulator = 0;
+            const fixedStep = 1000 / 60;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+
+                accumulator += dt;
+                const steps = Math.min(Math.floor(accumulator / fixedStep), 3);
+                accumulator -= steps * fixedStep;
+
+                for (let s = 0; s < steps; s++) {
+                    time += 0.016;
+                    const dtNorm = fixedStep / 1000 * 60;
+                    for (const org of organisms) {
+                        org.update(dtNorm, mouse, time);
+                    }
+                    updateBubbles(dtNorm);
+                    updateGlowTrails(dtNorm);
+                }
+
+                // 半透明清除，产生深海余辉
+                ctx.fillStyle = 'rgba(4, 7, 15, 0.25)';
+                ctx.fillRect(0, 0, W, H);
+
+                // 绘制发光轨迹
+                drawGlowTrails(ctx);
+
+                // 绘制浮游生物
+                for (const org of organisms) {
+                    org.draw(ctx, time);
+                }
+
+                // 绘制气泡
+                drawBubbles(ctx);
+
+                // 鼠标光晕（轻微）
+                if (mouse.active) {
+                    const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, 50);
+                    gradient.addColorStop(0, 'rgba(150, 220, 240, 0.05)');
+                    gradient.addColorStop(1, 'transparent');
+                    ctx.fillStyle = gradient;
+                    ctx.beginPath();
+                    ctx.arc(mouse.x, mouse.y, 50, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+
+                requestAnimationFrame(animate);
+            }
+
+            // ─── 交互事件 ───────────────────────────────────────────────
+            function onMouseMove(e) {
+                mouse.prevX = mouse.x;
+                mouse.prevY = mouse.y;
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+
+                // 产生发光轨迹
+                if (Math.random() < 0.5) {
+                    addGlowTrail(mouse.x, mouse.y);
+                }
+                // 移动音效（低频限制）
+                if (audioCtx && Math.random() < 0.03) {
+                    playMoveSfx();
+                }
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+                mouse.prevX = -9999;
+                mouse.prevY = -9999;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+
+                // 初始化音频
+                if (!audioCtx) initAudio();
+                // 播放气泡音效
+                if (audioCtx) playClickSfx();
+
+                // 产生气泡
+                for (let i = 0; i < 12; i++) {
+                    createBubble(mouse.x, mouse.y);
+                }
+                // 产生发光轨迹
+                for (let i = 0; i < 8; i++) {
+                    addGlowTrail(mouse.x + (Math.random() - 0.5) * 30, mouse.y + (Math.random() - 0.5) * 30);
+                }
+
+                // 颜色偏移
+                colorShift += 10 + Math.random() * 15;
+                if (colorShift > 60) colorShift = -10;
+                // 应用颜色偏移到所有生物
+                for (const org of organisms) {
+                    org.hue = (org.hue + colorShift) % 360;
+                }
+                colorShift = 0;
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.prevX = mouse.x;
+                    mouse.prevY = mouse.y;
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    if (Math.random() < 0.5) {
+                        addGlowTrail(mouse.x, mouse.y);
+                    }
+                    if (audioCtx && Math.random() < 0.03) {
+                        playMoveSfx();
+                    }
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    if (!audioCtx) initAudio();
+                    if (audioCtx) playClickSfx();
+                    for (let i = 0; i < 12; i++) {
+                        createBubble(mouse.x, mouse.y);
+                    }
+                    for (let i = 0; i < 8; i++) {
+                        addGlowTrail(mouse.x + (Math.random() - 0.5) * 30, mouse.y + (Math.random() - 0.5) * 30);
+                    }
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+                mouse.prevX = -9999;
+                mouse.prevY = -9999;
+            }
+
+            function onResize() {
+                setupCanvas();
+                const targetCount = ORGANISM_COUNT();
+                if (targetCount !== organisms.length) {
+                    while (organisms.length < targetCount) {
+                        organisms.push(new Organism());
+                    }
+                    if (organisms.length > targetCount) {
+                        organisms.length = targetCount;
+                    }
+                }
+                bubbles = [];
+                glowTrails = [];
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+                initOrganisms();
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#04070f';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+        })();
+    </script>
+</body>
+</html>

@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NEBULA · 星云旋涡</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #080816;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2;
+            text-align: center;
+            pointer-events: none;
+            opacity: 0.55;
+            transition: opacity 0.6s ease;
+            mix-blend-mode: screen;
+        }
+
+        .overlay:hover {
+            opacity: 0.9;
+        }
+
+        .title {
+            color: rgba(230, 220, 255, 0.8);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.65em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 20px rgba(130, 100, 230, 0.5);
+        }
+
+        .hint {
+            color: rgba(180, 170, 210, 0.5);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+
+        @media (max-width: 768px) {
+            .overlay {
+                bottom: 18px;
+            }
+            .title {
+                font-size: 8px;
+                letter-spacing: 0.45em;
+            }
+            .hint {
+                font-size: 6px;
+                letter-spacing: 0.22em;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="canvas"></canvas>
+
+    <div class="overlay">
+        <div class="title">Nebula</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script>
+        (function() {
+            // ─── 画布初始化 ───────────────────────────────────────────────
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            let centerX, centerY;
+            let particles = [];
+            let mouse = { x: -9999, y: -9999, active: false };
+            let time = 0;
+            let colorShift = 0;        // 颜色偏移
+            let isSupernova = false;   // 是否为超新星爆发状态
+            let burstTimer = 0;        // 爆发持续时间
+
+            // ─── 性能参数 ───────────────────────────────────────────────
+            const PARTICLE_COUNT = () => Math.max(180, Math.min(350, Math.floor(W * H / 2400)));
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                centerX = W / 2;
+                centerY = H / 2;
+                // 深色背景，避免白屏
+                ctx.fillStyle = '#080816';
+                ctx.fillRect(0, 0, W, H);
+            }
+
+            // ─── 粒子类 ─────────────────────────────────────────────────
+            class Particle {
+                constructor() {
+                    // 随机初始化位置，在屏幕内
+                    this.x = Math.random() * W;
+                    this.y = Math.random() * H;
+                    // 初始速度：围绕中心的轨道速度
+                    const dx = this.x - centerX;
+                    const dy = this.y - centerY;
+                    const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+                    const angle = Math.atan2(dy, dx);
+                    const orbitalSpeed = 0.8 + Math.random() * 1.2; // 角速度系数
+                    // 切向速度 (垂直于径向)
+                    const vx = -Math.sin(angle) * orbitalSpeed + (Math.random() - 0.5) * 0.3;
+                    const vy = Math.cos(angle) * orbitalSpeed + (Math.random() - 0.5) * 0.3;
+                    this.vx = vx;
+                    this.vy = vy;
+                    this.size = 1.0 + Math.random() * 2.0;
+                    this.brightness = 0.6 + Math.random() * 0.35;
+                    this.hueOffset = Math.random() * 60 - 30;
+                }
+
+                update(dt, mouse, centerX, centerY, isSupernova) {
+                    const dx = this.x - centerX;
+                    const dy = this.y - centerY;
+                    const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+                    const normX = dx / dist;
+                    const normY = dy / dist;
+
+                    // 向心引力（强度随距离变化）
+                    const gravityStrength = 0.04 * (0.5 + dist / (Math.max(W, H) * 0.8));
+                    this.vx -= normX * gravityStrength * dt;
+                    this.vy -= normY * gravityStrength * dt;
+
+                    // 鼠标影响：模拟引力透镜，吸引粒子偏移
+                    if (mouse.active) {
+                        const mx = mouse.x - this.x;
+                        const my = mouse.y - this.y;
+                        const mDistSq = mx * mx + my * my;
+                        const mRadius = 180;
+                        const mRadiusSq = mRadius * mRadius;
+                        if (mDistSq < mRadiusSq) {
+                            const mDist = Math.sqrt(mDistSq);
+                            const force = (1 - mDist / mRadius) * 0.35;
+                            this.vx += (mx / mDist) * force * dt;
+                            this.vy += (my / mDist) * force * dt;
+                        }
+                    }
+
+                    // 超新星爆发：粒子获得径向向外冲量
+                    if (isSupernova && burstTimer > 0) {
+                        const impulse = 1.8 * (burstTimer * 0.5);
+                        this.vx += normX * impulse;
+                        this.vy += normY * impulse;
+                    }
+
+                    // 阻尼
+                    this.vx *= 0.98;
+                    this.vy *= 0.98;
+
+                    // 速度限制
+                    const maxSpeed = 8;
+                    const speedSq = this.vx * this.vx + this.vy * this.vy;
+                    if (speedSq > maxSpeed * maxSpeed) {
+                        const speed = Math.sqrt(speedSq);
+                        this.vx = (this.vx / speed) * maxSpeed;
+                        this.vy = (this.vy / speed) * maxSpeed;
+                    }
+
+                    this.x += this.vx * dt;
+                    this.y += this.vy * dt;
+
+                    // 边界处理：如果飞出太远，拉回或环绕
+                    if (this.x < -100) this.x = W + 100;
+                    if (this.x > W + 100) this.x = -100;
+                    if (this.y < -100) this.y = H + 100;
+                    if (this.y > H + 100) this.y = -100;
+                }
+
+                draw(ctx, t, centerX, centerY, mouse, colorShift) {
+                    const dx = this.x - centerX;
+                    const dy = this.y - centerY;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    const maxDist = Math.sqrt(centerX * centerX + centerY * centerY);
+                    const normalizedDist = Math.min(1, dist / maxDist);
+
+                    // 颜色：中心偏紫，外圈偏蓝，并受鼠标距离影响
+                    let hue, sat, light;
+                    if (mouse.active) {
+                        const mouseDist = Math.sqrt((mouse.x - this.x) ** 2 + (mouse.y - this.y) ** 2);
+                        const proximity = Math.max(0, 1 - mouseDist / 220);
+                        hue = 260 + colorShift + normalizedDist * 40 - proximity * 30;
+                        sat = 70 + proximity * 20;
+                        light = 55 + normalizedDist * 15 + proximity * 10;
+                    } else {
+                        hue = 250 + colorShift + normalizedDist * 50 + this.hueOffset * 0.3;
+                        sat = 65 + normalizedDist * 25;
+                        light = 55 + normalizedDist * 15;
+                    }
+
+                    const alpha = 0.6 + normalizedDist * 0.3;
+
+                    // 粒子主体
+                    ctx.fillStyle = `hsla(${hue}, ${sat}%, ${light}%, ${alpha})`;
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // 较大粒子增加光晕
+                    if (this.size > 2.5) {
+                        const glowSize = this.size * 2.5;
+                        const gradient = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, glowSize);
+                        gradient.addColorStop(0, `hsla(${hue}, ${sat}%, ${light + 15}%, ${alpha * 0.3})`);
+                        gradient.addColorStop(1, 'transparent');
+                        ctx.fillStyle = gradient;
+                        ctx.beginPath();
+                        ctx.arc(this.x, this.y, glowSize, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+                }
+            }
+
+            // ─── 初始化粒子 ─────────────────────────────────────────────
+            function initParticles() {
+                const count = PARTICLE_COUNT();
+                particles = [];
+                for (let i = 0; i < count; i++) {
+                    particles.push(new Particle());
+                }
+            }
+
+            // ─── 中心光晕 ───────────────────────────────────────────────
+            function drawCenterGlow(ctx, centerX, centerY, colorShift) {
+                const radius = 120;
+                const gradient = ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, radius);
+                const hue = 270 + colorShift;
+                gradient.addColorStop(0, `hsla(${hue}, 70%, 70%, 0.12)`);
+                gradient.addColorStop(0.4, `hsla(${hue}, 65%, 65%, 0.04)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // ─── 鼠标光晕 ───────────────────────────────────────────────
+            function drawCursorGlow(ctx, mouse, colorShift) {
+                if (!mouse.active) return;
+                const radius = 80;
+                const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                const hue = 250 + colorShift;
+                gradient.addColorStop(0, `hsla(${hue}, 60%, 75%, 0.08)`);
+                gradient.addColorStop(0.7, `hsla(${hue}, 55%, 70%, 0.02)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // ─── 主循环 ─────────────────────────────────────────────────
+            let lastTime = 0;
+            let accumulator = 0;
+            const fixedStep = 1000 / 60;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+
+                accumulator += dt;
+                const steps = Math.min(Math.floor(accumulator / fixedStep), 3);
+                accumulator -= steps * fixedStep;
+
+                // 更新爆发计时
+                if (isSupernova) {
+                    burstTimer -= dt / 1000; // 秒
+                    if (burstTimer <= 0) {
+                        isSupernova = false;
+                        burstTimer = 0;
+                    }
+                }
+
+                for (let s = 0; s < steps; s++) {
+                    time += 0.015;
+                    const dtNorm = fixedStep / 1000 * 60;
+                    for (const p of particles) {
+                        p.update(dtNorm, mouse, centerX, centerY, isSupernova && burstTimer > 0);
+                    }
+                }
+
+                // 拖尾效果：半透明背景覆盖，形成星云轨迹
+                ctx.fillStyle = 'rgba(8, 8, 22, 0.12)';
+                ctx.fillRect(0, 0, W, H);
+
+                // 绘制中心光晕
+                drawCenterGlow(ctx, centerX, centerY, colorShift);
+
+                // 绘制粒子
+                for (const p of particles) {
+                    p.draw(ctx, time, centerX, centerY, mouse, colorShift);
+                }
+
+                // 绘制鼠标光晕
+                drawCursorGlow(ctx, mouse, colorShift);
+
+                requestAnimationFrame(animate);
+            }
+
+            // ─── 交互事件 ───────────────────────────────────────────────
+            function onMouseMove(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                // 触发超新星爆发
+                isSupernova = true;
+                burstTimer = 0.9; // 持续约0.9秒
+                // 切换颜色主题
+                colorShift += 40 + Math.random() * 30;
+                if (colorShift > 130) colorShift = -30;
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    isSupernova = true;
+                    burstTimer = 0.9;
+                    colorShift += 40 + Math.random() * 30;
+                    if (colorShift > 130) colorShift = -30;
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onResize() {
+                setupCanvas();
+                // 调整粒子数量
+                const targetCount = PARTICLE_COUNT();
+                if (targetCount !== particles.length) {
+                    while (particles.length < targetCount) {
+                        particles.push(new Particle());
+                    }
+                    if (particles.length > targetCount) {
+                        particles.length = targetCount;
+                    }
+                }
+                // 重置爆发状态
+                isSupernova = false;
+                burstTimer = 0;
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+                initParticles();
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            // 确保初始背景填充
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#080816';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+
+        })();
+    </script>
+</body>
+</html>

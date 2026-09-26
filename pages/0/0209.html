@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>球面正交网格 · 三族大圆交织</title>
+    <style>
+        :root { --bg: #02040a; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'STSong', 'Songti SC', 'Noto Serif SC', 'SimSun', 'Times New Roman', serif;
+            -webkit-font-smoothing: antialiased;
+            height: 100vh; width: 100vw;
+            user-select: none; -webkit-user-select: none; cursor: default;
+        }
+        #canvas-container { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+        canvas { display: block; }
+        #title-overlay {
+            position: fixed; top: 26px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+        }
+        #title-overlay .title {
+            font-size: clamp(1.0rem, 2.2vw, 1.5rem); font-weight: 400; letter-spacing: 0.09em;
+            color: #cfc7b5; text-shadow: 0 0 42px rgba(200,180,150,0.5), 0 0 72px rgba(170,150,130,0.22);
+            line-height: 1.4; white-space: nowrap;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.5rem, 0.9vw, 0.66rem); font-weight: 300; letter-spacing: 0.13em;
+            color: #a09888; text-shadow: 0 0 16px rgba(155,145,125,0.32);
+            margin-top: 2px; white-space: nowrap;
+        }
+        #formula-overlay {
+            position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+            background: rgba(2,4,10,0.7); padding: 12px 24px; border-radius: 34px;
+            border: 1px solid rgba(175,155,135,0.18);
+            backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); max-width: 95vw;
+        }
+        #formula-overlay .formula {
+            font-size: clamp(0.42rem, 0.78vw, 0.62rem); font-weight: 300; letter-spacing: 0.04em;
+            color: #c5bdaa; text-shadow: 0 0 14px rgba(185,170,145,0.27);
+            line-height: 1.55; white-space: nowrap;
+        }
+        #formula-overlay .formula .c1 { color: #d4885c; }
+        #formula-overlay .formula .c2 { color: #5d9ec6; }
+        #formula-overlay .formula .c3 { color: #c77d9f; }
+        @media (max-width: 600px) {
+            #title-overlay { top: 14px; }
+            #formula-overlay { bottom: 12px; padding: 8px 14px; border-radius: 26px; }
+            #formula-overlay .formula { font-size: 0.36rem; white-space: normal; line-height: 1.35; }
+            #title-overlay .title { font-size: 0.7rem; }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="title-overlay">
+        <div class="title">球面正交网格 · 三族大圆交织</div>
+        <div class="subtitle">ORTHOGONAL SPHERICAL GRID &nbsp;·&nbsp; 3 FAMILIES OF GREAT CIRCLES</div>
+    </div>
+    <div id="formula-overlay">
+        <div class="formula">
+            <span class="c1">𝒞₁: z=R·cosθ, x=R·sinθ·cosφ, y=R·sinθ·sinφ (φ=i·Δφ)</span>
+            <br>
+            <span class="c2">𝒞₂: θ=j·Δθ, x=R·sinθ·cosφ, y=R·sinθ·sinφ, z=R·cosθ</span>
+            <br>
+            <span class="c3">𝒞₃: 绕轴(1,0,1)旋转的大圆族</span>
+            <span style="color:#9aa8b8;">R=2.65 &nbsp;33条大圆 &nbsp;绝对时间驱动</span>
+        </div>
+    </div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#02040a');
+        scene.fog = new THREE.Fog('#02040a', 8, 22);
+
+        const camera = new THREE.PerspectiveCamera(
+            50,
+            container.clientWidth / Math.max(container.clientHeight, 1),
+            0.3,
+            26
+        );
+        camera.position.set(1.5, 0.8, 7.0);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = false;
+        container.appendChild(renderer.domElement);
+
+        // ==================== 颜色 ====================
+        const C1 = '#d4885c'; // 暖金 - 水平纬线族
+        const C2 = '#5d9ec6'; // 冰蓝 - 子午经线族
+        const C3 = '#c77d9f'; // 玫瑰粉 - 倾斜大圆族
+        const C_SPHERE = '#3a4a5c';
+
+        const R = 2.65;
+        const NUM_CIRCLES_PER_FAMILY = 11;
+        const NUM_SAMPLES = 200;
+
+        // ==================== 生成一族大圆的辅助函数 ====================
+        function generateGreatCircles(paramsArray, colorHex, opacity) {
+            const group = new THREE.Group();
+            for (const params of paramsArray) {
+                const pts = [];
+                for (let i = 0; i <= NUM_SAMPLES; i++) {
+                    const t = (i / NUM_SAMPLES) * Math.PI * 2;
+                    const pt = params.paramFunc(t);
+                    pts.push(pt.clone().multiplyScalar(R));
+                }
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(colorHex),
+                    transparent: true,
+                    opacity: opacity,
+                    depthWrite: true,
+                });
+                group.add(new THREE.Line(geom, mat));
+            }
+            return group;
+        }
+
+        // ==================== 族1: 水平纬线族 (固定z, 即固定极角theta) ====================
+        const thetaValues = [];
+        for (let k = 0; k < NUM_CIRCLES_PER_FAMILY; k++) {
+            // 避免极点，从PI*0.1到PI*0.9均匀分布
+            const theta = Math.PI * 0.1 + (k / (NUM_CIRCLES_PER_FAMILY - 1)) * Math.PI * 0.8;
+            thetaValues.push(theta);
+        }
+
+        const circlesLatitude = thetaValues.map(theta => ({
+            paramFunc: (phi) => {
+                const sinT = Math.sin(theta);
+                return new THREE.Vector3(sinT * Math.cos(phi), sinT * Math.sin(phi), Math.cos(theta));
+            }
+        }));
+
+        // ==================== 族2: 子午经线族 (固定经度phi) ====================
+        const phiValues = [];
+        for (let k = 0; k < NUM_CIRCLES_PER_FAMILY; k++) {
+            const phi = (k / NUM_CIRCLES_PER_FAMILY) * Math.PI * 2;
+            phiValues.push(phi);
+        }
+
+        const circlesLongitude = phiValues.map(phi => ({
+            paramFunc: (theta) => {
+                const sinT = Math.sin(theta);
+                return new THREE.Vector3(sinT * Math.cos(phi), sinT * Math.sin(phi), Math.cos(theta));
+            }
+        }));
+
+        // ==================== 族3: 倾斜大圆族 (绕轴(1,0,1)旋转) ====================
+        // 基准大圆: 在XZ平面上的大圆 (y=0, x=cos(t), z=sin(t))
+        // 然后绕(1,0,1)归一化轴旋转不同角度
+        const tiltAxis = new THREE.Vector3(1, 0, 1).normalize();
+        const tiltAngles = [];
+        for (let k = 0; k < NUM_CIRCLES_PER_FAMILY; k++) {
+            tiltAngles.push((k / NUM_CIRCLES_PER_FAMILY) * Math.PI * 2);
+        }
+
+        const circlesTilt = tiltAngles.map(angle => ({
+            paramFunc: (t) => {
+                const p0 = new THREE.Vector3(Math.cos(t), 0, Math.sin(t));
+                const q = new THREE.Quaternion().setFromAxisAngle(tiltAxis, angle);
+                return p0.applyQuaternion(q);
+            }
+        }));
+
+        // ==================== 创建三个线条组 ====================
+        const groupLat = generateGreatCircles(circlesLatitude, C1, 0.6);
+        const groupLon = generateGreatCircles(circlesLongitude, C2, 0.6);
+        const groupTilt = generateGreatCircles(circlesTilt, C3, 0.55);
+
+        const mainGroup = new THREE.Group();
+        mainGroup.add(groupLat);
+        mainGroup.add(groupLon);
+        mainGroup.add(groupTilt);
+        scene.add(mainGroup);
+
+        // ==================== 参考球面线框（极细灰线） ====================
+        function createSphereWireframe(radius, colorHex, opacity) {
+            const group = new THREE.Group();
+            const segs = 160;
+            // 三条正交大圆作参考
+            const axes = [
+                (a) => new THREE.Vector3(Math.cos(a)*radius, Math.sin(a)*radius, 0),
+                (a) => new THREE.Vector3(Math.cos(a)*radius, 0, Math.sin(a)*radius),
+                (a) => new THREE.Vector3(0, Math.cos(a)*radius, Math.sin(a)*radius),
+            ];
+            for (const gen of axes) {
+                const pts = [];
+                for (let i=0; i<=segs; i++) pts.push(gen((i/segs)*Math.PI*2));
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(colorHex),
+                    transparent: true, opacity: opacity, depthWrite: true,
+                });
+                group.add(new THREE.Line(geom, mat));
+            }
+            return group;
+        }
+        const sphereRef = createSphereWireframe(R, C_SPHERE, 0.25);
+        scene.add(sphereRef);
+
+        // ==================== 动画循环（绝对时间） ====================
+        let time = 0;
+        let lastTime = performance.now();
+        let frameCount = 0;
+        let logTime = 0;
+
+        function animate(now) {
+            requestAnimationFrame(animate);
+            let delta = (now - lastTime) / 1000;
+            if (delta <= 0 || delta > 0.5) delta = 0.016;
+            lastTime = now;
+            time += delta;
+            frameCount++;
+            if (now - logTime > 4000) {
+                console.log(`[动画运行中] 帧:${frameCount} 时间:${time.toFixed(2)}s`);
+                logTime = now;
+            }
+
+            // 主结构旋转
+            mainGroup.rotation.y = time * 0.3;
+            mainGroup.rotation.x = time * 0.18 + Math.sin(time * 0.23) * 0.2;
+            mainGroup.rotation.z = Math.cos(time * 0.2) * 0.14;
+
+            // 参考球同步
+            sphereRef.rotation.copy(mainGroup.rotation);
+
+            // 相机游走
+            const camX = 1.5 + Math.sin(time * 0.15) * 0.55;
+            const camY = 0.8 + Math.cos(time * 0.18) * 0.5;
+            const camZ = 7.0 + Math.sin(time * 0.12) * 0.5;
+            camera.position.set(camX, camY, camZ);
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        // ==================== 窗口调整 ====================
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth;
+            const h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth;
+            const h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 100));
+
+        console.log('=== 球面正交网格 · 三族大圆交织 ===');
+        console.log('水平纬线:', NUM_CIRCLES_PER_FAMILY, '条');
+        console.log('子午经线:', NUM_CIRCLES_PER_FAMILY, '条');
+        console.log('倾斜大圆:', NUM_CIRCLES_PER_FAMILY, '条');
+        console.log('总大圆数:', NUM_CIRCLES_PER_FAMILY * 3);
+        console.log('✅ 初始帧渲染完成，启动绝对时间动画循环...');
+
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

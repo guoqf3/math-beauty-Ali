@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>环面测地流 · 几何动画</title>
+    <style>
+        :root {
+            --bg: #070b14;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'Noto Serif SC', serif;
+            width: 100vw;
+            height: 100vh;
+            height: 100dvh;
+            -webkit-tap-highlight-color: transparent;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        #canvas-container {
+            position: fixed;
+            inset: 0;
+            z-index: 1;
+        }
+        canvas {
+            display: block;
+        }
+        #title-overlay {
+            position: fixed;
+            top: 2.5vh;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+        }
+        #title-overlay .title {
+            font-size: clamp(1.1rem, 2.5vw, 1.8rem);
+            font-weight: 400;
+            letter-spacing: 0.07em;
+            color: rgba(215, 225, 245, 0.93);
+            text-shadow: 0 0 45px rgba(160, 200, 255, 0.55), 0 0 85px rgba(130, 170, 240, 0.3);
+            line-height: 1.3;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.6rem, 1.3vw, 0.85rem);
+            letter-spacing: 0.12em;
+            color: rgba(180, 195, 220, 0.72);
+            text-shadow: 0 0 20px rgba(140, 180, 220, 0.35);
+            margin-top: 0.3vh;
+            font-style: italic;
+        }
+        #formula-overlay {
+            position: fixed;
+            bottom: 3vh;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+        }
+        #formula-overlay .formula {
+            font-size: clamp(0.65rem, 1.4vw, 0.88rem);
+            letter-spacing: 0.04em;
+            color: rgba(190, 200, 225, 0.78);
+            text-shadow: 0 0 30px rgba(150, 180, 220, 0.4);
+            font-style: italic;
+            background: rgba(8, 14, 26, 0.55);
+            padding: 0.5vh 2.2vw;
+            border-radius: 2rem;
+            border: 1px solid rgba(120, 150, 200, 0.22);
+            backdrop-filter: blur(5px);
+            -webkit-backdrop-filter: blur(5px);
+        }
+        #formula-overlay .formula .highlight {
+            color: rgba(255, 175, 95, 0.9);
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="title-overlay">
+        <div class="title">环面测地流</div>
+        <div class="subtitle">平坦环面上的测地线 · 有理与无理的舞蹈</div>
+    </div>
+    <div id="formula-overlay">
+        <div class="formula">
+            <span class="highlight">ü</span>=0,&nbsp;<span class="highlight">v̈</span>=0&emsp;|&emsp;
+            X(u,v)=((R+r&thinsp;cos&thinsp;v)cos&thinsp;u,&nbsp;(R+r&thinsp;cos&thinsp;v)sin&thinsp;u,&nbsp;r&thinsp;sin&thinsp;v)
+        </div>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.157.0/build/three.module.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== DOM ====================
+        const container = document.getElementById('canvas-container');
+
+        // ==================== 场景初始化 ====================
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(48, container.clientWidth / container.clientHeight, 0.1, 18);
+        camera.position.set(3.8, 1.8, 4.6);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x070b14, 1);
+        renderer.outputColorSpace = THREE.SRGBColorSpace;
+        container.appendChild(renderer.domElement);
+
+        // ==================== 星空背景 ====================
+        const starCount = 650;
+        const starGeom = new THREE.BufferGeometry();
+        const starPositionsArray = new Float32Array(starCount * 3);
+        const starSizesArray = new Float32Array(starCount);
+        for (let i = 0; i < starCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const r = 7 + Math.random() * 11;
+            starPositionsArray[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+            starPositionsArray[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+            starPositionsArray[i * 3 + 2] = r * Math.cos(phi);
+            starSizesArray[i] = Math.random() * 1.5 + 0.15;
+        }
+        starGeom.setAttribute('position', new THREE.BufferAttribute(starPositionsArray, 3));
+        starGeom.setAttribute('size', new THREE.BufferAttribute(starSizesArray, 1));
+        const starMat = new THREE.PointsMaterial({
+            color: 0x7c8db0,
+            size: 0.009,
+            transparent: true,
+            opacity: 0.55,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            sizeAttenuation: true,
+        });
+        const stars = new THREE.Points(starGeom, starMat);
+        scene.add(stars);
+
+        // ==================== 环面参数 ====================
+        const R0 = 2.0;     // 主半径
+        const r0 = 0.75;    // 管半径
+        const deltaR = 0.18; // 主半径脉动幅度
+        const deltaR_freq = 0.42;
+        const deltaR_phase = 0.7;
+        const deltar = 0.1;  // 管半径脉动幅度
+        const deltar_freq = 0.55;
+        const deltar_phase = 2.3;
+
+        // ==================== 测地线参数 ====================
+        const NUM_LINES = 96;           // 线条总数
+        const POINTS_PER_LINE = 210;    // 每条线点数
+        const S_MAX = 7 * Math.PI;      // 测地线总长度参数
+        const STEP = S_MAX / (POINTS_PER_LINE - 1);
+
+        // 颜色定义
+        const COLOR_CYAN = new THREE.Color('#00c8f0');
+        const COLOR_GOLD = new THREE.Color('#f0a040');
+        const COLOR_MAGENTA = new THREE.Color('#f05078');
+
+        // 生成每条线的元数据
+        const lineMetas = [];
+        for (let i = 0; i < NUM_LINES; i++) {
+            const u0 = Math.random() * Math.PI * 2;
+            const v0 = Math.random() * Math.PI * 2;
+            const k0 = 0.5 + Math.random() * 2.3;  // 基础斜率 v/u
+            const amp = 0.08 + Math.random() * 0.22; // 斜率变化幅度
+            const omega = 0.2 + Math.random() * 0.5; // 变化角速度
+            const phaseShift = Math.random() * Math.PI * 2;
+            // 颜色分组基于初始斜率
+            let colorGroup;
+            if (k0 < 0.95) {
+                colorGroup = 0; // 青色
+            } else if (k0 <= 1.45) {
+                colorGroup = 1; // 金色
+            } else {
+                colorGroup = 2; // 品红
+            }
+            lineMetas.push({
+                u0, v0,
+                k0, amp, omega, phaseShift,
+                colorGroup,
+                index: i
+            });
+        }
+
+        // 确保三个颜色组都有线条（如果不平衡，重新分配）
+        const groupCounts = [0, 0, 0];
+        lineMetas.forEach(m => groupCounts[m.colorGroup]++);
+        console.log('颜色组线条数:', groupCounts);
+
+        // ==================== 创建线条对象 ====================
+        const lineObjects = [];
+        const linePositionArrays = [];
+        const lineGeometries = [];
+
+        for (let i = 0; i < NUM_LINES; i++) {
+            const meta = lineMetas[i];
+            const geom = new THREE.BufferGeometry();
+            const positions = new Float32Array(POINTS_PER_LINE * 3);
+            // 初始化为零
+            geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            geom.setDrawRange(0, POINTS_PER_LINE);
+
+            let color;
+            if (meta.colorGroup === 0) color = COLOR_CYAN;
+            else if (meta.colorGroup === 1) color = COLOR_GOLD;
+            else color = COLOR_MAGENTA;
+
+            const mat = new THREE.LineBasicMaterial({
+                color: color,
+                linewidth: 1,
+                transparent: true,
+                opacity: 0.78,
+                depthTest: true,
+                depthWrite: true,
+                blending: THREE.NormalBlending,
+            });
+            const line = new THREE.Line(geom, mat);
+            line.frustumCulled = false;
+            scene.add(line);
+            lineObjects.push(line);
+            linePositionArrays.push(positions);
+            lineGeometries.push(geom);
+        }
+
+        // ==================== 环面参考微光环（隐约可见） ====================
+        // 用稀疏的点云大致勾勒环面形状
+        const refPointCount = 3000;
+        const refGeom = new THREE.BufferGeometry();
+        const refPositions = new Float32Array(refPointCount * 3);
+        for (let i = 0; i < refPointCount; i++) {
+            const u = Math.random() * Math.PI * 2;
+            const v = Math.random() * Math.PI * 2;
+            const R = R0;
+            const r = r0;
+            const x = (R + r * Math.cos(v)) * Math.cos(u);
+            const y = (R + r * Math.cos(v)) * Math.sin(u);
+            const z = r * Math.sin(v);
+            refPositions[i * 3] = x;
+            refPositions[i * 3 + 1] = y;
+            refPositions[i * 3 + 2] = z;
+        }
+        refGeom.setAttribute('position', new THREE.BufferAttribute(refPositions, 3));
+        const refMat = new THREE.PointsMaterial({
+            color: 0x4a5b80,
+            size: 0.015,
+            transparent: true,
+            opacity: 0.18,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            sizeAttenuation: true,
+        });
+        const torusRef = new THREE.Points(refGeom, refMat);
+        torusRef.frustumCulled = false;
+        scene.add(torusRef);
+
+        // ==================== 辅助函数：更新环面点位置 ====================
+        function torusPoint(R, r, u, v) {
+            const x = (R + r * Math.cos(v)) * Math.cos(u);
+            const y = (R + r * Math.cos(v)) * Math.sin(u);
+            const z = r * Math.sin(v);
+            return { x, y, z };
+        }
+
+        // ==================== 更新所有线条 ====================
+        function updateLines(time) {
+            const R_animated = R0 + deltaR * Math.sin(deltaR_freq * time + deltaR_phase);
+            const r_animated = r0 + deltar * Math.cos(deltar_freq * time + deltar_phase);
+            // 更新参考环面点云（可选，这里不更新以节省性能，保持静态）
+            // 但可以更新少量点？为了动画一致，不更新参考点，它固定形状。
+
+            for (let i = 0; i < NUM_LINES; i++) {
+                const meta = lineMetas[i];
+                const k_t = meta.k0 + meta.amp * Math.sin(meta.omega * time + meta.phaseShift);
+                const a = 1.0; // du/ds
+                const b = k_t; // dv/ds
+                const positions = linePositionArrays[i];
+                for (let j = 0; j < POINTS_PER_LINE; j++) {
+                    const s = j * STEP;
+                    const u = (meta.u0 + a * s) % (Math.PI * 2);
+                    const v = (meta.v0 + b * s) % (Math.PI * 2);
+                    const p = torusPoint(R_animated, r_animated, u, v);
+                    const idx = j * 3;
+                    positions[idx] = p.x;
+                    positions[idx + 1] = p.y;
+                    positions[idx + 2] = p.z;
+                }
+                lineGeometries[i].attributes.position.needsUpdate = true;
+            }
+        }
+
+        // ==================== 动画状态 ====================
+        let lastTime = performance.now();
+        let frameCount = 0;
+        let firstFrameRendered = false;
+        let timeAccum = 0;
+
+        // 相机自动旋转
+        let camAngle = 0.2;
+        const camRadius = 5.6;
+        const camHeightAmp = 0.8;
+        const camHeightFreq = 0.25;
+
+        // ==================== 渲染循环 ====================
+        function animate(timestamp) {
+            requestAnimationFrame(animate);
+
+            let dt = (timestamp - lastTime) / 1000;
+            if (dt <= 0) dt = 0.016;
+            if (dt > 0.2) dt = 0.2;
+            lastTime = timestamp;
+
+            timeAccum += dt;
+
+            // 更新线条
+            updateLines(timeAccum);
+
+            // 自动旋转相机
+            camAngle += dt * 0.18;
+            const camX = camRadius * Math.sin(camAngle);
+            const camZ = camRadius * Math.cos(camAngle);
+            const camY = 1.2 + camHeightAmp * Math.sin(camHeightFreq * timeAccum + 1.5);
+            camera.position.set(camX, camY, camZ);
+            camera.lookAt(0, 0, 0);
+
+            // 星空缓慢旋转
+            stars.rotation.y += dt * 0.03;
+            stars.rotation.x += dt * 0.01;
+
+            renderer.render(scene, camera);
+            frameCount++;
+
+            if (!firstFrameRendered && frameCount >= 3) {
+                firstFrameRendered = true;
+                console.log('动画已稳定运行');
+            }
+        }
+
+        // ==================== 初始帧强制渲染 ====================
+        function renderInitialFrame() {
+            updateLines(0);
+            // 设置初始相机
+            camera.position.set(4.2, 1.6, 3.8);
+            camera.lookAt(0, 0, 0);
+            renderer.render(scene, camera);
+            console.log('初始帧已绘制');
+        }
+
+        // ==================== 窗口响应 ====================
+        function onResize() {
+            const w = container.clientWidth;
+            const h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        }
+        window.addEventListener('resize', onResize);
+        window.addEventListener('orientationchange', () => setTimeout(onResize, 150));
+
+        // ==================== 看门狗：防止画面停滞 ====================
+        let watchdogFrameCount = frameCount;
+        let watchdogLastCheck = performance.now();
+        setInterval(() => {
+            const now = performance.now();
+            const elapsed = now - watchdogLastCheck;
+            if (elapsed > 1800 && watchdogFrameCount === frameCount && frameCount > 8) {
+                console.warn('检测到可能停滞，尝试恢复渲染...');
+                timeAccum += 0.05;
+                updateLines(timeAccum);
+                // 同时更新相机
+                camAngle += 0.03;
+                const camX = camRadius * Math.sin(camAngle);
+                const camZ = camRadius * Math.cos(camAngle);
+                const camY = 1.2 + camHeightAmp * Math.sin(camHeightFreq * timeAccum + 1.5);
+                camera.position.set(camX, camY, camZ);
+                camera.lookAt(0, 0, 0);
+                renderer.render(scene, camera);
+            }
+            watchdogFrameCount = frameCount;
+            watchdogLastCheck = now;
+        }, 2500);
+
+        // ==================== 启动 ====================
+        renderInitialFrame();
+        setTimeout(() => {
+            lastTime = performance.now();
+            requestAnimationFrame(animate);
+            console.log('动画循环启动');
+        }, 100);
+
+        console.log('环面测地流动画初始化完成');
+        console.log('线条总数:', NUM_LINES);
+        console.log('每条线点数:', POINTS_PER_LINE);
+        console.log('环面参数 R₀, r₀:', R0, r0);
+    </script>
+</body>
+</html>

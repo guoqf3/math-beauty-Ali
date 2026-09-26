@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>有机流体生物</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #060612;
+            font-family: sans-serif;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="bioCanvas"></canvas>
+    <script>
+        (function() {
+            'use strict';
+
+            const canvas = document.getElementById('bioCanvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            // ---------- 配置参数 ----------
+            const CONFIG = {
+                organismCount: 6,           // 生物形态数量
+                segmentsPerOrganism: 12,    // 每个生物的外围控制点数量
+                baseRadius: 45,             // 基础半径（像素）
+                radiusVariation: 25,        // 半径变化幅度
+                waveSpeed: 0.8,             // 形变波动速度
+                waveAmplitude: 20,          // 形变振幅（像素）
+                mouseAttractRadius: 200,    // 鼠标吸引半径
+                mouseAttractStrength: 0.06, // 吸引强度
+                mouseStretchFactor: 18,     // 鼠标拉伸最大偏移
+                clickPulseDuration: 700,    // 点击脉冲持续时间(ms)
+                clickPulseStrength: 25,     // 点击脉冲强度
+                maxPulses: 5,               // 最大同时脉冲数量
+                damping: 0.94,              // 速度阻尼
+                returnSpeed: 0.04,          // 回弹速度
+                colorSchemes: [
+                    { hue: 180, sat: 85, light: 60 },   // 青绿
+                    { hue: 230, sat: 80, light: 65 },   // 蓝
+                    { hue: 280, sat: 75, light: 68 },   // 紫
+                    { hue: 320, sat: 85, light: 70 },   // 粉
+                    { hue: 160, sat: 80, light: 60 },   // 青
+                    { hue: 250, sat: 85, light: 72 },   // 蓝紫
+                ],
+                backgroundFade: 0.12,       // 背景拖尾强度
+                glowAlpha: 0.5,             // 光晕透明度
+            };
+
+            let width = 0;
+            let height = 0;
+            let dpr = 1;
+            let organisms = [];
+            let pulses = [];
+            let mouseX = -9999;
+            let mouseY = -9999;
+            let mouseActive = false;
+            let targetMouseX = -9999;
+            let targetMouseY = -9999;
+            let smoothMouseX = -9999;
+            let smoothMouseY = -9999;
+            let animationId = null;
+            let lastTime = 0;
+            let time = 0;
+
+            // ---------- 脉冲类 ----------
+            class Pulse {
+                constructor(x, y, startTime) {
+                    this.x = x;
+                    this.y = y;
+                    this.startTime = startTime;
+                    this.duration = CONFIG.clickPulseDuration;
+                    this.strength = CONFIG.clickPulseStrength;
+                }
+                getProgress(now) {
+                    return Math.min(1, (now - this.startTime) / this.duration);
+                }
+                getEnvelope(now) {
+                    const p = this.getProgress(now);
+                    return Math.max(0, 1 - p);
+                }
+                isExpired(now) {
+                    return this.getProgress(now) >= 1;
+                }
+            }
+
+            // ---------- 生物形态类 ----------
+            class Organism {
+                constructor(cx, cy, hue, sat, light) {
+                    this.cx = cx;
+                    this.cy = cy;
+                    this.hue = hue;
+                    this.saturation = sat;
+                    this.lightness = light;
+                    this.vx = (Math.random() - 0.5) * 0.5;
+                    this.vy = (Math.random() - 0.5) * 0.5;
+                    this.baseRadius = CONFIG.baseRadius + Math.random() * CONFIG.radiusVariation;
+                    // 每个控制点的相位和角度
+                    this.pointAngles = [];
+                    this.pointPhases = [];
+                    this.pointDistances = [];
+                    const segCount = CONFIG.segmentsPerOrganism;
+                    for (let i = 0; i < segCount; i++) {
+                        this.pointAngles.push((i / segCount) * Math.PI * 2);
+                        this.pointPhases.push(Math.random() * Math.PI * 2);
+                        this.pointDistances.push(0.85 + Math.random() * 0.3);
+                    }
+                    this.morphSpeed = CONFIG.waveSpeed * (0.7 + Math.random() * 0.6);
+                    this.rotation = Math.random() * Math.PI * 2;
+                    this.rotationSpeed = (Math.random() - 0.5) * 0.01;
+                }
+
+                // 更新生物形态位置和形变
+                update(dt, now, time) {
+                    // 鼠标吸引
+                    if (mouseActive && smoothMouseX > -1000) {
+                        const dx = smoothMouseX - this.cx;
+                        const dy = smoothMouseY - this.cy;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        if (dist < CONFIG.mouseAttractRadius && dist > 0.01) {
+                            const force = (CONFIG.mouseAttractRadius - dist) / CONFIG.mouseAttractRadius * CONFIG
+                                .mouseAttractStrength;
+                            this.vx += (dx / dist) * force * dt;
+                            this.vy += (dy / dist) * force * dt;
+                        }
+                    }
+
+                    // 脉冲影响
+                    for (const pulse of pulses) {
+                        const dx = this.cx - pulse.x;
+                        const dy = this.cy - pulse.y;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        const effectRadius = 150;
+                        if (dist < effectRadius && dist > 0.01) {
+                            const envelope = pulse.getEnvelope(now);
+                            const force = (1 - dist / effectRadius) * pulse.strength * envelope;
+                            this.vx += (dx / dist) * force * 0.5;
+                            this.vy += (dy / dist) * force * 0.5;
+                        }
+                    }
+
+                    // 阻尼
+                    this.vx *= CONFIG.damping;
+                    this.vy *= CONFIG.damping;
+
+                    // 限制速度
+                    const maxSpeed = 1.8;
+                    const currentSpeed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
+                    if (currentSpeed > maxSpeed) {
+                        this.vx = (this.vx / currentSpeed) * maxSpeed;
+                        this.vy = (this.vy / currentSpeed) * maxSpeed;
+                    }
+
+                    this.cx += this.vx * dt;
+                    this.cy += this.vy * dt;
+
+                    // 边界处理
+                    const margin = this.baseRadius * 0.8;
+                    if (this.cx < margin) { this.cx = margin;
+                        this.vx *= -0.5; }
+                    if (this.cx > width - margin) { this.cx = width - margin;
+                        this.vx *= -0.5; }
+                    if (this.cy < margin) { this.cy = margin;
+                        this.vy *= -0.5; }
+                    if (this.cy > height - margin) { this.cy = height - margin;
+                        this.vy *= -0.5; }
+
+                    // 旋转
+                    this.rotation += this.rotationSpeed * dt;
+                }
+
+                // 获取当前时刻的控制点位置
+                getControlPoints(time) {
+                    const points = [];
+                    const segCount = CONFIG.segmentsPerOrganism;
+                    const baseRadius = this.baseRadius;
+                    const waveAmp = CONFIG.waveAmplitude;
+
+                    // 鼠标拉伸方向
+                    let stretchX = 0;
+                    let stretchY = 0;
+                    if (mouseActive && smoothMouseX > -1000) {
+                        const dx = smoothMouseX - this.cx;
+                        const dy = smoothMouseY - this.cy;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        if (dist < CONFIG.mouseAttractRadius && dist > 0.01) {
+                            const influence = (1 - dist / CONFIG.mouseAttractRadius);
+                            stretchX = (dx / dist) * CONFIG.mouseStretchFactor * influence;
+                            stretchY = (dy / dist) * CONFIG.mouseStretchFactor * influence * 0.7;
+                        }
+                    }
+
+                    // 脉冲影响控制点
+                    let pulseOffX = 0;
+                    let pulseOffY = 0;
+                    for (const pulse of pulses) {
+                        const dx = this.cx - pulse.x;
+                        const dy = this.cy - pulse.y;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        const effectRadius = 180;
+                        if (dist < effectRadius && dist > 0.01) {
+                            const envelope = pulse.getEnvelope(performance.now());
+                            const force = (1 - dist / effectRadius) * pulse.strength * envelope * 0.3;
+                            pulseOffX += (dx / dist) * force;
+                            pulseOffY += (dy / dist) * force;
+                        }
+                    }
+
+                    for (let i = 0; i < segCount; i++) {
+                        const baseAngle = this.pointAngles[i] + this.rotation;
+                        const phase = this.pointPhases[i];
+                        const distanceFactor = this.pointDistances[i];
+
+                        // 使用正弦波产生有机形变
+                        const wave1 = Math.sin(time * this.morphSpeed + phase) * waveAmp;
+                        const wave2 = Math.cos(time * this.morphSpeed * 1.4 + phase * 1.7) * waveAmp * 0.6;
+                        const wave3 = Math.sin(time * this.morphSpeed * 2.1 + phase * 2.3) * waveAmp * 0.35;
+
+                        const totalWave = wave1 + wave2 + wave3;
+                        const radius = baseRadius * distanceFactor + totalWave;
+
+                        // 计算点位置（考虑鼠标拉伸和脉冲）
+                        const px = this.cx + Math.cos(baseAngle) * radius + stretchX * Math.cos(baseAngle) * 0.6 +
+                            pulseOffX;
+                        const py = this.cy + Math.sin(baseAngle) * radius + stretchY * Math.sin(baseAngle) * 0.6 +
+                            pulseOffY;
+
+                        points.push({ x: px, y: py });
+                    }
+                    return points;
+                }
+
+                // 绘制生物形态
+                draw(ctx, time) {
+                    const points = this.getControlPoints(time);
+                    if (points.length < 3) return;
+
+                    // 使用平滑的贝塞尔曲线闭合路径
+                    ctx.beginPath();
+                    const n = points.length;
+                    for (let i = 0; i < n; i++) {
+                        const curr = points[i];
+                        const next = points[(i + 1) % n];
+                        const prev = points[(i - 1 + n) % n];
+                        const midX = (curr.x + next.x) / 2;
+                        const midY = (curr.y + next.y) / 2;
+                        if (i === 0) {
+                            ctx.moveTo((prev.x + curr.x) / 2, (prev.y + curr.y) / 2);
+                        }
+                        ctx.quadraticCurveTo(curr.x, curr.y, midX, midY);
+                    }
+                    ctx.closePath();
+
+                    // 填充径向渐变
+                    const grad = ctx.createRadialGradient(this.cx, this.cy, 0, this.cx, this.cy, this.baseRadius * 1.8);
+                    grad.addColorStop(0, `hsla(${this.hue}, ${this.saturation}%, ${this.lightness + 15}%, 0.75)`);
+                    grad.addColorStop(0.5, `hsla(${this.hue}, ${this.saturation}%, ${this.lightness}%, 0.55)`);
+                    grad.addColorStop(1, `hsla(${this.hue}, ${this.saturation}%, ${this.lightness - 10}%, 0.3)`);
+                    ctx.fillStyle = grad;
+                    ctx.fill();
+
+                    // 描边（光晕感）
+                    ctx.strokeStyle = `hsla(${this.hue}, 100%, 85%, 0.5)`;
+                    ctx.lineWidth = 1.5;
+                    ctx.stroke();
+
+                    // 内部高光
+                    const corePoints = this.getControlPoints(time);
+                    ctx.beginPath();
+                    for (let i = 0; i < n; i++) {
+                        const curr = corePoints[i];
+                        const cx = this.cx + (curr.x - this.cx) * 0.4;
+                        const cy = this.cy + (curr.y - this.cy) * 0.4;
+                        if (i === 0) ctx.moveTo(cx, cy);
+                        else ctx.lineTo(cx, cy);
+                    }
+                    ctx.closePath();
+                    ctx.fillStyle = `hsla(${this.hue}, 100%, 90%, 0.35)`;
+                    ctx.fill();
+                }
+            }
+
+            // ---------- 初始化生物形态 ----------
+            function initOrganisms() {
+                organisms = [];
+                for (let i = 0; i < CONFIG.organismCount; i++) {
+                    const x = Math.random() * width;
+                    const y = Math.random() * height;
+                    const scheme = CONFIG.colorSchemes[i % CONFIG.colorSchemes.length];
+                    organisms.push(new Organism(x, y, scheme.hue, scheme.sat, scheme.light));
+                }
+            }
+
+            // ---------- 调整画布尺寸 ----------
+            function resizeCanvas() {
+                dpr = Math.min(window.devicePixelRatio || 1, 2);
+                width = window.innerWidth;
+                height = window.innerHeight;
+                canvas.width = Math.floor(width * dpr);
+                canvas.height = Math.floor(height * dpr);
+                canvas.style.width = width + 'px';
+                canvas.style.height = height + 'px';
+                ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                ctx.fillStyle = '#060612';
+                ctx.fillRect(0, 0, width, height);
+                initOrganisms();
+                // 立即绘制一帧，避免白屏
+                drawScene(performance.now());
+            }
+
+            // ---------- 绘制场景 ----------
+            function drawScene(now) {
+                // 背景拖尾
+                ctx.fillStyle = 'rgba(6, 6, 18, ' + CONFIG.backgroundFade + ')';
+                ctx.fillRect(0, 0, width, height);
+
+                // 开启混合模式
+                ctx.globalCompositeOperation = 'lighter';
+
+                // 平滑鼠标位置
+                if (mouseActive) {
+                    smoothMouseX += (targetMouseX - smoothMouseX) * 0.14;
+                    smoothMouseY += (targetMouseY - smoothMouseY) * 0.14;
+                }
+
+                // 绘制鼠标周围柔光
+                if (mouseActive && smoothMouseX > -1000) {
+                    const glowRadius = 140;
+                    const grad = ctx.createRadialGradient(smoothMouseX, smoothMouseY, 0, smoothMouseX, smoothMouseY,
+                        glowRadius);
+                    grad.addColorStop(0, 'rgba(130, 160, 255, 0.1)');
+                    grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+                    ctx.fillStyle = grad;
+                    ctx.beginPath();
+                    ctx.arc(smoothMouseX, smoothMouseY, glowRadius, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+
+                // 绘制所有生物形态
+                for (const org of organisms) {
+                    org.draw(ctx, time);
+                }
+
+                // 恢复混合模式
+                ctx.globalCompositeOperation = 'source-over';
+
+                // 移除过期脉冲
+                pulses = pulses.filter(p => !p.isExpired(now));
+                if (pulses.length > CONFIG.maxPulses) {
+                    pulses = pulses.slice(-CONFIG.maxPulses);
+                }
+            }
+
+            // ---------- 更新生物形态 ----------
+            function updateOrganisms(now) {
+                const dt = Math.min(2, (now - lastTime) / 16.67) || 1;
+                time = now * 0.001;
+
+                // 更新生物形态
+                for (const org of organisms) {
+                    org.update(dt, now, time);
+                }
+            }
+
+            // ---------- 动画循环 ----------
+            function animate(timestamp) {
+                const now = performance.now();
+                if (lastTime === 0) lastTime = now;
+                const dt = now - lastTime;
+                if (dt > 100) {
+                    lastTime = now - 16;
+                } else {
+                    lastTime = now;
+                }
+
+                updateOrganisms(now);
+                drawScene(now);
+
+                animationId = requestAnimationFrame(animate);
+            }
+
+            // ---------- 鼠标与触摸事件 ----------
+            function updateMousePosition(clientX, clientY) {
+                targetMouseX = clientX;
+                targetMouseY = clientY;
+                if (!mouseActive) {
+                    mouseActive = true;
+                    smoothMouseX = targetMouseX;
+                    smoothMouseY = targetMouseY;
+                }
+            }
+
+            function handleClick(clientX, clientY) {
+                const now = performance.now();
+                pulses.push(new Pulse(clientX, clientY, now));
+                if (pulses.length > CONFIG.maxPulses) {
+                    pulses = pulses.slice(-CONFIG.maxPulses);
+                }
+            }
+
+            function setupEvents() {
+                window.addEventListener('mousemove', (e) => {
+                    updateMousePosition(e.clientX, e.clientY);
+                }, { passive: true });
+
+                window.addEventListener('mouseleave', () => {
+                    mouseActive = false;
+                    smoothMouseX = -9999;
+                    smoothMouseY = -9999;
+                });
+
+                window.addEventListener('mousedown', (e) => {
+                    handleClick(e.clientX, e.clientY);
+                });
+
+                window.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        updateMousePosition(touch.clientX, touch.clientY);
+                        handleClick(touch.clientX, touch.clientY);
+                    }
+                }, { passive: false });
+
+                window.addEventListener('touchmove', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        updateMousePosition(touch.clientX, touch.clientY);
+                    }
+                }, { passive: false });
+
+                window.addEventListener('touchend', () => {
+                    mouseActive = false;
+                    smoothMouseX = -9999;
+                    smoothMouseY = -9999;
+                });
+
+                window.addEventListener('resize', () => {
+                    resizeCanvas();
+                });
+
+                document.addEventListener('visibilitychange', () => {
+                    if (document.hidden) {
+                        if (animationId) {
+                            cancelAnimationFrame(animationId);
+                            animationId = null;
+                        }
+                        lastTime = 0;
+                    } else {
+                        if (!animationId) {
+                            lastTime = 0;
+                            animationId = requestAnimationFrame(animate);
+                        }
+                    }
+                });
+            }
+
+            // ---------- 启动 ----------
+            function init() {
+                resizeCanvas();
+                setupEvents();
+                lastTime = 0;
+                animationId = requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.__bioOrganisms = {
+                config: CONFIG,
+                organisms: organisms,
+                pulses: pulses,
+            };
+        })();
+    </script>
+</body>
+</html>

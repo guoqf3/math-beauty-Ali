@@ -1,0 +1,629 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>霍普夫纤维化 - Hopf Fibration</title>
+    <style>
+        :root {
+            --bg: #080c14;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'Noto Serif SC', serif;
+            width: 100vw;
+            height: 100vh;
+            height: 100dvh;
+            -webkit-tap-highlight-color: transparent;
+            user-select: none;
+            -webkit-user-select: none;
+            cursor: default;
+        }
+        #canvas-container {
+            position: fixed;
+            inset: 0;
+            z-index: 1;
+        }
+        canvas {
+            display: block;
+        }
+        #title-overlay {
+            position: fixed;
+            top: 2.5vh;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+        }
+        #title-overlay .title {
+            font-size: clamp(1.1rem, 2.2vw, 1.6rem);
+            font-weight: 400;
+            letter-spacing: 0.08em;
+            color: rgba(210, 220, 240, 0.9);
+            text-shadow: 0 0 40px rgba(160, 200, 255, 0.5), 0 0 80px rgba(140, 180, 240, 0.25);
+            line-height: 1.3;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.65rem, 1.3vw, 0.85rem);
+            letter-spacing: 0.12em;
+            color: rgba(180, 195, 220, 0.65);
+            text-shadow: 0 0 20px rgba(140, 180, 220, 0.3);
+            margin-top: 0.3vh;
+            font-style: italic;
+        }
+        #formula-overlay {
+            position: fixed;
+            bottom: 3vh;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+        }
+        #formula-overlay .formula {
+            font-size: clamp(0.7rem, 1.4vw, 0.95rem);
+            letter-spacing: 0.05em;
+            color: rgba(190, 200, 225, 0.7);
+            text-shadow: 0 0 30px rgba(150, 180, 220, 0.35);
+            font-style: italic;
+            background: rgba(10, 16, 28, 0.55);
+            padding: 0.6vh 2vw;
+            border-radius: 2rem;
+            border: 1px solid rgba(120, 150, 200, 0.2);
+            backdrop-filter: blur(4px);
+            -webkit-backdrop-filter: blur(4px);
+        }
+        #formula-overlay .formula .highlight {
+            color: rgba(255, 180, 100, 0.85);
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="title-overlay">
+        <div class="title">霍普夫纤维化</div>
+        <div class="subtitle">Hopf Fibration · S³ 的优雅分解</div>
+    </div>
+    <div id="formula-overlay">
+        <div class="formula">
+            <span class="highlight">h</span>(z₁,z₂) = (|z₁|²−|z₂|²,&nbsp;2z₁z̅₂)&emsp;|&emsp;
+            <span class="highlight">F</span><sub>θ,φ</sub>(t) = (cos(θ/2)e<sup>i(t+φ)</sup>, sin(θ/2)e<sup>it</sup>)&ensp;∈&ensp;S³⊂ℂ²
+        </div>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.157.0/build/three.module.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== DOM 元素 ====================
+        const container = document.getElementById('canvas-container');
+
+        // ==================== 场景初始化 ====================
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(55, container.clientWidth / container.clientHeight, 0.05, 30);
+        camera.position.set(0, 0.15, 5.2);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x080c14, 1);
+        renderer.outputColorSpace = THREE.SRGBColorSpace;
+        container.appendChild(renderer.domElement);
+
+        // ==================== 背景星场 ====================
+        const starCount = 500;
+        const starGeom = new THREE.BufferGeometry();
+        const starPositions = new Float32Array(starCount * 3);
+        const starSizes = new Float32Array(starCount);
+        for (let i = 0; i < starCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const r = 7 + Math.random() * 12;
+            starPositions[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+            starPositions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+            starPositions[i * 3 + 2] = r * Math.cos(phi);
+            starSizes[i] = Math.random() * 1.8 + 0.2;
+        }
+        starGeom.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
+        starGeom.setAttribute('size', new THREE.BufferAttribute(starSizes, 1));
+        const starMat = new THREE.PointsMaterial({
+            color: 0x8899cc,
+            size: 0.012,
+            transparent: true,
+            opacity: 0.55,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            sizeAttenuation: true,
+        });
+        const stars = new THREE.Points(starGeom, starMat);
+        scene.add(stars);
+
+        // ==================== 参数设置 ====================
+        const NUM_THETA = 18; // θ 值数量
+        const PHI0_VALUES = [0, Math.PI * 2 / 3, Math.PI * 4 / 3]; // 每个θ对应3个φ₀
+        const FIBERS_PER_COLOR_GROUP = NUM_THETA; // 每个颜色组的纤维数（NUM_THETA个θ值各对应PHI0_VALUES中1个φ₀，需调整）
+        // 实际：总共NUM_THETA * 3条纤维
+        const TOTAL_FIBERS = NUM_THETA * PHI0_VALUES.length;
+        const POINTS_PER_FIBER = 220;
+        const NUM_TRANSVERSAL = 5; // 横向曲线数量
+        const POINTS_PER_TRANSVERSAL = 200;
+        const NUM_PARTICLES = 100;
+        const SCALE = 1.05; // 3D投影缩放因子
+
+        // 颜色定义
+        const COLOR_CYAN = new THREE.Color('#00c8f0');
+        const COLOR_GOLD = new THREE.Color('#f0a040');
+        const COLOR_MAGENTA = new THREE.Color('#f05078');
+        const COLOR_WHITE = new THREE.Color('#dde4f0');
+
+        // ==================== 4D 旋转角度 ====================
+        const omega1 = 0.38; // x1-x2平面旋转角速度
+        const omega2 = 0.38 * Math.sqrt(2); // x3-x4平面旋转角速度（不可公度）
+        let alpha = 0.3; // x1-x2旋转角
+        let beta = 0.7; // x3-x4旋转角
+
+        // ==================== 预计算纤维的4D基础坐标 ====================
+        // 每条纤维存储：θ值, φ₀值, 以及基础4D坐标数组[t参数]
+        const fiberData = [];
+        const thetaValues = [];
+
+        for (let i = 0; i < NUM_THETA; i++) {
+            const theta = (Math.PI * i) / (NUM_THETA - 1); // 0到π均匀分布
+            thetaValues.push(theta);
+        }
+
+        // 为每个(θ, φ₀)对创建纤维
+        for (let i = 0; i < NUM_THETA; i++) {
+            const theta = thetaValues[i];
+            for (let j = 0; j < PHI0_VALUES.length; j++) {
+                const phi0 = PHI0_VALUES[j];
+                const baseCoords4D = new Float32Array(POINTS_PER_FIBER * 4);
+                for (let k = 0; k < POINTS_PER_FIBER; k++) {
+                    const t = (Math.PI * 2 * k) / POINTS_PER_FIBER;
+                    const cosHalfTheta = Math.cos(theta / 2);
+                    const sinHalfTheta = Math.sin(theta / 2);
+                    const tp = t + phi0;
+                    baseCoords4D[k * 4] = cosHalfTheta * Math.cos(tp); // x1
+                    baseCoords4D[k * 4 + 1] = cosHalfTheta * Math.sin(tp); // x2
+                    baseCoords4D[k * 4 + 2] = sinHalfTheta * Math.cos(t); // x3
+                    baseCoords4D[k * 4 + 3] = sinHalfTheta * Math.sin(t); // x4
+                }
+                // 确定颜色组
+                let colorGroup;
+                const frac = i / (NUM_THETA - 1); // 0到1
+                if (frac < 1 / 3) {
+                    colorGroup = 0; // 青色
+                } else if (frac < 2 / 3) {
+                    colorGroup = 1; // 金色
+                } else {
+                    colorGroup = 2; // 品红
+                }
+                fiberData.push({
+                    theta,
+                    phi0,
+                    baseCoords4D,
+                    colorGroup,
+                    index: fiberData.length,
+                });
+            }
+        }
+
+        // ==================== 预计算横向曲线的4D基础坐标 ====================
+        const transversalData = [];
+        const transversalTValues = [0, Math.PI / 2, Math.PI, 3 * Math.PI / 2, Math.PI / 4];
+        for (let ti = 0; ti < NUM_TRANSVERSAL; ti++) {
+            const tFixed = transversalTValues[ti];
+            const phi0Fixed = 0;
+            const baseCoords4D = new Float32Array(POINTS_PER_TRANSVERSAL * 4);
+            for (let k = 0; k < POINTS_PER_TRANSVERSAL; k++) {
+                const theta = (Math.PI * k) / (POINTS_PER_TRANSVERSAL - 1);
+                const cosHalfTheta = Math.cos(theta / 2);
+                const sinHalfTheta = Math.sin(theta / 2);
+                const tp = tFixed + phi0Fixed;
+                baseCoords4D[k * 4] = cosHalfTheta * Math.cos(tp);
+                baseCoords4D[k * 4 + 1] = cosHalfTheta * Math.sin(tp);
+                baseCoords4D[k * 4 + 2] = sinHalfTheta * Math.cos(tFixed);
+                baseCoords4D[k * 4 + 3] = sinHalfTheta * Math.sin(tFixed);
+            }
+            transversalData.push({ baseCoords4D, index: ti });
+        }
+
+        // ==================== 创建 Three.js Line 对象 ====================
+        // 辅助函数：将4D旋转+立体投影应用到坐标
+        function project4DTo3D(x1, x2, x3, x4, cosA, sinA, cosB, sinB) {
+            // 4D双旋转
+            const x1r = x1 * cosA - x2 * sinA;
+            const x2r = x1 * sinA + x2 * cosA;
+            const x3r = x3 * cosB - x4 * sinB;
+            const x4r = x3 * sinB + x4 * cosB;
+            // 立体投影 S³ → R³
+            const denom = 1 - x4r;
+            const safeDenom = Math.abs(denom) < 0.0001 ? (denom >= 0 ? 0.0001 : -0.0001) : denom;
+            const invDenom = 1 / safeDenom;
+            const X = x1r * invDenom;
+            const Y = x2r * invDenom;
+            const Z = x3r * invDenom;
+            // 软钳制
+            const maxVal = 7.5;
+            const clampX = Math.max(-maxVal, Math.min(maxVal, X));
+            const clampY = Math.max(-maxVal, Math.min(maxVal, Y));
+            const clampZ = Math.max(-maxVal, Math.min(maxVal, Z));
+            return { x: clampX * SCALE, y: clampY * SCALE, z: clampZ * SCALE };
+        }
+
+        // 为每种颜色组创建Line对象
+        const colorGroupLines = [
+            [], // 颜色组0：青色
+            [], // 颜色组1：金色
+            [], // 颜色组2：品红
+        ];
+        const allLineObjects = [];
+        const allBaseCoordsRefs = []; // 存储对fiberData中baseCoords4D的引用
+
+        const fiberGeometries = [];
+        const fiberPositionArrays = [];
+
+        for (let fi = 0; fi < TOTAL_FIBERS; fi++) {
+            const fd = fiberData[fi];
+            const geom = new THREE.BufferGeometry();
+            const positions = new Float32Array(POINTS_PER_FIBER * 3);
+            // 初始化所有点为原点（将在第一帧更新）
+            for (let k = 0; k < POINTS_PER_FIBER; k++) {
+                positions[k * 3] = 0;
+                positions[k * 3 + 1] = 0;
+                positions[k * 3 + 2] = 0;
+            }
+            geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            geom.setDrawRange(0, POINTS_PER_FIBER);
+
+            let matColor;
+            if (fd.colorGroup === 0) matColor = COLOR_CYAN;
+            else if (fd.colorGroup === 1) matColor = COLOR_GOLD;
+            else matColor = COLOR_MAGENTA;
+
+            const mat = new THREE.LineBasicMaterial({
+                color: matColor,
+                linewidth: 1,
+                transparent: true,
+                opacity: 0.78,
+                depthTest: true,
+                depthWrite: true,
+                blending: THREE.NormalBlending,
+            });
+
+            const line = new THREE.Line(geom, mat);
+            line.frustumCulled = false;
+            scene.add(line);
+            colorGroupLines[fd.colorGroup].push(line);
+            allLineObjects.push(line);
+            fiberGeometries.push(geom);
+            fiberPositionArrays.push(positions);
+            allBaseCoordsRefs.push(fd.baseCoords4D);
+        }
+
+        // 横向曲线
+        const transversalGeometries = [];
+        const transversalPositionArrays = [];
+        const transversalLines = [];
+        for (let ti = 0; ti < NUM_TRANSVERSAL; ti++) {
+            const geom = new THREE.BufferGeometry();
+            const positions = new Float32Array(POINTS_PER_TRANSVERSAL * 3);
+            for (let k = 0; k < POINTS_PER_TRANSVERSAL; k++) {
+                positions[k * 3] = 0;
+                positions[k * 3 + 1] = 0;
+                positions[k * 3 + 2] = 0;
+            }
+            geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            geom.setDrawRange(0, POINTS_PER_TRANSVERSAL);
+            const mat = new THREE.LineBasicMaterial({
+                color: COLOR_WHITE,
+                linewidth: 1,
+                transparent: true,
+                opacity: 0.5,
+                depthTest: true,
+                depthWrite: true,
+                blending: THREE.NormalBlending,
+            });
+            const line = new THREE.Line(geom, mat);
+            line.frustumCulled = false;
+            scene.add(line);
+            transversalGeometries.push(geom);
+            transversalPositionArrays.push(positions);
+            transversalLines.push(line);
+        }
+
+        // ==================== 流动粒子 ====================
+        const particleData = [];
+        for (let p = 0; p < NUM_PARTICLES; p++) {
+            const fiberIdx = Math.floor(Math.random() * TOTAL_FIBERS);
+            const tParam = Math.random() * Math.PI * 2;
+            const speed = 0.15 + Math.random() * 0.55; // 不同速度
+            const direction = Math.random() < 0.5 ? 1 : -1;
+            particleData.push({ fiberIdx, tParam, speed, direction });
+        }
+
+        const particleGeom = new THREE.BufferGeometry();
+        const particlePositionsArr = new Float32Array(NUM_PARTICLES * 3);
+        const particleColorsArr = new Float32Array(NUM_PARTICLES * 3);
+        for (let p = 0; p < NUM_PARTICLES; p++) {
+            particlePositionsArr[p * 3] = 0;
+            particlePositionsArr[p * 3 + 1] = 0;
+            particlePositionsArr[p * 3 + 2] = 0;
+            const fd = fiberData[particleData[p].fiberIdx];
+            let col;
+            if (fd.colorGroup === 0) col = COLOR_CYAN;
+            else if (fd.colorGroup === 1) col = COLOR_GOLD;
+            else col = COLOR_MAGENTA;
+            particleColorsArr[p * 3] = col.r;
+            particleColorsArr[p * 3 + 1] = col.g;
+            particleColorsArr[p * 3 + 2] = col.b;
+        }
+        particleGeom.setAttribute('position', new THREE.BufferAttribute(particlePositionsArr, 3));
+        particleGeom.setAttribute('color', new THREE.BufferAttribute(particleColorsArr, 3));
+
+        // 创建发光粒子贴图
+        const glowCanvas = document.createElement('canvas');
+        glowCanvas.width = 64;
+        glowCanvas.height = 64;
+        const ctx = glowCanvas.getContext('2d');
+        const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+        gradient.addColorStop(0, 'rgba(255,255,255,1)');
+        gradient.addColorStop(0.06, 'rgba(255,255,255,0.95)');
+        gradient.addColorStop(0.2, 'rgba(220,230,255,0.7)');
+        gradient.addColorStop(0.45, 'rgba(140,170,220,0.25)');
+        gradient.addColorStop(0.75, 'rgba(60,90,160,0.04)');
+        gradient.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = gradient;
+        ctx.fillRect(0, 0, 64, 64);
+        const glowTexture = new THREE.CanvasTexture(glowCanvas);
+        glowTexture.needsUpdate = true;
+
+        const particleMat = new THREE.PointsMaterial({
+            size: 0.09,
+            map: glowTexture,
+            vertexColors: true,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            depthTest: true,
+            transparent: true,
+            opacity: 0.85,
+            sizeAttenuation: true,
+        });
+        const particles = new THREE.Points(particleGeom, particleMat);
+        particles.frustumCulled = false;
+        scene.add(particles);
+
+        // ==================== 中心微光点 ====================
+        const coreGlowGeom = new THREE.BufferGeometry();
+        const coreGlowPositions = new Float32Array(3);
+        coreGlowPositions[0] = 0;
+        coreGlowPositions[1] = 0;
+        coreGlowPositions[2] = 0;
+        coreGlowGeom.setAttribute('position', new THREE.BufferAttribute(coreGlowPositions, 3));
+        const coreGlowMat = new THREE.PointsMaterial({
+            size: 0.35,
+            map: glowTexture,
+            color: 0xaaccff,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            depthTest: true,
+            transparent: true,
+            opacity: 0.5,
+            sizeAttenuation: true,
+        });
+        const coreGlow = new THREE.Points(coreGlowGeom, coreGlowMat);
+        coreGlow.frustumCulled = false;
+        scene.add(coreGlow);
+
+        // ==================== 辅助函数：更新所有线条 ====================
+        function updateAllLines(cosA, sinA, cosB, sinB) {
+            // 更新纤维线条
+            for (let fi = 0; fi < TOTAL_FIBERS; fi++) {
+                const baseCoords = allBaseCoordsRefs[fi];
+                const positions = fiberPositionArrays[fi];
+                for (let k = 0; k < POINTS_PER_FIBER; k++) {
+                    const idx4 = k * 4;
+                    const proj = project4DTo3D(
+                        baseCoords[idx4],
+                        baseCoords[idx4 + 1],
+                        baseCoords[idx4 + 2],
+                        baseCoords[idx4 + 3],
+                        cosA,
+                        sinA,
+                        cosB,
+                        sinB
+                    );
+                    positions[k * 3] = proj.x;
+                    positions[k * 3 + 1] = proj.y;
+                    positions[k * 3 + 2] = proj.z;
+                }
+                fiberGeometries[fi].attributes.position.needsUpdate = true;
+            }
+            // 更新横向曲线
+            for (let ti = 0; ti < NUM_TRANSVERSAL; ti++) {
+                const baseCoords = transversalData[ti].baseCoords4D;
+                const positions = transversalPositionArrays[ti];
+                for (let k = 0; k < POINTS_PER_TRANSVERSAL; k++) {
+                    const idx4 = k * 4;
+                    const proj = project4DTo3D(
+                        baseCoords[idx4],
+                        baseCoords[idx4 + 1],
+                        baseCoords[idx4 + 2],
+                        baseCoords[idx4 + 3],
+                        cosA,
+                        sinA,
+                        cosB,
+                        sinB
+                    );
+                    positions[k * 3] = proj.x;
+                    positions[k * 3 + 1] = proj.y;
+                    positions[k * 3 + 2] = proj.z;
+                }
+                transversalGeometries[ti].attributes.position.needsUpdate = true;
+            }
+        }
+
+        function updateParticles(cosA, sinA, cosB, sinB, dt) {
+            for (let p = 0; p < NUM_PARTICLES; p++) {
+                const pd = particleData[p];
+                pd.tParam += pd.speed * pd.direction * dt;
+                // 保持在0到2π范围内
+                if (pd.tParam > Math.PI * 2) pd.tParam -= Math.PI * 2;
+                if (pd.tParam < 0) pd.tParam += Math.PI * 2;
+
+                const fd = fiberData[pd.fiberIdx];
+                const baseCoords = fd.baseCoords4D;
+                // 在基础4D坐标中插值t参数
+                const tNorm = pd.tParam / (Math.PI * 2);
+                const floatIndex = tNorm * (POINTS_PER_FIBER - 1);
+                const idxLow = Math.floor(floatIndex);
+                const idxHigh = Math.min(idxLow + 1, POINTS_PER_FIBER - 1);
+                const frac = floatIndex - idxLow;
+
+                const x1 = baseCoords[idxLow * 4] * (1 - frac) + baseCoords[idxHigh * 4] * frac;
+                const x2 = baseCoords[idxLow * 4 + 1] * (1 - frac) + baseCoords[idxHigh * 4 + 1] * frac;
+                const x3 = baseCoords[idxLow * 4 + 2] * (1 - frac) + baseCoords[idxHigh * 4 + 2] * frac;
+                const x4 = baseCoords[idxLow * 4 + 3] * (1 - frac) + baseCoords[idxHigh * 4 + 3] * frac;
+
+                const proj = project4DTo3D(x1, x2, x3, x4, cosA, sinA, cosB, sinB);
+                particlePositionsArr[p * 3] = proj.x;
+                particlePositionsArr[p * 3 + 1] = proj.y;
+                particlePositionsArr[p * 3 + 2] = proj.z;
+            }
+            particleGeom.attributes.position.needsUpdate = true;
+        }
+
+        // ==================== 动画循环 ====================
+        let lastTime = performance.now();
+        let firstFrameDone = false;
+        let frameCount = 0;
+
+        function animate(timestamp) {
+            requestAnimationFrame(animate);
+
+            // 计算时间增量
+            let dt = (timestamp - lastTime) / 1000;
+            if (dt <= 0) dt = 0.016;
+            if (dt > 0.2) dt = 0.2; // 防止大帧跳跃
+            lastTime = timestamp;
+
+            // 更新4D旋转角度
+            alpha += omega1 * dt;
+            beta += omega2 * dt;
+            // 保持角度在合理范围
+            if (alpha > Math.PI * 200) alpha -= Math.PI * 200;
+            if (beta > Math.PI * 200) beta -= Math.PI * 200;
+
+            const cosA = Math.cos(alpha);
+            const sinA = Math.sin(alpha);
+            const cosB = Math.cos(beta);
+            const sinB = Math.sin(beta);
+
+            // 更新所有线条
+            updateAllLines(cosA, sinA, cosB, sinB);
+
+            // 更新粒子
+            updateParticles(cosA, sinA, cosB, sinB, dt);
+
+            // 缓慢旋转星场
+            stars.rotation.y += dt * 0.04;
+            stars.rotation.x += dt * 0.015;
+
+            // 中心光点随旋转微微脉动
+            const pulse = 1 + 0.25 * Math.sin(alpha * 0.7) * Math.cos(beta * 0.5);
+            coreGlowMat.opacity = 0.35 + 0.2 * pulse;
+            coreGlowMat.size = 0.28 + 0.12 * pulse;
+
+            // 渲染
+            renderer.render(scene, camera);
+            frameCount++;
+
+            if (!firstFrameDone && frameCount >= 3) {
+                firstFrameDone = true;
+                console.log('动画已稳定运行，帧数:', frameCount);
+            }
+        }
+
+        // ==================== 初始帧立即渲染 ====================
+        function renderInitialFrame() {
+            const cosA = Math.cos(alpha);
+            const sinA = Math.sin(alpha);
+            const cosB = Math.cos(beta);
+            const sinB = Math.sin(beta);
+            updateAllLines(cosA, sinA, cosB, sinB);
+            updateParticles(cosA, sinA, cosB, sinB, 0.016);
+            renderer.render(scene, camera);
+            console.log('初始帧已渲染');
+        }
+
+        // ==================== 窗口大小响应 ====================
+        function onResize() {
+            const w = container.clientWidth;
+            const h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        }
+        window.addEventListener('resize', onResize);
+        window.addEventListener('orientationchange', () => {
+            setTimeout(onResize, 150);
+        });
+
+        // ==================== 启动 ====================
+        renderInitialFrame();
+        // 使用setTimeout确保首帧完全渲染后再启动循环
+        setTimeout(() => {
+            lastTime = performance.now();
+            requestAnimationFrame(animate);
+            console.log('动画循环已启动');
+        }, 80);
+
+        // ==================== 调试：检测画面停滞 ====================
+        let watchdogFrameCount = 0;
+        let watchdogLastCheck = performance.now();
+        setInterval(() => {
+            const now = performance.now();
+            const elapsed = now - watchdogLastCheck;
+            if (elapsed > 1500 && watchdogFrameCount === frameCount && frameCount > 10) {
+                console.warn('检测到可能的画面停滞，尝试恢复...');
+                // 强制更新一帧
+                alpha += 0.02;
+                beta += 0.03;
+                const cosA = Math.cos(alpha);
+                const sinA = Math.sin(alpha);
+                const cosB = Math.cos(beta);
+                const sinB = Math.sin(beta);
+                updateAllLines(cosA, sinA, cosB, sinB);
+                updateParticles(cosA, sinA, cosB, sinB, 0.016);
+                renderer.render(scene, camera);
+            }
+            watchdogFrameCount = frameCount;
+            watchdogLastCheck = now;
+        }, 2000);
+
+        console.log('霍普夫纤维化动画初始化完成');
+        console.log('纤维总数:', TOTAL_FIBERS);
+        console.log('每条纤维点数:', POINTS_PER_FIBER);
+        console.log('横向曲线数:', NUM_TRANSVERSAL);
+        console.log('流动粒子数:', NUM_PARTICLES);
+        console.log('4D旋转角速度: ω₁=', omega1.toFixed(3), 'ω₂=', omega2.toFixed(3));
+    </script>
+</body>
+</html>

@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rössler吸引子 · 混沌编织</title>
+    <style>
+        :root {
+            --bg: #06060c;
+            --gold: #d4a843;
+            --cyan: #45b7aa;
+            --magenta: #d4708a;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'SimSun', serif;
+            -webkit-font-smoothing: antialiased;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        #canvas-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+        }
+        canvas {
+            display: block;
+        }
+        .overlay-title {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 22px 20px 8px;
+            text-align: center;
+            background: linear-gradient(180deg, rgba(6, 6, 12, 0.95) 0%, rgba(6, 6, 12, 0.8) 55%, rgba(6, 6, 12, 0) 100%);
+        }
+        .overlay-title h2 {
+            font-size: clamp(1.1rem, 2.2vw, 1.8rem);
+            font-weight: 400;
+            letter-spacing: 0.13em;
+            color: #e8d5b0;
+            text-shadow: 0 0 30px rgba(212, 168, 67, 0.45), 0 0 60px rgba(212, 168, 67, 0.18);
+            margin: 0 0 2px;
+            line-height: 1.3;
+        }
+        .overlay-title .sub {
+            font-size: clamp(0.65rem, 1.1vw, 0.85rem);
+            letter-spacing: 0.22em;
+            color: rgba(200, 180, 150, 0.65);
+        }
+        .overlay-formula {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 8px 20px 18px;
+            text-align: center;
+            background: linear-gradient(0deg, rgba(6, 6, 12, 0.95) 0%, rgba(6, 6, 12, 0.82) 55%, rgba(6, 6, 12, 0) 100%);
+        }
+        .formula-text {
+            font-size: clamp(0.6rem, 1.0vw, 0.8rem);
+            color: rgba(210, 200, 185, 0.8);
+            letter-spacing: 0.03em;
+            line-height: 1.7;
+            font-style: italic;
+        }
+        .clr-gold {
+            color: #d4a843;
+            font-style: normal;
+            font-weight: bold;
+        }
+        .clr-cyan {
+            color: #45b7aa;
+            font-style: normal;
+            font-weight: bold;
+        }
+        .clr-magenta {
+            color: #d4708a;
+            font-style: normal;
+            font-weight: bold;
+        }
+        .formula-sep {
+            display: inline-block;
+            margin: 0 14px;
+            color: rgba(150, 140, 130, 0.35);
+            font-style: normal;
+        }
+    </style>
+</head>
+<body>
+    <div class="overlay-title">
+        <h2>Rössler吸引子 · 混沌编织</h2>
+        <div class="sub">Chaotic streamlines · Strange attractor geometry</div>
+    </div>
+    <div class="overlay-formula">
+        <div class="formula-text">
+            <span class="clr-gold">ẋ = −y − z</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-cyan">ẏ = x + a y</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-magenta">ż = b + z(x − c)</span>
+        </div>
+    </div>
+    <div id="canvas-container"></div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ---------- 场景初始化 ----------
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+
+        const camera = new THREE.PerspectiveCamera(48, container.clientWidth / container.clientHeight, 0.5, 30);
+        camera.position.set(3.5, 2.5, 9.5);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x06060c, 1);
+        container.appendChild(renderer.domElement);
+
+        // 手动时钟
+        let startTime = performance.now();
+        let elapsed = 0;
+        function tick() {
+            elapsed = (performance.now() - startTime) * 0.001;
+            return elapsed;
+        }
+
+        // 颜色
+        const COLOR_GOLD = 0xd4a843;
+        const COLOR_CYAN = 0x45b7aa;
+        const COLOR_MAGENTA = 0xd4708a;
+
+        // ---- Rössler 系统参数 (标准混沌参数) ----
+        const a = 0.2;
+        const b = 0.2;
+        const c = 5.7;
+
+        // 速度场
+        function rosslerFlow(x, y, z) {
+            return new THREE.Vector3(
+                -y - z,
+                x + a * y,
+                b + z * (x - c)
+            );
+        }
+
+        // RK4 一步
+        function rk4Step(pos, h) {
+            const k1 = rosslerFlow(pos.x, pos.y, pos.z);
+            const p2 = pos.clone().add(k1.clone().multiplyScalar(h * 0.5));
+            const k2 = rosslerFlow(p2.x, p2.y, p2.z);
+            const p3 = pos.clone().add(k2.clone().multiplyScalar(h * 0.5));
+            const k3 = rosslerFlow(p3.x, p3.y, p3.z);
+            const p4 = pos.clone().add(k3.clone().multiplyScalar(h));
+            const k4 = rosslerFlow(p4.x, p4.y, p4.z);
+            const increment = k1.clone()
+                .add(k2.clone().multiplyScalar(2))
+                .add(k3.clone().multiplyScalar(2))
+                .add(k4)
+                .multiplyScalar(h / 6.0);
+            return pos.clone().add(increment);
+        }
+
+        // 积分一条轨迹，返回点数组
+        function integrateTrajectory(seed, h, steps, maxRadius = 15) {
+            const points = [];
+            let pos = seed.clone();
+            points.push(pos.clone());
+            for (let i = 0; i < steps; i++) {
+                pos = rk4Step(pos, h);
+                if (pos.length() > maxRadius) break;
+                points.push(pos.clone());
+            }
+            return points;
+        }
+
+        // 缩放因子，使吸引子适应视图
+        const SCALE = 0.65;
+
+        // 生成随机种子（在吸引子附近区域）
+        function randomSeed() {
+            return new THREE.Vector3(
+                (Math.random() - 0.5) * 12,
+                (Math.random() - 0.5) * 12,
+                (Math.random() - 0.2) * 15
+            );
+        }
+
+        // 创建所有流线
+        const flowGroup = new THREE.Group();
+        flowGroup.name = 'rossler-streamlines';
+        scene.add(flowGroup);
+
+        const h = 0.025;       // 积分步长
+        const steps = 1800;    // 每线条点数
+        const totalLines = 72; // 线条总数，3种颜色各24条
+
+        const seeds = [];
+        for (let i = 0; i < totalLines; i++) {
+            seeds.push(randomSeed());
+        }
+
+        seeds.forEach((seed, index) => {
+            let color;
+            const x = seed.x,
+                y = seed.y,
+                z = seed.z;
+            // 根据初始位置主要区域分配颜色
+            if (Math.abs(x) > Math.abs(y) && Math.abs(x) > Math.abs(z)) {
+                color = x > 0 ? COLOR_GOLD : COLOR_CYAN;
+            } else if (Math.abs(y) > Math.abs(z)) {
+                color = y > 0 ? COLOR_CYAN : COLOR_MAGENTA;
+            } else {
+                color = z > 0 ? COLOR_MAGENTA : COLOR_GOLD;
+            }
+
+            const rawPoints = integrateTrajectory(seed, h, steps, 14);
+            if (rawPoints.length < 2) return;
+
+            const scaledPoints = rawPoints.map(p => p.clone().multiplyScalar(SCALE));
+            const geom = new THREE.BufferGeometry().setFromPoints(scaledPoints);
+            const mat = new THREE.LineBasicMaterial({
+                color: color,
+                transparent: true,
+                opacity: 0.62,
+                depthWrite: true,
+                depthTest: true,
+            });
+            flowGroup.add(new THREE.Line(geom, mat));
+        });
+
+        console.log('已生成 Rössler 流线:', flowGroup.children.length);
+
+        // ---- 背景星点 ----
+        const starsGroup = new THREE.Group();
+        const starsGeom = new THREE.BufferGeometry();
+        const starsCount = 600;
+        const starsPos = new Float32Array(starsCount * 3);
+        for (let i = 0; i < starsCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const dist = 7 + Math.random() * 11;
+            starsPos[i * 3] = dist * Math.sin(phi) * Math.cos(theta);
+            starsPos[i * 3 + 1] = dist * Math.sin(phi) * Math.sin(theta);
+            starsPos[i * 3 + 2] = dist * Math.cos(phi);
+        }
+        starsGeom.setAttribute('position', new THREE.BufferAttribute(starsPos, 3));
+        const starsMat = new THREE.PointsMaterial({
+            color: 0x908878,
+            size: 0.018,
+            transparent: true,
+            opacity: 0.55,
+            depthWrite: false,
+        });
+        starsGroup.add(new THREE.Points(starsGeom, starsMat));
+        scene.add(starsGroup);
+
+        // ---- 稳定动画循环 ----
+        function animate() {
+            tick();
+            const t = elapsed;
+
+            flowGroup.rotation.x = t * 0.17;
+            flowGroup.rotation.y = t * 0.28;
+            flowGroup.rotation.z = t * 0.13;
+
+            starsGroup.rotation.y = t * 0.03;
+            starsGroup.rotation.x = t * 0.02;
+
+            const camRadius = 9.2;
+            const camAngle = t * 0.09;
+            const camHeight = 2.8 + Math.sin(t * 0.16) * 0.7;
+            camera.position.x = Math.cos(camAngle) * camRadius;
+            camera.position.z = Math.sin(camAngle) * camRadius;
+            camera.position.y = camHeight;
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+            requestAnimationFrame(animate);
+        }
+
+        // 预渲染首帧
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+
+        // 响应式调整
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth;
+            const h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth;
+            const h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 120));
+
+        console.log('✅ Rössler吸引子动画已稳定运行');
+    </script>
+</body>
+</html>

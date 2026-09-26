@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MOIRE · 莫尔波纹</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #0a0a18;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            right: 32px;
+            z-index: 2;
+            text-align: right;
+            pointer-events: none;
+            opacity: 0.5;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+        .overlay:hover {
+            opacity: 0.85;
+        }
+        .title {
+            color: rgba(235, 220, 255, 0.7);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 20px rgba(160, 120, 240, 0.4);
+        }
+        .hint {
+            color: rgba(190, 175, 220, 0.45);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+        @media (max-width: 768px) {
+            .overlay { bottom: 18px; right: 20px; }
+            .title { font-size: 8px; letter-spacing: 0.45em; }
+            .hint { font-size: 6px; letter-spacing: 0.22em; }
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <div class="overlay">
+        <div class="title">Moire</div>
+        <div class="hint">move · click</div>
+    </div>
+    <script>
+        (function() {
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            let patterns = [];
+            let mouse = { x: -9999, y: -9999, active: false, px: -9999, py: -9999, influence: 0 };
+            let time = 0;
+            let colorShift = 0;
+            let flashOverlay = 0;
+
+            // 图案层数
+            const PATTERN_COUNT = 5;
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                ctx.fillStyle = '#0a0a18';
+                ctx.fillRect(0, 0, W, H);
+            }
+
+            // ─── 图案层 ─────────────────────────────────────────────────
+            class PatternLayer {
+                constructor(index) {
+                    this.index = index;
+                    this.type = index % 3; // 0=同心圆, 1=斜线, 2=网格
+                    this.rotation = Math.random() * Math.PI * 2;
+                    this.rotationSpeed = (0.1 + Math.random() * 0.3) * (Math.random() < 0.5 ? 1 : -1);
+                    this.scale = 0.5 + Math.random() * 0.8;
+                    this.scaleSpeed = 0.03 + Math.random() * 0.06;
+                    this.offsetX = Math.random() * W * 0.5;
+                    this.offsetY = Math.random() * H * 0.5;
+                    this.driftX = (Math.random() - 0.5) * 0.4;
+                    this.driftY = (Math.random() - 0.5) * 0.4;
+                    this.lineWidth = 1.0 + Math.random() * 1.5;
+                    this.spacing = 15 + Math.random() * 30;
+                    this.hue = 210 + Math.random() * 80;
+                    this.saturation = 50 + Math.random() * 30;
+                    this.lightness = 45 + Math.random() * 25;
+                    this.alpha = 0.25 + Math.random() * 0.25;
+                    this.mouseWarp = 0.3 + Math.random() * 0.5;
+                    this.wavePhase = Math.random() * Math.PI * 2;
+                    this.waveSpeed = 0.3 + Math.random() * 0.6;
+                    this.waveAmplitude = 5 + Math.random() * 15;
+                }
+
+                update(dt, mouse, t) {
+                    this.rotation += this.rotationSpeed * dt * 0.02;
+                    this.scale += this.scaleSpeed * dt * 0.008;
+                    if (this.scale > 2.5) this.scaleSpeed = -Math.abs(this.scaleSpeed);
+                    if (this.scale < 0.4) this.scaleSpeed = Math.abs(this.scaleSpeed);
+                    this.offsetX += this.driftX * dt;
+                    this.offsetY += this.driftY * dt;
+                    this.wavePhase += this.waveSpeed * dt * 0.01;
+                    if (this.offsetX < -200) this.offsetX = W + 200;
+                    if (this.offsetX > W + 200) this.offsetX = -200;
+                    if (this.offsetY < -200) this.offsetY = H + 200;
+                    if (this.offsetY > H + 200) this.offsetY = -200;
+                }
+
+                draw(ctx, t) {
+                    ctx.save();
+                    ctx.translate(this.offsetX, this.offsetY);
+                    ctx.rotate(this.rotation);
+                    ctx.scale(this.scale, this.scale);
+                    ctx.globalAlpha = this.alpha;
+                    ctx.strokeStyle = `hsla(${this.hue + colorShift}, ${this.saturation}%, ${this.lightness}%, 1)`;
+                    ctx.lineWidth = this.lineWidth;
+                    ctx.lineCap = 'round';
+
+                    const effectiveSpacing = this.spacing * (1 + Math.sin(this.wavePhase) * 0.3);
+                    const warpX = mouse.active ? (mouse.x - W/2) * this.mouseWarp * 0.01 : 0;
+                    const warpY = mouse.active ? (mouse.y - H/2) * this.mouseWarp * 0.01 : 0;
+
+                    if (this.type === 0) {
+                        // 同心圆
+                        const maxR = Math.max(W, H) * 1.2;
+                        for (let r = effectiveSpacing; r < maxR; r += effectiveSpacing) {
+                            ctx.beginPath();
+                            ctx.arc(warpX, warpY, r, 0, Math.PI * 2);
+                            ctx.stroke();
+                        }
+                    } else if (this.type === 1) {
+                        // 斜线
+                        const startX = -Math.max(W, H) * 1.5;
+                        const endX = Math.max(W, H) * 1.5;
+                        const startY = -Math.max(W, H) * 1.5;
+                        const endY = Math.max(W, H) * 1.5;
+                        for (let offset = -Math.max(W, H); offset < Math.max(W, H); offset += effectiveSpacing) {
+                            const wobble = Math.sin(offset * 0.05 + this.wavePhase) * this.waveAmplitude;
+                            ctx.beginPath();
+                            ctx.moveTo(startX + offset + wobble, startY);
+                            ctx.lineTo(endX + offset - wobble, endY);
+                            ctx.stroke();
+                        }
+                    } else {
+                        // 网格
+                        const halfSize = Math.max(W, H) * 0.7;
+                        for (let pos = -halfSize; pos <= halfSize; pos += effectiveSpacing) {
+                            const wobble = Math.sin(pos * 0.06 + this.wavePhase) * this.waveAmplitude;
+                            ctx.beginPath();
+                            ctx.moveTo(pos + wobble, -halfSize);
+                            ctx.lineTo(pos - wobble, halfSize);
+                            ctx.stroke();
+                            ctx.beginPath();
+                            ctx.moveTo(-halfSize, pos + wobble);
+                            ctx.lineTo(halfSize, pos - wobble);
+                            ctx.stroke();
+                        }
+                    }
+                    ctx.restore();
+                }
+            }
+
+            // ─── 初始化图案 ─────────────────────────────────────────────
+            function initPatterns() {
+                patterns = [];
+                for (let i = 0; i < PATTERN_COUNT; i++) {
+                    patterns.push(new PatternLayer(i));
+                }
+            }
+
+            // ─── 鼠标光晕 ───────────────────────────────────────────────
+            function drawCursorGlow(ctx) {
+                if (!mouse.active) return;
+                const radius = 60;
+                const hue = 220 + colorShift;
+                const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                gradient.addColorStop(0, `hsla(${hue}, 60%, 75%, 0.06)`);
+                gradient.addColorStop(0.7, `hsla(${hue}, 50%, 70%, 0.02)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // ─── 点击闪光 ───────────────────────────────────────────────
+            function drawFlash(ctx) {
+                if (flashOverlay > 0.01) {
+                    ctx.fillStyle = `hsla(${220 + colorShift}, 60%, 80%, ${flashOverlay * 0.3})`;
+                    ctx.fillRect(0, 0, W, H);
+                    flashOverlay *= 0.92;
+                }
+            }
+
+            // ─── 主循环 ─────────────────────────────────────────────────
+            let lastTime = 0;
+            let accumulator = 0;
+            const fixedStep = 1000 / 60;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+
+                accumulator += dt;
+                const steps = Math.min(Math.floor(accumulator / fixedStep), 3);
+                accumulator -= steps * fixedStep;
+
+                for (let s = 0; s < steps; s++) {
+                    time += 0.016;
+                    const dtNorm = fixedStep / 1000 * 60;
+                    for (const pat of patterns) {
+                        pat.update(dtNorm, mouse, time);
+                    }
+                }
+
+                // 清除画布
+                ctx.fillStyle = '#0a0a18';
+                ctx.fillRect(0, 0, W, H);
+
+                // 绘制图案层
+                for (const pat of patterns) {
+                    pat.draw(ctx, time);
+                }
+
+                // 鼠标光晕
+                drawCursorGlow(ctx);
+
+                // 点击闪光
+                drawFlash(ctx);
+
+                requestAnimationFrame(animate);
+            }
+
+            // ─── 交互事件 ───────────────────────────────────────────────
+            function onMouseMove(e) {
+                mouse.px = mouse.x;
+                mouse.py = mouse.y;
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+                mouse.px = -9999;
+                mouse.py = -9999;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                // 点击切换色彩偏移
+                colorShift += 25 + Math.random() * 30;
+                if (colorShift > 150) colorShift = -25;
+                // 触发闪光
+                flashOverlay = 0.8;
+                // 随机扰动图案参数
+                for (const pat of patterns) {
+                    pat.rotationSpeed += (Math.random() - 0.5) * 0.2;
+                    pat.spacing = 15 + Math.random() * 30;
+                }
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.px = mouse.x;
+                    mouse.py = mouse.y;
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    colorShift += 25 + Math.random() * 30;
+                    if (colorShift > 150) colorShift = -25;
+                    flashOverlay = 0.8;
+                    for (const pat of patterns) {
+                        pat.rotationSpeed += (Math.random() - 0.5) * 0.2;
+                        pat.spacing = 15 + Math.random() * 30;
+                    }
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+                mouse.px = -9999;
+                mouse.py = -9999;
+            }
+
+            function onResize() {
+                setupCanvas();
+                for (const pat of patterns) {
+                    pat.offsetX = Math.random() * W * 0.5;
+                    pat.offsetY = Math.random() * H * 0.5;
+                }
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+                initPatterns();
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#0a0a18';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+        })();
+    </script>
+</body>
+</html>

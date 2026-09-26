@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>星形线空间编织 · 多瓣几何</title>
+    <style>
+        :root {
+            --bg: #02010d;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'Noto Serif SC', serif;
+            height: 100vh;
+            width: 100vw;
+            user-select: none;
+            -webkit-user-select: none;
+            cursor: default;
+        }
+        #canvas-container {
+            position: fixed;
+            inset: 0;
+            z-index: 1;
+        }
+        canvas {
+            display: block;
+        }
+
+        #title-overlay {
+            position: fixed;
+            top: clamp(18px, 3.8vh, 44px);
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+            white-space: nowrap;
+        }
+        #title-overlay h1 {
+            color: #e1d0b5;
+            font-size: clamp(1.2rem, 2.4vw, 2rem);
+            font-weight: 400;
+            letter-spacing: 0.08em;
+            text-shadow: 0 0 28px rgba(215, 180, 130, 0.55), 0 0 75px rgba(190, 150, 100, 0.25);
+            margin: 0;
+        }
+        #title-overlay .subtitle {
+            color: #bda78c;
+            font-size: clamp(0.7rem, 1.2vw, 0.95rem);
+            letter-spacing: 0.06em;
+            margin-top: 0.3em;
+            text-shadow: 0 0 14px rgba(180, 140, 100, 0.4);
+        }
+
+        #formula-overlay {
+            position: fixed;
+            bottom: clamp(26px, 4.8vh, 56px);
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+            padding: 0 16px;
+        }
+        #formula-overlay .formula-box {
+            display: inline-block;
+            background: rgba(15, 11, 20, 0.72);
+            border: 1px solid rgba(170, 145, 115, 0.28);
+            border-radius: 12px;
+            padding: clamp(10px, 1.4vh, 16px) clamp(16px, 3vw, 28px);
+            backdrop-filter: blur(7px);
+            -webkit-backdrop-filter: blur(7px);
+        }
+        #formula-overlay .formula-main {
+            color: #f2dec5;
+            font-size: clamp(0.8rem, 1.35vw, 1.15rem);
+            letter-spacing: 0.04em;
+            line-height: 1.7;
+        }
+        #formula-overlay .formula-detail {
+            color: #a6947c;
+            font-size: clamp(0.62rem, 0.95vw, 0.82rem);
+            letter-spacing: 0.03em;
+            margin-top: 0.25em;
+            line-height: 1.5;
+        }
+
+        @media (max-width: 600px) {
+            #title-overlay h1 {
+                letter-spacing: 0.05em;
+            }
+            #formula-overlay .formula-box {
+                padding: 10px 16px;
+                border-radius: 10px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+
+    <div id="title-overlay">
+        <h1>星形线空间编织</h1>
+        <div class="subtitle">Astroid Spatial Weave · Multilobe Geometry</div>
+    </div>
+
+    <div id="formula-overlay">
+        <div class="formula-box">
+            <div class="formula-main">
+                x = cos³(t), y = sin³(t)<br>
+                (x, y, z) = R<sub>φ,ψ</sub> · (x, y, 0) + (0, 0, A sin(ωt+δ))
+            </div>
+            <div class="formula-detail">
+                t ∈ [0, 2π] | A=0.6 | ω ∈ ℕ | 16 curves
+            </div>
+        </div>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.157.0/build/three.module.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#02010d');
+        scene.fog = new THREE.Fog('#02010d', 5.5, 18);
+
+        const camera = new THREE.PerspectiveCamera(
+            46,
+            container.clientWidth / container.clientHeight,
+            0.3,
+            26
+        );
+        camera.position.set(0, 0.4, 6.8);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.2;
+        container.appendChild(renderer.domElement);
+
+        scene.add(new THREE.AmbientLight('#202040', 0.4));
+
+        // ==================== 主图案组 ====================
+        const mainGroup = new THREE.Group();
+        scene.add(mainGroup);
+
+        const totalPoints = 1600;
+        const allLines = [];
+        const curveCount = 16;
+        const scale2D = 1.2;          // 星形线基础大小
+        const zAmplitude = 0.6;       // z轴正弦振幅
+        const globalScale = 0.85;     // 整体缩放，确保不超出画面
+
+        /**
+         * 生成单条星形线，应用空间旋转和z轴调制
+         */
+        function createAstroidLine(index) {
+            const rotY = (index / curveCount) * Math.PI * 2;
+            const rotX = (index * 0.7) % Math.PI;
+            const rotation = new THREE.Euler(rotX, rotY, 0);
+            const rotMatrix = new THREE.Matrix4().makeRotationFromEuler(rotation);
+
+            const freqZ = 3 + (index % 4) * 2;   // 3,5,7,9
+            const phaseZ = index * 0.6;
+
+            const vertices = new Float32Array(totalPoints * 3);
+            for (let i = 0; i < totalPoints; i++) {
+                const t = (i / (totalPoints - 1)) * Math.PI * 2;
+                const cosT = Math.cos(t);
+                const sinT = Math.sin(t);
+                const x2d = scale2D * Math.pow(cosT, 3);
+                const y2d = scale2D * Math.pow(sinT, 3);
+                const z2d = zAmplitude * Math.sin(freqZ * t + phaseZ);
+
+                const vec = new THREE.Vector3(x2d, y2d, z2d);
+                vec.applyMatrix4(rotMatrix);
+                vec.multiplyScalar(globalScale);
+
+                vertices[i * 3] = vec.x;
+                vertices[i * 3 + 1] = vec.y;
+                vertices[i * 3 + 2] = vec.z;
+            }
+
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+            geometry.setDrawRange(0, 0); // 初始隐藏
+
+            const hue = (index / curveCount) * 0.85;
+            const material = new THREE.LineBasicMaterial({
+                color: new THREE.Color().setHSL(hue, 0.92, 0.64),
+                transparent: true,
+                opacity: 0.78,
+                linewidth: 1,
+                blending: THREE.AdditiveBlending,
+                depthWrite: true,
+                depthTest: true,
+            });
+
+            const line = new THREE.Line(geometry, material);
+            line.visible = false;
+            line.frustumCulled = false;
+            return line;
+        }
+
+        // 生成所有曲线
+        for (let j = 0; j < curveCount; j++) {
+            const line = createAstroidLine(j);
+            mainGroup.add(line);
+            allLines.push(line);
+        }
+
+        console.log(`✅ 已生成 ${curveCount} 条星形线`);
+
+        // ==================== 动画状态机 ====================
+        const CYCLE_TOTAL = 7.0;    // 出现3s + 停顿1s + 消失3s
+        const APPEAR_TIME = 3.0;
+        const PAUSE_TIME = 1.0;
+        const DISAPPEAR_TIME = 3.0;
+
+        let animationStartTime = null;
+        let firstFrameDone = false;
+
+        function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+        function easeInCubic(t) { return t * t * t; }
+
+        function getProgress(elapsedSeconds) {
+            const cycle = elapsedSeconds % CYCLE_TOTAL;
+            if (cycle < APPEAR_TIME) {
+                const t = cycle / APPEAR_TIME;
+                return { progress: easeOutCubic(t), phase: 'appear' };
+            } else if (cycle < APPEAR_TIME + PAUSE_TIME) {
+                return { progress: 1.0, phase: 'pause' };
+            } else {
+                const t = (cycle - APPEAR_TIME - PAUSE_TIME) / DISAPPEAR_TIME;
+                return { progress: 1.0 - easeInCubic(t), phase: 'disappear' };
+            }
+        }
+
+        // ==================== 渲染循环 ====================
+        function animate(timestamp) {
+            requestAnimationFrame(animate);
+
+            if (animationStartTime === null) {
+                animationStartTime = timestamp;
+                allLines.forEach(line => {
+                    line.visible = false;
+                    if (line.geometry) line.geometry.setDrawRange(0, 0);
+                });
+                renderer.render(scene, camera);
+                firstFrameDone = true;
+                return;
+            }
+
+            const elapsed = (timestamp - animationStartTime) / 1000;
+            const { progress } = getProgress(elapsed);
+            const drawCount = Math.floor(progress * totalPoints);
+            const shouldBeVisible = drawCount >= 2;
+
+            for (let i = 0; i < allLines.length; i++) {
+                const line = allLines[i];
+                if (!line || !line.geometry) continue;
+                const maxPts = line.geometry.attributes.position.count;
+                const lineDraw = Math.min(drawCount, maxPts);
+                if (shouldBeVisible && lineDraw >= 2) {
+                    line.visible = true;
+                    line.geometry.setDrawRange(0, lineDraw);
+                } else {
+                    line.visible = false;
+                    line.geometry.setDrawRange(0, 0);
+                }
+            }
+
+            // 整体缓慢旋转
+            const rotY = elapsed * 0.09;
+            const rotX = Math.sin(elapsed * 0.18) * 0.06;
+            const rotZ = Math.cos(elapsed * 0.23) * 0.05;
+            mainGroup.rotation.set(rotX, rotY, rotZ);
+
+            // 相机轻柔晃动
+            camera.position.x = Math.sin(elapsed * 0.16) * 0.22;
+            camera.position.y = 0.4 + Math.cos(elapsed * 0.21) * 0.2;
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        // ==================== 响应式处理 ====================
+        function onResize() {
+            const w = container.clientWidth;
+            const h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        }
+        window.addEventListener('resize', onResize, { passive: true });
+        window.addEventListener('orientationchange', () => setTimeout(onResize, 150), { passive: true });
+
+        // ==================== 启动 ====================
+        console.log('🚀 星形线空间编织动画启动');
+        console.log(`   - 曲线数量: ${curveCount}`);
+        console.log(`   - 采样点/曲线: ${totalPoints}`);
+        console.log(`   - 动画周期: ${CYCLE_TOTAL}s`);
+
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

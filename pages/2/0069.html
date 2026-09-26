@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CIRCUIT · 电路生长</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #0a0f0c;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            right: 32px;
+            z-index: 2;
+            text-align: right;
+            pointer-events: none;
+            opacity: 0.5;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+        .overlay:hover {
+            opacity: 0.85;
+        }
+        .title {
+            color: rgba(180, 220, 200, 0.7);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 20px rgba(80, 200, 140, 0.4);
+        }
+        .hint {
+            color: rgba(140, 180, 160, 0.45);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+        @media (max-width: 768px) {
+            .overlay { bottom: 18px; right: 20px; }
+            .title { font-size: 8px; letter-spacing: 0.45em; }
+            .hint { font-size: 6px; letter-spacing: 0.22em; }
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <div class="overlay">
+        <div class="title">Circuit</div>
+        <div class="hint">move · click</div>
+    </div>
+    <script>
+        (function() {
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            let traces = [];          // 电路走线
+            let nodes = [];           // 电路节点
+            let signals = [];         // 信号脉冲
+            let mouse = { x: -9999, y: -9999, active: false, lastNodeX: -9999, lastNodeY: -9999 };
+            let time = 0;
+            let colorShift = 0;       // 色相偏移
+            let growingTrace = null;  // 正在生长的走线
+
+            // 性能参数
+            const MAX_TRACES = 80;
+            const MAX_NODES = 45;
+            const MAX_SIGNALS = 60;
+            const TRACE_SEGMENT_LEN = 6;
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                // 深绿色 PCB 背景
+                ctx.fillStyle = '#0a0f0c';
+                ctx.fillRect(0, 0, W, H);
+            }
+
+            // ─── 电路节点 ─────────────────────────────────────────────
+            class Node {
+                constructor(x, y, isSeed) {
+                    this.x = x;
+                    this.y = y;
+                    this.isSeed = isSeed || false;
+                    this.size = isSeed ? 4 + Math.random() * 4 : 3 + Math.random() * 3;
+                    this.hue = 110 + colorShift + Math.random() * 50 - 25;
+                    this.pulsePhase = Math.random() * Math.PI * 2;
+                    this.pulseSpeed = 0.8 + Math.random() * 1.2;
+                    this.connections = 0;
+                    this.glowAlpha = 0.3 + Math.random() * 0.5;
+                }
+
+                update(t) {
+                    this.pulsePhase += this.pulseSpeed * 0.016;
+                }
+
+                draw(ctx, t) {
+                    const pulse = 0.7 + 0.3 * Math.sin(this.pulsePhase);
+                    const alpha = this.glowAlpha * pulse;
+                    const hue = this.hue + colorShift;
+
+                    // 节点光晕
+                    const gradient = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, this.size * 3);
+                    gradient.addColorStop(0, `hsla(${hue}, 60%, 60%, ${alpha * 0.8})`);
+                    gradient.addColorStop(0.5, `hsla(${hue}, 50%, 50%, ${alpha * 0.3})`);
+                    gradient.addColorStop(1, 'transparent');
+                    ctx.fillStyle = gradient;
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, this.size * 3, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // 焊盘核心
+                    ctx.fillStyle = `hsla(${hue}, 40%, 55%, ${alpha})`;
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, this.size * 0.8, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // 焊盘环
+                    ctx.strokeStyle = `hsla(${hue}, 50%, 65%, ${alpha * 0.7})`;
+                    ctx.lineWidth = 0.8;
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                    ctx.stroke();
+                }
+            }
+
+            // ─── 电路走线 ─────────────────────────────────────────────
+            class Trace {
+                constructor(startX, startY, hue) {
+                    this.points = [];
+                    this.points.push({ x: startX, y: startY });
+                    this.hue = hue || 110 + colorShift + Math.random() * 40 - 20;
+                    this.saturation = 35 + Math.random() * 25;
+                    this.lightness = 40 + Math.random() * 20;
+                    this.width = 0.8 + Math.random() * 0.8;
+                    this.growthProgress = 0;   // 0-1
+                    this.completed = false;
+                    this.angle = Math.random() * Math.PI * 2;
+                    this.direction = Math.random() < 0.5 ? 1 : -1;
+                    this.turnTimer = 0;
+                    this.maxTurnInterval = 15 + Math.random() * 30;
+                }
+
+                grow(mouse) {
+                    if (this.completed) return;
+
+                    this.growthProgress += 0.015 + Math.random() * 0.01;
+                    if (this.growthProgress >= 1) {
+                        this.growthProgress = 1;
+                        this.completed = true;
+                        return;
+                    }
+
+                    const lastPoint = this.points[this.points.length - 1];
+
+                    // 随机转向（直角风格）
+                    this.turnTimer++;
+                    if (this.turnTimer > this.maxTurnInterval || Math.random() < 0.03) {
+                        this.angle += this.direction * (Math.PI / 2) * (Math.random() < 0.7 ? 1 : -1);
+                        this.turnTimer = 0;
+                        this.maxTurnInterval = 15 + Math.random() * 30;
+                        this.direction = Math.random() < 0.5 ? 1 : -1;
+                    }
+
+                    // 鼠标引导
+                    if (mouse.active) {
+                        const dx = mouse.x - lastPoint.x;
+                        const dy = mouse.y - lastPoint.y;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        if (dist < 180 && dist > 1) {
+                            const targetAngle = Math.atan2(dy, dx);
+                            const angleDiff = targetAngle - this.angle;
+                            this.angle += angleDiff * 0.08;
+                        }
+                    }
+
+                    // 随机小幅波动
+                    this.angle += (Math.random() - 0.5) * 0.2;
+
+                    // 计算新点位置
+                    const stepX = Math.cos(this.angle) * TRACE_SEGMENT_LEN;
+                    const stepY = Math.sin(this.angle) * TRACE_SEGMENT_LEN;
+                    const newX = lastPoint.x + stepX;
+                    const newY = lastPoint.y + stepY;
+
+                    // 边界检查
+                    if (newX < 10 || newX > W - 10 || newY < 10 || newY > H - 10) {
+                        this.completed = true;
+                        return;
+                    }
+
+                    this.points.push({ x: newX, y: newY });
+
+                    // 限制走线长度
+                    if (this.points.length > 120) {
+                        this.completed = true;
+                    }
+                }
+
+                draw(ctx, t) {
+                    if (this.points.length < 2) return;
+                    const hue = this.hue + colorShift;
+                    const alpha = 0.5 + 0.3 * Math.sin(t * 1.5 + this.hue * 0.05);
+
+                    // 绘制走线主体
+                    ctx.strokeStyle = `hsla(${hue}, ${this.saturation}%, ${this.lightness}%, ${alpha})`;
+                    ctx.lineWidth = this.width;
+                    ctx.lineCap = 'round';
+                    ctx.lineJoin = 'round';
+
+                    const drawCount = Math.floor(this.points.length * this.growthProgress);
+                    if (drawCount < 2) return;
+
+                    ctx.beginPath();
+                    ctx.moveTo(this.points[0].x, this.points[0].y);
+                    for (let i = 1; i < Math.min(drawCount, this.points.length); i++) {
+                        ctx.lineTo(this.points[i].x, this.points[i].y);
+                    }
+                    ctx.stroke();
+
+                    // 走线高光
+                    if (drawCount > 3) {
+                        ctx.strokeStyle = `hsla(${hue}, ${this.saturation + 10}%, ${this.lightness + 20}%, ${alpha * 0.4})`;
+                        ctx.lineWidth = this.width * 0.4;
+                        ctx.beginPath();
+                        ctx.moveTo(this.points[0].x, this.points[0].y);
+                        for (let i = 1; i < Math.min(drawCount, this.points.length); i++) {
+                            ctx.lineTo(this.points[i].x, this.points[i].y);
+                        }
+                        ctx.stroke();
+                    }
+
+                    // 走线末端光点
+                    const endIdx = Math.min(drawCount - 1, this.points.length - 1);
+                    const endPoint = this.points[endIdx];
+                    if (endPoint) {
+                        const dotAlpha = alpha * 0.9;
+                        ctx.fillStyle = `hsla(${hue}, ${this.saturation + 10}%, ${this.lightness + 25}%, ${dotAlpha})`;
+                        ctx.beginPath();
+                        ctx.arc(endPoint.x, endPoint.y, this.width * 1.5, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+                }
+            }
+
+            // ─── 信号脉冲 ─────────────────────────────────────────────
+            class Signal {
+                constructor(trace, hue) {
+                    this.trace = trace;
+                    this.progress = 0;
+                    this.speed = 0.04 + Math.random() * 0.06;
+                    this.size = 2 + Math.random() * 2;
+                    this.hue = hue || 110 + colorShift + Math.random() * 60 - 30;
+                    this.alpha = 0.8;
+                }
+
+                update(dt) {
+                    this.progress += this.speed * dt;
+                    if (this.progress > 1) {
+                        this.progress = 1;
+                    }
+                }
+
+                draw(ctx, t) {
+                    if (!this.trace || this.trace.points.length < 2) return;
+                    const points = this.trace.points;
+                    const idx = Math.floor(this.progress * (points.length - 1));
+                    if (idx >= points.length) return;
+                    const pos = points[idx];
+                    const alpha = this.alpha * (1 - this.progress * 0.3);
+                    const hue = this.hue + colorShift;
+
+                    // 信号光点
+                    const gradient = ctx.createRadialGradient(pos.x, pos.y, 0, pos.x, pos.y, this.size * 4);
+                    gradient.addColorStop(0, `hsla(${hue}, 80%, 75%, ${alpha})`);
+                    gradient.addColorStop(0.4, `hsla(${hue}, 70%, 60%, ${alpha * 0.4})`);
+                    gradient.addColorStop(1, 'transparent');
+                    ctx.fillStyle = gradient;
+                    ctx.beginPath();
+                    ctx.arc(pos.x, pos.y, this.size * 4, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+
+                isComplete() {
+                    return this.progress >= 1;
+                }
+            }
+
+            // ─── 初始化节点 ───────────────────────────────────────────
+            function initNodes() {
+                nodes = [];
+                const count = 6 + Math.floor(Math.random() * 4);
+                for (let i = 0; i < count; i++) {
+                    const x = W * (0.1 + Math.random() * 0.8);
+                    const y = H * (0.1 + Math.random() * 0.8);
+                    nodes.push(new Node(x, y, Math.random() < 0.4));
+                }
+            }
+
+            // ─── 创建新走线 ───────────────────────────────────────────
+            function createTrace(fromNode) {
+                if (traces.length >= MAX_TRACES) {
+                    traces.shift();
+                }
+                const hue = fromNode.hue + (Math.random() - 0.5) * 40;
+                const trace = new Trace(fromNode.x, fromNode.y, hue);
+                // 设置初始方向指向屏幕内随机方向
+                trace.angle = Math.random() * Math.PI * 2;
+                traces.push(trace);
+                growingTrace = trace;
+                return trace;
+            }
+
+            // ─── 更新所有 ─────────────────────────────────────────────
+            function update(dt) {
+                // 更新节点
+                for (const node of nodes) {
+                    node.update(time);
+                }
+
+                // 从随机节点创建新走线
+                if (traces.length < MAX_TRACES && nodes.length > 0 && Math.random() < 0.006) {
+                    const randomNode = nodes[Math.floor(Math.random() * nodes.length)];
+                    createTrace(randomNode);
+                }
+
+                // 更新走线
+                for (const trace of traces) {
+                    trace.grow(mouse);
+                }
+
+                // 移除已完成的过短走线
+                traces = traces.filter(t => t.points.length >= 2 || !t.completed);
+
+                // 更新信号
+                for (let i = signals.length - 1; i >= 0; i--) {
+                    signals[i].update(dt);
+                    if (signals[i].isComplete()) {
+                        signals.splice(i, 1);
+                    }
+                }
+            }
+
+            // ─── 绘制 ─────────────────────────────────────────────────
+            function draw(t) {
+                // 绘制走线
+                for (const trace of traces) {
+                    trace.draw(ctx, t);
+                }
+
+                // 绘制节点
+                for (const node of nodes) {
+                    node.draw(ctx, t);
+                }
+
+                // 绘制信号
+                for (const signal of signals) {
+                    signal.draw(ctx, t);
+                }
+            }
+
+            // ─── 鼠标光晕 ─────────────────────────────────────────────
+            function drawCursorGlow(ctx) {
+                if (!mouse.active) return;
+                const radius = 50;
+                const hue = 110 + colorShift;
+                const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                gradient.addColorStop(0, `hsla(${hue}, 55%, 65%, 0.05)`);
+                gradient.addColorStop(0.7, `hsla(${hue}, 45%, 55%, 0.02)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // ─── 主循环 ─────────────────────────────────────────────────
+            let lastTime = 0;
+            let accumulator = 0;
+            const fixedStep = 1000 / 60;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+
+                accumulator += dt;
+                const steps = Math.min(Math.floor(accumulator / fixedStep), 3);
+                accumulator -= steps * fixedStep;
+
+                for (let s = 0; s < steps; s++) {
+                    time += 0.016;
+                    const dtNorm = fixedStep / 1000 * 60;
+                    update(dtNorm);
+                }
+
+                // 半透明清除，形成余辉
+                ctx.fillStyle = 'rgba(10, 15, 12, 0.28)';
+                ctx.fillRect(0, 0, W, H);
+
+                // 绘制
+                draw(time);
+
+                // 鼠标光晕
+                drawCursorGlow(ctx);
+
+                requestAnimationFrame(animate);
+            }
+
+            // ─── 交互事件 ──────────────────────────────────────────────
+            function onMouseMove(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                // 创建新节点
+                if (nodes.length < MAX_NODES) {
+                    const newNode = new Node(mouse.x, mouse.y, Math.random() < 0.3);
+                    nodes.push(newNode);
+                    // 从新节点创建走线
+                    createTrace(newNode);
+                    // 发送信号
+                    if (traces.length > 0) {
+                        signals.push(new Signal(traces[traces.length - 1], newNode.hue));
+                    }
+                }
+                // 色彩偏移
+                colorShift += 20 + Math.random() * 25;
+                if (colorShift > 90) colorShift = -20;
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    if (nodes.length < MAX_NODES) {
+                        const newNode = new Node(mouse.x, mouse.y, Math.random() < 0.3);
+                        nodes.push(newNode);
+                        createTrace(newNode);
+                        if (traces.length > 0) {
+                            signals.push(new Signal(traces[traces.length - 1], newNode.hue));
+                        }
+                    }
+                    colorShift += 20 + Math.random() * 25;
+                    if (colorShift > 90) colorShift = -20;
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onResize() {
+                setupCanvas();
+                // 调整节点位置
+                for (const node of nodes) {
+                    node.x = Math.min(Math.max(node.x, 10), W - 10);
+                    node.y = Math.min(Math.max(node.y, 10), H - 10);
+                }
+                // 调整走线
+                for (const trace of traces) {
+                    for (const p of trace.points) {
+                        p.x = Math.min(Math.max(p.x, 10), W - 10);
+                        p.y = Math.min(Math.max(p.y, 10), H - 10);
+                    }
+                }
+                signals = [];
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+                initNodes();
+
+                // 从初始节点创建几条走线
+                for (let i = 0; i < 5; i++) {
+                    if (nodes.length > 0) {
+                        const n = nodes[Math.floor(Math.random() * nodes.length)];
+                        createTrace(n);
+                    }
+                }
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#0a0f0c';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+        })();
+    </script>
+</body>
+</html>

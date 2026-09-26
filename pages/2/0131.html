@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>幻彩音柱</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #0a0a14;
+            font-family: sans-serif;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="barsCanvas"></canvas>
+    <script>
+        (function() {
+            'use strict';
+
+            const canvas = document.getElementById('barsCanvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            // ---------- 配置参数 ----------
+            const CONFIG = {
+                barCount: 90,               // 柱子数量
+                minHeight: 8,               // 最小高度
+                maxHeight: 0.35,            // 最大高度（占屏幕比例）
+                waveSpeed: 0.002,           // 波动速度
+                waveFrequency: 0.02,        // 波动频率
+                mouseInfluenceRadius: 180,  // 鼠标影响半径
+                mouseBoost: 0.55,           // 鼠标高度提升
+                clickRippleRadius: 260,     // 点击波纹半径
+                clickRippleDuration: 900,   // 波纹持续时间(ms)
+                clickRippleStrength: 0.6,   // 波纹强度
+                maxRipples: 6,              // 最大波纹数
+                damping: 0.92,              // 速度阻尼
+                returnForce: 0.06,          // 回弹力
+                backgroundFade: 0.16,       // 背景拖尾
+                barWidth: 0.7,              // 柱子宽度占间距比例
+                hueBase: 200,               // 基础色相
+                hueRange: 160,              // 色相变化范围
+                saturation: 90,
+                lightnessMin: 40,
+                lightnessMax: 85,
+            };
+
+            let width = 0;
+            let height = 0;
+            let dpr = 1;
+            let bars = [];
+            let ripples = [];
+            let mouseX = -9999;
+            let mouseY = -9999;
+            let mouseActive = false;
+            let targetMouseX = -9999;
+            let targetMouseY = -9999;
+            let smoothMouseX = -9999;
+            let smoothMouseY = -9999;
+            let animationId = null;
+            let lastTime = 0;
+            let time = 0;
+
+            // ---------- 波纹类 ----------
+            class Ripple {
+                constructor(x, y, startTime) {
+                    this.x = x;
+                    this.y = y;
+                    this.startTime = startTime;
+                    this.duration = CONFIG.clickRippleDuration;
+                    this.maxRadius = CONFIG.clickRippleRadius;
+                    this.strength = CONFIG.clickRippleStrength;
+                }
+                getProgress(now) {
+                    return Math.min(1, (now - this.startTime) / this.duration);
+                }
+                // 获取波纹对某点高度的影响
+                getHeightEffect(px, py, now) {
+                    const progress = this.getProgress(now);
+                    if (progress >= 1) return 0;
+                    const dx = px - this.x;
+                    const dy = py - this.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    const radius = this.maxRadius * (0.2 + 0.8 * progress);
+                    if (dist > radius) return 0;
+                    const envelope = Math.max(0, 1 - progress) * (1 - dist / radius);
+                    const wave = Math.sin((dist / radius) * Math.PI * 5 - progress * 12);
+                    return this.strength * envelope * wave;
+                }
+            }
+
+            // ---------- 柱子类 ----------
+            class Bar {
+                constructor(x, index) {
+                    this.x = x;
+                    this.index = index;
+                    this.height = CONFIG.minHeight;
+                    this.velocity = 0;
+                    this.phase = index * 0.8;
+                }
+
+                update(dt, now, time) {
+                    // 基础波动（正弦叠加，模拟音乐律动）
+                    const wavePhase = time * CONFIG.waveSpeed * 1000;
+                    let targetHeight = CONFIG.minHeight;
+                    targetHeight += (Math.sin(this.x * CONFIG.waveFrequency + wavePhase + this.phase) * 0.5 + 0.5) *
+                        CONFIG.maxHeight * height * 0.5;
+                    targetHeight += (Math.sin(this.x * CONFIG.waveFrequency * 2.7 + wavePhase * 1.6 + this.phase * 1.3) *
+                        0.5 + 0.5) * CONFIG.maxHeight * height * 0.3;
+                    targetHeight += (Math.cos(this.x * CONFIG.waveFrequency * 0.4 - wavePhase * 0.8 + this.phase * 0.5) *
+                        0.5 + 0.5) * CONFIG.maxHeight * height * 0.2;
+
+                    // 鼠标影响：附近柱子升高
+                    if (mouseActive && smoothMouseX > -1000) {
+                        const dx = this.x - smoothMouseX;
+                        const dist = Math.abs(dx);
+                        if (dist < CONFIG.mouseInfluenceRadius) {
+                            const influence = (1 - dist / CONFIG.mouseInfluenceRadius);
+                            targetHeight += CONFIG.mouseBoost * height * influence * influence;
+                        }
+                    }
+
+                    // 波纹影响
+                    for (const ripple of ripples) {
+                        targetHeight += ripple.getHeightEffect(this.x, height * 0.5, now) * height * 0.8;
+                    }
+
+                    // 限制目标高度范围
+                    targetHeight = Math.max(CONFIG.minHeight, Math.min(height * 0.9, targetHeight));
+
+                    // 弹性运动
+                    const acceleration = (targetHeight - this.height) * CONFIG.returnForce;
+                    this.velocity += acceleration * dt;
+                    this.velocity *= CONFIG.damping;
+                    this.height += this.velocity * dt;
+
+                    // 确保高度不为负
+                    if (this.height < CONFIG.minHeight) this.height = CONFIG.minHeight;
+                }
+
+                getColor() {
+                    const normalizedHeight = Math.min(1, this.height / (height * 0.9));
+                    const hue = (CONFIG.hueBase + normalizedHeight * CONFIG.hueRange) % 360;
+                    const lightness = CONFIG.lightnessMin + normalizedHeight * (CONFIG.lightnessMax - CONFIG.lightnessMin);
+                    return { hue, lightness };
+                }
+
+                draw() {
+                    const color = this.getColor();
+                    const barWidth = (width / CONFIG.barCount) * CONFIG.barWidth;
+                    const x = this.x - barWidth / 2;
+                    const y = height - this.height;
+
+                    // 渐变填充（从底部到顶部）
+                    const gradient = ctx.createLinearGradient(0, height, 0, y);
+                    gradient.addColorStop(0, `hsla(${color.hue}, ${CONFIG.saturation}%, ${color.lightness * 0.5}%, 0.8)`);
+                    gradient.addColorStop(1, `hsla(${color.hue}, ${CONFIG.saturation}%, ${color.lightness + 10}%, 0.95)`);
+
+                    ctx.fillStyle = gradient;
+                    ctx.fillRect(x, y, barWidth, this.height);
+
+                    // 顶部高光
+                    ctx.fillStyle = `hsla(${color.hue}, 100%, 95%, 0.7)`;
+                    ctx.fillRect(x, y, barWidth, 2);
+                }
+            }
+
+            // ---------- 初始化柱子 ----------
+            function initBars() {
+                bars = [];
+                const cellWidth = width / CONFIG.barCount;
+                for (let i = 0; i < CONFIG.barCount; i++) {
+                    const x = i * cellWidth + cellWidth / 2;
+                    bars.push(new Bar(x, i));
+                }
+            }
+
+            // ---------- 调整画布尺寸 ----------
+            function resizeCanvas() {
+                dpr = Math.min(window.devicePixelRatio || 1, 2);
+                width = window.innerWidth;
+                height = window.innerHeight;
+                canvas.width = Math.floor(width * dpr);
+                canvas.height = Math.floor(height * dpr);
+                canvas.style.width = width + 'px';
+                canvas.style.height = height + 'px';
+                ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                ctx.fillStyle = '#0a0a14';
+                ctx.fillRect(0, 0, width, height);
+                initBars();
+                // 立即绘制一帧
+                drawScene(performance.now());
+            }
+
+            // ---------- 绘制场景 ----------
+            function drawScene(now) {
+                // 背景拖尾
+                ctx.fillStyle = 'rgba(10, 10, 20, ' + CONFIG.backgroundFade + ')';
+                ctx.fillRect(0, 0, width, height);
+
+                // 平滑鼠标位置
+                if (mouseActive) {
+                    smoothMouseX += (targetMouseX - smoothMouseX) * 0.2;
+                    smoothMouseY += (targetMouseY - smoothMouseY) * 0.2;
+                }
+
+                // 绘制鼠标光晕
+                if (mouseActive && smoothMouseX > -1000) {
+                    const glowRadius = 140;
+                    const grad = ctx.createRadialGradient(smoothMouseX, smoothMouseY, 0, smoothMouseX, smoothMouseY,
+                        glowRadius);
+                    grad.addColorStop(0, 'rgba(140, 180, 255, 0.08)');
+                    grad.addColorStop(1, 'rgba(0,0,0,0)');
+                    ctx.fillStyle = grad;
+                    ctx.beginPath();
+                    ctx.arc(smoothMouseX, smoothMouseY, glowRadius, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+
+                // 绘制所有柱子
+                for (const bar of bars) {
+                    bar.draw();
+                }
+
+                // 移除过期波纹
+                ripples = ripples.filter(r => r.getProgress(now) < 1);
+                if (ripples.length > CONFIG.maxRipples) {
+                    ripples = ripples.slice(-CONFIG.maxRipples);
+                }
+            }
+
+            // ---------- 更新柱子 ----------
+            function updateBars(now) {
+                const dt = Math.min(2, (now - lastTime) / 16.67) || 1;
+                time = now * 0.001;
+
+                for (const bar of bars) {
+                    bar.update(dt, now, time);
+                }
+            }
+
+            // ---------- 动画循环 ----------
+            function animate(timestamp) {
+                const now = performance.now();
+                if (lastTime === 0) lastTime = now;
+                const dt = now - lastTime;
+                if (dt > 100) {
+                    lastTime = now - 16;
+                } else {
+                    lastTime = now;
+                }
+
+                updateBars(now);
+                drawScene(now);
+
+                animationId = requestAnimationFrame(animate);
+            }
+
+            // ---------- 交互事件 ----------
+            function updateMousePosition(clientX, clientY) {
+                targetMouseX = clientX;
+                targetMouseY = clientY;
+                if (!mouseActive) {
+                    mouseActive = true;
+                    smoothMouseX = targetMouseX;
+                    smoothMouseY = targetMouseY;
+                }
+            }
+
+            function handleClick(clientX, clientY) {
+                const now = performance.now();
+                ripples.push(new Ripple(clientX, clientY, now));
+                if (ripples.length > CONFIG.maxRipples) {
+                    ripples = ripples.slice(-CONFIG.maxRipples);
+                }
+            }
+
+            function setupEvents() {
+                window.addEventListener('mousemove', (e) => {
+                    updateMousePosition(e.clientX, e.clientY);
+                }, { passive: true });
+
+                window.addEventListener('mouseleave', () => {
+                    mouseActive = false;
+                    smoothMouseX = -9999;
+                    smoothMouseY = -9999;
+                });
+
+                window.addEventListener('mousedown', (e) => {
+                    handleClick(e.clientX, e.clientY);
+                });
+
+                window.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        updateMousePosition(touch.clientX, touch.clientY);
+                        handleClick(touch.clientX, touch.clientY);
+                    }
+                }, { passive: false });
+
+                window.addEventListener('touchmove', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        updateMousePosition(touch.clientX, touch.clientY);
+                    }
+                }, { passive: false });
+
+                window.addEventListener('touchend', () => {
+                    mouseActive = false;
+                    smoothMouseX = -9999;
+                    smoothMouseY = -9999;
+                });
+
+                window.addEventListener('resize', () => {
+                    resizeCanvas();
+                });
+
+                document.addEventListener('visibilitychange', () => {
+                    if (document.hidden) {
+                        if (animationId) {
+                            cancelAnimationFrame(animationId);
+                            animationId = null;
+                        }
+                        lastTime = 0;
+                    } else {
+                        if (!animationId) {
+                            lastTime = 0;
+                            animationId = requestAnimationFrame(animate);
+                        }
+                    }
+                });
+            }
+
+            // ---------- 启动 ----------
+            function init() {
+                resizeCanvas();
+                setupEvents();
+                lastTime = 0;
+                animationId = requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.__spectrumBars = {
+                config: CONFIG,
+                bars: bars,
+                ripples: ripples,
+            };
+        })();
+    </script>
+</body>
+</html>

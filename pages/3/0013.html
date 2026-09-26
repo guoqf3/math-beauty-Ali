@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>投影魔术 · Tesseract Projection</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{
+    height:100%;overflow:hidden;background:#03030a;
+    font-family:"Helvetica Neue",Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  canvas{display:block;position:fixed;inset:0;}
+
+  .vignette{
+    position:fixed;inset:0;pointer-events:none;z-index:3;
+    background:radial-gradient(ellipse at 50% 50%,
+      transparent 26%,
+      rgba(3,3,10,.32) 60%,
+      rgba(1,1,5,.88) 100%);
+  }
+
+  #ui{position:fixed;inset:0;pointer-events:none;z-index:5;}
+
+  /* ---------- 左上标题 ---------- */
+  #title{
+    position:absolute;top:0;left:0;
+    padding:38px 46px;
+    opacity:0;animation:fade 2.0s .4s ease forwards;
+  }
+  #title h1{
+    font-size:clamp(18px,2.4vw,30px);
+    font-weight:200;
+    letter-spacing:.44em;text-indent:.44em;
+    background:linear-gradient(96deg,#c9a0ff 0%,#ff7ad9 34%,#ffb070 64%,#ffd48a 100%);
+    -webkit-background-clip:text;background-clip:text;
+    color:transparent;
+    margin-bottom:14px;
+    filter:drop-shadow(0 0 28px rgba(200,120,255,.42));
+  }
+  #title .en{
+    font-size:9px;letter-spacing:.52em;text-indent:.52em;
+    color:rgba(200,150,255,.32);
+    margin-bottom:14px;
+  }
+  #title .sub{
+    font-size:10.5px;letter-spacing:.20em;line-height:1.9;
+    color:rgba(170,160,235,.26);font-weight:300;
+  }
+
+  /* ---------- 右上：数学参数 ---------- */
+  #stats{
+    position:absolute;top:0;right:0;
+    padding:38px 46px;
+    text-align:right;
+    opacity:0;animation:fade 2.0s 1.0s ease forwards;
+    font-family:"SF Mono",Consolas,Monaco,monospace;
+    font-size:9px;letter-spacing:.22em;line-height:2.0;
+    color:rgba(180,160,235,.24);
+  }
+  #stats .lab{
+    display:block;font-size:8px;
+    letter-spacing:.44em;text-indent:.44em;
+    color:rgba(150,130,220,.20);
+    margin-bottom:10px;
+  }
+  #stats .row{
+    display:flex;justify-content:flex-end;gap:12px;
+  }
+  #stats .k{color:rgba(160,140,230,.34);}
+  #stats .v{color:rgba(220,200,255,.60);min-width:44px;text-align:right;}
+  #stats .g{color:rgba(255,205,150,.58);}
+
+  /* ---------- 左下：数学原理 ---------- */
+  #formula{
+    position:absolute;bottom:0;left:0;
+    padding:0 46px 34px;
+    opacity:0;animation:fade 2.0s 1.1s ease forwards;
+    font-family:"SF Mono",Consolas,Monaco,"Courier New",monospace;
+    font-size:clamp(9px,1.0vw,11.5px);
+    line-height:2.05;
+    letter-spacing:.02em;
+    color:rgba(170,160,235,.28);
+    max-width:min(800px,88vw);
+  }
+  #formula .lab{
+    display:block;font-size:8px;
+    letter-spacing:.44em;text-indent:.44em;
+    color:rgba(140,125,215,.20);
+    margin-bottom:10px;
+  }
+  #formula .kw{color:rgba(210,170,255,.58);}
+  #formula .fn{color:rgba(255,170,220,.52);}
+  #formula .nm{color:rgba(255,205,140,.60);}
+  #formula .op{color:rgba(170,160,225,.26);}
+  #formula .cm{color:rgba(130,120,195,.20);font-style:italic;}
+
+  /* ---------- 右下 ---------- */
+  #hint{
+    position:absolute;bottom:0;right:0;
+    padding:0 46px 34px;
+    text-align:right;
+    opacity:0;animation:fade 2.0s 1.4s ease forwards;
+  }
+  #hint .big{
+    font-size:clamp(9.5px,1.0vw,12px);
+    letter-spacing:.32em;text-indent:.32em;
+    color:rgba(255,180,220,.40);
+    margin-bottom:10px;font-weight:300;
+  }
+  #hint .small{
+    font-family:"SF Mono",Consolas,Monaco,monospace;
+    font-size:8.5px;letter-spacing:.20em;
+    color:rgba(160,150,230,.22);
+    line-height:1.9;
+  }
+  #hint .key{
+    display:inline-block;
+    padding:1px 6px;margin:0 2px;
+    border:1px solid rgba(160,150,230,.18);
+    border-radius:3px;
+    color:rgba(215,205,255,.42);
+  }
+
+  @keyframes fade{to{opacity:1;}}
+
+  @media (max-width:680px){
+    #title{padding:20px 20px;}
+    #stats{padding:20px 20px;font-size:8px;}
+    #formula{padding:0 20px 18px;font-size:8px;}
+    #hint{padding:0 20px 18px;}
+    #hint .small{display:none;}
+  }
+</style>
+</head>
+<body>
+
+<canvas id="c"></canvas>
+<div class="vignette"></div>
+
+<div id="ui">
+  <div id="title">
+    <h1>投影魔术</h1>
+    <div class="en">TESSERACT PROJECTION</div>
+    <div class="sub">四维超立方体 · 4D → 3D → 2D 逐层投影</div>
+  </div>
+
+  <div id="stats">
+    <span class="lab">HYPERCUBE STRUCTURE</span>
+    <div class="row"><span class="k">顶点 V</span><span class="v">16</span></div>
+    <div class="row"><span class="k">棱 E</span><span class="v">32</span></div>
+    <div class="row"><span class="k">面 F</span><span class="v">24</span></div>
+    <div class="row"><span class="k">胞 C</span><span class="v">8</span></div>
+    <div class="row" style="margin-top:6px;">
+      <span class="k">V−E+F−C</span><span class="g">0</span>
+    </div>
+    <div class="row" style="margin-top:4px;">
+      <span class="k">投影 w</span><span class="v" id="wVal">–</span>
+    </div>
+  </div>
+
+  <div id="formula">
+    <span class="lab">4D ROTATION · PERSPECTIVE PROJECTION</span>
+    <span class="kw">R</span><sub><span class="nm">xy</span></sub>
+    <span class="op">·</span><span class="kw">R</span><sub><span class="nm">xz</span></sub>
+    <span class="op">·</span><span class="kw">R</span><sub><span class="nm">xw</span></sub>
+    <span class="op">·</span><span class="kw">R</span><sub><span class="nm">yz</span></sub>
+    <span class="op">·</span><span class="kw">R</span><sub><span class="nm">yw</span></sub>
+    <span class="op">·</span><span class="kw">R</span><sub><span class="nm">zw</span></sub>
+    <span class="cm">&nbsp;&nbsp;// 六平面联合旋转</span><br>
+    <span class="fn">P</span><sub><span class="nm">3D</span></sub>
+    <span class="op">=</span> <span class="nm">P</span><span class="op">·</span>
+    <span class="fn">d</span><span class="op">/</span>(<span class="fn">d</span><span class="op">−</span><span class="kw">w</span>)
+    <span class="cm">&nbsp;&nbsp;// 4D → 3D</span><br>
+    <span class="fn">P</span><sub><span class="nm">2D</span></sub>
+    <span class="op">=</span> <span class="nm">P</span><span class="op">·</span>
+    <span class="fn">d</span><span class="op">/</span>(<span class="fn">d</span><span class="op">−</span><span class="kw">z</span>)
+    <span class="cm">&nbsp;&nbsp;// 3D → 2D</span><br>
+    <span class="fn">V−E+F−C</span> <span class="op">=</span> <span class="nm">16−32+24−8</span> <span class="op">=</span> <span class="nm">0</span>
+    <span class="cm">&nbsp;&nbsp;// 四维欧拉示性数</span>
+  </div>
+
+  <div id="hint">
+    <div class="big">看见看不见的维度</div>
+    <div class="small">
+      <span class="key">空格</span> 暂停 / 继续<br>
+      <span class="key">R</span> 重置旋转相位
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+'use strict';
+
+/* =========================================================
+   0. 基础
+   ========================================================= */
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d');
+const TAU    = Math.PI * 2;
+
+let W = 0, H = 0, DPR = 1;
+let CX = 0, CY = 0;
+let SCALE = 1;
+
+/* =========================================================
+   1. 超立方体构造
+   ========================================================= */
+const N = 16;
+const VERTS = new Array(N);
+
+for (let i = 0; i < N; i++){
+  VERTS[i] = [
+    (i & 1) ? 1 : -1,
+    (i & 2) ? 1 : -1,
+    (i & 4) ? 1 : -1,
+    (i & 8) ? 1 : -1
+  ];
+}
+
+/* 棱：恰好只有一个坐标不同的顶点对 */
+const EDGES = [];
+for (let i = 0; i < N; i++){
+  for (let j = i + 1; j < N; j++){
+    let diff = 0;
+    for (let k = 0; k < 4; k++){
+      if (VERTS[i][k] !== VERTS[j][k]) diff++;
+    }
+    if (diff === 1) EDGES.push([i, j]);
+  }
+}
+
+/* =========================================================
+   2. 投影参数
+   ========================================================= */
+const D4 = 2.8;    // 4D 相机距离
+const D3 = 4.0;    // 3D 相机距离
+
+/* =========================================================
+   3. 尺寸
+   ========================================================= */
+function resize(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+
+  canvas.width  = Math.round(W * DPR);
+  canvas.height = Math.round(H * DPR);
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  CX = W * 0.5;
+  CY = H * 0.5;
+  SCALE = Math.min(W, H) * 0.13;
+}
+window.addEventListener('resize', resize);
+resize();
+
+/* =========================================================
+   4. 4D 旋转 —— 六个平面依次作用
+   ========================================================= */
+function rotate4D(v, a){
+  let x = v[0], y = v[1], z = v[2], w = v[3];
+  let c, s, t;
+
+  /* XY */
+  c = Math.cos(a.xy); s = Math.sin(a.xy);
+  t = x * c - y * s; y = x * s + y * c; x = t;
+
+  /* XZ */
+  c = Math.cos(a.xz); s = Math.sin(a.xz);
+  t = x * c - z * s; z = x * s + z * c; x = t;
+
+  /* XW —— 第四维核心旋转 */
+  c = Math.cos(a.xw); s = Math.sin(a.xw);
+  t = x * c - w * s; w = x * s + w * c; x = t;
+
+  /* YZ */
+  c = Math.cos(a.yz); s = Math.sin(a.yz);
+  t = y * c - z * s; z = y * s + z * c; y = t;
+
+  /* YW */
+  c = Math.cos(a.yw); s = Math.sin(a.yw);
+  t = y * c - w * s; w = y * s + w * c; y = t;
+
+  /* ZW */
+  c = Math.cos(a.zw); s = Math.sin(a.zw);
+  t = z * c - w * s; w = z * s + w * c; z = t;
+
+  return [x, y, z, w];
+}
+
+/* =========================================================
+   5. 色彩映射 —— 由 w 决定色相
+   w = −1（远端）→ 紫罗兰 270°
+   w = +1（近端）→ 金色   45°
+   ========================================================= */
+function hueFromW(w){
+  const h = 270 + 135 * (w + 1) * 0.5;   // 270 → 405
+  return ((h % 360) + 360) % 360;
+}
+
+/* =========================================================
+   6. 状态
+   ========================================================= */
+let elapsed = 0;
+let paused  = false;
+let phase   = 0;         // 旋转相位偏移
+let lastTS  = 0;
+
+/* =========================================================
+   7. 渲染
+   ========================================================= */
+const vData   = new Array(N);
+const eData   = new Array(EDGES.length);
+
+function render(){
+  /* ---------- 背景 ---------- */
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+
+  ctx.fillStyle = '#03030a';
+  ctx.fillRect(0, 0, W, H);
+
+  const bg = ctx.createRadialGradient(CX, CY, 0, CX, CY, Math.max(W, H) * 0.68);
+  bg.addColorStop(0.00, 'rgba(52, 26, 92, 0.46)');
+  bg.addColorStop(0.36, 'rgba(28, 18, 58, 0.22)');
+  bg.addColorStop(0.72, 'rgba(12, 8, 30, 0.06)');
+  bg.addColorStop(1.00, 'rgba(3, 3, 10, 0)');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  /* ---------- 旋转角度 ---------- */
+  const t = elapsed + phase;
+  const ang = {
+    xy: t * 0.100,
+    xz: t * 0.070,
+    xw: t * 0.210,   // 第四维主旋转
+    yz: t * 0.130,
+    yw: t * 0.170,
+    zw: t * 0.090
+  };
+
+  /* ---------- 顶点：4D → 3D → 2D ---------- */
+  for (let i = 0; i < N; i++){
+    const r = rotate4D(VERTS[i], ang);
+    const x = r[0], y = r[1], z = r[2], w = r[3];
+
+    /* 4D → 3D 透视 */
+    const k4 = D4 / (D4 - w);
+    const x3 = x * k4;
+    const y3 = y * k4;
+    const z3 = z * k4;
+
+    /* 3D → 2D 透视 */
+    const k3 = D3 / (D3 - z3);
+
+    const sx = CX + x3 * k3 * SCALE;
+    const sy = CY - y3 * k3 * SCALE;
+
+    vData[i] = {
+      x: sx,
+      y: sy,
+      w,
+      prox: k4 * k3,           // 越近越大
+      hue: hueFromW(w)
+    };
+  }
+
+  /* ---------- 组装棱数据 ---------- */
+  for (let k = 0; k < EDGES.length; k++){
+    const i = EDGES[k][0];
+    const j = EDGES[k][1];
+    const a = vData[i];
+    const b = vData[j];
+
+    eData[k] = {
+      a, b,
+      prox: (a.prox + b.prox) * 0.5,
+      hue: (a.hue + b.hue) * 0.5,
+      len: Math.hypot(a.x - b.x, a.y - b.y)
+    };
+  }
+
+  /* ---------- 排序：远 → 近 ---------- */
+  eData.sort((p, q) => p.prox - q.prox);
+
+  /* ---------- 绘制棱 ---------- */
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap  = 'round';
+  ctx.lineJoin = 'round';
+
+  for (let k = 0; k < eData.length; k++){
+    const e = eData[k];
+
+    /* 深度归一化：0 远 → 1 近 */
+    let depth = (e.prox - 0.55) / 1.7;
+    if (depth < 0) depth = 0;
+    else if (depth > 1) depth = 1;
+
+    /* 色相与亮度 */
+    const hueMod = ((e.hue % 360) + 360) % 360;
+    const light  = 56 + depth * 22;
+    const alpha  = 0.14 + depth * 0.72;
+
+    /* 线宽 */
+    const lw = 0.55 + depth * 1.75;
+
+    /* 发光层 */
+    ctx.beginPath();
+    ctx.moveTo(e.a.x, e.a.y);
+    ctx.lineTo(e.b.x, e.b.y);
+    ctx.strokeStyle = 'hsla(' + hueMod.toFixed(1) + ',100%,62%,' +
+                      (alpha * 0.20).toFixed(3) + ')';
+    ctx.lineWidth = lw * 4.6;
+    ctx.stroke();
+
+    /* 主芯层 */
+    ctx.strokeStyle = 'hsla(' + hueMod.toFixed(1) + ',92%,' +
+                      light.toFixed(0) + '%,' + alpha.toFixed(3) + ')';
+    ctx.lineWidth = lw;
+    ctx.stroke();
+
+    /* 高光层 */
+    ctx.strokeStyle = 'hsla(' + hueMod.toFixed(1) + ',100%,94%,' +
+                      (alpha * 0.16).toFixed(3) + ')';
+    ctx.lineWidth = lw * 0.35;
+    ctx.stroke();
+  }
+
+  /* ---------- 顶点光点（按深度排序，先远后近） ---------- */
+  const order = [];
+  for (let i = 0; i < N; i++) order.push(i);
+  order.sort((a, b) => vData[a].prox - vData[b].prox);
+
+  for (let k = 0; k < N; k++){
+    const i = order[k];
+    const v = vData[i];
+
+    let depth = (v.prox - 0.55) / 1.7;
+    if (depth < 0) depth = 0;
+    else if (depth > 1) depth = 1;
+
+    /* 呼吸脉动 */
+    const pulse = 1 + 0.22 * Math.sin(t * 2.1 + i * 0.83);
+
+    const coreR = (1.1 + depth * 2.4) * pulse;
+    const glowR = coreR * (5.2 + depth * 3.0);
+    const hueMod = ((v.hue % 360) + 360) % 360;
+    const a = 0.20 + depth * 0.70;
+
+    /* 外层光晕 */
+    const g = ctx.createRadialGradient(v.x, v.y, 0, v.x, v.y, glowR);
+    g.addColorStop(0.00, 'hsla(' + hueMod.toFixed(1) + ',100%,88%,' +
+                      (a * 0.92).toFixed(3) + ')');
+    g.addColorStop(0.20, 'hsla(' + hueMod.toFixed(1) + ',100%,68%,' +
+                      (a * 0.38).toFixed(3) + ')');
+    g.addColorStop(0.55, 'hsla(' + hueMod.toFixed(1) + ',100%,56%,' +
+                      (a * 0.10).toFixed(3) + ')');
+    g.addColorStop(1.00, 'hsla(' + hueMod.toFixed(1) + ',100%,50%,0)');
+
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(v.x, v.y, glowR, 0, TAU);
+    ctx.fill();
+
+    /* 核心亮点 */
+    ctx.fillStyle = 'hsla(' + hueMod.toFixed(1) + ',100%,' +
+                    (88 + depth * 10).toFixed(0) + '%,' + a.toFixed(3) + ')';
+    ctx.beginPath();
+    ctx.arc(v.x, v.y, coreR, 0, TAU);
+    ctx.fill();
+  }
+
+  /* ---------- 中心柔光 ---------- */
+  const cg = ctx.createRadialGradient(CX, CY, 0, CX, CY, Math.min(W, H) * 0.20);
+  cg.addColorStop(0.00, 'rgba(200, 140, 255, 0.09)');
+  cg.addColorStop(0.55, 'rgba(150, 100, 230, 0.035)');
+  cg.addColorStop(1.00, 'rgba(120, 80, 210, 0)');
+  ctx.fillStyle = cg;
+  ctx.fillRect(0, 0, W, H);
+
+  /* ---------- 暗角 ---------- */
+  ctx.globalCompositeOperation = 'source-over';
+  const vg = ctx.createRadialGradient(
+    CX, CY, Math.min(W, H) * 0.26,
+    CX, CY, Math.max(W, H) * 0.78
+  );
+  vg.addColorStop(0, 'rgba(0,0,0,0)');
+  vg.addColorStop(1, 'rgba(0,0,0,0.76)');
+  ctx.fillStyle = vg;
+  ctx.fillRect(0, 0, W, H);
+
+  /* ---------- HUD 更新 ---------- */
+  updateHUD();
+}
+
+/* =========================================================
+   8. HUD
+   ========================================================= */
+const wValEl = document.getElementById('wVal');
+let lastHudUpdate = 0;
+
+function updateHUD(){
+  if (performance.now() - lastHudUpdate < 200) return;
+  lastHudUpdate = performance.now();
+
+  /* 取全部顶点 w 的平均值，反映当前投影状态 */
+  let sum = 0;
+  for (let i = 0; i < N; i++) sum += vData[i].w;
+  const avg = sum / N;
+
+  wValEl.textContent = (avg >= 0 ? '+' : '') + avg.toFixed(3);
+}
+
+/* =========================================================
+   9. 主循环
+   ========================================================= */
+function loop(now){
+  requestAnimationFrame(loop);
+
+  if (!lastTS){ lastTS = now; return; }
+
+  let dt = (now - lastTS) / 1000;
+  lastTS = now;
+
+  if (dt > 0.10) dt = 0.10;
+  if (dt < 0)    dt = 0;
+
+  if (!paused){
+    elapsed += dt;
+  }
+
+  render();
+}
+
+/* =========================================================
+   10. 交互
+   ========================================================= */
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space'){
+    e.preventDefault();
+    paused = !paused;
+  } else if (e.code === 'KeyR'){
+    e.preventDefault();
+    phase = -elapsed;      // 回到初始相位
+  }
+});
+
+/* =========================================================
+   11. 启动
+   ========================================================= */
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>

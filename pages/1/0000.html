@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bernoulli双纽线 · 空间推广</title>
+    <style>
+        :root { --bg: #050513; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'Noto Serif SC', 'STSong', 'KaiTi', '楷体', '华文楷体', '宋体', serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            height: 100vh;
+            width: 100vw;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+        #canvas-container { position: fixed; inset: 0; z-index: 1; }
+        canvas { display: block; }
+        .overlay { position: fixed; z-index: 10; pointer-events: none; text-align: center; left: 50%; transform: translateX(-50%); }
+        #title-overlay { top: clamp(12px, 3.5vh, 36px); }
+        #title-overlay .title {
+            font-size: clamp(1.0rem, 2.0vw, 1.4rem);
+            font-weight: 400;
+            letter-spacing: 0.10em;
+            color: rgba(235, 228, 220, 0.92);
+            text-shadow: 0 0 24px rgba(190, 165, 140, 0.5), 0 0 6px rgba(170, 148, 125, 0.35);
+            line-height: 1.4;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.60rem, 1.10vw, 0.76rem);
+            font-weight: 300;
+            letter-spacing: 0.06em;
+            color: rgba(200, 192, 180, 0.7);
+            margin-top: 0.2em;
+            text-shadow: 0 0 13px rgba(155, 140, 120, 0.3);
+        }
+        #formula-overlay { bottom: clamp(14px, 3.5vh, 40px); }
+        #formula-overlay .formula {
+            font-size: clamp(0.44rem, 0.78vw, 0.62rem);
+            font-style: italic;
+            letter-spacing: 0.03em;
+            color: rgba(222, 214, 204, 0.84);
+            text-shadow: 0 0 20px rgba(155, 140, 125, 0.42), 0 0 5px rgba(165, 148, 130, 0.28);
+            line-height: 1.6;
+            background: rgba(10, 9, 16, 0.46);
+            padding: 0.32em 1.1em;
+            border-radius: 2em;
+            backdrop-filter: blur(5px);
+            -webkit-backdrop-filter: blur(5px);
+            border: 1px solid rgba(145, 125, 105, 0.20);
+        }
+        @media (max-width: 600px) {
+            #formula-overlay .formula { padding: 0.18em 0.50em; letter-spacing: 0.02em; font-size: 0.34rem; }
+            #title-overlay .title { letter-spacing: 0.06em; }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div class="overlay" id="title-overlay">
+        <div class="title">Bernoulli双纽线 · 空间推广</div>
+        <div class="subtitle">3D Lemniscate of Bernoulli — A Spatial Figure‑Eight</div>
+    </div>
+    <div class="overlay" id="formula-overlay">
+        <div class="formula">
+            γ(t) = ( A·cos t/(1+sin²t) , B·sin t cos t/(1+sin²t) , C·sin(n t+φ) )
+            &emsp;|&emsp; t ∈ [0, 2π]
+        </div>
+    </div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 时间配置 ====================
+        const DRAW_DURATION = 15.0;
+        const HOLD_DURATION = 1.5;
+        const ERASE_DURATION = 15.0;
+        const CYCLE_DURATION = DRAW_DURATION + HOLD_DURATION + ERASE_DURATION;
+        const DRAW_END = DRAW_DURATION;
+        const ERASE_START = DRAW_END + HOLD_DURATION;
+        const FADE_IN_DURATION = 2.5;
+        const FADE_OUT_START = CYCLE_DURATION - 3.0;
+
+        const CURVE_SEGMENTS = 720;
+        const TOTAL_VERTICES = CURVE_SEGMENTS + 1;
+        const SPHERE_R = 1.60;
+
+        const COLOR_WARM_GOLD = new THREE.Color('#e8b86d');
+        const COLOR_ROSE = new THREE.Color('#e8a0b8');
+        const COLOR_CYAN = new THREE.Color('#7ec8e3');
+        const THREE_COLORS = [COLOR_WARM_GOLD, COLOR_ROSE, COLOR_CYAN];
+
+        // Bernoulli双纽线三维推广点
+        function generateLemniscateCurve(A, B, C, n, phase) {
+            const positions = new Float32Array(TOTAL_VERTICES * 3);
+            for (let i = 0; i <= CURVE_SEGMENTS; i++) {
+                const t = (i / CURVE_SEGMENTS) * Math.PI * 2;
+                const denom = 1 + Math.sin(t) * Math.sin(t);
+                const x = A * Math.cos(t) / denom;
+                const y = B * Math.sin(t) * Math.cos(t) / denom;
+                const z = C * Math.sin(n * t + phase);
+                positions[i * 3] = x;
+                positions[i * 3 + 1] = y;
+                positions[i * 3 + 2] = z;
+            }
+            return positions;
+        }
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x050513, 0.00006);
+
+        const camera = new THREE.PerspectiveCamera(46, container.clientWidth / container.clientHeight, 0.35, 17);
+        camera.position.set(0.5, 0.55, 3.7);
+        camera.lookAt(0, -0.02, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.16;
+        renderer.outputColorSpace = THREE.SRGBColorSpace;
+        container.appendChild(renderer.domElement);
+
+        const mainGroup = new THREE.Group();
+        scene.add(mainGroup);
+
+        // ==================== 星空背景粒子 ====================
+        const starsGroup = new THREE.Group();
+        mainGroup.add(starsGroup);
+        const starCount = 200;
+        const starPosArr = new Float32Array(starCount * 3);
+        for (let i = 0; i < starCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phiA = Math.acos(2 * Math.random() - 1);
+            const r = 3.5 + Math.random() * 4.8;
+            starPosArr[i * 3] = Math.sin(phiA) * Math.cos(theta) * r;
+            starPosArr[i * 3 + 1] = Math.sin(phiA) * Math.sin(theta) * r;
+            starPosArr[i * 3 + 2] = Math.cos(phiA) * r;
+        }
+        const starGeom = new THREE.BufferGeometry();
+        starGeom.setAttribute('position', new THREE.BufferAttribute(starPosArr, 3));
+        const starMat = new THREE.PointsMaterial({
+            color: 0xb6afc6, size: 0.009, transparent: true, opacity: 0.26, depthWrite: false,
+            blending: THREE.AdditiveBlending,
+        });
+        starsGroup.add(new THREE.Points(starGeom, starMat));
+
+        // ==================== 漂浮光点 ====================
+        const glowGroup = new THREE.Group();
+        mainGroup.add(glowGroup);
+        const glowCount = 80;
+        const glowArr = new Float32Array(glowCount * 3);
+        const phiGold = Math.PI * (3 - Math.sqrt(5));
+        for (let i = 0; i < glowCount; i++) {
+            const y = 1 - (i / (glowCount - 1)) * 2;
+            const rAtY = Math.sqrt(1 - y * y);
+            const theta = phiGold * i;
+            glowArr[i * 3] = Math.cos(theta) * rAtY * SPHERE_R;
+            glowArr[i * 3 + 1] = y * SPHERE_R;
+            glowArr[i * 3 + 2] = Math.sin(theta) * rAtY * SPHERE_R;
+        }
+        const glowGeom = new THREE.BufferGeometry();
+        glowGeom.setAttribute('position', new THREE.BufferAttribute(glowArr, 3));
+        const glowMat = new THREE.PointsMaterial({
+            color: 0xf0e4cc, size: 0.019, transparent: true, opacity: 0.44, depthWrite: false,
+            blending: THREE.AdditiveBlending,
+        });
+        glowGroup.add(new THREE.Points(glowGeom, glowMat));
+
+        // ==================== 参考球体线框 ====================
+        const sphereWireGroup = new THREE.Group();
+        mainGroup.add(sphereWireGroup);
+        const sphereWireMats = [];
+
+        function createLatLine(phiVal) {
+            const pts = [];
+            const r = Math.sin(phiVal) * SPHERE_R;
+            const y = Math.cos(phiVal) * SPHERE_R;
+            for (let i = 0; i <= 240; i++) {
+                const th = (i / 240) * Math.PI * 2;
+                pts.push(new THREE.Vector3(r * Math.cos(th), y, r * Math.sin(th)));
+            }
+            const g = new THREE.BufferGeometry().setFromPoints(pts);
+            const m = new THREE.LineBasicMaterial({ color: 0x3a3650, transparent: true, opacity: 0.11, depthWrite: false });
+            sphereWireMats.push(m);
+            return new THREE.Line(g, m);
+        }
+        function createLongLine(theta) {
+            const pts = [];
+            for (let i = 0; i <= 200; i++) {
+                const phiVal = (i / 200) * Math.PI;
+                pts.push(new THREE.Vector3(
+                    Math.sin(phiVal) * Math.cos(theta) * SPHERE_R,
+                    Math.cos(phiVal) * SPHERE_R,
+                    Math.sin(phiVal) * Math.sin(theta) * SPHERE_R));
+            }
+            const g = new THREE.BufferGeometry().setFromPoints(pts);
+            const m = new THREE.LineBasicMaterial({ color: 0x3a3650, transparent: true, opacity: 0.11, depthWrite: false });
+            sphereWireMats.push(m);
+            return new THREE.Line(g, m);
+        }
+        for (let i = 1; i <= 9; i++) sphereWireGroup.add(createLatLine((i / 10) * Math.PI));
+        for (let i = 0; i < 18; i++) sphereWireGroup.add(createLongLine((i / 18) * Math.PI * 2));
+        {
+            const eqPts = [];
+            for (let i = 0; i <= 280; i++) {
+                const th = (i / 280) * Math.PI * 2;
+                eqPts.push(new THREE.Vector3(Math.cos(th) * SPHERE_R, 0, Math.sin(th) * SPHERE_R));
+            }
+            const eqG = new THREE.BufferGeometry().setFromPoints(eqPts);
+            const eqM = new THREE.LineBasicMaterial({ color: 0x58527a, transparent: true, opacity: 0.16, depthWrite: false });
+            sphereWireMats.push(eqM);
+            sphereWireGroup.add(new THREE.Line(eqG, eqM));
+        }
+
+        // ==================== 双纽线空间曲线生成 ====================
+        const curvesGroup = new THREE.Group();
+        mainGroup.add(curvesGroup);
+        const allCurveData = [];
+
+        function createLemniscateLine(A, B, C, n, phase, rotationQuat, color) {
+            const rawPositions = generateLemniscateCurve(A, B, C, n, phase);
+            const v = new THREE.Vector3();
+            for (let i = 0; i < rawPositions.length; i += 3) {
+                v.set(rawPositions[i], rawPositions[i + 1], rawPositions[i + 2]);
+                v.applyQuaternion(rotationQuat);
+                rawPositions[i] = v.x;
+                rawPositions[i + 1] = v.y;
+                rawPositions[i + 2] = v.z;
+            }
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.BufferAttribute(rawPositions, 3));
+            geometry.setDrawRange(0, 0);
+            const material = new THREE.LineBasicMaterial({
+                color: color, transparent: true, opacity: 0.84, depthWrite: false,
+            });
+            const line = new THREE.Line(geometry, material);
+            allCurveData.push({ geometry, totalVertices: TOTAL_VERTICES });
+            return line;
+        }
+
+        // 6个主方向（斐波那契球面分布）
+        const numAxes = 6;
+        const axisDirections = [];
+        const phiGolden2 = Math.PI * (3 - Math.sqrt(5));
+        for (let i = 0; i < numAxes; i++) {
+            const yNorm = 1 - (i / (numAxes - 0.999)) * 2;
+            const rAtY = Math.sqrt(1 - yNorm * yNorm);
+            const theta = phiGolden2 * i;
+            axisDirections.push(new THREE.Vector3(Math.cos(theta) * rAtY, yNorm, Math.sin(theta) * rAtY).normalize());
+        }
+
+        const zAxis = new THREE.Vector3(0, 0, 1);
+
+        // 参数定义：每种颜色对应不同的(A,B,C,n)范围和phase
+        const goldParams = [
+            { A: 1.35, B: 1.15, C: 0.35, n: 2, ph: 0.0 },
+            { A: 1.30, B: 1.20, C: 0.40, n: 2, ph: 1.2 },
+            { A: 1.25, B: 1.10, C: 0.32, n: 3, ph: 2.4 },
+            { A: 1.38, B: 1.18, C: 0.38, n: 2, ph: 3.6 },
+            { A: 1.28, B: 1.22, C: 0.36, n: 3, ph: 4.8 },
+            { A: 1.32, B: 1.12, C: 0.42, n: 2, ph: 0.6 },
+        ];
+        const roseParams = [
+            { A: 1.00, B: 0.85, C: 0.52, n: 3, ph: 1.8 },
+            { A: 0.95, B: 0.80, C: 0.48, n: 4, ph: 3.0 },
+            { A: 1.05, B: 0.88, C: 0.55, n: 3, ph: 4.2 },
+            { A: 0.92, B: 0.82, C: 0.50, n: 4, ph: 0.3 },
+            { A: 0.98, B: 0.86, C: 0.45, n: 5, ph: 5.1 },
+            { A: 1.02, B: 0.78, C: 0.58, n: 3, ph: 2.1 },
+        ];
+        const cyanParams = [
+            { A: 0.72, B: 0.58, C: 0.65, n: 5, ph: 0.9 },
+            { A: 0.68, B: 0.55, C: 0.72, n: 6, ph: 2.7 },
+            { A: 0.75, B: 0.60, C: 0.60, n: 5, ph: 4.5 },
+            { A: 0.65, B: 0.52, C: 0.68, n: 7, ph: 1.5 },
+            { A: 0.70, B: 0.56, C: 0.75, n: 6, ph: 3.3 },
+            { A: 0.78, B: 0.62, C: 0.55, n: 5, ph: 5.4 },
+        ];
+
+        // 为每个轴生成3条曲线（3种颜色），绕轴旋转分散
+        for (let a = 0; a < numAxes; a++) {
+            const axisDir = axisDirections[a];
+            const baseQuat = new THREE.Quaternion().setFromUnitVectors(zAxis, axisDir);
+
+            // 金色：0°旋转
+            const goldQuat = baseQuat.clone();
+            const gp = goldParams[a];
+            curvesGroup.add(createLemniscateLine(gp.A, gp.B, gp.C, gp.n, gp.ph, goldQuat, COLOR_WARM_GOLD));
+
+            // 玫瑰粉：绕轴旋转120°
+            const roseRot = new THREE.Quaternion().setFromAxisAngle(axisDir, 2 * Math.PI / 3);
+            const roseQuat = roseRot.clone().multiply(baseQuat);
+            const rp = roseParams[a];
+            curvesGroup.add(createLemniscateLine(rp.A, rp.B, rp.C, rp.n, rp.ph, roseQuat, COLOR_ROSE));
+
+            // 青蓝：绕轴旋转240°
+            const cyanRot = new THREE.Quaternion().setFromAxisAngle(axisDir, 4 * Math.PI / 3);
+            const cyanQuat = cyanRot.clone().multiply(baseQuat);
+            const cp = cyanParams[a];
+            curvesGroup.add(createLemniscateLine(cp.A, cp.B, cp.C, cp.n, cp.ph, cyanQuat, COLOR_CYAN));
+        }
+
+        const curveCount = allCurveData.length; // 18
+
+        // ==================== 动画循环 ====================
+        const clock = new THREE.Clock();
+        clock.getDelta(); // 立即消耗初始累积时间，防止首帧dt异常导致跳帧
+        let animationStartTime = performance.now() / 1000;
+
+        function getCycleTime() {
+            const now = performance.now() / 1000;
+            return (now - animationStartTime) % CYCLE_DURATION;
+        }
+
+        function easeInOutCubic(t) {
+            return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const cycleTime = getCycleTime();
+            const dt = Math.min(clock.getDelta(), 0.1);
+
+            // 主旋转
+            mainGroup.rotation.y += 0.24 * dt;
+            mainGroup.rotation.x += 0.058 * dt;
+            mainGroup.rotation.z += 0.013 * Math.sin(cycleTime * 0.55) * dt;
+
+            // 相机微动
+            const sway = 0.08 * Math.sin(cycleTime * (Math.PI * 2 / 33));
+            camera.position.y = 0.55 + sway;
+            camera.lookAt(0, -0.02, 0);
+
+            // 绘制进度
+            let fraction;
+            if (cycleTime < DRAW_END) {
+                fraction = easeInOutCubic(cycleTime / DRAW_DURATION);
+            } else if (cycleTime < ERASE_START) {
+                fraction = 1.0;
+            } else if (cycleTime < CYCLE_DURATION) {
+                const elapsed = cycleTime - ERASE_START;
+                fraction = 1.0 - easeInOutCubic(elapsed / ERASE_DURATION);
+                fraction = Math.max(0, fraction);
+            } else {
+                fraction = 0;
+            }
+
+            // 更新所有曲线绘制范围
+            for (const data of allCurveData) {
+                const count = Math.round(fraction * data.totalVertices);
+                data.geometry.setDrawRange(0, Math.max(0, Math.min(data.totalVertices, count)));
+            }
+
+            // 背景透明度渐变
+            let bgOp;
+            if (cycleTime < FADE_IN_DURATION) {
+                bgOp = cycleTime / FADE_IN_DURATION;
+            } else if (cycleTime < FADE_OUT_START) {
+                bgOp = 1.0;
+            } else if (cycleTime < CYCLE_DURATION) {
+                bgOp = 1.0 - (cycleTime - FADE_OUT_START) / (CYCLE_DURATION - FADE_OUT_START);
+            } else {
+                bgOp = 0;
+            }
+            bgOp = Math.max(0, Math.min(1, bgOp));
+
+            starMat.opacity = 0.26 * bgOp;
+            glowMat.opacity = 0.44 * bgOp;
+            for (const mat of sphereWireMats) {
+                mat.opacity = (mat.opacity ?? 0.11) * bgOp;
+            }
+
+            // 粒子微动
+            glowGroup.position.y = Math.sin(cycleTime * 1.05) * 0.035;
+            starsGroup.rotation.y += dt * 0.014;
+            starsGroup.rotation.x += dt * 0.009;
+
+            renderer.render(scene, camera);
+        }
+
+        // ==================== 响应式处理 ====================
+        window.addEventListener('resize', () => {
+            camera.aspect = container.clientWidth / container.clientHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        });
+
+        // 可选重置键
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'r' || e.key === 'R') {
+                animationStartTime = performance.now() / 1000;
+                for (const data of allCurveData) {
+                    data.geometry.setDrawRange(0, 0);
+                }
+                mainGroup.rotation.set(0, 0, 0);
+            }
+        });
+
+        // 预热渲染，防止第一帧空白
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+
+        console.log('♾️ Bernoulli双纽线空间曲线动画已启动');
+        console.log(`   - ${curveCount} 条闭合曲线，3种颜色各${curveCount / 3}条`);
+        console.log('   - 双纽线方程：x=A·cos t/(1+sin²t), y=B·sin t cos t/(1+sin²t), z=C·sin(n t+φ)');
+        console.log('   - 金色 n=2-3 低阶 | 玫瑰粉 n=3-5 中阶 | 青蓝 n=5-7 高阶');
+        console.log(`   - 球面半径：${SPHERE_R}`);
+        console.log(`   - 周期：${CYCLE_DURATION.toFixed(1)}秒`);
+        console.log('   - 按 R 键可重置');
+    </script>
+</body>
+</html>

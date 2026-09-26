@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>正十二面体内接五立方体 · 复合多面体线网</title>
+    <style>
+        :root { --bg: #02040a; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'STSong', 'Songti SC', 'Noto Serif SC', 'SimSun', 'Times New Roman', serif;
+            -webkit-font-smoothing: antialiased;
+            height: 100vh; width: 100vw;
+            user-select: none; -webkit-user-select: none; cursor: default;
+        }
+        #canvas-container { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+        canvas { display: block; }
+        #title-overlay {
+            position: fixed; top: 22px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+        }
+        #title-overlay .title {
+            font-size: clamp(1.0rem, 2.2vw, 1.5rem); font-weight: 400; letter-spacing: 0.09em;
+            color: #cfc7b5; text-shadow: 0 0 42px rgba(200,180,150,0.5), 0 0 70px rgba(170,150,130,0.2);
+            line-height: 1.4; white-space: nowrap;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.46rem, 0.82vw, 0.62rem); font-weight: 300; letter-spacing: 0.12em;
+            color: #a09888; text-shadow: 0 0 14px rgba(155,145,125,0.3);
+            margin-top: 2px; white-space: nowrap;
+        }
+        #formula-overlay {
+            position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+            background: rgba(2,4,10,0.7); padding: 10px 22px; border-radius: 32px;
+            border: 1px solid rgba(175,155,135,0.18);
+            backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); max-width: 95vw;
+        }
+        #formula-overlay .formula {
+            font-size: clamp(0.36rem, 0.68vw, 0.54rem); font-weight: 300; letter-spacing: 0.04em;
+            color: #c5bdaa; text-shadow: 0 0 13px rgba(185,170,145,0.25);
+            line-height: 1.5; white-space: nowrap;
+        }
+        #formula-overlay .formula .c1 { color: #d4885c; }
+        #formula-overlay .formula .c2 { color: #5d9ec6; }
+        #formula-overlay .formula .c3 { color: #c77d9f; }
+        @media (max-width: 600px) {
+            #title-overlay { top: 14px; }
+            #formula-overlay { bottom: 10px; padding: 7px 12px; border-radius: 24px; }
+            #formula-overlay .formula { font-size: 0.32rem; white-space: normal; line-height: 1.3; }
+            #title-overlay .title { font-size: 0.68rem; }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="title-overlay">
+        <div class="title">正十二面体内接五立方体 · 复合多面体线网</div>
+        <div class="subtitle">5 CUBES INSCRIBED IN A DODECAHEDRON &nbsp;·&nbsp; 60 EDGES COMPOUND</div>
+    </div>
+    <div id="formula-overlay">
+        <div class="formula">
+            <span class="c1">𝒞₀𝒞₁:</span> 立方体0和1 &nbsp;
+            <span class="c2">𝒞₂𝒞₃:</span> 立方体2和3 &nbsp;
+            <span class="c3">𝒞₄:</span> 立方体4
+            <br>
+            <span style="color:#9aa8b8;">φ=(1+√5)/2 &nbsp;|&nbsp; 顶点(±1,±1,±1)∪(0,±1/φ,±φ)㊨ &nbsp;|&nbsp; 球半径R=2.7 &nbsp;|&nbsp; 绝对时间驱动</span>
+        </div>
+    </div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#02040a');
+        scene.fog = new THREE.Fog('#02040a', 9, 24);
+
+        const camera = new THREE.PerspectiveCamera(
+            50, container.clientWidth / Math.max(container.clientHeight, 1), 0.3, 26
+        );
+        camera.position.set(1.2, 0.65, 7.5);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = false;
+        container.appendChild(renderer.domElement);
+
+        // ==================== 常量 ====================
+        const C1 = '#d4885c', C2 = '#5d9ec6', C3 = '#c77d9f';
+        const C_REF = '#3a4a5c', C_GLINT = '#8898aa';
+        const R = 2.7;
+        const phi = (1 + Math.sqrt(5)) / 2;
+        const invPhi = 1 / phi;
+        const SQRT3 = Math.sqrt(3);
+        const SCALE = R / SQRT3;
+
+        // ==================== 生成正十二面体20个顶点 ====================
+        function generateDodecaVertices() {
+            const raw = [];
+            // 8个 (±1,±1,±1)
+            for (let sx = -1; sx <= 1; sx += 2)
+                for (let sy = -1; sy <= 1; sy += 2)
+                    for (let sz = -1; sz <= 1; sz += 2)
+                        raw.push(new THREE.Vector3(sx, sy, sz));
+            // 12个 (0, ±1/φ, ±φ) 循环排列
+            const perms = [[0,1,2],[2,0,1],[1,2,0]];
+            for (const [i,j,k] of perms) {
+                for (let sj = -1; sj <= 1; sj += 2) {
+                    for (let sk = -1; sk <= 1; sk += 2) {
+                        const v = [0,0,0];
+                        v[i] = 0; v[j] = sj * invPhi; v[k] = sk * phi;
+                        raw.push(new THREE.Vector3(v[0], v[1], v[2]));
+                    }
+                }
+            }
+            // 去重（应该天然不重复）并缩放
+            const verts = raw.map(v => v.clone().multiplyScalar(SCALE));
+            return { verts, raw };
+        }
+
+        const { verts, raw: rawVerts } = generateDodecaVertices();
+        console.log('正十二面体顶点数:', verts.length);
+
+        // ==================== 定义旋转：绕五重轴(0,1,φ)旋转 ====================
+        const axis5fold = new THREE.Vector3(0, 1, phi).normalize();
+        function rotateByQuat(v, axis, angle) {
+            const q = new THREE.Quaternion().setFromAxisAngle(axis, angle);
+            return v.clone().applyQuaternion(q);
+        }
+
+        // ==================== 初始立方体：8个(±1,±1,±1)顶点 ====================
+        const cube0RawIndices = [];
+        const cube0RawVerts = [];
+        for (let i = 0; i < rawVerts.length; i++) {
+            const v = rawVerts[i];
+            if (Math.abs(v.x) > 0.9 && Math.abs(v.y) > 0.9 && Math.abs(v.z) > 0.9) {
+                cube0RawIndices.push(i);
+                cube0RawVerts.push(v.clone());
+            }
+        }
+        console.log('立方体0顶点索引:', cube0RawIndices.length);
+
+        // ==================== 生成立方体的12条边 ====================
+        function cubeEdgesFromVertices(cubeVerts) {
+            const edges = [];
+            const n = cubeVerts.length;
+            for (let i = 0; i < n; i++) {
+                for (let j = i + 1; j < n; j++) {
+                    const d = cubeVerts[i].distanceTo(cubeVerts[j]);
+                    // 在原始尺度下，立方体边长=2，面对角线=2√2≈2.828
+                    if (d < 2.1 && d > 0.01) {
+                        edges.push([i, j]);
+                    }
+                }
+            }
+            return edges;
+        }
+
+        // ==================== 为每个立方体生成边并着色 ====================
+        const allEdges = []; // { a: THREE.Vector3, b: THREE.Vector3, colorGroup: 0|1|2 }
+        const edgeSet = new Set();
+
+        function edgeKey(a, b) {
+            const toS = (v) => `${v.x.toFixed(6)},${v.y.toFixed(6)},${v.z.toFixed(6)}`;
+            const sa = toS(a), sb = toS(b);
+            return sa < sb ? `${sa}|${sb}` : `${sb}|${sa}`;
+        }
+
+        for (let cubeIdx = 0; cubeIdx < 5; cubeIdx++) {
+            const angle = cubeIdx * Math.PI * 2 / 5;
+            // 对初始立方体0的8个顶点施加旋转
+            const cubeVertsRaw = cube0RawVerts.map(v => rotateByQuat(v, axis5fold, angle));
+            // 吸附到最近的20个顶点
+            const cubeVerts = cubeVertsRaw.map(vr => {
+                let best = null, bestDist = Infinity;
+                for (const rv of rawVerts) {
+                    const d = vr.distanceTo(rv);
+                    if (d < bestDist) { bestDist = d; best = rv; }
+                }
+                return best.clone().multiplyScalar(SCALE);
+            });
+            const edges = cubeEdgesFromVertices(cubeVertsRaw);
+            // 着色分组：立方体0,1→暖金；2,3→冰蓝；4→玫瑰粉
+            let colorGroup;
+            if (cubeIdx === 0 || cubeIdx === 1) colorGroup = 0;
+            else if (cubeIdx === 2 || cubeIdx === 3) colorGroup = 1;
+            else colorGroup = 2;
+
+            for (const [i, j] of edges) {
+                const a = cubeVerts[i], b = cubeVerts[j];
+                const key = edgeKey(a, b);
+                if (!edgeSet.has(key)) {
+                    edgeSet.add(key);
+                    allEdges.push({ a: a.clone(), b: b.clone(), colorGroup });
+                }
+            }
+        }
+        console.log('去重后总边数:', allEdges.length);
+        const countColors = [0, 0, 0];
+        allEdges.forEach(e => countColors[e.colorGroup]++);
+        console.log('暖金:', countColors[0], '冰蓝:', countColors[1], '玫瑰粉:', countColors[2]);
+
+        // ==================== 创建线段 ====================
+        function createColoredSegments(edges, colorHex, groupIdx, opacity) {
+            const verts = [];
+            for (const e of edges) {
+                if (e.colorGroup === groupIdx) {
+                    verts.push(e.a.x, e.a.y, e.a.z, e.b.x, e.b.y, e.b.z);
+                }
+            }
+            if (verts.length === 0) return new THREE.Group();
+            const geom = new THREE.BufferGeometry();
+            geom.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+            const mat = new THREE.LineBasicMaterial({
+                color: new THREE.Color(colorHex),
+                transparent: true, opacity: opacity, depthWrite: true
+            });
+            return new THREE.LineSegments(geom, mat);
+        }
+
+        const lines0 = createColoredSegments(allEdges, C1, 0, 0.68);
+        const lines1 = createColoredSegments(allEdges, C2, 1, 0.65);
+        const lines2 = createColoredSegments(allEdges, C3, 2, 0.66);
+
+        const mainGroup = new THREE.Group();
+        mainGroup.add(lines0);
+        mainGroup.add(lines1);
+        mainGroup.add(lines2);
+        scene.add(mainGroup);
+
+        // ==================== 顶点光点 ====================
+        function createVertexGlints(vertList, colorHex, sz) {
+            const group = new THREE.Group();
+            for (const pt of vertList) {
+                [[-sz,0,0],[sz,0,0],[0,-sz,0],[0,sz,0],[0,0,-sz],[0,0,sz]].forEach(([dx,dy,dz]) => {
+                    const g = new THREE.BufferGeometry().setFromPoints([
+                        pt.clone().add(new THREE.Vector3(dx,dy,dz)), pt
+                    ]);
+                    const m = new THREE.LineBasicMaterial({
+                        color: new THREE.Color(colorHex),
+                        transparent: true, opacity: 0.5, depthWrite: true
+                    });
+                    group.add(new THREE.Line(g, m));
+                });
+            }
+            return group;
+        }
+        mainGroup.add(createVertexGlints(verts, C_GLINT, 0.055));
+
+        // ==================== 参考球面线框 ====================
+        function createSphereWireframe(radius, colorHex, opacity) {
+            const group = new THREE.Group();
+            const segs = 180;
+            const gen = (f) => {
+                const pts = [];
+                for (let i = 0; i <= segs; i++) pts.push(f((i/segs)*Math.PI*2));
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(colorHex),
+                    transparent: true, opacity: opacity, depthWrite: true
+                });
+                group.add(new THREE.Line(geom, mat));
+            };
+            gen((a) => new THREE.Vector3(Math.cos(a)*radius, Math.sin(a)*radius, 0));
+            gen((a) => new THREE.Vector3(Math.cos(a)*radius, 0, Math.sin(a)*radius));
+            gen((a) => new THREE.Vector3(0, Math.cos(a)*radius, Math.sin(a)*radius));
+            for (const z of [-radius*0.5, radius*0.5]) {
+                const r = Math.sqrt(radius*radius - z*z);
+                const pts = [];
+                for (let i = 0; i <= segs; i++) {
+                    const a = (i/segs)*Math.PI*2;
+                    pts.push(new THREE.Vector3(Math.cos(a)*r, z, Math.sin(a)*r));
+                }
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(colorHex),
+                    transparent: true, opacity: opacity*0.6, depthWrite: true
+                });
+                group.add(new THREE.Line(geom, mat));
+            }
+            return group;
+        }
+        const sphereRef = createSphereWireframe(R, C_REF, 0.22);
+        scene.add(sphereRef);
+
+        // ==================== 轴端点光点 ====================
+        (() => {
+            const sz = 0.055;
+            const axes = [[R,0,0],[-R,0,0],[0,R,0],[0,-R,0],[0,0,R],[0,0,-R]];
+            const gGroup = new THREE.Group();
+            axes.forEach(([ax,ay,az]) => {
+                const pt = new THREE.Vector3(ax, ay, az);
+                [[-sz,0,0],[sz,0,0],[0,-sz,0],[0,sz,0],[0,0,-sz],[0,0,sz]].forEach(([dx,dy,dz]) => {
+                    const g = new THREE.BufferGeometry().setFromPoints([pt.clone().add(new THREE.Vector3(dx,dy,dz)), pt]);
+                    const m = new THREE.LineBasicMaterial({ color: new THREE.Color(C_GLINT), transparent:true, opacity:0.5, depthWrite:true });
+                    gGroup.add(new THREE.Line(g, m));
+                });
+            });
+            mainGroup.add(gGroup);
+        })();
+
+        // ==================== 原点光点 ====================
+        (() => {
+            const sz = 0.08;
+            const g = new THREE.BufferGeometry().setFromPoints([
+                new THREE.Vector3(-sz,0,0), new THREE.Vector3(sz,0,0),
+                new THREE.Vector3(0,-sz,0), new THREE.Vector3(0,sz,0),
+                new THREE.Vector3(0,0,-sz), new THREE.Vector3(0,0,sz)
+            ]);
+            const m = new THREE.LineBasicMaterial({ color: new THREE.Color(C_GLINT), transparent:true, opacity:0.72, depthWrite:true });
+            scene.add(new THREE.LineSegments(g, m));
+        })();
+
+        // ==================== 动画循环（绝对时间） ====================
+        const startTime = performance.now();
+        let frameCount = 0;
+        let currentTime = 0;
+
+        function animate(now) {
+            requestAnimationFrame(animate);
+            const elapsed = (now - startTime) / 1000;
+            if (elapsed <= 0) { renderer.render(scene, camera); return; }
+            currentTime = elapsed;
+            frameCount++;
+            if (frameCount === 1 || frameCount % 150 === 0) {
+                console.log(`[动画运行中] 帧:${frameCount} 时间:${currentTime.toFixed(2)}s 边:${allEdges.length}`);
+            }
+
+            mainGroup.rotation.y = currentTime * 0.28;
+            mainGroup.rotation.x = currentTime * 0.15 + Math.sin(currentTime * 0.24) * 0.2;
+            mainGroup.rotation.z = Math.cos(currentTime * 0.19) * 0.12;
+            sphereRef.rotation.copy(mainGroup.rotation);
+
+            const camX = 1.2 + Math.sin(currentTime * 0.14) * 0.5;
+            const camY = 0.65 + Math.cos(currentTime * 0.17) * 0.45;
+            const camZ = 7.5 + Math.sin(currentTime * 0.11) * 0.45;
+            camera.position.set(camX, camY, camZ);
+            camera.lookAt(0, 0, 0);
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth, h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth, h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 100));
+
+        console.log('=== 正十二面体内接五立方体 · 复合多面体线网 ===');
+        console.log('总边数:', allEdges.length);
+        console.log('✅ 初始帧渲染完成，启动绝对时间动画循环...');
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

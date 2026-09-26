@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FCC晶格三层连接 · 多重距离线网</title>
+    <style>
+        :root { --bg: #02040a; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'STSong', 'Songti SC', 'Noto Serif SC', 'SimSun', 'Times New Roman', serif;
+            -webkit-font-smoothing: antialiased;
+            height: 100vh; width: 100vw;
+            user-select: none; -webkit-user-select: none; cursor: default;
+        }
+        #canvas-container { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+        canvas { display: block; }
+        #title-overlay {
+            position: fixed; top: 22px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+        }
+        #title-overlay .title {
+            font-size: clamp(1.0rem, 2.2vw, 1.5rem); font-weight: 400; letter-spacing: 0.08em;
+            color: #cfc7b5; text-shadow: 0 0 42px rgba(200,180,150,0.5), 0 0 70px rgba(170,150,130,0.2);
+            line-height: 1.4; white-space: nowrap;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.48rem, 0.85vw, 0.64rem); font-weight: 300; letter-spacing: 0.12em;
+            color: #a09888; text-shadow: 0 0 14px rgba(155,145,125,0.3);
+            margin-top: 2px; white-space: nowrap;
+        }
+        #formula-overlay {
+            position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+            background: rgba(2,4,10,0.7); padding: 10px 22px; border-radius: 32px;
+            border: 1px solid rgba(175,155,135,0.16);
+            backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); max-width: 95vw;
+        }
+        #formula-overlay .formula {
+            font-size: clamp(0.36rem, 0.68vw, 0.54rem); font-weight: 300; letter-spacing: 0.04em;
+            color: #c5bdaa; text-shadow: 0 0 13px rgba(185,170,145,0.25);
+            line-height: 1.5; white-space: nowrap;
+        }
+        #formula-overlay .formula .c1 { color: #d4885c; }
+        #formula-overlay .formula .c2 { color: #5d9ec6; }
+        #formula-overlay .formula .c3 { color: #c77d9f; }
+        @media (max-width: 600px) {
+            #title-overlay { top: 14px; }
+            #formula-overlay { bottom: 10px; padding: 7px 12px; border-radius: 24px; }
+            #formula-overlay .formula { font-size: 0.32rem; white-space: normal; line-height: 1.3; }
+            #title-overlay .title { font-size: 0.68rem; }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="title-overlay">
+        <div class="title">FCC晶格三层连接 · 多重距离线网</div>
+        <div class="subtitle">FCC MULTI‑SHELL NETWORK &nbsp;·&nbsp; d=√2 · d=2 · d=√6</div>
+    </div>
+    <div id="formula-overlay">
+        <div class="formula">
+            <span class="c1">最近邻 d=√2:</span> 12个方向(±1,±1,0)㊨ &nbsp;
+            <span class="c2">次近邻 d=2:</span> 6个方向(±2,0,0)㊨
+            <br>
+            <span class="c3">第三近邻 d=√6:</span> 24个方向(±2,±1,±1)㊨ &nbsp;|&nbsp; FCC: x+y+z∈2ℤ &nbsp;|&nbsp; 球半径R=2.8</span>
+        </div>
+    </div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#02040a');
+        scene.fog = new THREE.Fog('#02040a', 8, 20);
+
+        const camera = new THREE.PerspectiveCamera(
+            50,
+            container.clientWidth / Math.max(container.clientHeight, 1),
+            0.3,
+            24
+        );
+        camera.position.set(1.2, 0.6, 7.0);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = false;
+        container.appendChild(renderer.domElement);
+
+        // ==================== 颜色 ====================
+        const C1 = '#d4885c'; // 暖金 – 最近邻 d=√2
+        const C2 = '#5d9ec6'; // 冰蓝 – 次近邻 d=2
+        const C3 = '#c77d9f'; // 玫瑰粉 – 第三近邻 d=√6
+        const C_SPHERE = '#3a4a5c';
+        const C_GLINT = '#8898aa';
+
+        const SPHERE_R = 2.8;
+        const SCALE = 0.85; // 晶格缩放
+
+        // 距离阈值（缩放后）
+        const D1 = Math.sqrt(2) * SCALE;
+        const D2 = 2 * SCALE;
+        const D3 = Math.sqrt(6) * SCALE;
+        const THRESH = 1.04; // 微小的容差
+
+        // ==================== 生成FCC格点 ====================
+        const range = 4;
+        const points = [];
+        for (let x = -range; x <= range; x++) {
+            for (let y = -range; y <= range; y++) {
+                for (let z = -range; z <= range; z++) {
+                    if ((x + y + z) % 2 === 0) {
+                        const pt = new THREE.Vector3(x * SCALE, y * SCALE, z * SCALE);
+                        if (pt.length() <= SPHERE_R * 1.12) {
+                            points.push(pt);
+                        }
+                    }
+                }
+            }
+        }
+        console.log('FCC格点数:', points.length);
+
+        // ==================== 生成边并按距离分类 ====================
+        const n = points.length;
+        const edgesShell1 = [];
+        const edgesShell2 = [];
+        const edgesShell3 = [];
+        const edgeSet = new Set();
+
+        function edgeKey(i, j) { return i < j ? `${i},${j}` : `${j},${i}`; }
+
+        for (let i = 0; i < n; i++) {
+            for (let j = i + 1; j < n; j++) {
+                const d = points[i].distanceTo(points[j]);
+                const key = edgeKey(i, j);
+                if (edgeSet.has(key)) continue;
+
+                if (Math.abs(d - D1) < D1 * (THRESH - 1)) {
+                    edgeSet.add(key);
+                    edgesShell1.push([points[i].clone(), points[j].clone()]);
+                } else if (Math.abs(d - D2) < D2 * (THRESH - 1)) {
+                    edgeSet.add(key);
+                    edgesShell2.push([points[i].clone(), points[j].clone()]);
+                } else if (Math.abs(d - D3) < D3 * (THRESH - 1)) {
+                    edgeSet.add(key);
+                    edgesShell3.push([points[i].clone(), points[j].clone()]);
+                }
+            }
+        }
+
+        console.log('最近邻边 (暖金):', edgesShell1.length);
+        console.log('次近邻边 (冰蓝):', edgesShell2.length);
+        console.log('第三近邻边 (玫瑰粉):', edgesShell3.length);
+        console.log('总边数:', edgesShell1.length + edgesShell2.length + edgesShell3.length);
+
+        // ==================== 创建线段 ====================
+        function createLineSegments(edgeList, colorHex, opacity) {
+            if (edgeList.length === 0) return new THREE.Group();
+            const verts = [];
+            for (const [a, b] of edgeList) {
+                verts.push(a.x, a.y, a.z, b.x, b.y, b.z);
+            }
+            const geom = new THREE.BufferGeometry();
+            geom.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+            const mat = new THREE.LineBasicMaterial({
+                color: new THREE.Color(colorHex),
+                transparent: true,
+                opacity: opacity,
+                depthWrite: true,
+            });
+            return new THREE.LineSegments(geom, mat);
+        }
+
+        const lines1 = createLineSegments(edgesShell1, C1, 0.6);
+        const lines2 = createLineSegments(edgesShell2, C2, 0.55);
+        const lines3 = createLineSegments(edgesShell3, C3, 0.5);
+
+        const mainGroup = new THREE.Group();
+        mainGroup.add(lines1);
+        mainGroup.add(lines2);
+        mainGroup.add(lines3);
+        scene.add(mainGroup);
+
+        // ==================== 参考球面线框 ====================
+        function createSphereWireframe(radius, colorHex, opacity) {
+            const group = new THREE.Group();
+            const segs = 170;
+            const circles = [
+                (a) => new THREE.Vector3(Math.cos(a) * radius, Math.sin(a) * radius, 0),
+                (a) => new THREE.Vector3(Math.cos(a) * radius, 0, Math.sin(a) * radius),
+                (a) => new THREE.Vector3(0, Math.cos(a) * radius, Math.sin(a) * radius),
+            ];
+            for (const gen of circles) {
+                const pts = [];
+                for (let i = 0; i <= segs; i++) pts.push(gen((i / segs) * Math.PI * 2));
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(colorHex), transparent: true, opacity: opacity, depthWrite: true,
+                });
+                group.add(new THREE.Line(geom, mat));
+            }
+            return group;
+        }
+        const sphereRef = createSphereWireframe(SPHERE_R, C_SPHERE, 0.2);
+        scene.add(sphereRef);
+
+        // ==================== 轴方向光点 ====================
+        function createRefDots(radius, colorHex, sz) {
+            const group = new THREE.Group();
+            const axes = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
+            for (const [ax,ay,az] of axes) {
+                const pt = new THREE.Vector3(ax*radius, ay*radius, az*radius);
+                const pairs = [
+                    [pt.clone().add(new THREE.Vector3(-sz,0,0)), pt.clone().add(new THREE.Vector3(sz,0,0))],
+                    [pt.clone().add(new THREE.Vector3(0,-sz,0)), pt.clone().add(new THREE.Vector3(0,sz,0))],
+                    [pt.clone().add(new THREE.Vector3(0,0,-sz)), pt.clone().add(new THREE.Vector3(0,0,sz))],
+                ];
+                for (const [a,b] of pairs) {
+                    const g = new THREE.BufferGeometry().setFromPoints([a,b]);
+                    const m = new THREE.LineBasicMaterial({
+                        color: new THREE.Color(colorHex), transparent: true, opacity: 0.5, depthWrite: true,
+                    });
+                    group.add(new THREE.Line(g, m));
+                }
+            }
+            return group;
+        }
+        const refDots = createRefDots(SPHERE_R, C_GLINT, 0.05);
+        mainGroup.add(refDots);
+
+        // ==================== 原点光点 ====================
+        function originGlint() {
+            const group = new THREE.Group();
+            const sz = 0.08;
+            const pairs = [
+                [new THREE.Vector3(-sz,0,0), new THREE.Vector3(sz,0,0)],
+                [new THREE.Vector3(0,-sz,0), new THREE.Vector3(0,sz,0)],
+                [new THREE.Vector3(0,0,-sz), new THREE.Vector3(0,0,sz)],
+            ];
+            for (const [a,b] of pairs) {
+                const g = new THREE.BufferGeometry().setFromPoints([a,b]);
+                const m = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(C_GLINT), transparent: true, opacity: 0.7, depthWrite: true,
+                });
+                group.add(new THREE.Line(g, m));
+            }
+            return group;
+        }
+        scene.add(originGlint());
+
+        // ==================== 动画循环（绝对时间） ====================
+        let time = 0;
+        let lastTime = performance.now();
+        let frameCount = 0;
+        let logTime = 0;
+        const totalEdges = edgesShell1.length + edgesShell2.length + edgesShell3.length;
+
+        function animate(now) {
+            requestAnimationFrame(animate);
+            let delta = (now - lastTime) / 1000;
+            if (delta <= 0 || delta > 0.5) delta = 0.016;
+            lastTime = now;
+            time += delta;
+            frameCount++;
+            if (now - logTime > 4000) {
+                console.log(`[动画运行中] 帧:${frameCount} 时间:${time.toFixed(2)}s 边:${totalEdges}`);
+                logTime = now;
+            }
+
+            mainGroup.rotation.y = time * 0.28;
+            mainGroup.rotation.x = time * 0.15 + Math.sin(time * 0.23) * 0.2;
+            mainGroup.rotation.z = Math.cos(time * 0.19) * 0.13;
+            sphereRef.rotation.copy(mainGroup.rotation);
+
+            const camX = 1.2 + Math.sin(time * 0.14) * 0.5;
+            const camY = 0.6 + Math.cos(time * 0.17) * 0.45;
+            const camZ = 7.0 + Math.sin(time * 0.11) * 0.45;
+            camera.position.set(camX, camY, camZ);
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth, h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth, h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 100));
+
+        console.log('=== FCC晶格三层连接 · 多重距离线网 ===');
+        console.log('格点数:', points.length);
+        console.log('✅ 初始帧渲染完成，启动绝对时间动画循环...');
+
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

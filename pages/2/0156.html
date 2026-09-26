@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>混沌蝴蝶 · 洛伦兹流</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #080a12;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            font-family: 'Segoe UI', system-ui, sans-serif;
+        }
+        .container {
+            position: relative;
+            border-radius: 28px;
+            overflow: hidden;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.9), 0 0 0 1px rgba(255, 255, 255, 0.04);
+            background: #080a12;
+        }
+        canvas {
+            display: block;
+            width: 1000px;
+            height: 600px;
+            cursor: grab;
+            background: radial-gradient(ellipse at 50% 50%, #0f131f, #030408);
+        }
+        canvas:active {
+            cursor: grabbing;
+        }
+        .fallback {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: rgba(255, 255, 255, 0.25);
+            font-size: 18px;
+            letter-spacing: 4px;
+            pointer-events: none;
+            text-align: center;
+            display: none;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 20px 40px;
+            border-radius: 60px;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(6px);
+        }
+        .credit {
+            position: absolute;
+            bottom: 20px;
+            right: 28px;
+            color: rgba(255, 255, 255, 0.12);
+            font-size: 13px;
+            letter-spacing: 2px;
+            font-weight: 300;
+            pointer-events: none;
+            backdrop-filter: blur(4px);
+            padding: 6px 16px;
+            border-radius: 40px;
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.02);
+        }
+        .hint {
+            position: absolute;
+            top: 20px;
+            left: 28px;
+            color: rgba(255, 255, 255, 0.12);
+            font-size: 13px;
+            font-weight: 300;
+            letter-spacing: 0.5px;
+            pointer-events: none;
+            backdrop-filter: blur(4px);
+            padding: 6px 16px;
+            border-radius: 40px;
+            background: rgba(0, 0, 0, 0.2);
+            border: 1px solid rgba(255, 255, 255, 0.02);
+        }
+        @media (max-width: 1024px) {
+            canvas {
+                width: 100%;
+                height: auto;
+                aspect-ratio: 1000 / 600;
+            }
+            .credit,
+            .hint {
+                display: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <canvas id="canvas" width="1000" height="600"></canvas>
+        <div class="fallback" id="fallback">✦ 混沌蝴蝶 · 请刷新页面 ✦</div>
+        <div class="hint"><i>✦ 移动鼠标 · 改变混沌参数</i></div>
+        <div class="credit">vibe <span>·</span> code</div>
+    </div>
+
+    <script>
+        // ============================================================
+        //  混沌蝴蝶 · 洛伦兹流
+        //  物理：三维洛伦兹吸引子方程，粒子沿混沌轨迹高速运动，
+        //  鼠标横移改变参数 rho，产生动态蝴蝶效应。
+        // ============================================================
+
+        console.log('✅ 混沌蝴蝶 加载开始');
+
+        // 全局错误捕获：如果出错，显示备用文字
+        window.addEventListener('error', function(e) {
+            const fallback = document.getElementById('fallback');
+            if (fallback) fallback.style.display = 'block';
+            console.error('全局错误:', e.message);
+        });
+
+        // ---------- 获取元素 ----------
+        const canvas = document.getElementById('canvas');
+        const fallback = document.getElementById('fallback');
+
+        if (!canvas) {
+            console.error('❌ Canvas 元素未找到');
+            if (fallback) fallback.style.display = 'block';
+            throw new Error('Canvas 元素不存在');
+        }
+
+        let ctx = null;
+        try {
+            ctx = canvas.getContext('2d');
+            if (!ctx) throw new Error('无法获取 2D 上下文');
+        } catch (err) {
+            console.error('❌ 上下文获取失败:', err.message);
+            if (fallback) fallback.style.display = 'block';
+            throw err;
+        }
+
+        console.log('✅ Canvas 就绪');
+
+        const W = 1000,
+            H = 600;
+
+        // ---------- 状态 ----------
+        let mouse = { x: -9999, y: -9999, active: false };
+        let time = 0;
+
+        // ---------- 洛伦兹吸引子参数 ----------
+        const NUM_PARTICLES = 360;
+        const DT = 0.006; // 时间步长（值越小，轨迹越细腻）
+        const SCALE = 14; // 缩放系数（投影到屏幕）
+        let sigma = 10;
+        let beta = 8 / 3;
+        let rho = 28; // 鼠标移动时会动态改变
+
+        // ---------- 初始化粒子 ----------
+        let particles = [];
+        try {
+            for (let i = 0; i < NUM_PARTICLES; i++) {
+                // 随机初始位置在吸引子附近
+                particles.push({
+                    x: (Math.random() - 0.5) * 4,
+                    y: (Math.random() - 0.5) * 4,
+                    z: (Math.random() - 0.5) * 4,
+                    px: 0, // 前一帧 x
+                    py: 0, // 前一帧 y
+                    hue: 200 + Math.random() * 80,
+                    speed: 0.5 + Math.random() * 0.5 // 微小速度差异
+                });
+            }
+            console.log('✅ 粒子初始化成功，数量:', NUM_PARTICLES);
+        } catch (err) {
+            console.error('❌ 粒子初始化失败:', err.message);
+            if (fallback) fallback.style.display = 'block';
+            throw err;
+        }
+
+        // ---------- 背景繁星 ----------
+        let stars = [];
+        for (let i = 0; i < 60; i++) {
+            stars.push({
+                x: Math.random() * W,
+                y: Math.random() * H,
+                r: 0.3 + Math.random() * 0.8,
+                phase: Math.random() * Math.PI * 2
+            });
+        }
+
+        // ---------- 物理更新（洛伦兹方程） ----------
+        function updatePhysics() {
+            // 鼠标横移影响 rho 值（20~40），纵移影响 sigma（8~12）
+            let currentRho = rho;
+            let currentSigma = sigma;
+            if (mouse.active) {
+                // x 坐标映射到 rho：18 ~ 38
+                currentRho = 28 + (mouse.x / W - 0.5) * 20;
+                // y 坐标映射到 sigma：8 ~ 12
+                currentSigma = 10 + (mouse.y / H - 0.5) * 4;
+                // 限制范围
+                currentRho = Math.min(40, Math.max(18, currentRho));
+                currentSigma = Math.min(14, Math.max(8, currentSigma));
+            }
+
+            for (let p of particles) {
+                // 保存前一帧位置（用于绘制拖尾）
+                p.px = p.x;
+                p.py = p.y;
+
+                // 洛伦兹方程
+                let dx = currentSigma * (p.y - p.x) * DT;
+                let dy = (p.x * (currentRho - p.z) - p.y) * DT;
+                let dz = (p.x * p.y - beta * p.z) * DT;
+
+                p.x += dx;
+                p.y += dy;
+                p.z += dz;
+            }
+        }
+
+        // ---------- 渲染（彩色混沌轨迹） ----------
+        function draw() {
+            // 半透明背景：形成拖尾（轨迹残留）
+            ctx.fillStyle = 'rgba(8, 10, 18, 0.06)';
+            ctx.fillRect(0, 0, W, H);
+
+            // 投影中心
+            const cx = W / 2;
+            const cy = H / 2;
+
+            // ---- 1. 绘制粒子轨迹线条 ----
+            for (const p of particles) {
+                // 投影到 2D：使用 x 和 y 平面（也可用 x 和 z，这里用 x, y 产生经典蝴蝶形状）
+                const sx = p.px * SCALE + cx;
+                const sy = p.py * SCALE + cy;
+                const ex = p.x * SCALE + cx;
+                const ey = p.y * SCALE + cy;
+
+                // 计算速度，用于颜色和亮度
+                const vx = p.x - p.px;
+                const vy = p.y - p.py;
+                const speed = Math.sqrt(vx * vx + vy * vy);
+
+                // 色相：基于位置和速度动态变化
+                const hue = p.hue + Math.sin(p.x * 0.3) * 20 + Math.cos(p.y * 0.3) * 20;
+                const alpha = 0.3 + Math.min(speed * 8, 0.6);
+                const lineWidth = 0.8 + speed * 1.2;
+
+                ctx.shadowBlur = 15;
+                ctx.shadowColor = `hsla(${hue}, 100%, 70%, ${alpha * 0.15})`;
+                ctx.strokeStyle = `hsla(${hue}, 90%, 60%, ${alpha})`;
+                ctx.lineWidth = lineWidth;
+                ctx.beginPath();
+                ctx.moveTo(sx, sy);
+                ctx.lineTo(ex, ey);
+                ctx.stroke();
+            }
+
+            ctx.shadowBlur = 0;
+
+            // ---- 2. 绘制粒子核心亮点 ----
+            for (const p of particles) {
+                const ex = p.x * SCALE + cx;
+                const ey = p.y * SCALE + cy;
+                const vx = p.x - p.px;
+                const vy = p.y - p.py;
+                const speed = Math.sqrt(vx * vx + vy * vy);
+                const hue = p.hue + Math.sin(p.x * 0.3) * 20 + Math.cos(p.y * 0.3) * 20;
+                const size = 1.2 + speed * 0.8;
+
+                const grad = ctx.createRadialGradient(
+                    ex - 1, ey - 1, 0.5,
+                    ex, ey, size * 2.5
+                );
+                grad.addColorStop(0, `hsla(${hue}, 100%, 90%, 0.9)`);
+                grad.addColorStop(0.4, `hsla(${hue + 10}, 80%, 65%, 0.5)`);
+                grad.addColorStop(1, `hsla(${hue + 20}, 70%, 40%, 0)`);
+
+                ctx.shadowBlur = 25;
+                ctx.shadowColor = `hsla(${hue}, 100%, 60%, ${0.15 + speed * 0.05})`;
+                ctx.beginPath();
+                ctx.arc(ex, ey, size * 1.5, 0, Math.PI * 2);
+                ctx.fillStyle = grad;
+                ctx.fill();
+            }
+
+            ctx.shadowBlur = 0;
+
+            // ---- 3. 背景繁星 ----
+            for (const star of stars) {
+                const flicker = 0.5 + 0.5 * Math.sin(time * 0.025 + star.phase);
+                const alpha = 0.1 + flicker * 0.2;
+                ctx.beginPath();
+                ctx.arc(star.x, star.y, star.r * 0.6, 0, Math.PI * 2);
+                ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+                ctx.fill();
+            }
+
+            // ---- 4. 鼠标交互光晕 ----
+            if (mouse.active) {
+                const grad = ctx.createRadialGradient(
+                    mouse.x, mouse.y, 0,
+                    mouse.x, mouse.y, 180
+                );
+                grad.addColorStop(0, 'rgba(180, 200, 255, 0.06)');
+                grad.addColorStop(0.5, 'rgba(100, 130, 255, 0.02)');
+                grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+                ctx.fillStyle = grad;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, 180, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        // ---------- 动画循环 ----------
+        let animFrameId = null;
+
+        function animate(timestamp) {
+            try {
+                time = timestamp || 0;
+                updatePhysics();
+                draw();
+                animFrameId = requestAnimationFrame(animate);
+            } catch (err) {
+                console.error('❌ 动画循环出错:', err.message);
+                if (fallback) fallback.style.display = 'block';
+                if (animFrameId) cancelAnimationFrame(animFrameId);
+            }
+        }
+
+        // ---------- 鼠标事件 ----------
+        function handleMouseMove(e) {
+            try {
+                const rect = canvas.getBoundingClientRect();
+                const scaleX = canvas.width / rect.width;
+                const scaleY = canvas.height / rect.height;
+                mouse.x = (e.clientX - rect.left) * scaleX;
+                mouse.y = (e.clientY - rect.top) * scaleY;
+                mouse.active = true;
+            } catch (err) {}
+        }
+
+        function handleMouseLeave() {
+            mouse.active = false;
+        }
+
+        canvas.addEventListener('mousemove', handleMouseMove);
+        canvas.addEventListener('mouseleave', handleMouseLeave);
+
+        // 触摸支持
+        canvas.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            try {
+                const rect = canvas.getBoundingClientRect();
+                const touch = e.touches[0];
+                const scaleX = canvas.width / rect.width;
+                const scaleY = canvas.height / rect.height;
+                mouse.x = (touch.clientX - rect.left) * scaleX;
+                mouse.y = (touch.clientY - rect.top) * scaleY;
+                mouse.active = true;
+            } catch (err) {}
+        }, { passive: false });
+
+        canvas.addEventListener('touchend', () => {
+            mouse.active = false;
+        });
+
+        // ---------- 窗口自适应 ----------
+        function resizeCanvas() {
+            try {
+                const container = canvas.parentElement;
+                const maxW = window.innerWidth - 40;
+                const maxH = window.innerHeight - 40;
+                const ratio = canvas.width / canvas.height;
+                let w = Math.min(1000, maxW);
+                let h = w / ratio;
+                if (h > maxH) {
+                    h = maxH;
+                    w = h * ratio;
+                }
+                canvas.style.width = w + 'px';
+                canvas.style.height = h + 'px';
+            } catch (err) {}
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // ---------- 启动动画 ----------
+        console.log('🚀 启动混沌蝴蝶动画');
+        try {
+            animate(0);
+        } catch (err) {
+            console.error('❌ 启动失败:', err.message);
+            if (fallback) fallback.style.display = 'block';
+        }
+
+        // 兜底检测：如果3秒后还是空白，显示备用文字
+        setTimeout(() => {
+            if (fallback && !fallback.style.display) {
+                try {
+                    const imageData = ctx.getImageData(0, 0, W, H).data;
+                    let isBlank = true;
+                    for (let i = 0; i < 1000; i++) {
+                        if (imageData[i * 4 + 3] > 0) { isBlank = false; break; }
+                    }
+                    if (isBlank) {
+                        console.warn('⚠️ 检测到空白帧，显示备用文字');
+                        fallback.style.display = 'block';
+                    }
+                } catch (e) {
+                    fallback.style.display = 'block';
+                }
+            }
+        }, 3000);
+
+        console.log('✅ 混沌蝴蝶已就绪，移动鼠标改变混沌参数！');
+    </script>
+</body>
+</html>

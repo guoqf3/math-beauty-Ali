@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>球面弹性线编织 · 变分极值网</title>
+    <style>
+        :root {
+            --bg: #06060c;
+            --gold: #d4a843;
+            --cyan: #45b7aa;
+            --magenta: #d4708a;
+        }
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body {
+            background: var(--bg);
+            width: 100vw; height: 100vh; overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'SimSun', serif;
+            -webkit-font-smoothing: antialiased; user-select: none; -webkit-user-select: none;
+        }
+        #canvas-container { position:fixed; top:0; left:0; width:100vw; height:100vh; z-index:1; }
+        canvas { display:block; }
+        .overlay-title {
+            position:fixed; top:0; left:0; right:0; z-index:10; pointer-events:none;
+            padding:22px 20px 8px; text-align:center;
+            background: linear-gradient(180deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.8) 55%, rgba(6,6,12,0) 100%);
+        }
+        .overlay-title h2 {
+            font-size: clamp(1.1rem, 2.2vw, 1.8rem); font-weight:400; letter-spacing:0.13em;
+            color:#e8d5b0; text-shadow: 0 0 30px rgba(212,168,67,0.45), 0 0 60px rgba(212,168,67,0.18);
+            margin:0 0 2px; line-height:1.3;
+        }
+        .overlay-title .sub {
+            font-size: clamp(0.65rem, 1.1vw, 0.85rem); letter-spacing:0.22em; color:rgba(200,180,150,0.65);
+        }
+        .overlay-formula {
+            position:fixed; bottom:0; left:0; right:0; z-index:10; pointer-events:none;
+            padding:8px 20px 18px; text-align:center;
+            background: linear-gradient(0deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.82) 55%, rgba(6,6,12,0) 100%);
+        }
+        .formula-text {
+            font-size: clamp(0.6rem, 1.0vw, 0.8rem); color:rgba(210,200,185,0.8); letter-spacing:0.03em; line-height:1.7;
+        }
+        .clr-gold { color:#d4a843; font-weight:bold; }
+        .clr-cyan { color:#45b7aa; font-weight:bold; }
+        .clr-magenta { color:#d4708a; font-weight:bold; }
+        .formula-sep { display:inline-block; margin:0 14px; color:rgba(150,140,130,0.35); }
+    </style>
+</head>
+<body>
+    <div class="overlay-title">
+        <h2>球面弹性线编织 · 变分极值网</h2>
+        <div class="sub">Spherical elastica · Bending energy minima · Time‑varying curvature</div>
+    </div>
+    <div class="overlay-formula">
+        <div class="formula-text">
+            <span class="clr-gold">δ∫(κ²+λ)ds=0</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-cyan">dθ/ds = κ, dκ/ds = −(λ+κ²)tanθ</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-magenta">λ = λ₀ + ε·cos(ω·t)</span>
+        </div>
+    </div>
+    <div id="canvas-container"></div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(48, container.clientWidth / container.clientHeight, 0.5, 22);
+        camera.position.set(3.5, 2.4, 7.4);
+        camera.lookAt(0, 0, 0);
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x06060c, 1);
+        container.appendChild(renderer.domElement);
+
+        const clock = new THREE.Clock();
+        const getElapsed = () => clock.getElapsedTime();
+
+        const COLOR_GOLD = 0xd4a843;
+        const COLOR_CYAN = 0x45b7aa;
+        const COLOR_MAGENTA = 0xd4708a;
+        const RADIUS = 2.7;
+        const STEPS_PER_CURVE = 360;
+        const DS = 0.06;
+        const FAMILY_COUNT = 32;
+        const UPDATE_INTERVAL = 0.12;
+
+        // ---- 球面点 ----
+        function spherePoint(theta, phi) {
+            const st = Math.sin(theta);
+            return new THREE.Vector3(
+                RADIUS * st * Math.cos(phi),
+                RADIUS * Math.cos(theta),
+                RADIUS * st * Math.sin(phi)
+            );
+        }
+
+        // ---- 球面弹性线 ODE ----
+        // 状态：θ (余纬), φ (经度), α (切向与∂/∂φ的夹角), κ (测地曲率)
+        // 导数公式来自球面弹性线 Euler-Lagrange 方程
+        function sphericalElasticaDerivs(theta, phi, alpha, kappa, lambda) {
+            const st = Math.sin(theta);
+            const ct = Math.cos(theta);
+            const tanAlpha = Math.tan(alpha);
+            const cosAlpha = Math.cos(alpha);
+            const sinAlpha = Math.sin(alpha);
+            const dTheta = cosAlpha;
+            const dPhi = (st > 1e-6) ? sinAlpha / st : 0;
+            const dAlpha = kappa - dPhi * ct;
+            const dKappa = -(lambda + kappa * kappa) * tanAlpha;
+            return { dTheta, dPhi, dAlpha, dKappa };
+        }
+
+        function integrateElastica(theta0, phi0, alpha0, kappa0, lambda, ds, steps) {
+            let theta = theta0, phi = phi0, alpha = alpha0, kappa = kappa0;
+            const pts = [spherePoint(theta, phi)];
+            for (let i = 0; i < steps; i++) {
+                const d = sphericalElasticaDerivs(theta, phi, alpha, kappa, lambda);
+                theta += d.dTheta * ds;
+                phi += d.dPhi * ds;
+                alpha += d.dAlpha * ds;
+                kappa += d.dKappa * ds;
+                // 保持角度在合理范围
+                if (theta < 0.02 || theta > Math.PI - 0.02) break;
+                pts.push(spherePoint(theta, phi));
+            }
+            return pts;
+        }
+
+        function createElasticaFamily(color, opacity, numCurves, lambdaBase, lambdaAmp, lambdaFreq, time) {
+            const group = new THREE.Group();
+            const lambda = lambdaBase + lambdaAmp * Math.cos(lambdaFreq * time);
+            for (let i = 0; i < numCurves; i++) {
+                // 随机初始条件分布在球面上
+                const theta0 = 0.2 + Math.random() * (Math.PI - 0.4);
+                const phi0 = Math.random() * 2 * Math.PI;
+                const alpha0 = Math.random() * 2 * Math.PI;
+                const kappa0 = (Math.random() - 0.5) * 1.6;
+                const pts = integrateElastica(theta0, phi0, alpha0, kappa0, lambda, DS, STEPS_PER_CURVE);
+                if (pts.length < 2) continue;
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color, transparent: true, opacity, depthWrite: true, depthTest: true,
+                });
+                group.add(new THREE.Line(geom, mat));
+            }
+            return group;
+        }
+
+        // ---- 三族曲线 ----
+        const rootGroup = new THREE.Group();
+        rootGroup.name = 'spherical-elastica';
+        scene.add(rootGroup);
+
+        let goldGroup, cyanGroup, magentaGroup;
+        function rebuildFamilies(time) {
+            if (goldGroup) rootGroup.remove(goldGroup);
+            if (cyanGroup) rootGroup.remove(cyanGroup);
+            if (magentaGroup) rootGroup.remove(magentaGroup);
+            goldGroup = createElasticaFamily(COLOR_GOLD, 0.58, FAMILY_COUNT, 0.5, 0.25, Math.sqrt(2), time);
+            cyanGroup = createElasticaFamily(COLOR_CYAN, 0.58, FAMILY_COUNT, 1.2, 0.35, Math.sqrt(3), time);
+            magentaGroup = createElasticaFamily(COLOR_MAGENTA, 0.58, FAMILY_COUNT, 2.0, 0.30, Math.PI, time);
+            rootGroup.add(goldGroup);
+            rootGroup.add(cyanGroup);
+            rootGroup.add(magentaGroup);
+        }
+        rebuildFamilies(0);
+
+        // 辅助球面参考网格
+        for (let i = 0; i < 10; i++) {
+            const lat = (i + 0.5) * Math.PI / 10;
+            const r = RADIUS * Math.sin(lat);
+            const z = RADIUS * Math.cos(lat);
+            const pts = [];
+            for (let j = 0; j <= 220; j++) {
+                const phi = j * 2 * Math.PI / 220;
+                pts.push(new THREE.Vector3(r * Math.cos(phi), z, r * Math.sin(phi)));
+            }
+            const geom = new THREE.BufferGeometry().setFromPoints(pts);
+            rootGroup.add(new THREE.Line(geom, new THREE.LineBasicMaterial({
+                color: 0x403830, transparent: true, opacity: 0.07, depthWrite: true, depthTest: true
+            })));
+        }
+        for (let k = 0; k < 8; k++) {
+            const phi = k * Math.PI / 4;
+            const pts = [];
+            for (let j = 0; j <= 220; j++) {
+                const theta = 0.02 + j * Math.PI / 220;
+                const st = Math.sin(theta);
+                pts.push(new THREE.Vector3(RADIUS * st * Math.cos(phi), RADIUS * Math.cos(theta), RADIUS * st * Math.sin(phi)));
+            }
+            const geom = new THREE.BufferGeometry().setFromPoints(pts);
+            rootGroup.add(new THREE.Line(geom, new THREE.LineBasicMaterial({
+                color: 0x303840, transparent: true, opacity: 0.05, depthWrite: true, depthTest: true
+            })));
+        }
+
+        // 背景星点
+        const starsGroup = new THREE.Group();
+        const starsGeom = new THREE.BufferGeometry();
+        const sc = 550;
+        const sp = new Float32Array(sc * 3);
+        for (let i = 0; i < sc; i++) {
+            const th = Math.random() * Math.PI * 2, ph = Math.acos(2 * Math.random() - 1), d = 6.5 + Math.random() * 10;
+            sp[i * 3] = d * Math.sin(ph) * Math.cos(th);
+            sp[i * 3 + 1] = d * Math.sin(ph) * Math.sin(th);
+            sp[i * 3 + 2] = d * Math.cos(ph);
+        }
+        starsGeom.setAttribute('position', new THREE.BufferAttribute(sp, 3));
+        starsGroup.add(new THREE.Points(starsGeom, new THREE.PointsMaterial({
+            color: 0x908878, size: 0.018, transparent: true, opacity: 0.55, depthWrite: false
+        })));
+        scene.add(starsGroup);
+
+        console.log('球面弹性线编织已就绪');
+
+        // ---- 动画循环 ----
+        let lastRebuild = -10, rebuildInterval = 1.5;
+
+        function animate() {
+            const t = getElapsed();
+            if (t - lastRebuild > rebuildInterval) {
+                try { rebuildFamilies(t); lastRebuild = t; } catch (e) { console.warn(e); }
+            }
+
+            rootGroup.rotation.x = t * 0.14;
+            rootGroup.rotation.y = t * 0.23;
+            rootGroup.rotation.z = t * 0.09;
+            starsGroup.rotation.y = t * 0.04;
+            starsGroup.rotation.x = t * 0.025;
+
+            const cr = 7.5, ca = t * 0.08, ch = 2.5 + Math.sin(t * 0.16) * 0.7;
+            camera.position.set(Math.cos(ca) * cr, ch, Math.sin(ca) * cr);
+            camera.lookAt(0, 0, 0);
+            renderer.render(scene, camera);
+        }
+
+        renderer.setAnimationLoop(animate);
+        renderer.render(scene, camera);
+
+        window.addEventListener('resize', () => {
+            camera.aspect = container.clientWidth / Math.max(container.clientHeight, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            camera.aspect = container.clientWidth / Math.max(container.clientHeight, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        }, 120));
+        console.log('✅ 球面弹性线变分编织动画已稳定运行');
+    </script>
+</body>
+</html>

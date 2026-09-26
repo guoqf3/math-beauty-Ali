@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>蜗牛线空间编织 · 帕斯卡蜗牛</title>
+    <style>
+        :root {
+            --bg: #02010e;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'Noto Serif SC', serif;
+            height: 100vh;
+            width: 100vw;
+            user-select: none;
+            -webkit-user-select: none;
+            cursor: default;
+            -webkit-tap-highlight-color: transparent;
+        }
+        #canvas-container {
+            position: fixed;
+            inset: 0;
+            z-index: 1;
+        }
+        canvas {
+            display: block;
+        }
+
+        #title-overlay {
+            position: fixed;
+            top: clamp(16px, 3.5vh, 42px);
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+            white-space: nowrap;
+        }
+        #title-overlay h1 {
+            color: #e0cfb4;
+            font-size: clamp(1.1rem, 2.1vw, 1.8rem);
+            font-weight: 400;
+            letter-spacing: 0.08em;
+            text-shadow: 0 0 28px rgba(210, 175, 130, 0.55), 0 0 75px rgba(185, 145, 100, 0.25);
+            margin: 0;
+        }
+        #title-overlay .subtitle {
+            color: #bca689;
+            font-size: clamp(0.64rem, 1.1vw, 0.88rem);
+            letter-spacing: 0.06em;
+            margin-top: 0.28em;
+            text-shadow: 0 0 14px rgba(180, 140, 100, 0.4);
+        }
+
+        #formula-overlay {
+            position: fixed;
+            bottom: clamp(24px, 4.5vh, 54px);
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+            padding: 0 16px;
+        }
+        #formula-overlay .formula-box {
+            display: inline-block;
+            background: rgba(14, 10, 20, 0.72);
+            border: 1px solid rgba(165, 140, 110, 0.28);
+            border-radius: 12px;
+            padding: clamp(10px, 1.4vh, 16px) clamp(16px, 3vw, 28px);
+            backdrop-filter: blur(7px);
+            -webkit-backdrop-filter: blur(7px);
+        }
+        #formula-overlay .formula-main {
+            color: #f1ddc3;
+            font-size: clamp(0.68rem, 1.15vw, 1.0rem);
+            letter-spacing: 0.04em;
+            line-height: 1.7;
+        }
+        #formula-overlay .formula-detail {
+            color: #a59279;
+            font-size: clamp(0.52rem, 0.75vw, 0.68rem);
+            letter-spacing: 0.03em;
+            margin-top: 0.22em;
+            line-height: 1.5;
+        }
+
+        @media (max-width: 600px) {
+            #title-overlay h1 {
+                letter-spacing: 0.05em;
+            }
+            #formula-overlay .formula-box {
+                padding: 10px 16px;
+                border-radius: 10px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="title-overlay">
+        <h1>蜗牛线空间编织</h1>
+        <div class="subtitle">Limacon Weave · Pascal's Snail Curves</div>
+    </div>
+    <div id="formula-overlay">
+        <div class="formula-box">
+            <div class="formula-main">
+                r = b + a·cos θ<br>
+                x = r·cos θ y = r·sin θ z = ε·sin(ωθ + δ)
+            </div>
+            <div class="formula-detail">
+                a ∈ [1.0, 2.2] b ∈ [0.6, 1.6] | 18 条闭合蜗牛线
+            </div>
+        </div>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.157.0/build/three.module.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#02010e');
+        scene.fog = new THREE.Fog('#02010e', 7, 22);
+
+        const camera = new THREE.PerspectiveCamera(
+            46,
+            container.clientWidth / Math.max(container.clientHeight, 1),
+            0.3,
+            28
+        );
+        camera.position.set(0, 0.3, 7.8);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.2;
+        container.appendChild(renderer.domElement);
+
+        scene.add(new THREE.AmbientLight('#1e1e3a', 0.4));
+
+        // ==================== 主图案组 ====================
+        const mainGroup = new THREE.Group();
+        scene.add(mainGroup);
+
+        const segmentCount = 2000;
+        const vertexCountPerCurve = segmentCount + 1; // 首尾重合确保完美闭合
+        const curveCount = 18;
+        const allLines = [];
+
+        const zEpsilon = 0.1;
+        const zOmegaBase = 4.0;
+
+        // ==================== 蜗牛线生成 ====================
+        /**
+         * 生成一条帕斯卡蜗牛线
+         * r = b + a * cos(theta)
+         * @param {number} a 振幅，控制内环大小
+         * @param {number} b 偏移，控制形状（b>a 无内环，b=a 心脏线，b<a 有内环）
+         * @param {number} omegaZ z轴调制频率
+         * @param {number} zPhase z轴调制相位
+         * @param {THREE.Euler} rotation 空间旋转
+         */
+        function generateLimacon(a, b, omegaZ, zPhase, rotation) {
+            const rotMatrix = new THREE.Matrix4().makeRotationFromEuler(rotation);
+            const rawVerts = new Float32Array(vertexCountPerCurve * 3);
+
+            // 首顶点 (θ=0)
+            const t0 = 0;
+            const r0 = b + a * Math.cos(t0);
+            const x0 = r0 * Math.cos(t0);
+            const y0 = r0 * Math.sin(t0);
+            const z0 = zEpsilon * Math.sin(omegaZ * t0 + zPhase);
+            const vec0 = new THREE.Vector3(x0, y0, z0);
+            vec0.applyMatrix4(rotMatrix);
+            rawVerts[0] = vec0.x;
+            rawVerts[1] = vec0.y;
+            rawVerts[2] = vec0.z;
+
+            // 中间顶点
+            for (let i = 1; i < segmentCount; i++) {
+                const theta = (i / segmentCount) * Math.PI * 2;
+                const r = b + a * Math.cos(theta);
+                const x2d = r * Math.cos(theta);
+                const y2d = r * Math.sin(theta);
+                const z2d = zEpsilon * Math.sin(omegaZ * theta + zPhase);
+                const vec = new THREE.Vector3(x2d, y2d, z2d);
+                vec.applyMatrix4(rotMatrix);
+                rawVerts[i * 3] = vec.x;
+                rawVerts[i * 3 + 1] = vec.y;
+                rawVerts[i * 3 + 2] = vec.z;
+            }
+
+            // 末顶点显式复制首顶点，确保完美闭合
+            const lastIdx = segmentCount * 3;
+            rawVerts[lastIdx] = rawVerts[0];
+            rawVerts[lastIdx + 1] = rawVerts[1];
+            rawVerts[lastIdx + 2] = rawVerts[2];
+
+            return rawVerts;
+        }
+
+        function createLine(scaledVerts, hue, opacity = 0.78) {
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.BufferAttribute(scaledVerts, 3));
+            geometry.setDrawRange(0, 0); // 初始不可见
+
+            const material = new THREE.LineBasicMaterial({
+                color: new THREE.Color().setHSL(hue, 0.88, 0.62),
+                transparent: true,
+                opacity: opacity,
+                linewidth: 1,
+                blending: THREE.AdditiveBlending,
+                depthWrite: true,
+                depthTest: true,
+            });
+
+            const line = new THREE.Line(geometry, material);
+            line.visible = false;
+            line.frustumCulled = false;
+            return line;
+        }
+
+        // ==================== 18条蜗牛线的参数配置 ====================
+        // a, b 取值使得有的有内环(a>b)，有的无内环(a<b)，有的接近心脏线(a≈b)
+        const aValues = [1.1, 1.4, 1.7, 2.0, 1.2, 1.5, 1.8, 2.1, 1.3, 1.6, 1.9, 2.2, 1.0, 1.25, 1.55, 1.85, 2.05, 1.15];
+        const bValues = [1.5, 1.0, 1.3, 0.8, 1.6, 1.2, 0.9, 1.1, 1.4, 1.7, 1.0, 0.7, 1.0, 1.35, 1.25, 0.95, 0.85, 1.45];
+        // 确保 a, b 组合产生多样的蜗牛线形态（包括内环、无内环、心脏线）
+
+        const allRawVertices = [];
+        for (let j = 0; j < curveCount; j++) {
+            const a = aValues[j];
+            const b = bValues[j];
+            const omegaZ = zOmegaBase + (j % 5);          // 4~8
+            const zPhase = j * 0.5;
+            const rotY = (j / curveCount) * Math.PI * 2;
+            const rotX = (j * 0.68) % Math.PI;
+            const rotZ = (j * 0.35) % (Math.PI * 0.45);
+            const rotation = new THREE.Euler(rotX, rotY, rotZ);
+            const rawVerts = generateLimacon(a, b, omegaZ, zPhase, rotation);
+            allRawVertices.push(rawVerts);
+        }
+
+        // ==================== 计算全局包围盒 ====================
+        let minX = Infinity, maxX = -Infinity;
+        let minY = Infinity, maxY = -Infinity;
+        let minZ = Infinity, maxZ = -Infinity;
+
+        for (const rawVerts of allRawVertices) {
+            for (let i = 0; i < rawVerts.length; i += 3) {
+                const vx = rawVerts[i];
+                const vy = rawVerts[i + 1];
+                const vz = rawVerts[i + 2];
+                if (vx < minX) minX = vx;
+                if (vx > maxX) maxX = vx;
+                if (vy < minY) minY = vy;
+                if (vy > maxY) maxY = vy;
+                if (vz < minZ) minZ = vz;
+                if (vz > maxZ) maxZ = vz;
+            }
+        }
+
+        const centerX = (minX + maxX) / 2;
+        const centerY = (minY + maxY) / 2;
+        const centerZ = (minZ + maxZ) / 2;
+        const rangeX = maxX - minX;
+        const rangeY = maxY - minY;
+        const rangeZ = maxZ - minZ;
+        const maxRange = Math.max(rangeX, rangeY, rangeZ, 0.1);
+        const targetScale = 5.2 / maxRange;
+
+        console.log('📐 包围盒:', { maxRange: maxRange.toFixed(3), targetScale: targetScale.toFixed(4) });
+
+        // ==================== 缩放并创建线条 ====================
+        for (let j = 0; j < curveCount; j++) {
+            const rawVerts = allRawVertices[j];
+            const scaledVerts = new Float32Array(vertexCountPerCurve * 3);
+            for (let i = 0; i < vertexCountPerCurve; i++) {
+                const idx = i * 3;
+                scaledVerts[idx] = (rawVerts[idx] - centerX) * targetScale;
+                scaledVerts[idx + 1] = (rawVerts[idx + 1] - centerY) * targetScale;
+                scaledVerts[idx + 2] = (rawVerts[idx + 2] - centerZ) * targetScale;
+            }
+            const hue = (j / curveCount) * 0.82 + 0.06;
+            const line = createLine(scaledVerts, hue % 1.0, 0.75);
+            mainGroup.add(line);
+            allLines.push(line);
+        }
+
+        console.log(`✅ 已生成 ${curveCount} 条蜗牛线闭合曲线`);
+
+        // ==================== 动画状态机 ====================
+        const APPEAR_TIME = 8.0;
+        const PAUSE_TIME = 1.5;
+        const DISAPPEAR_TIME = 8.0;
+        const CYCLE_TOTAL = APPEAR_TIME + PAUSE_TIME + DISAPPEAR_TIME; // 17.5秒
+
+        let animationStartTime = null;
+        let firstFrameDone = false;
+
+        function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+        function easeInCubic(t) { return t * t * t; }
+
+        function getProgress(elapsedSeconds) {
+            const cycle = elapsedSeconds % CYCLE_TOTAL;
+            if (cycle < APPEAR_TIME) {
+                const t = cycle / APPEAR_TIME;
+                return { progress: easeOutCubic(t), phase: 'appear' };
+            } else if (cycle < APPEAR_TIME + PAUSE_TIME) {
+                return { progress: 1.0, phase: 'pause' };
+            } else {
+                const t = (cycle - APPEAR_TIME - PAUSE_TIME) / DISAPPEAR_TIME;
+                return { progress: 1.0 - easeInCubic(t), phase: 'disappear' };
+            }
+        }
+
+        // ==================== 渲染循环 ====================
+        function animate(timestamp) {
+            requestAnimationFrame(animate);
+
+            // 第一帧：强制空白，避免任何残留图形
+            if (animationStartTime === null) {
+                animationStartTime = timestamp;
+                allLines.forEach(line => {
+                    line.visible = false;
+                    if (line.geometry) line.geometry.setDrawRange(0, 0);
+                });
+                renderer.render(scene, camera);
+                firstFrameDone = true;
+                return;
+            }
+
+            const elapsed = (timestamp - animationStartTime) / 1000;
+            const { progress } = getProgress(elapsed);
+            const drawCount = Math.floor(progress * vertexCountPerCurve);
+            const shouldBeVisible = drawCount >= 2;
+
+            for (let i = 0; i < allLines.length; i++) {
+                const line = allLines[i];
+                if (!line || !line.geometry) continue;
+                const maxPts = line.geometry.attributes.position.count;
+                const lineDraw = Math.min(drawCount, maxPts);
+                if (shouldBeVisible && lineDraw >= 2) {
+                    line.visible = true;
+                    line.geometry.setDrawRange(0, lineDraw);
+                } else {
+                    line.visible = false;
+                    line.geometry.setDrawRange(0, 0);
+                }
+            }
+
+            // 整体缓慢旋转，展现空间编织结构
+            const rotY = elapsed * 0.045;
+            const rotX = Math.sin(elapsed * 0.08) * 0.035;
+            const rotZ = Math.cos(elapsed * 0.11) * 0.028;
+            mainGroup.rotation.set(rotX, rotY, rotZ);
+
+            // 相机轻柔晃动，增强观赏性
+            camera.position.x = Math.sin(elapsed * 0.07) * 0.22;
+            camera.position.y = 0.3 + Math.cos(elapsed * 0.1) * 0.17;
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        // ==================== 响应式处理 ====================
+        function onResize() {
+            const w = container.clientWidth;
+            const h = container.clientHeight;
+            if (h <= 0) return;
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        }
+        window.addEventListener('resize', onResize, { passive: true });
+        window.addEventListener('orientationchange', () => setTimeout(onResize, 150), { passive: true });
+
+        // ==================== 启动 ====================
+        console.log('🚀 蜗牛线空间编织动画启动');
+        console.log(`   - 曲线数量: ${curveCount}`);
+        console.log(`   - 顶点数/曲线: ${vertexCountPerCurve}`);
+        console.log(`   - 动画周期: ${CYCLE_TOTAL}s`);
+
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

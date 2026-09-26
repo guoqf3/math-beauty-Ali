@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>正二十面体测地线网络 · 正多面体对称之美</title>
+    <style>
+        :root {
+            --bg: #050513;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'Noto Serif SC', 'STSong', 'KaiTi', '楷体', '华文楷体', '宋体', serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            height: 100vh;
+            width: 100vw;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+        #canvas-container {
+            position: fixed;
+            inset: 0;
+            z-index: 1;
+        }
+        canvas {
+            display: block;
+        }
+        .overlay {
+            position: fixed;
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+        #title-overlay {
+            top: clamp(12px, 3.5vh, 36px);
+        }
+        #title-overlay .title {
+            font-size: clamp(1.0rem, 2.0vw, 1.4rem);
+            font-weight: 400;
+            letter-spacing: 0.10em;
+            color: rgba(235, 228, 220, 0.92);
+            text-shadow: 0 0 24px rgba(190, 165, 140, 0.5), 0 0 6px rgba(170, 148, 125, 0.35);
+            line-height: 1.4;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.60rem, 1.10vw, 0.76rem);
+            font-weight: 300;
+            letter-spacing: 0.06em;
+            color: rgba(200, 192, 180, 0.7);
+            margin-top: 0.2em;
+            text-shadow: 0 0 13px rgba(155, 140, 120, 0.3);
+        }
+        #formula-overlay {
+            bottom: clamp(14px, 3.5vh, 40px);
+        }
+        #formula-overlay .formula {
+            font-size: clamp(0.42rem, 0.75vw, 0.60rem);
+            font-style: italic;
+            letter-spacing: 0.03em;
+            color: rgba(222, 214, 204, 0.84);
+            text-shadow: 0 0 20px rgba(155, 140, 125, 0.42), 0 0 5px rgba(165, 148, 130, 0.28);
+            line-height: 1.6;
+            background: rgba(10, 9, 16, 0.46);
+            padding: 0.30em 1.0em;
+            border-radius: 2em;
+            backdrop-filter: blur(5px);
+            -webkit-backdrop-filter: blur(5px);
+            border: 1px solid rgba(145, 125, 105, 0.20);
+        }
+        @media (max-width: 600px) {
+            #formula-overlay .formula {
+                padding: 0.16em 0.40em;
+                letter-spacing: 0.02em;
+                font-size: 0.32rem;
+            }
+            #title-overlay .title {
+                letter-spacing: 0.06em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+
+    <div class="overlay" id="title-overlay">
+        <div class="title">正二十面体测地线网络 · 正多面体对称之美</div>
+        <div class="subtitle">Geodesic Web on the Icosahedron</div>
+    </div>
+
+    <div class="overlay" id="formula-overlay">
+        <div class="formula">
+            Γ = { γ(t) = slerp(v<sub>i</sub>, v<sub>j</sub>, t mod 1) | (i,j) ∈ E }
+            &emsp;|&emsp; {v<sub>k</sub>} ⊂ S², 正二十面体顶点
+        </div>
+    </div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 时间配置 ====================
+        const DRAW_DURATION = 15.0;
+        const HOLD_DURATION = 1.5;
+        const ERASE_DURATION = 15.0;
+        const CYCLE_DURATION = DRAW_DURATION + HOLD_DURATION + ERASE_DURATION;
+        const DRAW_END = DRAW_DURATION;
+        const ERASE_START = DRAW_END + HOLD_DURATION;
+        const FADE_IN_DURATION = 2.5;
+        const FADE_OUT_START = CYCLE_DURATION - 3.0;
+
+        const SPHERE_R = 1.6;
+        const CURVE_POINTS_PER_SEGMENT = 90;
+        // 每条曲线由多段大圆弧组成，总点数 = 段数 × 每段点数 + 1
+
+        const COLOR_WARM_GOLD = new THREE.Color('#e8b86d');
+        const COLOR_ROSE = new THREE.Color('#e8a0b8');
+        const COLOR_CYAN = new THREE.Color('#7ec8e3');
+        const THREE_COLORS = [COLOR_WARM_GOLD, COLOR_ROSE, COLOR_CYAN];
+
+        // 正二十面体12个顶点（归一化）
+        const phi = (1 + Math.sqrt(5)) / 2;
+        const rawVertices = [
+            [0, 1, phi],
+            [0, -1, phi],
+            [0, 1, -phi],
+            [0, -1, -phi],
+            [1, phi, 0],
+            [-1, phi, 0],
+            [1, -phi, 0],
+            [-1, -phi, 0],
+            [phi, 0, 1],
+            [-phi, 0, 1],
+            [phi, 0, -1],
+            [-phi, 0, -1]
+        ];
+        const vertices = rawVertices.map(v => {
+            const len = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+            return new THREE.Vector3(v[0] / len, v[1] / len, v[2] / len);
+        });
+
+        // 在两个单位向量之间生成大圆弧点
+        function generateGreatArc(v1, v2, numPoints) {
+            const pts = [];
+            const angle = v1.angleTo(v2);
+            if (angle < 1e-10) {
+                for (let i = 0; i <= numPoints; i++) pts.push(v1.clone());
+                return pts;
+            }
+            const axis = new THREE.Vector3().crossVectors(v1, v2).normalize();
+            const totalQuat = new THREE.Quaternion().setFromAxisAngle(axis, angle);
+            for (let i = 0; i <= numPoints; i++) {
+                const t = i / numPoints;
+                const q = new THREE.Quaternion().slerpQuaternions(
+                    new THREE.Quaternion(),
+                    totalQuat,
+                    t
+                );
+                const pt = v1.clone().applyQuaternion(q);
+                pts.push(pt);
+            }
+            return pts;
+        }
+
+        // 生成闭合路径的所有点（多段大圆弧连接顶点序列）
+        function generateClosedGeodesicPath(vertexIndices, totalSegments) {
+            const allPts = [];
+            const n = vertexIndices.length;
+            for (let seg = 0; seg < n; seg++) {
+                const i0 = vertexIndices[seg];
+                const i1 = vertexIndices[(seg + 1) % n];
+                const arcPts = generateGreatArc(vertices[i0], vertices[i1], CURVE_POINTS_PER_SEGMENT);
+                if (seg === 0) {
+                    allPts.push(...arcPts);
+                } else {
+                    allPts.push(...arcPts.slice(1));
+                }
+            }
+            // 确保闭合：最后一个点必须等于第一个点
+            if (allPts.length > 1) {
+                const first = allPts[0];
+                const last = allPts[allPts.length - 1];
+                if (first.distanceTo(last) > 0.0001) {
+                    allPts.push(first.clone());
+                }
+            }
+            const positions = new Float32Array(allPts.length * 3);
+            for (let i = 0; i < allPts.length; i++) {
+                positions[i * 3] = allPts[i].x * SPHERE_R;
+                positions[i * 3 + 1] = allPts[i].y * SPHERE_R;
+                positions[i * 3 + 2] = allPts[i].z * SPHERE_R;
+            }
+            return { positions, totalVertices: allPts.length };
+        }
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x050513, 0.00006);
+
+        const camera = new THREE.PerspectiveCamera(46, container.clientWidth / container.clientHeight, 0.35, 17);
+        camera.position.set(0.55, 0.7, 3.8);
+        camera.lookAt(0, 0.02, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.15;
+        renderer.outputColorSpace = THREE.SRGBColorSpace;
+        container.appendChild(renderer.domElement);
+
+        const mainGroup = new THREE.Group();
+        scene.add(mainGroup);
+
+        // ==================== 星空背景粒子 ====================
+        const starsGroup = new THREE.Group();
+        mainGroup.add(starsGroup);
+        const starCount = 200;
+        const starPosArr = new Float32Array(starCount * 3);
+        for (let i = 0; i < starCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phiA = Math.acos(2 * Math.random() - 1);
+            const r = 3.5 + Math.random() * 4.5;
+            starPosArr[i * 3] = Math.sin(phiA) * Math.cos(theta) * r;
+            starPosArr[i * 3 + 1] = Math.sin(phiA) * Math.sin(theta) * r;
+            starPosArr[i * 3 + 2] = Math.cos(phiA) * r;
+        }
+        const starGeom = new THREE.BufferGeometry();
+        starGeom.setAttribute('position', new THREE.BufferAttribute(starPosArr, 3));
+        const starMat = new THREE.PointsMaterial({
+            color: 0xb6afc6, size: 0.009, transparent: true, opacity: 0.26, depthWrite: false,
+            blending: THREE.AdditiveBlending,
+        });
+        starsGroup.add(new THREE.Points(starGeom, starMat));
+
+        // ==================== 漂浮光点（顶点位置） ====================
+        const glowGroup = new THREE.Group();
+        mainGroup.add(glowGroup);
+        const glowArr = new Float32Array(vertices.length * 3);
+        vertices.forEach((v, i) => {
+            glowArr[i * 3] = v.x * SPHERE_R;
+            glowArr[i * 3 + 1] = v.y * SPHERE_R;
+            glowArr[i * 3 + 2] = v.z * SPHERE_R;
+        });
+        const glowGeom = new THREE.BufferGeometry();
+        glowGeom.setAttribute('position', new THREE.BufferAttribute(glowArr, 3));
+        const glowMat = new THREE.PointsMaterial({
+            color: 0xf0e4cc, size: 0.038, transparent: true, opacity: 0.55, depthWrite: false,
+            blending: THREE.AdditiveBlending,
+        });
+        glowGroup.add(new THREE.Points(glowGeom, glowMat));
+
+        // ==================== 参考球体线框 ====================
+        const sphereWireGroup = new THREE.Group();
+        mainGroup.add(sphereWireGroup);
+        const sphereWireMats = [];
+
+        function createLatLine(phiVal) {
+            const pts = [];
+            const r = Math.sin(phiVal) * SPHERE_R;
+            const y = Math.cos(phiVal) * SPHERE_R;
+            for (let i = 0; i <= 240; i++) {
+                const th = (i / 240) * Math.PI * 2;
+                pts.push(new THREE.Vector3(r * Math.cos(th), y, r * Math.sin(th)));
+            }
+            const g = new THREE.BufferGeometry().setFromPoints(pts);
+            const m = new THREE.LineBasicMaterial({ color: 0x3a3650, transparent: true, opacity: 0.11, depthWrite: false });
+            sphereWireMats.push(m);
+            return new THREE.Line(g, m);
+        }
+        function createLongLine(theta) {
+            const pts = [];
+            for (let i = 0; i <= 200; i++) {
+                const phiVal = (i / 200) * Math.PI;
+                pts.push(new THREE.Vector3(
+                    Math.sin(phiVal) * Math.cos(theta) * SPHERE_R,
+                    Math.cos(phiVal) * SPHERE_R,
+                    Math.sin(phiVal) * Math.sin(theta) * SPHERE_R
+                ));
+            }
+            const g = new THREE.BufferGeometry().setFromPoints(pts);
+            const m = new THREE.LineBasicMaterial({ color: 0x3a3650, transparent: true, opacity: 0.11, depthWrite: false });
+            sphereWireMats.push(m);
+            return new THREE.Line(g, m);
+        }
+        for (let i = 1; i <= 9; i++) sphereWireGroup.add(createLatLine((i / 10) * Math.PI));
+        for (let i = 0; i < 18; i++) sphereWireGroup.add(createLongLine((i / 18) * Math.PI * 2));
+        {
+            const eqPts = [];
+            for (let i = 0; i <= 280; i++) {
+                const th = (i / 280) * Math.PI * 2;
+                eqPts.push(new THREE.Vector3(Math.cos(th) * SPHERE_R, 0, Math.sin(th) * SPHERE_R));
+            }
+            const eqG = new THREE.BufferGeometry().setFromPoints(eqPts);
+            const eqM = new THREE.LineBasicMaterial({ color: 0x58527a, transparent: true, opacity: 0.16, depthWrite: false });
+            sphereWireMats.push(eqM);
+            sphereWireGroup.add(new THREE.Line(eqG, eqM));
+        }
+
+        // ==================== 二十面体测地线曲线生成 ====================
+        const curvesGroup = new THREE.Group();
+        mainGroup.add(curvesGroup);
+        const allCurveData = [];
+
+        function createGeodesicCurve(vertexIndices, color) {
+            const { positions, totalVertices } = generateClosedGeodesicPath(vertexIndices, CURVE_POINTS_PER_SEGMENT);
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            geometry.setDrawRange(0, 0);
+            const material = new THREE.LineBasicMaterial({
+                color: color, transparent: true, opacity: 0.84, depthWrite: false,
+            });
+            const line = new THREE.Line(geometry, material);
+            allCurveData.push({ geometry, totalVertices });
+            return line;
+        }
+
+        // 定义三组顶点序列（每种颜色6条闭合路径）
+        // 金色：三角形面（3个顶点，正二十面体的面）
+        const goldPaths = [
+            [0, 4, 8],
+            [0, 8, 5],
+            [0, 5, 1],
+            [0, 1, 9],
+            [0, 9, 4],
+            [2, 4, 10],
+        ];
+
+        // 玫瑰粉：五边形环（围绕顶点，5个顶点）
+        const rosePaths = [
+            [0, 4, 8, 9, 5],
+            [1, 5, 0, 9, 6],
+            [2, 4, 0, 5, 10],
+            [3, 6, 1, 7, 10],
+            [7, 3, 11, 6, 1],
+            [11, 3, 10, 2, 7],
+        ];
+
+        // 青蓝：六边形环（取两相邻五边形的边界，6个顶点）
+        const cyanPaths = [
+            [0, 4, 10, 3, 6, 1],
+            [0, 5, 2, 7, 3, 8],
+            [1, 5, 10, 4, 9, 6],
+            [2, 4, 0, 9, 8, 10],
+            [3, 6, 9, 8, 11, 7],
+            [7, 11, 2, 5, 1, 6],
+        ];
+
+        goldPaths.forEach(path => curvesGroup.add(createGeodesicCurve(path, COLOR_WARM_GOLD)));
+        rosePaths.forEach(path => curvesGroup.add(createGeodesicCurve(path, COLOR_ROSE)));
+        cyanPaths.forEach(path => curvesGroup.add(createGeodesicCurve(path, COLOR_CYAN)));
+
+        const curveCount = allCurveData.length;
+
+        // ==================== 动画循环 ====================
+        const clock = new THREE.Clock();
+        let animationStartTime = performance.now() / 1000;
+        clock.getDelta(); // 消耗初始累积时间
+
+        function getCycleTime() {
+            return (performance.now() / 1000 - animationStartTime) % CYCLE_DURATION;
+        }
+
+        function easeInOutCubic(t) {
+            return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const cycleTime = getCycleTime();
+            const dt = Math.min(clock.getDelta(), 0.1);
+
+            mainGroup.rotation.y += 0.23 * dt;
+            mainGroup.rotation.x += 0.055 * dt;
+            mainGroup.rotation.z += 0.012 * Math.sin(cycleTime * 0.54) * dt;
+
+            const sway = 0.08 * Math.sin(cycleTime * (Math.PI * 2 / 33));
+            camera.position.y = 0.7 + sway;
+            camera.lookAt(0, 0.02, 0);
+
+            let fraction;
+            if (cycleTime < DRAW_END) {
+                fraction = easeInOutCubic(cycleTime / DRAW_DURATION);
+            } else if (cycleTime < ERASE_START) {
+                fraction = 1.0;
+            } else if (cycleTime < CYCLE_DURATION) {
+                const elapsed = cycleTime - ERASE_START;
+                fraction = 1.0 - easeInOutCubic(elapsed / ERASE_DURATION);
+                fraction = Math.max(0, fraction);
+            } else {
+                fraction = 0;
+            }
+
+            for (const data of allCurveData) {
+                const count = Math.round(fraction * data.totalVertices);
+                data.geometry.setDrawRange(0, Math.max(0, Math.min(data.totalVertices, count)));
+            }
+
+            let bgOp;
+            if (cycleTime < FADE_IN_DURATION) {
+                bgOp = cycleTime / FADE_IN_DURATION;
+            } else if (cycleTime < FADE_OUT_START) {
+                bgOp = 1.0;
+            } else if (cycleTime < CYCLE_DURATION) {
+                bgOp = 1.0 - (cycleTime - FADE_OUT_START) / (CYCLE_DURATION - FADE_OUT_START);
+            } else {
+                bgOp = 0;
+            }
+            bgOp = Math.max(0, Math.min(1, bgOp));
+
+            starMat.opacity = 0.26 * bgOp;
+            glowMat.opacity = 0.55 * bgOp;
+            for (const mat of sphereWireMats) {
+                mat.opacity = (mat.opacity ?? 0.11) * bgOp;
+            }
+
+            glowGroup.rotation.copy(mainGroup.rotation);
+            starsGroup.rotation.y += dt * 0.014;
+            starsGroup.rotation.x += dt * 0.009;
+
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = container.clientWidth / container.clientHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        });
+
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'r' || e.key === 'R') {
+                animationStartTime = performance.now() / 1000;
+                for (const data of allCurveData) {
+                    data.geometry.setDrawRange(0, 0);
+                }
+                mainGroup.rotation.set(0, 0, 0);
+            }
+        });
+
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+
+        console.log('🔷 正二十面体测地线网络动画已启动');
+        console.log(`   - ${curveCount} 条闭合测地线曲线，3种颜色各${curveCount / 3}条`);
+        console.log('   - 金色：三角形面 | 玫瑰粉：五边形环 | 青蓝：六边形环');
+        console.log(`   - 球面半径：${SPHERE_R}，顶点数：${vertices.length}`);
+        console.log(`   - 周期：${CYCLE_DURATION.toFixed(1)}秒`);
+        console.log('   - 按 R 键可重置');
+    </script>
+</body>
+</html>

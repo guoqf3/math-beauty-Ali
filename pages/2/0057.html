@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ROSETTE · 玫瑰线</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #0a0a18;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2;
+            text-align: center;
+            pointer-events: none;
+            opacity: 0.5;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+        .overlay:hover {
+            opacity: 0.85;
+        }
+        .title {
+            color: rgba(235, 220, 255, 0.7);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 20px rgba(160, 120, 240, 0.4);
+        }
+        .hint {
+            color: rgba(185, 175, 215, 0.45);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+        @media (max-width: 768px) {
+            .overlay { bottom: 18px; }
+            .title { font-size: 8px; letter-spacing: 0.45em; }
+            .hint { font-size: 6px; letter-spacing: 0.22em; }
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <div class="overlay">
+        <div class="title">Rosette</div>
+        <div class="hint">move · click</div>
+    </div>
+    <script>
+        (function() {
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            let mouse = { x: -9999, y: -9999, active: false, tx: 0, ty: 0 };
+            let time = 0;
+            let colorShift = 0;
+            let kValue = 5; // 玫瑰线参数（花瓣数量相关）
+            let kTarget = 5;
+            let rotateAngle = 0;
+            let trailCanvas, trailCtx;
+
+            // 玫瑰线绘制参数
+            const PETAL_COUNT = 3 + Math.floor(kValue * 2); // 对于k=5，会有10个花瓣
+            const POINT_COUNT = 720; // 每帧绘制的点数
+            const MAX_RADIUS_FACTOR = 0.42; // 最大半径占画布比例
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                ctx.fillStyle = '#0a0a18';
+                ctx.fillRect(0, 0, W, H);
+                // 创建拖尾画布
+                trailCanvas = document.createElement('canvas');
+                trailCanvas.width = canvas.width;
+                trailCanvas.height = canvas.height;
+                trailCtx = trailCanvas.getContext('2d');
+                trailCtx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                trailCtx.fillStyle = '#0a0a18';
+                trailCtx.fillRect(0, 0, W, H);
+            }
+
+            function initRosette() {
+                kValue = 3 + Math.floor(Math.random() * 5);
+                kTarget = kValue;
+            }
+
+            // ─── 绘制玫瑰线 ───────────────────────────────────────────
+            function drawRosette(ctx, cx, cy, maxR, k, rotation, colorOffset, alpha) {
+                ctx.lineWidth = 1.2;
+                ctx.lineCap = 'round';
+
+                const steps = POINT_COUNT;
+                const prev = { x: 0, y: 0 };
+                let first = true;
+
+                for (let i = 0; i <= steps; i++) {
+                    const theta = (i / steps) * Math.PI * 2;
+                    // 玫瑰线：r = maxR * cos(k * theta)
+                    const r = maxR * Math.cos(k * theta + rotation * 0.01);
+                    const x = cx + r * Math.cos(theta + rotation);
+                    const y = cy + r * Math.sin(theta + rotation);
+
+                    if (!first) {
+                        // 颜色沿角度变化
+                        const hue = (theta / (Math.PI * 2) * 360 + colorOffset + r * 60) % 360;
+                        const sat = 65 + Math.abs(r / maxR) * 30;
+                        const light = 50 + Math.abs(r / maxR) * 35;
+                        const gradient = ctx.createLinearGradient(prev.x, prev.y, x, y);
+                        gradient.addColorStop(0, `hsla(${hue}, ${sat}%, ${light}%, ${alpha})`);
+                        gradient.addColorStop(1, `hsla(${hue + 15}, ${sat + 5}%, ${light + 8}%, ${alpha * 0.9})`);
+                        ctx.strokeStyle = gradient;
+                        ctx.beginPath();
+                        ctx.moveTo(prev.x, prev.y);
+                        ctx.lineTo(x, y);
+                        ctx.stroke();
+                    }
+
+                    prev.x = x;
+                    prev.y = y;
+                    first = false;
+                }
+            }
+
+            // ─── 绘制多个嵌套玫瑰线 ──────────────────────────────────
+            function drawAllRosettes(ctx, t, mouseAngle) {
+                const cx = W / 2;
+                const cy = H / 2;
+                const baseMaxR = Math.min(W, H) * MAX_RADIUS_FACTOR;
+
+                // 鼠标旋转影响
+                const mouseRotation = mouse.active ? mouseAngle * 0.15 : 0;
+                const rotation = rotateAngle + mouseRotation + t * 0.08;
+
+                // 绘制多层玫瑰线
+                const layers = 4;
+                for (let layer = 0; layer < layers; layer++) {
+                    const layerFactor = 1 - layer * 0.16;
+                    const layerMaxR = baseMaxR * layerFactor;
+                    const layerAlpha = 0.5 - layer * 0.09;
+                    const layerRotation = rotation + layer * 0.7;
+                    const layerK = kValue + layer * 0.3;
+
+                    drawRosette(ctx, cx, cy, layerMaxR, layerK, layerRotation, colorShift + layer * 18, layerAlpha);
+                }
+
+                // 中心发光点
+                const centerGradient = ctx.createRadialGradient(cx, cy, 0, cx, cy, baseMaxR * 0.25);
+                centerGradient.addColorStop(0, `hsla(${220 + colorShift}, 55%, 75%, 0.25)`);
+                centerGradient.addColorStop(0.5, `hsla(${220 + colorShift}, 50%, 65%, 0.08)`);
+                centerGradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = centerGradient;
+                ctx.beginPath();
+                ctx.arc(cx, cy, baseMaxR * 0.25, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // ─── 鼠标光晕 ───────────────────────────────────────────────
+            function drawCursorGlow(ctx) {
+                if (!mouse.active) return;
+                const radius = 55;
+                const hue = 220 + colorShift;
+                const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                gradient.addColorStop(0, `hsla(${hue}, 60%, 75%, 0.06)`);
+                gradient.addColorStop(0.7, `hsla(${hue}, 55%, 70%, 0.02)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // ─── 主循环 ─────────────────────────────────────────────────
+            let lastTime = 0;
+            let accumulator = 0;
+            const fixedStep = 1000 / 60;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+
+                accumulator += dt;
+                const steps = Math.min(Math.floor(accumulator / fixedStep), 3);
+                accumulator -= steps * fixedStep;
+
+                for (let s = 0; s < steps; s++) {
+                    time += 0.016;
+                    // 平滑过渡k值
+                    if (Math.abs(kTarget - kValue) > 0.01) {
+                        kValue += (kTarget - kValue) * 0.06;
+                    } else {
+                        kValue = kTarget;
+                    }
+                    // 自动旋转
+                    rotateAngle += 0.003;
+                }
+
+                // 计算鼠标角度（相对于画布中心）
+                let mouseAngle = 0;
+                if (mouse.active && mouse.x > 0) {
+                    mouseAngle = Math.atan2(mouse.y - H / 2, mouse.x - W / 2);
+                }
+
+                // 半透明清除，产生拖尾效果
+                ctx.fillStyle = 'rgba(10, 10, 24, 0.15)';
+                ctx.fillRect(0, 0, W, H);
+
+                // 绘制玫瑰线
+                drawAllRosettes(ctx, time, mouseAngle);
+
+                // 鼠标光晕
+                drawCursorGlow(ctx);
+
+                requestAnimationFrame(animate);
+            }
+
+            // ─── 交互事件 ───────────────────────────────────────────────
+            function onMouseMove(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                // 切换花瓣数量
+                kTarget = 3 + Math.floor(Math.random() * 6);
+                // 色彩偏移
+                colorShift += 30 + Math.random() * 30;
+                if (colorShift > 160) colorShift = -30;
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    kTarget = 3 + Math.floor(Math.random() * 6);
+                    colorShift += 30 + Math.random() * 30;
+                    if (colorShift > 160) colorShift = -30;
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onResize() {
+                setupCanvas();
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+                initRosette();
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#0a0a18';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+        })();
+    </script>
+</body>
+</html>

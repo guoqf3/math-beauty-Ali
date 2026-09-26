@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GENESIS · 有机生长</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #0a0a14;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+            image-rendering: pixelated;
+        }
+
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            right: 32px;
+            z-index: 2;
+            text-align: right;
+            pointer-events: none;
+            opacity: 0.55;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+
+        .overlay:hover {
+            opacity: 0.9;
+        }
+
+        .title {
+            color: rgba(225, 220, 250, 0.8);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 18px rgba(120, 140, 240, 0.5);
+        }
+
+        .hint {
+            color: rgba(180, 175, 205, 0.5);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+
+        @media (max-width: 768px) {
+            .overlay {
+                bottom: 18px;
+                right: 20px;
+            }
+            .title {
+                font-size: 8px;
+                letter-spacing: 0.45em;
+            }
+            .hint {
+                font-size: 6px;
+                letter-spacing: 0.22em;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="canvas"></canvas>
+
+    <div class="overlay">
+        <div class="title">Genesis</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script>
+        (function() {
+            // ─── 画布初始化 ───────────────────────────────────────────────
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d');
+
+            let W, H, DPR;
+            let simW, simH;          // 模拟网格分辨率
+            let U, V;                // 化学物质浓度数组
+            let nextU, nextV;
+            let imageData, data;
+            let mouse = { x: -9999, y: -9999, active: false };
+            let time = 0;
+            let colorShift = 0;
+            let simScale = 4;        // 模拟网格缩放因子
+
+            // 格雷-斯科特模型参数
+            let Du = 0.16;
+            let Dv = 0.08;
+            let feed = 0.035;
+            let kill = 0.062;
+            let dt = 0.6;
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+                // 模拟网格分辨率（保持低分辨率以保证性能）
+                simScale = Math.max(3, Math.min(5, Math.floor(Math.min(W, H) / 180)));
+                simW = Math.ceil(W / simScale);
+                simH = Math.ceil(H / simScale);
+
+                // 确保网格尺寸合理
+                while (simW * simH > 16000) {
+                    simScale++;
+                    simW = Math.ceil(W / simScale);
+                    simH = Math.ceil(H / simScale);
+                }
+                while (simW * simH < 4000 && simScale > 2) {
+                    simScale--;
+                    simW = Math.ceil(W / simScale);
+                    simH = Math.ceil(H / simScale);
+                }
+
+                // 初始化数组
+                U = new Float32Array(simW * simH);
+                V = new Float32Array(simW * simH);
+                nextU = new Float32Array(simW * simH);
+                nextV = new Float32Array(simW * simH);
+
+                // 随机种子
+                for (let i = 0; i < simW * simH; i++) {
+                    U[i] = 1.0;
+                    V[i] = 0.0;
+                }
+                // 在几个随机位置注入种子
+                for (let s = 0; s < 5; s++) {
+                    const sx = Math.floor(Math.random() * simW);
+                    const sy = Math.floor(Math.random() * simH);
+                    for (let dy = -3; dy <= 3; dy++) {
+                        for (let dx = -3; dx <= 3; dx++) {
+                            const nx = sx + dx;
+                            const ny = sy + dy;
+                            if (nx >= 0 && nx < simW && ny >= 0 && ny < simH) {
+                                const idx = ny * simW + nx;
+                                V[idx] = 0.8 + Math.random() * 0.2;
+                                U[idx] = 0.2 + Math.random() * 0.1;
+                            }
+                        }
+                    }
+                }
+
+                // 创建ImageData
+                imageData = ctx.createImageData(simW, simH);
+                data = imageData.data;
+            }
+
+            // ─── 格雷-斯科特模拟步进 ───────────────────────────────────
+            function stepSimulation() {
+                // 拉普拉斯算子（3x3卷积）
+                for (let y = 0; y < simH; y++) {
+                    for (let x = 0; x < simW; x++) {
+                        const idx = y * simW + x;
+                        const xm = x > 0 ? x - 1 : simW - 1;
+                        const xp = x < simW - 1 ? x + 1 : 0;
+                        const ym = y > 0 ? y - 1 : simH - 1;
+                        const yp = y < simH - 1 ? y + 1 : 0;
+
+                        const uC = U[idx];
+                        const vC = V[idx];
+
+                        // 拉普拉斯（5点模板）
+                        const lapU = U[ym * simW + x] + U[yp * simW + x] + U[y * simW + xm] + U[y * simW + xp] - 4 * uC;
+                        const lapV = V[ym * simW + x] + V[yp * simW + x] + V[y * simW + xm] + V[y * simW + xp] - 4 * vC;
+
+                        // 反应项
+                        const uvv = uC * vC * vC;
+                        const du = Du * lapU - uvv + feed * (1 - uC);
+                        const dv = Dv * lapV + uvv - (feed + kill) * vC;
+
+                        nextU[idx] = uC + du * dt;
+                        nextV[idx] = vC + dv * dt;
+
+                        // 边界保护
+                        nextU[idx] = Math.max(0, Math.min(1, nextU[idx]));
+                        nextV[idx] = Math.max(0, Math.min(1, nextV[idx]));
+                    }
+                }
+
+                // 交换缓冲
+                const tempU = U;
+                U = nextU;
+                nextU = tempU;
+                const tempV = V;
+                V = nextV;
+                nextV = tempV;
+            }
+
+            // ─── 鼠标注入化学物质 ───────────────────────────────────────
+            function injectAt(screenX, screenY, strength) {
+                const simX = Math.floor(screenX / simScale);
+                const simY = Math.floor(screenY / simScale);
+                const radius = Math.max(2, Math.floor(6 / simScale));
+                for (let dy = -radius; dy <= radius; dy++) {
+                    for (let dx = -radius; dx <= radius; dx++) {
+                        const nx = simX + dx;
+                        const ny = simY + dy;
+                        if (nx >= 0 && nx < simW && ny >= 0 && ny < simH) {
+                            const dist = Math.sqrt(dx * dx + dy * dy);
+                            if (dist <= radius) {
+                                const idx = ny * simW + nx;
+                                const falloff = (1 - dist / radius);
+                                V[idx] = Math.min(1, V[idx] + strength * falloff);
+                                U[idx] = Math.max(0, U[idx] - strength * 0.5 * falloff);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ─── 渲染到画布 ─────────────────────────────────────────────
+            function renderToCanvas() {
+                for (let i = 0; i < simW * simH; i++) {
+                    const u = U[i];
+                    const v = V[i];
+                    const idx4 = i * 4;
+
+                    // 颜色映射：基于U和V的比值
+                    const ratio = v / (u + v + 0.001);
+                    const intensity = Math.min(1, v * 3);
+
+                    // 基础色相：从深蓝（低强度）到青/绿/黄（高强度）
+                    let hue, sat, light, alpha;
+                    if (intensity < 0.05) {
+                        hue = 220 + colorShift;
+                        sat = 30;
+                        light = 12;
+                    } else {
+                        hue = 210 + colorShift - intensity * 80;
+                        sat = 60 + intensity * 30;
+                        light = 15 + intensity * 55;
+                    }
+
+                    // 转换HSLA为RGBA
+                    const rgb = hslaToRgba(hue, sat, light, 1);
+                    data[idx4] = rgb[0];
+                    data[idx4 + 1] = rgb[1];
+                    data[idx4 + 2] = rgb[2];
+                    data[idx4 + 3] = 255;
+                }
+
+                // 将低分辨率图像数据绘制到高分辨率画布
+                const tempCanvas = document.createElement('canvas');
+                tempCanvas.width = simW;
+                tempCanvas.height = simH;
+                const tempCtx = tempCanvas.getContext('2d');
+                tempCtx.putImageData(imageData, 0, 0);
+                ctx.clearRect(0, 0, W, H);
+                ctx.imageSmoothingEnabled = false;
+                ctx.drawImage(tempCanvas, 0, 0, W, H);
+            }
+
+            // ─── HSLA转RGBA ─────────────────────────────────────────────
+            function hslaToRgba(h, s, l, a) {
+                h = ((h % 360) + 360) % 360;
+                s = Math.max(0, Math.min(100, s)) / 100;
+                l = Math.max(0, Math.min(100, l)) / 100;
+                const c = (1 - Math.abs(2 * l - 1)) * s;
+                const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+                const m = l - c / 2;
+                let r, g, b;
+                if (h < 60) { r = c;
+                    g = x;
+                    b = 0; } else if (h < 120) { r = x;
+                    g = c;
+                    b = 0; } else if (h < 180) { r = 0;
+                    g = c;
+                    b = x; } else if (h < 240) { r = 0;
+                    g = x;
+                    b = c; } else if (h < 300) { r = x;
+                    g = 0;
+                    b = c; } else { r = c;
+                    g = 0;
+                    b = x; }
+                return [Math.round((r + m) * 255), Math.round((g + m) * 255), Math.round((b + m) * 255)];
+            }
+
+            // ─── 鼠标光晕 ───────────────────────────────────────────────
+            function drawCursorGlow(ctx) {
+                if (!mouse.active) return;
+                const radius = 40;
+                const hue = 210 + colorShift;
+                const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                gradient.addColorStop(0, `hsla(${hue}, 70%, 80%, 0.1)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // ─── 主循环 ─────────────────────────────────────────────────
+            let lastTime = 0;
+            let accumulator = 0;
+            const simStepInterval = 1000 / 35; // 约35fps的模拟步进
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 100) dt = 100;
+                if (dt < 1) dt = 1;
+
+                accumulator += dt;
+                // 按固定间隔执行模拟步进
+                while (accumulator >= simStepInterval) {
+                    stepSimulation();
+                    accumulator -= simStepInterval;
+                }
+
+                // 渲染
+                renderToCanvas();
+                drawCursorGlow(ctx);
+
+                time += dt;
+                requestAnimationFrame(animate);
+            }
+
+            // ─── 交互事件 ───────────────────────────────────────────────
+            function onMouseMove(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                injectAt(mouse.x, mouse.y, 0.35);
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                // 点击强注射
+                injectAt(mouse.x, mouse.y, 1.5);
+                // 切换色彩偏移
+                colorShift += 25 + Math.random() * 25;
+                if (colorShift > 90) colorShift = -25;
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    injectAt(mouse.x, mouse.y, 0.35);
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    injectAt(mouse.x, mouse.y, 1.5);
+                    colorShift += 25 + Math.random() * 25;
+                    if (colorShift > 90) colorShift = -25;
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onResize() {
+                setupCanvas();
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            // 确保初始背景填充
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#0a0a14';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+
+        })();
+    </script>
+</body>
+</html>

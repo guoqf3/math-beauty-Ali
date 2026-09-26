@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FIREFLY · 萤火虫</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #0a0a14;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            right: 32px;
+            z-index: 2;
+            text-align: right;
+            pointer-events: none;
+            opacity: 0.5;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+        .overlay:hover {
+            opacity: 0.85;
+        }
+        .title {
+            color: rgba(255, 230, 190, 0.7);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 20px rgba(255, 180, 80, 0.5);
+        }
+        .hint {
+            color: rgba(200, 170, 130, 0.45);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+        @media (max-width: 768px) {
+            .overlay { bottom: 18px; right: 20px; }
+            .title { font-size: 8px; letter-spacing: 0.45em; }
+            .hint { font-size: 6px; letter-spacing: 0.22em; }
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <div class="overlay">
+        <div class="title">Firefly</div>
+        <div class="hint">move · click</div>
+    </div>
+    <script>
+        (function() {
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            let fireflies = [];
+            let mouse = { x: -9999, y: -9999, active: false, vx: 0, vy: 0, lastX: -9999, lastY: -9999 };
+            let time = 0;
+            let colorShift = 0;
+            let burstParticles = [];
+
+            // 性能参数
+            const FIREFLY_COUNT = () => Math.max(80, Math.min(200, Math.floor(W * H / 6000)));
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                ctx.fillStyle = '#0a0a14';
+                ctx.fillRect(0, 0, W, H);
+            }
+
+            // ─── 萤火虫类 ─────────────────────────────────────────────
+            class Firefly {
+                constructor(x, y) {
+                    this.x = x || Math.random() * W;
+                    this.y = y || Math.random() * H;
+                    this.vx = (Math.random() - 0.5) * 0.6;
+                    this.vy = (Math.random() - 0.5) * 0.6;
+                    this.size = 1.5 + Math.random() * 2.5;
+                    this.glowRadius = this.size * 4;
+                    this.hue = 35 + Math.random() * 30; // 暖金色范围
+                    this.saturation = 75 + Math.random() * 20;
+                    this.lightness = 55 + Math.random() * 25;
+                    this.alpha = 0.4 + Math.random() * 0.5;
+                    // 闪烁参数
+                    this.flashSpeed = 0.4 + Math.random() * 1.2;
+                    this.flashPhase = Math.random() * Math.PI * 2;
+                    this.flashIntensity = 0.5 + Math.random() * 0.5;
+                    // 飞行参数
+                    this.wanderAngle = Math.random() * Math.PI * 2;
+                    this.wanderSpeed = 0.05 + Math.random() * 0.15;
+                    this.wanderStrength = 0.15 + Math.random() * 0.35;
+                    this.targetX = this.x;
+                    this.targetY = this.y;
+                    this.targetChangeTimer = 60 + Math.random() * 120;
+                }
+
+                update(dt, mouse, t) {
+                    // 更新目标点
+                    this.targetChangeTimer -= dt;
+                    if (this.targetChangeTimer <= 0) {
+                        this.targetX = Math.random() * W;
+                        this.targetY = Math.random() * H;
+                        this.targetChangeTimer = 80 + Math.random() * 180;
+                    }
+
+                    // 朝目标点移动
+                    const dx = this.targetX - this.x;
+                    const dy = this.targetY - this.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    if (dist > 5) {
+                        const moveForce = 0.008;
+                        this.vx += dx / dist * moveForce;
+                        this.vy += dy / dist * moveForce;
+                    }
+
+                    // 随机游荡
+                    this.wanderAngle += (Math.random() - 0.5) * this.wanderSpeed;
+                    this.vx += Math.cos(this.wanderAngle) * this.wanderStrength * 0.02;
+                    this.vy += Math.sin(this.wanderAngle) * this.wanderStrength * 0.02;
+
+                    // 鼠标影响：柔和推开
+                    if (mouse.active) {
+                        const mdx = this.x - mouse.x;
+                        const mdy = this.y - mouse.y;
+                        const mDistSq = mdx * mdx + mdy * mdy;
+                        const radius = 150;
+                        if (mDistSq < radius * radius && mDistSq > 0.01) {
+                            const mDist = Math.sqrt(mDistSq);
+                            const falloff = 1 - mDist / radius;
+                            const pushForce = falloff * 0.3;
+                            this.vx += mdx / mDist * pushForce;
+                            this.vy += mdy / mDist * pushForce;
+                            // 靠近鼠标时增亮
+                            this.flashIntensity = Math.min(1, this.flashIntensity + 0.015);
+                        }
+                    }
+
+                    // 阻尼
+                    this.vx *= 0.97;
+                    this.vy *= 0.97;
+
+                    // 速度限制
+                    const maxSpeed = 1.8;
+                    const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
+                    if (speed > maxSpeed) {
+                        this.vx = (this.vx / speed) * maxSpeed;
+                        this.vy = (this.vy / speed) * maxSpeed;
+                    }
+
+                    // 更新位置
+                    this.x += this.vx * dt;
+                    this.y += this.vy * dt;
+
+                    // 边界环绕
+                    if (this.x < -30) this.x = W + 30;
+                    if (this.x > W + 30) this.x = -30;
+                    if (this.y < -30) this.y = H + 30;
+                    if (this.y > H + 30) this.y = -30;
+                }
+
+                draw(ctx, t) {
+                    // 闪烁：使用两个正弦波叠加
+                    const flash1 = Math.sin(t * this.flashSpeed + this.flashPhase);
+                    const flash2 = Math.sin(t * this.flashSpeed * 2.3 + this.flashPhase * 1.5);
+                    const flash = this.flashIntensity * (0.4 + 0.3 * flash1 + 0.2 * flash2);
+                    const alpha = this.alpha * flash;
+                    if (alpha < 0.05) return;
+
+                    const hue = this.hue + colorShift;
+                    const sat = this.saturation;
+                    const light = this.lightness + flash * 20;
+
+                    // 外层光晕
+                    const glowGradient = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, this.glowRadius);
+                    glowGradient.addColorStop(0, `hsla(${hue}, ${sat}%, ${light + 20}%, ${alpha})`);
+                    glowGradient.addColorStop(0.4, `hsla(${hue}, ${sat}%, ${light}%, ${alpha * 0.4})`);
+                    glowGradient.addColorStop(1, 'transparent');
+                    ctx.fillStyle = glowGradient;
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, this.glowRadius, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // 核心光点
+                    ctx.fillStyle = `hsla(${hue}, ${sat}%, ${light + 30}%, ${alpha})`;
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, this.size * 0.7, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            // ─── 初始化萤火虫 ─────────────────────────────────────────
+            function initFireflies() {
+                const count = FIREFLY_COUNT();
+                fireflies = [];
+                for (let i = 0; i < count; i++) {
+                    fireflies.push(new Firefly());
+                }
+            }
+
+            // ─── 点击释放萤火虫群 ─────────────────────────────────────
+            function createFireflyBurst(x, y) {
+                const count = 15 + Math.floor(Math.random() * 15);
+                for (let i = 0; i < count; i++) {
+                    const ff = new Firefly(x, y);
+                    ff.vx = (Math.random() - 0.5) * 4;
+                    ff.vy = (Math.random() - 0.5) * 4;
+                    ff.flashIntensity = 1.0;
+                    ff.targetX = x + (Math.random() - 0.5) * 200;
+                    ff.targetY = y + (Math.random() - 0.5) * 200;
+                    fireflies.push(ff);
+                }
+                // 限制总数
+                if (fireflies.length > 250) {
+                    fireflies.splice(0, fireflies.length - 250);
+                }
+            }
+
+            // ─── 鼠标光晕 ─────────────────────────────────────────────
+            function drawCursorGlow(ctx) {
+                if (!mouse.active) return;
+                const radius = 45;
+                const hue = 40 + colorShift;
+                const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                gradient.addColorStop(0, `hsla(${hue}, 70%, 75%, 0.05)`);
+                gradient.addColorStop(0.7, `hsla(${hue}, 60%, 70%, 0.02)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // ─── 主循环 ─────────────────────────────────────────────────
+            let lastTime = 0;
+            let accumulator = 0;
+            const fixedStep = 1000 / 60;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+
+                accumulator += dt;
+                const steps = Math.min(Math.floor(accumulator / fixedStep), 3);
+                accumulator -= steps * fixedStep;
+
+                for (let s = 0; s < steps; s++) {
+                    time += 0.016;
+                    const dtNorm = fixedStep / 1000 * 60;
+                    for (const ff of fireflies) {
+                        ff.update(dtNorm, mouse, time);
+                    }
+                }
+
+                // 半透明清除，形成余辉
+                ctx.fillStyle = 'rgba(10, 10, 20, 0.3)';
+                ctx.fillRect(0, 0, W, H);
+
+                // 绘制萤火虫
+                for (const ff of fireflies) {
+                    ff.draw(ctx, time);
+                }
+
+                // 鼠标光晕
+                drawCursorGlow(ctx);
+
+                requestAnimationFrame(animate);
+            }
+
+            // ─── 交互事件 ─────────────────────────────────────────────
+            function onMouseMove(e) {
+                mouse.lastX = mouse.x;
+                mouse.lastY = mouse.y;
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                mouse.vx = (mouse.x - mouse.lastX) * 0.1;
+                mouse.vy = (mouse.y - mouse.lastY) * 0.1;
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+                mouse.lastX = -9999;
+                mouse.lastY = -9999;
+                mouse.vx = 0;
+                mouse.vy = 0;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                createFireflyBurst(mouse.x, mouse.y);
+                colorShift += 8 + Math.random() * 12;
+                if (colorShift > 40) colorShift = -10;
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.lastX = mouse.x;
+                    mouse.lastY = mouse.y;
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    createFireflyBurst(mouse.x, mouse.y);
+                    colorShift += 8 + Math.random() * 12;
+                    if (colorShift > 40) colorShift = -10;
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+                mouse.lastX = -9999;
+                mouse.lastY = -9999;
+            }
+
+            function onResize() {
+                setupCanvas();
+                const targetCount = FIREFLY_COUNT();
+                if (targetCount !== fireflies.length) {
+                    while (fireflies.length < targetCount) {
+                        fireflies.push(new Firefly());
+                    }
+                    if (fireflies.length > targetCount) {
+                        fireflies.length = targetCount;
+                    }
+                }
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+                initFireflies();
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#0a0a14';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+        })();
+    </script>
+</body>
+</html>

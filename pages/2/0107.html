@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NEURAL · 神经生长</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #0d0d1a;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            right: 32px;
+            z-index: 2;
+            text-align: right;
+            pointer-events: none;
+            opacity: 0.55;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+
+        .overlay:hover {
+            opacity: 0.9;
+        }
+
+        .title {
+            color: rgba(210, 230, 255, 0.8);
+            font-size: 11px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 18px rgba(100, 160, 240, 0.4);
+        }
+
+        .hint {
+            color: rgba(170, 190, 220, 0.5);
+            font-size: 8px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+
+        @media (max-width: 768px) {
+            .overlay {
+                bottom: 18px;
+                right: 20px;
+            }
+            .title {
+                font-size: 9px;
+                letter-spacing: 0.45em;
+            }
+            .hint {
+                font-size: 7px;
+                letter-spacing: 0.25em;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="canvas"></canvas>
+
+    <div class="overlay">
+        <div class="title">Neural</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script>
+        (function() {
+            // ─── 画布初始化 ───────────────────────────────────────────────
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            let branches = [];       // 分支数据
+            let tips = [];           // 生长尖端
+            let mouse = { x: -9999, y: -9999, active: false };
+            let time = 0;
+            let colorShift = 0;
+            let burstParticles = [];
+            let maxBranches = 220;
+            let maxTips = 45;
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                ctx.fillStyle = '#0d0d1a';
+                ctx.fillRect(0, 0, W, H);
+            }
+
+            // ─── 分支类 ─────────────────────────────────────────────────
+            class Branch {
+                constructor(x, y, angle, depth, parentId, hue) {
+                    this.x = x;
+                    this.y = y;
+                    this.angle = angle;
+                    this.depth = depth;
+                    this.parentId = parentId;
+                    this.hue = hue;
+                    this.length = 5 + Math.random() * 12;
+                    this.thickness = Math.max(0.3, 2.5 - depth * 0.3);
+                    this.grown = 0;        // 0到1，表示生长进度
+                    this.growthRate = 0.04 + Math.random() * 0.03;
+                    this.offspring = [];   // 子分支索引
+                }
+            }
+
+            // ─── 生长尖端类 ─────────────────────────────────────────────
+            class Tip {
+                constructor(x, y, angle, branchId, depth, hue) {
+                    this.x = x;
+                    this.y = y;
+                    this.angle = angle;
+                    this.branchId = branchId;
+                    this.depth = depth;
+                    this.hue = hue;
+                    this.speed = 1.1 + Math.random() * 0.8;
+                    this.wobble = Math.random() * Math.PI * 2;
+                    this.wobbleSpeed = 0.05 + Math.random() * 0.08;
+                    this.life = 70 + Math.random() * 50;
+                    this.splitCooldown = 20 + Math.random() * 30;
+                }
+
+                update(mouse) {
+                    this.life--;
+                    this.splitCooldown--;
+                    this.wobble += this.wobbleSpeed;
+
+                    // 随机方向变化
+                    this.angle += Math.sin(this.wobble) * 0.03;
+
+                    // 鼠标吸引
+                    if (mouse.active) {
+                        const dx = mouse.x - this.x;
+                        const dy = mouse.y - this.y;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        if (dist < 160) {
+                            const attractAngle = Math.atan2(dy, dx);
+                            const angleDiff = ((attractAngle - this.angle + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+                            this.angle += angleDiff * 0.12;
+                        }
+                    }
+
+                    // 远离密集区域（简单避让）
+                    for (const other of tips) {
+                        if (other === this || !other || other.branchId === this.branchId) continue;
+                        const dx = this.x - other.x;
+                        const dy = this.y - other.y;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        if (dist < 25 && dist > 0) {
+                            this.angle += (dx / dist) * 0.08;
+                            this.angle += (Math.random() - 0.5) * 0.05;
+                        }
+                    }
+
+                    // 移动
+                    const moveStep = this.speed * 0.6;
+                    this.x += Math.cos(this.angle) * moveStep;
+                    this.y += Math.sin(this.angle) * moveStep;
+
+                    // 边界反弹（温和转向）
+                    const margin = 50;
+                    if (this.x < margin) this.angle += 0.15;
+                    if (this.x > W - margin) this.angle -= 0.15;
+                    if (this.y < margin) this.angle += 0.15;
+                    if (this.y > H - margin) this.angle -= 0.15;
+                }
+
+                shouldSplit() {
+                    return this.splitCooldown <= 0 && this.life > 20 && tips.length < maxTips && Math.random() < 0.12;
+                }
+
+                shouldDie() {
+                    return this.life <= 0 || this.x < -100 || this.x > W + 100 || this.y < -100 || this.y > H + 100;
+                }
+            }
+
+            // ─── 创建种子 ───────────────────────────────────────────────
+            function createSeed(x, y) {
+                const hue = 190 + colorShift + Math.random() * 70 - 35;
+                const angle = Math.random() * Math.PI * 2;
+                const depth = 1;
+                const branchId = branches.length;
+                const branch = new Branch(x, y, angle, depth, -1, hue);
+                branches.push(branch);
+                const tip = new Tip(x, y, angle, branchId, depth, hue);
+                tips.push(tip);
+                return branchId;
+            }
+
+            // ─── 生长分支 ───────────────────────────────────────────────
+            function growBranches() {
+                if (branches.length >= maxBranches) return;
+                if (tips.length === 0) return;
+
+                // 找到最老的尖端（即最先加入的）
+                const tipIndex = 0;
+                const tip = tips[tipIndex];
+                if (!tip) return;
+
+                // 更新分支生长进度
+                const branch = branches[tip.branchId];
+                if (branch) {
+                    branch.grown = Math.min(1, branch.grown + 0.06);
+                }
+
+                // 尖端移动
+                tip.update(mouse);
+
+                // 更新分支末端位置
+                if (branch) {
+                    branch.x = tip.x;
+                    branch.y = tip.y;
+                }
+
+                // 检查分裂
+                if (tip.shouldSplit() && branches.length < maxBranches) {
+                    const splitAngle1 = tip.angle + (0.3 + Math.random() * 0.5);
+                    const splitAngle2 = tip.angle - (0.3 + Math.random() * 0.5);
+                    const newDepth = tip.depth + 1;
+                    if (newDepth < 8) {
+                        const hue1 = tip.hue + 20 + Math.random() * 30;
+                        const hue2 = tip.hue - 20 - Math.random() * 30;
+                        const branchId1 = branches.length;
+                        branches.push(new Branch(tip.x, tip.y, splitAngle1, newDepth, tip.branchId, hue1));
+                        tips.push(new Tip(tip.x, tip.y, splitAngle1, branchId1, newDepth, hue1));
+                        const branchId2 = branches.length;
+                        branches.push(new Branch(tip.x, tip.y, splitAngle2, newDepth, tip.branchId, hue2));
+                        tips.push(new Tip(tip.x, tip.y, splitAngle2, branchId2, newDepth, hue2));
+                        tip.splitCooldown = 30 + Math.random() * 40;
+                    }
+                }
+
+                // 检查死亡
+                if (tip.shouldDie() && tips.length > 3) {
+                    tips.splice(tipIndex, 1);
+                }
+            }
+
+            // ─── 绘制分支 ───────────────────────────────────────────────
+            function drawBranches(ctx) {
+                for (const b of branches) {
+                    if (b.grown <= 0.01) continue;
+                    const alpha = 0.45 * b.grown;
+                    const hue = b.hue + Math.sin(time * 0.3 + b.depth) * 15;
+                    const sat = 55 + b.depth * 5;
+                    const light = 50 + b.grown * 20;
+
+                    // 绘制线段——从分支起点到终点
+                    // 分支只存储了终点，我们需要存储起点来画线
+                    // 为简单起见，分支存储起始点，尖端移动后更新终点
+
+                    // 从父分支获取起点
+                    if (b.parentId >= 0) {
+                        const parent = branches[b.parentId];
+                        const startX = parent.x;
+                        const startY = parent.y;
+                        ctx.strokeStyle = `hsla(${hue}, ${sat}%, ${light}%, ${alpha})`;
+                        ctx.lineWidth = b.thickness * b.grown;
+                        ctx.lineCap = 'round';
+                        ctx.beginPath();
+                        ctx.moveTo(startX, startY);
+                        ctx.lineTo(b.x, b.y);
+                        ctx.stroke();
+                    } else {
+                        // 根分支——从种子点短线段
+                        const startX = b.x - Math.cos(b.angle) * b.length * b.grown;
+                        const startY = b.y - Math.sin(b.angle) * b.length * b.grown;
+                        ctx.strokeStyle = `hsla(${hue}, ${sat}%, ${light}%, ${alpha})`;
+                        ctx.lineWidth = b.thickness * b.grown;
+                        ctx.lineCap = 'round';
+                        ctx.beginPath();
+                        ctx.moveTo(startX, startY);
+                        ctx.lineTo(b.x, b.y);
+                        ctx.stroke();
+                    }
+
+                    // 绘制节点（生长点）
+                    if (b.grown > 0.5) {
+                        const nodeAlpha = (b.grown - 0.5) * 0.8;
+                        const nodeSize = 1.5 + b.thickness * 0.6;
+                        ctx.fillStyle = `hsla(${hue}, ${sat}%, ${light + 15}%, ${nodeAlpha})`;
+                        ctx.beginPath();
+                        ctx.arc(b.x, b.y, nodeSize, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+                }
+            }
+
+            // ─── 绘制尖端 ───────────────────────────────────────────────
+            function drawTips(ctx) {
+                for (const tip of tips) {
+                    const alpha = 0.7;
+                    const hue = tip.hue;
+                    const sat = 65;
+                    const light = 65;
+                    const size = 2.2 + (1 - tip.life / 100) * 2;
+                    ctx.fillStyle = `hsla(${hue}, ${sat}%, ${light}%, ${alpha})`;
+                    ctx.beginPath();
+                    ctx.arc(tip.x, tip.y, size, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // 光晕
+                    const glowRadius = size * 3;
+                    const gradient = ctx.createRadialGradient(tip.x, tip.y, 0, tip.x, tip.y, glowRadius);
+                    gradient.addColorStop(0, `hsla(${hue}, ${sat}%, ${light + 10}%, ${alpha * 0.5})`);
+                    gradient.addColorStop(1, 'transparent');
+                    ctx.fillStyle = gradient;
+                    ctx.beginPath();
+                    ctx.arc(tip.x, tip.y, glowRadius, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            // ─── 点击爆发粒子 ───────────────────────────────────────────
+            function createBurst(x, y) {
+                const count = 15 + Math.floor(Math.random() * 15);
+                for (let i = 0; i < count; i++) {
+                    const angle = Math.random() * Math.PI * 2;
+                    const speed = 1.5 + Math.random() * 4;
+                    burstParticles.push({
+                        x, y,
+                        vx: Math.cos(angle) * speed,
+                        vy: Math.sin(angle) * speed,
+                        life: 0.6 + Math.random() * 0.6,
+                        maxLife: 1.2,
+                        size: 1.5 + Math.random() * 2.5,
+                        hue: 200 + colorShift + Math.random() * 50 - 25,
+                        alpha: 0.8,
+                    });
+                }
+                if (burstParticles.length > 120) burstParticles.splice(0, burstParticles.length - 120);
+            }
+
+            function updateBurstParticles(dt) {
+                for (let i = burstParticles.length - 1; i >= 0; i--) {
+                    const p = burstParticles[i];
+                    p.x += p.vx * dt;
+                    p.y += p.vy * dt;
+                    p.vx *= 0.95;
+                    p.vy *= 0.95;
+                    p.life -= 0.02 * dt;
+                    if (p.life <= 0) burstParticles.splice(i, 1);
+                }
+            }
+
+            function drawBurstParticles(ctx) {
+                for (const p of burstParticles) {
+                    const alpha = p.life * 0.7;
+                    const size = p.size * p.life;
+                    ctx.fillStyle = `hsla(${p.hue}, 70%, 70%, ${alpha})`;
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, size, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            // ─── 鼠标光晕 ───────────────────────────────────────────────
+            function drawCursorGlow(ctx) {
+                if (!mouse.active) return;
+                const radius = 70;
+                const hue = 210 + colorShift;
+                const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                gradient.addColorStop(0, `hsla(${hue}, 60%, 75%, 0.05)`);
+                gradient.addColorStop(0.7, `hsla(${hue}, 50%, 70%, 0.02)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // ─── 主循环 ─────────────────────────────────────────────────
+            let lastTime = 0;
+            let accumulator = 0;
+            const fixedStep = 1000 / 60;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+
+                accumulator += dt;
+                const steps = Math.min(Math.floor(accumulator / fixedStep), 3);
+                accumulator -= steps * fixedStep;
+
+                for (let s = 0; s < steps; s++) {
+                    time += 0.016;
+                    const dtNorm = fixedStep / 1000 * 60;
+                    // 生长分支——每次生长几个尖端
+                    const growCount = Math.min(tips.length, 2 + Math.floor(tips.length / 15));
+                    for (let g = 0; g < growCount; g++) {
+                        growBranches();
+                    }
+                    updateBurstParticles(dtNorm);
+                }
+
+                // 拖尾效果
+                ctx.fillStyle = 'rgba(13, 13, 26, 0.18)';
+                ctx.fillRect(0, 0, W, H);
+
+                // 绘制分支
+                drawBranches(ctx);
+
+                // 绘制尖端
+                drawTips(ctx);
+
+                // 绘制爆发粒子
+                drawBurstParticles(ctx);
+
+                // 鼠标光晕
+                drawCursorGlow(ctx);
+
+                requestAnimationFrame(animate);
+            }
+
+            // ─── 交互事件 ───────────────────────────────────────────────
+            function onMouseMove(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                // 在点击位置创建新种子
+                createSeed(mouse.x, mouse.y);
+                createBurst(mouse.x, mouse.y);
+                // 切换色彩偏移
+                colorShift += 30 + Math.random() * 30;
+                if (colorShift > 120) colorShift = -30;
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    createSeed(mouse.x, mouse.y);
+                    createBurst(mouse.x, mouse.y);
+                    colorShift += 30 + Math.random() * 30;
+                    if (colorShift > 120) colorShift = -30;
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onResize() {
+                setupCanvas();
+                // 清理分支和尖端，重新开始
+                branches = [];
+                tips = [];
+                burstParticles = [];
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+                // 重新播种
+                const seedCount = 3 + Math.floor(Math.random() * 3);
+                for (let i = 0; i < seedCount; i++) {
+                    createSeed(W * (0.2 + Math.random() * 0.6), H * (0.2 + Math.random() * 0.6));
+                }
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+
+                // 初始种子
+                const seedCount = 4 + Math.floor(Math.random() * 3);
+                for (let i = 0; i < seedCount; i++) {
+                    createSeed(W * (0.15 + Math.random() * 0.7), H * (0.15 + Math.random() * 0.7));
+                }
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#0d0d1a';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+
+        })();
+    </script>
+</body>
+</html>

@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>极光绸带</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #000005;
+            font-family: sans-serif;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="auroraCanvas"></canvas>
+    <script>
+        (function() {
+            'use strict';
+
+            const canvas = document.getElementById('auroraCanvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            // ---------- 配置参数 ----------
+            const CONFIG = {
+                layers: 5,                  // 绸带层数
+                pointsPerLayer: 80,         // 每层点数量
+                baseAmplitude: 38,          // 基础振幅（像素）
+                waveSpeed: 0.002,           // 波动速度因子
+                frequencyX: 0.015,          // X方向频率
+                mouseInfluenceRadius: 220,  // 鼠标影响半径
+                mousePullStrength: 0.06,    // 鼠标牵引强度
+                mouseVerticalOffset: 30,    // 鼠标引起的垂直偏移
+                clickRippleRadius: 350,     // 点击光波最大半径
+                clickRippleDuration: 1300,  // 光波持续时间(ms)
+                clickRippleStrength: 55,    // 光波强度
+                maxRipples: 5,              // 最大同时光波数量
+                damping: 0.92,              // 点速度阻尼
+                returnSpeed: 0.05,          // 回弹速度
+                lineWidthBase: 3.2,         // 线条基础宽度
+                lineWidthVariation: 1.8,    // 线条宽度变化
+                glowAlpha: 0.5,             // 光晕透明度
+            };
+
+            // 颜色主题（每层不同色系）
+            const COLOR_SCHEMES = [
+                { hue: 170, sat: 100, light: 60, alpha: 0.35 },  // 青绿
+                { hue: 210, sat: 100, light: 65, alpha: 0.40 },  // 蓝
+                { hue: 260, sat: 80, light: 70, alpha: 0.35 },   // 紫
+                { hue: 300, sat: 90, light: 70, alpha: 0.38 },   // 粉紫
+                { hue: 190, sat: 95, light: 62, alpha: 0.32 },   // 蓝绿
+            ];
+
+            let width = 0;
+            let height = 0;
+            let dpr = 1;
+            let layers = [];
+            let ripples = [];
+            let mouseX = -9999;
+            let mouseY = -9999;
+            let mouseActive = false;
+            let targetMouseX = -9999;
+            let targetMouseY = -9999;
+            let smoothMouseX = -9999;
+            let smoothMouseY = -9999;
+            let animationId = null;
+            let lastTime = 0;
+            let time = 0;
+
+            // ---------- 波纹类 ----------
+            class Ripple {
+                constructor(x, y, startTime) {
+                    this.x = x;
+                    this.y = y;
+                    this.startTime = startTime;
+                    this.duration = CONFIG.clickRippleDuration;
+                    this.maxRadius = CONFIG.clickRippleRadius;
+                    this.strength = CONFIG.clickRippleStrength;
+                }
+
+                getProgress(now) {
+                    return Math.min(1, (now - this.startTime) / this.duration);
+                }
+
+                // 获取波纹对某点的垂直偏移影响
+                getOffset(px, py, now) {
+                    const progress = this.getProgress(now);
+                    if (progress >= 1) return 0;
+                    const dx = px - this.x;
+                    const dy = py - this.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    const radius = this.maxRadius * (0.25 + 0.75 * progress);
+                    if (dist > radius) return 0;
+                    const envelope = Math.max(0, 1 - progress) * (1 - dist / radius);
+                    // 使用正弦波模拟扩散波纹
+                    const wave = Math.sin((dist / radius) * Math.PI * 6 - progress * 12);
+                    return this.strength * envelope * wave;
+                }
+            }
+
+            // ---------- 层点类 ----------
+            class AuroraPoint {
+                constructor(x, baseY, layerIndex) {
+                    this.x = x;
+                    this.baseY = baseY;          // 无扰动时的基准Y
+                    this.y = baseY;              // 当前Y
+                    this.vy = 0;                 // 速度
+                    this.layerIndex = layerIndex; // 所属层索引
+                    this.phase = Math.random() * Math.PI * 2; // 随机相位
+                }
+
+                // 更新位置
+                update(now, dt, time) {
+                    // 基础波动：多层正弦叠加，每层略有不同
+                    const layerOffset = this.layerIndex * 0.8;
+                    const speed1 = CONFIG.waveSpeed * (1 + layerOffset * 0.3);
+                    const speed2 = CONFIG.waveSpeed * (1.5 + layerOffset * 0.2);
+                    const freq1 = CONFIG.frequencyX * (1 + layerOffset * 0.15);
+                    const freq2 = CONFIG.frequencyX * 2.3 * (1 + layerOffset * 0.1);
+                    const amp1 = CONFIG.baseAmplitude * (1 + layerOffset * 0.25);
+                    const amp2 = CONFIG.baseAmplitude * 0.45 * (1 + layerOffset * 0.35);
+
+                    let targetY = this.baseY;
+                    targetY += Math.sin(this.x * freq1 + time * speed1 * 1000 + this.phase) * amp1;
+                    targetY += Math.sin(this.x * freq2 + time * speed2 * 1000 + this.phase * 1.7) * amp2;
+
+                    // 鼠标影响：将点拉向鼠标位置的垂直分量
+                    if (mouseActive && smoothMouseX > -1000) {
+                        const dx = this.x - smoothMouseX;
+                        const dy = this.y - smoothMouseY;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        const influenceRadius = CONFIG.mouseInfluenceRadius;
+                        if (dist < influenceRadius) {
+                            const influence = (1 - dist / influenceRadius);
+                            // 向鼠标Y方向偏移，同时保持一些水平牵引
+                            const pullY = (smoothMouseY - this.y) * CONFIG.mousePullStrength * influence;
+                            const pullX = (smoothMouseX - this.x) * CONFIG.mousePullStrength * 0.3 * influence;
+                            targetY += pullY * 4;
+                            // 水平偏移会通过速度影响X，但我们保持X固定，只影响Y更自然
+                            targetY += pullX * 1.5;
+                        }
+                    }
+
+                    // 点击波纹影响
+                    for (const ripple of ripples) {
+                        targetY += ripple.getOffset(this.x, this.y, now);
+                    }
+
+                    // 弹性回弹
+                    const accel = (targetY - this.y) * CONFIG.returnSpeed;
+                    this.vy += accel * dt;
+                    this.vy *= CONFIG.damping;
+                    this.y += this.vy * dt;
+
+                    // 限制Y范围，防止跑出屏幕
+                    const maxDeviation = CONFIG.baseAmplitude * 2.5;
+                    if (this.y < this.baseY - maxDeviation) this.y = this.baseY - maxDeviation;
+                    if (this.y > this.baseY + maxDeviation) this.y = this.baseY + maxDeviation;
+                }
+            }
+
+            // ---------- 初始化层 ----------
+            function initLayers() {
+                layers = [];
+                const count = CONFIG.pointsPerLayer;
+                for (let l = 0; l < CONFIG.layers; l++) {
+                    const layer = {
+                        index: l,
+                        points: [],
+                        color: COLOR_SCHEMES[l % COLOR_SCHEMES.length],
+                    };
+                    const spreadY = height * 0.25;
+                    const baseCenterY = height * 0.55 + (l - CONFIG.layers / 2) * 30;
+                    for (let i = 0; i < count; i++) {
+                        const x = (i / (count - 1)) * width;
+                        // 初始Y：在中心附近随机偏移，使绸带有自然弯曲
+                        const yOffset = (Math.random() - 0.5) * spreadY * 0.5;
+                        const baseY = baseCenterY + yOffset;
+                        const point = new AuroraPoint(x, baseY, l);
+                        layer.points.push(point);
+                    }
+                    layers.push(layer);
+                }
+            }
+
+            // ---------- 调整画布尺寸 ----------
+            function resizeCanvas() {
+                dpr = Math.min(window.devicePixelRatio || 1, 2);
+                width = window.innerWidth;
+                height = window.innerHeight;
+                canvas.width = Math.floor(width * dpr);
+                canvas.height = Math.floor(height * dpr);
+                canvas.style.width = width + 'px';
+                canvas.style.height = height + 'px';
+                ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                // 填充背景
+                ctx.fillStyle = '#000005';
+                ctx.fillRect(0, 0, width, height);
+                initLayers();
+                // 立即绘制一帧，避免白屏
+                drawAurora(performance.now());
+            }
+
+            // ---------- 绘制极光 ----------
+            function drawAurora(now) {
+                // 清屏
+                ctx.fillStyle = '#000005';
+                ctx.fillRect(0, 0, width, height);
+
+                // 设置混合模式为“叠加”，增强光感
+                ctx.globalCompositeOperation = 'lighter';
+
+                // 绘制每层
+                for (const layer of layers) {
+                    const color = layer.color;
+                    const points = layer.points;
+                    if (points.length < 2) continue;
+
+                    // 创建渐变：从透明到彩色再到透明（水平方向）
+                    const gradient = ctx.createLinearGradient(0, 0, width, 0);
+                    gradient.addColorStop(0, 'hsla(' + color.hue + ', ' + color.sat + '%, ' + color.light +
+                        '%, 0.0)');
+                    gradient.addColorStop(0.3, 'hsla(' + color.hue + ', ' + color.sat + '%, ' + color.light +
+                        '%, ' + color.alpha + ')');
+                    gradient.addColorStop(0.7, 'hsla(' + color.hue + ', ' + color.sat + '%, ' + color.light +
+                        '%, ' + color.alpha + ')');
+                    gradient.addColorStop(1, 'hsla(' + color.hue + ', ' + color.sat + '%, ' + color.light +
+                        '%, 0.0)');
+
+                    // 设置线条样式
+                    ctx.strokeStyle = gradient;
+                    ctx.lineWidth = CONFIG.lineWidthBase + CONFIG.lineWidthVariation * Math.sin(time * 2 + layer
+                        .index);
+                    ctx.lineCap = 'round';
+                    ctx.lineJoin = 'round';
+
+                    // 开始路径
+                    ctx.beginPath();
+                    for (let i = 0; i < points.length; i++) {
+                        const p = points[i];
+                        if (i === 0) {
+                            ctx.moveTo(p.x, p.y);
+                        } else {
+                            // 使用二次贝塞尔曲线平滑连接，控制点取相邻点中点
+                            const prev = points[i - 1];
+                            const midX = (prev.x + p.x) / 2;
+                            const midY = (prev.y + p.y) / 2;
+                            ctx.quadraticCurveTo(prev.x, prev.y, midX, midY);
+                        }
+                    }
+                    // 最后一个点
+                    const last = points[points.length - 1];
+                    ctx.lineTo(last.x, last.y);
+                    ctx.stroke();
+
+                    // 绘制额外的一层更细的亮线，模拟极光高光
+                    ctx.beginPath();
+                    ctx.strokeStyle = 'hsla(' + color.hue + ', 100%, 92%, ' + (color.alpha * 0.3) + ')';
+                    ctx.lineWidth = CONFIG.lineWidthBase * 0.5;
+                    for (let i = 0; i < points.length; i++) {
+                        const p = points[i];
+                        if (i === 0) ctx.moveTo(p.x, p.y);
+                        else ctx.lineTo(p.x, p.y);
+                    }
+                    ctx.stroke();
+                }
+
+                // 恢复混合模式
+                ctx.globalCompositeOperation = 'source-over';
+
+                // 移除过期波纹
+                ripples = ripples.filter(r => r.getProgress(now) < 1);
+                if (ripples.length > CONFIG.maxRipples) {
+                    ripples = ripples.slice(-CONFIG.maxRipples);
+                }
+            }
+
+            // ---------- 更新极光 ----------
+            function updateAurora(now) {
+                const dt = Math.min(2, (now - lastTime) / 16.67) || 1;
+                time = now * 0.001;
+
+                // 平滑鼠标位置
+                if (mouseActive) {
+                    smoothMouseX += (targetMouseX - smoothMouseX) * 0.13;
+                    smoothMouseY += (targetMouseY - smoothMouseY) * 0.13;
+                }
+
+                // 更新每个点
+                for (const layer of layers) {
+                    for (const p of layer.points) {
+                        p.update(now, dt, time);
+                    }
+                }
+            }
+
+            // ---------- 动画循环 ----------
+            function animate(timestamp) {
+                const now = performance.now();
+                if (lastTime === 0) lastTime = now;
+                const dt = now - lastTime;
+                if (dt > 100) {
+                    lastTime = now - 16;
+                } else {
+                    lastTime = now;
+                }
+
+                updateAurora(now);
+                drawAurora(now);
+
+                animationId = requestAnimationFrame(animate);
+            }
+
+            // ---------- 鼠标与触摸事件 ----------
+            function updateMousePosition(clientX, clientY) {
+                targetMouseX = clientX;
+                targetMouseY = clientY;
+                if (!mouseActive) {
+                    mouseActive = true;
+                    smoothMouseX = targetMouseX;
+                    smoothMouseY = targetMouseY;
+                }
+            }
+
+            function handleClick(clientX, clientY) {
+                const now = performance.now();
+                ripples.push(new Ripple(clientX, clientY, now));
+                if (ripples.length > CONFIG.maxRipples) {
+                    ripples = ripples.slice(-CONFIG.maxRipples);
+                }
+            }
+
+            function setupEvents() {
+                window.addEventListener('mousemove', (e) => {
+                    updateMousePosition(e.clientX, e.clientY);
+                }, { passive: true });
+
+                window.addEventListener('mouseleave', () => {
+                    mouseActive = false;
+                    smoothMouseX = -9999;
+                    smoothMouseY = -9999;
+                });
+
+                window.addEventListener('mousedown', (e) => {
+                    handleClick(e.clientX, e.clientY);
+                });
+
+                window.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        updateMousePosition(touch.clientX, touch.clientY);
+                        handleClick(touch.clientX, touch.clientY);
+                    }
+                }, { passive: false });
+
+                window.addEventListener('touchmove', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        updateMousePosition(touch.clientX, touch.clientY);
+                    }
+                }, { passive: false });
+
+                window.addEventListener('touchend', () => {
+                    mouseActive = false;
+                    smoothMouseX = -9999;
+                    smoothMouseY = -9999;
+                });
+
+                window.addEventListener('resize', () => {
+                    resizeCanvas();
+                });
+
+                document.addEventListener('visibilitychange', () => {
+                    if (document.hidden) {
+                        if (animationId) {
+                            cancelAnimationFrame(animationId);
+                            animationId = null;
+                        }
+                        lastTime = 0;
+                    } else {
+                        if (!animationId) {
+                            lastTime = 0;
+                            animationId = requestAnimationFrame(animate);
+                        }
+                    }
+                });
+            }
+
+            // ---------- 启动 ----------
+            function init() {
+                resizeCanvas();
+                setupEvents();
+                lastTime = 0;
+                animationId = requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.__aurora = {
+                config: CONFIG,
+                layers: layers,
+                ripples: ripples,
+            };
+        })();
+    </script>
+</body>
+</html>

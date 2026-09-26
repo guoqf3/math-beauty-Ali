@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KALEIDO · 万花筒</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #0a0a14;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            right: 32px;
+            z-index: 2;
+            text-align: right;
+            pointer-events: none;
+            opacity: 0.6;
+            transition: opacity 0.8s ease;
+            mix-blend-mode: screen;
+        }
+
+        .overlay:hover {
+            opacity: 1;
+        }
+
+        .title {
+            color: rgba(235, 225, 255, 0.85);
+            font-size: 11px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 18px rgba(140, 120, 220, 0.5);
+        }
+
+        .hint {
+            color: rgba(190, 180, 220, 0.5);
+            font-size: 8px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+
+        @media (max-width: 768px) {
+            .overlay {
+                bottom: 18px;
+                right: 20px;
+            }
+            .title {
+                font-size: 9px;
+                letter-spacing: 0.45em;
+            }
+            .hint {
+                font-size: 7px;
+                letter-spacing: 0.25em;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="canvas"></canvas>
+
+    <div class="overlay">
+        <div class="title">Kaleido</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script>
+        (function() {
+            // ─── 画布初始化 ───────────────────────────────────────────────
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            let centerX, centerY;
+            let segments = 10;          // 对称段数，可根据屏幕调整
+            let trail = [];            // 存储轨迹点（相对于中心）
+            let mouse = { x: -9999, y: -9999, active: false };
+            let colorPaletteIndex = 0; // 颜色方案索引，点击切换
+            let burstParticles = [];   // 点击爆发粒子
+            let time = 0;
+
+            // 预定义色彩方案（HSLA基础色相）
+            const palettes = [
+                { baseHue: 260, sat: 80, light: 70 },   // 紫罗兰
+                { baseHue: 180, sat: 90, light: 65 },   // 青色
+                { baseHue: 320, sat: 85, light: 70 },   // 粉红
+                { baseHue: 40, sat: 90, light: 65 },    // 金色
+                { baseHue: 0, sat: 80, light: 65 },     // 红色
+            ];
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                centerX = W / 2;
+                centerY = H / 2;
+                // 根据屏幕尺寸调整对称段数（保持视觉密度）
+                const minDim = Math.min(W, H);
+                if (minDim < 500) segments = 8;
+                else if (minDim < 800) segments = 10;
+                else segments = 12;
+                // 深色背景，避免白屏
+                ctx.fillStyle = '#0a0a14';
+                ctx.fillRect(0, 0, W, H);
+            }
+
+            // ─── 轨迹管理 ───────────────────────────────────────────────
+            function addTrailPoint(x, y) {
+                // 转换为相对于中心点的极坐标
+                const dx = x - centerX;
+                const dy = y - centerY;
+                const radius = Math.sqrt(dx * dx + dy * dy);
+                const angle = Math.atan2(dy, dx);
+                trail.push({ radius, angle, created: time });
+                // 限制轨迹点数量，保证性能
+                if (trail.length > 600) {
+                    trail.shift();
+                }
+            }
+
+            // ─── 点击爆发粒子 ───────────────────────────────────────────
+            function createBurst(x, y) {
+                // 将爆发点转换为极坐标（相对于中心）
+                const dx = x - centerX;
+                const dy = y - centerY;
+                const baseRadius = Math.sqrt(dx * dx + dy * dy);
+                const baseAngle = Math.atan2(dy, dx);
+                const count = 40 + Math.floor(Math.random() * 20);
+                for (let i = 0; i < count; i++) {
+                    burstParticles.push({
+                        radius: baseRadius + (Math.random() - 0.5) * 30,
+                        angle: baseAngle + (Math.random() - 0.5) * 0.8,
+                        velRadius: (Math.random() - 0.5) * 4,
+                        velAngle: (Math.random() - 0.5) * 0.06,
+                        life: 0.8 + Math.random() * 0.6,
+                        maxLife: 1.0,
+                        hue: palettes[colorPaletteIndex].baseHue + Math.random() * 40 - 20,
+                        size: 1.5 + Math.random() * 2.5,
+                    });
+                }
+                // 限制粒子总数
+                if (burstParticles.length > 300) {
+                    burstParticles.splice(0, burstParticles.length - 300);
+                }
+            }
+
+            // ─── 更新爆发粒子 ───────────────────────────────────────────
+            function updateBurstParticles(dt) {
+                for (let i = burstParticles.length - 1; i >= 0; i--) {
+                    const p = burstParticles[i];
+                    p.radius += p.velRadius * dt;
+                    p.angle += p.velAngle * dt;
+                    p.velRadius *= 0.98;
+                    p.velAngle *= 0.98;
+                    p.life -= 0.012 * dt;
+                    if (p.life <= 0) {
+                        burstParticles.splice(i, 1);
+                    }
+                }
+            }
+
+            // ─── 绘制对称图案 ───────────────────────────────────────────
+            function drawKaleido(ctx) {
+                const palette = palettes[colorPaletteIndex];
+                const angleStep = (Math.PI * 2) / segments;
+
+                // 绘制轨迹点（每个点对称复制）
+                for (let i = 0; i < trail.length; i++) {
+                    const p = trail[i];
+                    const age = time - p.created;
+                    // 轨迹淡出：年龄越大越透明，但保留一段时间
+                    const alpha = Math.max(0, 0.55 - age * 0.015);
+                    if (alpha <= 0.01) continue;
+
+                    const hue = palette.baseHue + Math.sin(age * 0.5 + p.angle * 2) * 25;
+                    const sat = palette.sat;
+                    const light = palette.light + Math.cos(p.angle + time * 0.8) * 12;
+
+                    // 对于每个对称段
+                    for (let s = 0; s < segments; s++) {
+                        const currentAngle = p.angle + s * angleStep;
+                        const x = centerX + p.radius * Math.cos(currentAngle);
+                        const y = centerY + p.radius * Math.sin(currentAngle);
+
+                        // 根据距离中心的距离改变点的大小
+                        const sizeBase = 1.5 + (p.radius / Math.max(W, H)) * 4;
+                        const size = sizeBase * (0.7 + alpha * 0.6);
+
+                        // 绘制光点
+                        const dotAlpha = alpha * 0.9;
+                        ctx.fillStyle = `hsla(${hue}, ${sat}%, ${light}%, ${dotAlpha})`;
+                        ctx.beginPath();
+                        ctx.arc(x, y, size, 0, Math.PI * 2);
+                        ctx.fill();
+
+                        // 绘制从中心到点的细线，强化万花筒效果
+                        if (p.radius > 10 && (i % 2 === 0)) {
+                            const lineAlpha = alpha * 0.15;
+                            ctx.strokeStyle = `hsla(${hue}, ${sat}%, ${light + 10}%, ${lineAlpha})`;
+                            ctx.lineWidth = 0.6;
+                            ctx.beginPath();
+                            ctx.moveTo(centerX, centerY);
+                            ctx.lineTo(x, y);
+                            ctx.stroke();
+                        }
+                    }
+                }
+
+                // 绘制爆发粒子（同样对称复制）
+                for (const p of burstParticles) {
+                    const alpha = p.life * 0.9;
+                    const size = p.size * p.life;
+                    const hue = p.hue;
+                    for (let s = 0; s < segments; s++) {
+                        const currentAngle = p.angle + s * angleStep;
+                        const x = centerX + p.radius * Math.cos(currentAngle);
+                        const y = centerY + p.radius * Math.sin(currentAngle);
+                        ctx.fillStyle = `hsla(${hue}, 85%, 70%, ${alpha})`;
+                        ctx.beginPath();
+                        ctx.arc(x, y, size, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+                }
+            }
+
+            // ─── 鼠标光晕 ───────────────────────────────────────────────
+            function drawCursorGlow(ctx) {
+                if (!mouse.active) return;
+                const radius = 70;
+                const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                const palette = palettes[colorPaletteIndex];
+                gradient.addColorStop(0, `hsla(${palette.baseHue}, 70%, 75%, 0.08)`);
+                gradient.addColorStop(0.7, `hsla(${palette.baseHue}, 60%, 70%, 0.02)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // ─── 主循环 ─────────────────────────────────────────────────
+            let lastTime = 0;
+            let accumulator = 0;
+            const fixedStep = 1000 / 60;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+
+                accumulator += dt;
+                const steps = Math.min(Math.floor(accumulator / fixedStep), 3);
+                accumulator -= steps * fixedStep;
+
+                for (let s = 0; s < steps; s++) {
+                    time += 0.016; // 模拟时间
+                    updateBurstParticles(fixedStep / 1000 * 60);
+                }
+
+                // 拖尾效果：半透明清除（背景色混合）
+                ctx.fillStyle = 'rgba(10, 10, 20, 0.12)';
+                ctx.fillRect(0, 0, W, H);
+
+                // 绘制对称万花筒图案
+                drawKaleido(ctx);
+
+                // 绘制爆发粒子
+                // （已经在drawKaleido中绘制）
+
+                // 绘制鼠标光晕
+                drawCursorGlow(ctx);
+
+                requestAnimationFrame(animate);
+            }
+
+            // ─── 交互事件 ───────────────────────────────────────────────
+            function onMouseMove(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                addTrailPoint(mouse.x, mouse.y);
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                createBurst(mouse.x, mouse.y);
+                // 切换色彩方案
+                colorPaletteIndex = (colorPaletteIndex + 1) % palettes.length;
+                // 清空部分轨迹以突出新色彩
+                if (trail.length > 100) {
+                    trail = trail.slice(Math.floor(trail.length * 0.3));
+                }
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    addTrailPoint(mouse.x, mouse.y);
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    createBurst(mouse.x, mouse.y);
+                    colorPaletteIndex = (colorPaletteIndex + 1) % palettes.length;
+                    if (trail.length > 100) {
+                        trail = trail.slice(Math.floor(trail.length * 0.3));
+                    }
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onResize() {
+                setupCanvas();
+                // 调整轨迹点的半径比例（保持相对位置）
+                // 但不缩放角度，半径需要根据新中心调整吗？中心通常不变，但屏幕尺寸变化时，轨迹点可能超出边界
+                // 简单处理：清空轨迹，避免复杂计算
+                trail = [];
+                burstParticles = [];
+                // 重新设置中心点（已在setupCanvas中更新）
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            // 确保初始背景填充
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#0a0a14';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+
+        })();
+    </script>
+</body>
+</html>

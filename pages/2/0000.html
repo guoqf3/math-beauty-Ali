@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>虹彩气泡</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            /* 兜底背景色，防黑屏 */
+            background-color: #1c1b29; 
+        }
+        #container {
+            width: 100vw;
+            height: 100vh;
+            display: block;
+        }
+        #hint {
+            position: absolute;
+            bottom: 15px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: rgba(255, 255, 255, 0.3);
+            font-family: sans-serif;
+            font-size: 13px;
+            pointer-events: none;
+            user-select: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="container"></div>
+    <div id="hint">移动鼠标拨开气泡 · 点击引发泡泡爆裂</div>
+
+    <!-- 引入 PixiJS 7 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.4.2/pixi.min.js"></script>
+
+    <script>
+        // 1. 初始化 PixiJS 应用（固定极简安全的配置，防高DPI导致的负担）
+        const app = new PIXI.Application({
+            resizeTo: window,
+            backgroundColor: 0x1c1b29,
+            antialias: true,
+            autoDensity: true,
+            resolution: 1
+        });
+        document.getElementById('container').appendChild(app.view);
+
+        // 2. 预烘焙多种精美的气泡纹理（直接利用 Graphics 还原高光，极其安全）
+        function createBubbleTextures() {
+            const g = new PIXI.Graphics();
+            const textures = [];
+
+            // 生成 3 种不同尺寸的气泡纹理，极致优化性能
+            const sizes = [60, 100, 140]; 
+
+            sizes.forEach(size => {
+                const r = size / 2;
+                
+                // 主体：深色半透明球体
+                g.beginFill(0x1c1b29, 0.6);
+                g.drawCircle(0, 0, r);
+                g.endFill();
+
+                // 左下/底部反光（橙色/粉色）
+                g.beginFill(0xffa07a, 0.4);
+                g.drawEllipse(0, r * 0.8, r * 0.5, r * 0.2);
+                g.endFill();
+                g.beginFill(0xff69b4, 0.3);
+                g.drawEllipse(-r * 0.4, r * 0.9, r * 0.7, r * 0.15);
+                g.endFill();
+
+                // 右上/顶部反光（紫蓝色）
+                g.beginFill(0x8a2be2, 0.3);
+                g.drawEllipse(0, -r * 0.8, r * 0.4, r * 0.15);
+                g.endFill();
+                g.beginFill(0x00bfff, 0.4);
+                g.drawEllipse(r * 0.5, -r * 0.6, r * 0.3, r * 0.2);
+                g.endFill();
+
+                // 核心外圈高光（描边）
+                g.lineStyle(2, 0xffb6c1, 0.8);
+                g.drawCircle(0, 0, r);
+                g.lineStyle(1, 0x87cefa, 0.5);
+                g.drawCircle(0, 0, r * 0.9);
+
+                // 内部高光点（像星星）
+                g.beginFill(0xffffff, 0.9);
+                g.drawCircle(-r * 0.3, -r * 0.2, r * 0.05);
+                g.drawCircle(r * 0.1, -r * 0.4, r * 0.08);
+                g.drawCircle(r * 0.4, -r * 0.1, r * 0.04);
+                g.drawCircle(-r * 0.1, r * 0.2, r * 0.06);
+                g.endFill();
+
+                // 最亮的大弧形高光
+                g.lineStyle(3, 0xffffff, 0.6);
+                g.arc(-r * 0.2, -r * 0.2, r * 0.7, Math.PI * 1.1, Math.PI * 1.6);
+                
+                textures.push(app.renderer.generateTexture(g));
+                g.clear();
+            });
+
+            g.destroy();
+            return textures;
+        }
+
+        const textures = createBubbleTextures();
+
+        // 3. 创建气泡对象池
+        const bubbles = [];
+        const count = 40;
+
+        const spawnBubble = (x, y, isClickSpawn = false) => {
+            const tex = textures[Math.floor(Math.random() * textures.length)];
+            const bubble = new PIXI.Sprite(tex);
+            
+            bubble.anchor.set(0.5);
+            bubble.x = x || Math.random() * app.screen.width;
+            bubble.y = y || Math.random() * app.screen.height;
+
+            // 随机漂浮速度，保证动画明快不拖沓
+            bubble.vx = (Math.random() - 0.5) * 2;
+            bubble.vy = -1 - Math.random() * 3; // 向上漂浮
+            
+            // 随机相位，用于左右摇摆
+            bubble.phase = Math.random() * Math.PI * 2;
+            bubble.swaySpeed = 0.02 + Math.random() * 0.03;
+            
+            // 点击新生成的气泡稍大一点
+            bubble.scale.set(isClickSpawn ? 0.7 + Math.random() * 0.6 : 0.5 + Math.random() * 1.0);
+            bubble.alpha = 0.7 + Math.random() * 0.3;
+            bubble.baseAlpha = bubble.alpha;
+
+            app.stage.addChild(bubble);
+            bubbles.push(bubble);
+            return bubble;
+        };
+
+        // 初始填满
+        for (let i = 0; i < count; i++) {
+            spawnBubble();
+        }
+
+        // 4. 交互逻辑
+        const mouse = { x: -9999, y: -9999 }; // 初始在屏幕外
+
+        window.addEventListener('mousemove', (e) => {
+            mouse.x = e.clientX;
+            mouse.y = e.clientY;
+        });
+
+        // 点击交互：在鼠标处引发爆裂并生成新气泡
+        window.addEventListener('mousedown', (e) => {
+            // 爆裂效果：推走附近气泡
+            bubbles.forEach(b => {
+                const dx = b.x - e.clientX;
+                const dy = b.y - e.clientY;
+                // 防除零保护
+                const dist = Math.sqrt(dx * dx + dy * dy) + 0.001;
+                if (dist < 250) {
+                    const force = (250 - dist) / 250;
+                    b.vx += (dx / dist) * force * 30;
+                    b.vy += (dy / dist) * force * 30;
+                }
+            });
+            
+            // 生成新气泡
+            for(let i = 0; i < 5; i++) {
+                spawnBubble(e.clientX + (Math.random()-0.5)*50, e.clientY + (Math.random()-0.5)*50, true);
+            }
+        });
+
+        // 5. 动画主循环（完全安全的物理运算）
+        app.ticker.add((delta) => {
+            const dt = delta / 60 * 2; // 2倍速加速
+
+            bubbles.forEach(b => {
+                // 基础漂浮
+                b.x += (b.vx + Math.sin(app.ticker.lastTime * b.swaySpeed + b.phase)) * dt;
+                b.y += b.vy * dt;
+
+                // 鼠标排斥力（产生流动感）
+                const dx = b.x - mouse.x;
+                const dy = b.y - mouse.y;
+                const dist = Math.sqrt(dx * dx + dy * dy) + 0.001;
+
+                if (dist < 180) {
+                    const force = (180 - dist) / 180;
+                    b.vx += (dx / dist) * force * 8 * dt;
+                    b.vy += (dy / dist) * force * 8 * dt;
+                }
+
+                // 阻尼（防止飞出后速度无限大导致消失）
+                b.vx *= 0.985;
+                b.vy *= 0.985;
+
+                // 完美边界环绕（绝不报错）
+                if (b.x < -100) b.x = app.screen.width + 100;
+                if (b.x > app.screen.width + 100) b.x = -100;
+                if (b.y < -100) b.y = app.screen.height + 100;
+                if (b.y > app.screen.height + 100) b.y = -100;
+
+                // 限制数组长度防止内存溢出
+                if (bubbles.length > 80) {
+                    const old = bubbles.shift();
+                    old.destroy();
+                }
+            });
+        });
+
+        // 窗口缩放
+        window.addEventListener('resize', () => {
+            app.renderer.resize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>

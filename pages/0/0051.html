@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>双极坐标编织 · 正交圆网</title>
+    <style>
+        :root {
+            --bg: #06060c;
+            --gold: #d4a843;
+            --cyan: #45b7aa;
+            --magenta: #d4708a;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'SimSun', serif;
+            -webkit-font-smoothing: antialiased;
+            user-select: none;
+        }
+        #canvas-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+        }
+        canvas { display: block; }
+        .overlay-title {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 22px 20px 8px;
+            text-align: center;
+            background: linear-gradient(180deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.8) 55%, rgba(6,6,12,0) 100%);
+        }
+        .overlay-title h2 {
+            font-size: clamp(1.1rem, 2.2vw, 1.8rem);
+            font-weight: 400;
+            letter-spacing: 0.13em;
+            color: #e8d5b0;
+            text-shadow: 0 0 30px rgba(212,168,67,0.45), 0 0 60px rgba(212,168,67,0.18);
+            margin: 0 0 2px;
+            line-height: 1.3;
+        }
+        .overlay-title .sub {
+            font-size: clamp(0.65rem, 1.1vw, 0.85rem);
+            letter-spacing: 0.22em;
+            color: rgba(200,180,150,0.65);
+        }
+        .overlay-formula {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 8px 20px 18px;
+            text-align: center;
+            background: linear-gradient(0deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.82) 55%, rgba(6,6,12,0) 100%);
+        }
+        .formula-text {
+            font-size: clamp(0.6rem, 1.0vw, 0.8rem);
+            color: rgba(210,200,185,0.8);
+            letter-spacing: 0.03em;
+            line-height: 1.7;
+        }
+        .clr-gold { color: #d4a843; font-weight: bold; }
+        .clr-cyan { color: #45b7aa; font-weight: bold; }
+        .clr-magenta { color: #d4708a; font-weight: bold; }
+        .formula-sep {
+            display: inline-block;
+            margin: 0 14px;
+            color: rgba(150,140,130,0.35);
+        }
+    </style>
+</head>
+<body>
+    <div class="overlay-title">
+        <h2>双极坐标编织 · 正交圆网</h2>
+        <div class="sub">Bipolar coordinates · σ‑circles & τ‑circles · Stereographic projection</div>
+    </div>
+    <div class="overlay-formula">
+        <div class="formula-text">
+            <span class="clr-gold">等σ线: 过两焦点的圆族</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-cyan">等τ线: 绕焦点的Apollonian圆</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-magenta">对角族: σ±τ = const</span>
+        </div>
+    </div>
+    <div id="canvas-container"></div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(46, container.clientWidth / container.clientHeight, 0.5, 22);
+        camera.position.set(3.2, 2.1, 7.2);
+        camera.lookAt(0, 0, 0);
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x06060c, 1);
+        container.appendChild(renderer.domElement);
+
+        // 手动时钟——杜绝暂停
+        let startTime = performance.now();
+        const getElapsed = () => (performance.now() - startTime) * 0.001;
+
+        const COLOR_GOLD = 0xd4a843;
+        const COLOR_CYAN = 0x45b7aa;
+        const COLOR_MAGENTA = 0xd4708a;
+        const SPHERE_R = 2.65;
+        const PROJ_D = 2.3;
+        const A = 1.0;
+
+        // 球极投影
+        function stereographic(px, py) {
+            const denom = px * px + py * py + PROJ_D * PROJ_D;
+            return new THREE.Vector3(
+                2 * PROJ_D * px / denom,
+                2 * PROJ_D * py / denom,
+                (px * px + py * py - PROJ_D * PROJ_D) / denom
+            ).multiplyScalar(SPHERE_R);
+        }
+
+        // 双极坐标 → 平面笛卡尔坐标
+        function bipolarToCartesian(sigma, tau) {
+            const chT = Math.cosh(tau);
+            const cosS = Math.cos(sigma);
+            const sinS = Math.sin(sigma);
+            const denom = chT - cosS;
+            if (Math.abs(denom) < 0.0003) return null;
+            const px = A * Math.sinh(tau) / denom;
+            const py = A * sinS / denom;
+            return { px, py };
+        }
+
+        // 创建曲线
+        function createCurve(points2D, color, opacity) {
+            const pts3D = [];
+            for (const [px, py] of points2D) {
+                if (Math.abs(px) > 8 || Math.abs(py) > 8) continue;
+                const sp = stereographic(px, py);
+                if (sp && sp.length() < 9.5) pts3D.push(sp);
+            }
+            if (pts3D.length >= 2) {
+                const geom = new THREE.BufferGeometry().setFromPoints(pts3D);
+                const mat = new THREE.LineBasicMaterial({
+                    color, transparent: true, opacity, depthWrite: true, depthTest: true,
+                });
+                return new THREE.Line(geom, mat);
+            }
+            return null;
+        }
+
+        function addLine(group, pts, color, opacity) {
+            const line = createCurve(pts, color, opacity);
+            if (line) group.add(line);
+        }
+
+        // 生成等σ线族
+        function createSigmaFamily(sigmaValues, tauMin, tauMax, color, opacity, numPoints) {
+            const group = new THREE.Group();
+            const dt = (tauMax - tauMin) / numPoints;
+            for (const sigma of sigmaValues) {
+                const pts = [];
+                for (let i = 0; i <= numPoints; i++) {
+                    const tau = tauMin + i * dt;
+                    const bp = bipolarToCartesian(sigma, tau);
+                    if (bp) pts.push([bp.px, bp.py]);
+                }
+                addLine(group, pts, color, opacity);
+            }
+            return group;
+        }
+
+        // 生成等τ线族
+        function createTauFamily(tauValues, sigmaMin, sigmaMax, color, opacity, numPoints) {
+            const group = new THREE.Group();
+            const ds = (sigmaMax - sigmaMin) / numPoints;
+            for (const tau of tauValues) {
+                const pts = [];
+                for (let i = 0; i <= numPoints; i++) {
+                    const sigma = sigmaMin + i * ds;
+                    const bp = bipolarToCartesian(sigma, tau);
+                    if (bp) pts.push([bp.px, bp.py]);
+                }
+                addLine(group, pts, color, opacity);
+            }
+            return group;
+        }
+
+        // 生成对角线族
+        function createDiagonalFamily(constValues, sign, sigmaMin, sigmaMax, tauMin, tauMax, color, opacity, numPoints) {
+            const group = new THREE.Group();
+            for (const c of constValues) {
+                const pts = [];
+                const dt = (sigmaMax - sigmaMin) / numPoints;
+                for (let i = 0; i <= numPoints; i++) {
+                    const sigma = sigmaMin + i * dt;
+                    const tau = sign === 1 ? c - sigma : sigma - c;
+                    if (tau >= tauMin && tau <= tauMax) {
+                        const bp = bipolarToCartesian(sigma, tau);
+                        if (bp) pts.push([bp.px, bp.py]);
+                    }
+                }
+                addLine(group, pts, color, opacity * 0.85);
+            }
+            return group;
+        }
+
+        // 主组
+        const rootGroup = new THREE.Group();
+        rootGroup.name = 'bipolar-weave';
+        scene.add(rootGroup);
+
+        const tauMin = -2.2, tauMax = 2.2;
+        const sigmaMin = 0.04, sigmaMax = 2 * Math.PI - 0.04;
+        const curvePoints = 380;
+
+        // 金色族：等σ线（经过两焦点的圆），28条
+        const sigmaCount = 28;
+        const sigmaVals = [];
+        for (let i = 0; i < sigmaCount; i++) sigmaVals.push(sigmaMin + i * (sigmaMax - sigmaMin) / (sigmaCount - 1));
+        rootGroup.add(createSigmaFamily(sigmaVals, tauMin, tauMax, COLOR_GOLD, 0.60, curvePoints));
+
+        // 青色族：等τ线（围绕焦点的Apollonian圆），24条
+        const tauCount = 24;
+        const tauVals = [];
+        for (let i = 0; i < tauCount; i++) tauVals.push(tauMin + i * (tauMax - tauMin) / (tauCount - 1));
+        rootGroup.add(createTauFamily(tauVals, sigmaMin, sigmaMax, COLOR_CYAN, 0.60, curvePoints));
+
+        // 品红族：对角线σ+τ=const和σ-τ=const
+        const diagCount = 26;
+        const diagMin = sigmaMin + tauMin;
+        const diagMax = sigmaMax + tauMax;
+        const diagVals = [];
+        for (let i = 0; i < diagCount; i++) diagVals.push(diagMin + i * (diagMax - diagMin) / (diagCount - 1));
+        rootGroup.add(createDiagonalFamily(diagVals, 1, sigmaMin, sigmaMax, tauMin, tauMax, COLOR_MAGENTA, 0.55, curvePoints));
+        rootGroup.add(createDiagonalFamily(diagVals, -1, sigmaMin, sigmaMax, tauMin, tauMax, COLOR_MAGENTA, 0.50, curvePoints));
+
+        // 额外密度：更多等σ线
+        const extraSigma = [];
+        for (let i = 0; i < 16; i++) extraSigma.push(sigmaMin + 0.07 + i * (sigmaMax - sigmaMin) / 15);
+        rootGroup.add(createSigmaFamily(extraSigma, tauMin, tauMax, COLOR_GOLD, 0.40, Math.floor(curvePoints * 0.8)));
+
+        // 额外密度：更多等τ线
+        const extraTau = [];
+        for (let i = 0; i < 14; i++) extraTau.push(tauMin + 0.05 + i * (tauMax - tauMin) / 13);
+        rootGroup.add(createTauFamily(extraTau, sigmaMin, sigmaMax, COLOR_CYAN, 0.38, Math.floor(curvePoints * 0.8)));
+
+        // 额外对角族
+        const extraDiag = [];
+        const edMin = sigmaMin + tauMin + 0.1;
+        const edMax = sigmaMax + tauMax - 0.1;
+        for (let i = 0; i < 18; i++) extraDiag.push(edMin + i * (edMax - edMin) / 17);
+        rootGroup.add(createDiagonalFamily(extraDiag, 1, sigmaMin, sigmaMax, tauMin, tauMax, COLOR_MAGENTA, 0.35, Math.floor(curvePoints * 0.7)));
+        rootGroup.add(createDiagonalFamily(extraDiag, -1, sigmaMin, sigmaMax, tauMin, tauMax, COLOR_MAGENTA, 0.32, Math.floor(curvePoints * 0.7)));
+
+        // 辅助球面参考网格
+        for (let i = 0; i < 10; i++) {
+            const lat = (i + 0.5) * Math.PI / 10;
+            const r = SPHERE_R * Math.sin(lat);
+            const z = SPHERE_R * Math.cos(lat);
+            const pts = [];
+            for (let j = 0; j <= 240; j++) {
+                const phi = j * 2 * Math.PI / 240;
+                pts.push(new THREE.Vector3(r * Math.cos(phi), z, r * Math.sin(phi)));
+            }
+            const geom = new THREE.BufferGeometry().setFromPoints(pts);
+            rootGroup.add(new THREE.Line(geom, new THREE.LineBasicMaterial({
+                color: 0x403830, transparent: true, opacity: 0.09, depthWrite: true, depthTest: true
+            })));
+        }
+        for (let k = 0; k < 8; k++) {
+            const phi = k * Math.PI / 4;
+            const pts = [];
+            for (let j = 0; j <= 240; j++) {
+                const theta = 0.02 + j * Math.PI / 240;
+                const st = Math.sin(theta);
+                pts.push(new THREE.Vector3(SPHERE_R * st * Math.cos(phi), SPHERE_R * Math.cos(theta), SPHERE_R * st * Math.sin(phi)));
+            }
+            const geom = new THREE.BufferGeometry().setFromPoints(pts);
+            rootGroup.add(new THREE.Line(geom, new THREE.LineBasicMaterial({
+                color: 0x303840, transparent: true, opacity: 0.07, depthWrite: true, depthTest: true
+            })));
+        }
+
+        console.log('双极坐标编织线条总数:', rootGroup.children.length);
+
+        // 背景星点
+        const starsGroup = new THREE.Group();
+        const starsGeom = new THREE.BufferGeometry();
+        const starsCount = 550;
+        const starsPos = new Float32Array(starsCount * 3);
+        for (let i = 0; i < starsCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const dist = 6.5 + Math.random() * 10;
+            starsPos[i * 3] = dist * Math.sin(phi) * Math.cos(theta);
+            starsPos[i * 3 + 1] = dist * Math.sin(phi) * Math.sin(theta);
+            starsPos[i * 3 + 2] = dist * Math.cos(phi);
+        }
+        starsGeom.setAttribute('position', new THREE.BufferAttribute(starsPos, 3));
+        const starsMat = new THREE.PointsMaterial({
+            color: 0x908878, size: 0.018, transparent: true, opacity: 0.55, depthWrite: false,
+        });
+        starsGroup.add(new THREE.Points(starsGeom, starsMat));
+        scene.add(starsGroup);
+
+        // ---- 双保险动画循环 ----
+        let animFrameId;
+        function mainLoop() {
+            const t = getElapsed();
+            rootGroup.rotation.x = t * 0.14;
+            rootGroup.rotation.y = t * 0.25;
+            rootGroup.rotation.z = t * 0.11;
+            starsGroup.rotation.y = t * 0.04;
+            starsGroup.rotation.x = t * 0.025;
+
+            const camRadius = 7.3;
+            const camAngle = t * 0.08;
+            const camHeight = 2.2 + Math.sin(t * 0.16) * 0.7;
+            camera.position.x = Math.cos(camAngle) * camRadius;
+            camera.position.z = Math.sin(camAngle) * camRadius;
+            camera.position.y = camHeight;
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        function scheduleFrame() {
+            animFrameId = requestAnimationFrame(() => {
+                try { mainLoop(); } catch (e) { console.warn('动画异常:', e); }
+                scheduleFrame();
+            });
+        }
+
+        const backupTimer = setInterval(() => {
+            if (animFrameId !== undefined) {
+                cancelAnimationFrame(animFrameId);
+                scheduleFrame();
+            }
+        }, 3000);
+
+        // 预渲染首帧确保立即显示
+        renderer.render(scene, camera);
+        scheduleFrame();
+
+        // 响应式
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth, h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth, h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 120));
+
+        console.log('✅ 双极坐标正交圆网动画已稳定运行');
+    </script>
+</body>
+</html>

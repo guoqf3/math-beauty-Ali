@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>雅可比椭圆编织 · 特殊函数网</title>
+    <style>
+        :root {
+            --bg: #06060c;
+            --gold: #d4a843;
+            --cyan: #45b7aa;
+            --magenta: #d4708a;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'SimSun', serif;
+            -webkit-font-smoothing: antialiased;
+            user-select: none;
+        }
+        #canvas-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+        }
+        canvas { display: block; }
+        .overlay-title {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 22px 20px 8px;
+            text-align: center;
+            background: linear-gradient(180deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.8) 55%, rgba(6,6,12,0) 100%);
+        }
+        .overlay-title h2 {
+            font-size: clamp(1.1rem, 2.2vw, 1.8rem);
+            font-weight: 400;
+            letter-spacing: 0.13em;
+            color: #e8d5b0;
+            text-shadow: 0 0 30px rgba(212,168,67,0.45), 0 0 60px rgba(212,168,67,0.18);
+            margin: 0 0 2px;
+            line-height: 1.3;
+        }
+        .overlay-title .sub {
+            font-size: clamp(0.65rem, 1.1vw, 0.85rem);
+            letter-spacing: 0.22em;
+            color: rgba(200,180,150,0.65);
+        }
+        .overlay-formula {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 8px 20px 18px;
+            text-align: center;
+            background: linear-gradient(0deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.82) 55%, rgba(6,6,12,0) 100%);
+        }
+        .formula-text {
+            font-size: clamp(0.6rem, 1.0vw, 0.8rem);
+            color: rgba(210,200,185,0.8);
+            letter-spacing: 0.03em;
+            line-height: 1.7;
+        }
+        .clr-gold { color: #d4a843; font-weight: bold; }
+        .clr-cyan { color: #45b7aa; font-weight: bold; }
+        .clr-magenta { color: #d4708a; font-weight: bold; }
+        .formula-sep {
+            display: inline-block;
+            margin: 0 14px;
+            color: rgba(150,140,130,0.35);
+        }
+    </style>
+</head>
+<body>
+    <div class="overlay-title">
+        <h2>雅可比椭圆编织 · 特殊函数网</h2>
+        <div class="sub">Jacobi elliptic functions sn·cn·dn · Moduli k=0.5,0.7,0.9</div>
+    </div>
+    <div class="overlay-formula">
+        <div class="formula-text">
+            <span class="clr-gold">k=0.5: x=sn(t,k), y=cn(1.5t,k), z=dn(2.2t,k)</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-cyan">k=0.7: x=cn(t,k), y=dn(2.1t,k), z=sn(1.4t,k)</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-magenta">k=0.9: x=dn(t,k), y=sn(1.8t,k), z=cn(2.6t,k)</span>
+        </div>
+    </div>
+    <div id="canvas-container"></div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(46, container.clientWidth / container.clientHeight, 0.5, 22);
+        camera.position.set(3.6, 2.5, 7.5);
+        camera.lookAt(0, 0, 0);
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x06060c, 1);
+        container.appendChild(renderer.domElement);
+
+        let startTime = performance.now();
+        const getElapsed = () => (performance.now() - startTime) * 0.001;
+
+        const COLOR_GOLD = 0xd4a843;
+        const COLOR_CYAN = 0x45b7aa;
+        const COLOR_MAGENTA = 0xd4708a;
+        const SCALE_FACTOR = 1.5;
+
+        // ---------- 雅可比椭圆函数 RK4 积分 ----------
+        function jacobiStep(sn, cn, dn, k2, h) {
+            // ODE: sn' = cn*dn, cn' = -sn*dn, dn' = -k2*sn*cn
+            const dsn = cn * dn;
+            const dcn = -sn * dn;
+            const ddn = -k2 * sn * cn;
+            return { sn: sn + dsn * h, cn: cn + dcn * h, dn: dn + ddn * h };
+        }
+
+        function integrateJacobi(k, tEnd, steps) {
+            const k2 = k * k;
+            const dt = tEnd / steps;
+            let sn = 0, cn = 1, dn = 1;
+            const snArr = [sn], cnArr = [cn], dnArr = [dn];
+            let t = 0;
+            for (let i = 0; i < steps; i++) {
+                const { sn: s1, cn: c1, dn: d1 } = jacobiStep(sn, cn, dn, k2, dt * 0.5);
+                // 使用RK2中点法更精确
+                const dsn1 = c1 * d1;
+                const dcn1 = -s1 * d1;
+                const ddn1 = -k2 * s1 * c1;
+                sn += dsn1 * dt;
+                cn += dcn1 * dt;
+                dn += ddn1 * dt;
+                t += dt;
+                snArr.push(sn);
+                cnArr.push(cn);
+                dnArr.push(dn);
+            }
+            return { snArr, cnArr, dnArr, tEnd, steps, dt };
+        }
+
+        // 预计算不同k值的椭圆函数表
+        const tables = {};
+        function getJacobiTable(k, tMax, steps) {
+            const key = `${k.toFixed(2)}_${tMax.toFixed(2)}_${steps}`;
+            if (!tables[key]) {
+                tables[key] = integrateJacobi(k, tMax, steps);
+            }
+            return tables[key];
+        }
+
+        // 生成一族曲线
+        function createEllipticCurveFamily(k, xFn, yFn, zFn, numCurves, color, opacity, tMax, steps) {
+            const group = new THREE.Group();
+            const table = getJacobiTable(k, tMax, steps);
+            const { snArr, cnArr, dnArr, dt } = table;
+
+            for (let c = 0; c < numCurves; c++) {
+                const phase = c * 2 * Math.PI / numCurves;
+                const pts = [];
+                for (let i = 0; i <= steps; i++) {
+                    const t = i * dt;
+                    const sn = snArr[i];
+                    const cn = cnArr[i];
+                    const dn = dnArr[i];
+                    const x = xFn(sn, cn, dn, t, phase) * SCALE_FACTOR;
+                    const y = yFn(sn, cn, dn, t, phase) * SCALE_FACTOR;
+                    const z = zFn(sn, cn, dn, t, phase) * SCALE_FACTOR;
+                    if (Math.abs(x) < 6 && Math.abs(y) < 6 && Math.abs(z) < 6) {
+                        pts.push(new THREE.Vector3(x, y, z));
+                    }
+                }
+                if (pts.length >= 2) {
+                    const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                    const mat = new THREE.LineBasicMaterial({
+                        color, transparent: true, opacity,
+                        depthWrite: true, depthTest: true,
+                    });
+                    group.add(new THREE.Line(geom, mat));
+                }
+            }
+            return group;
+        }
+
+        const rootGroup = new THREE.Group();
+        rootGroup.name = 'jacobi-weave';
+        scene.add(rootGroup);
+
+        const tMax = 8.0;
+        const steps = 550;
+        const numCurves = 32;
+
+        // 金色族：k=0.5，曲线 x=sn(t), y=cn(1.5t), z=dn(2.2t) 加相位偏移
+        const goldX = (sn, cn, dn, t, phi) => Math.sin(t * 1.0 + phi) * (0.6 + 0.4 * sn);
+        const goldY = (sn, cn, dn, t, phi) => cn * Math.cos(1.5 * t + phi * 0.7);
+        const goldZ = (sn, cn, dn, t, phi) => dn * Math.sin(2.2 * t + phi * 0.5);
+        rootGroup.add(createEllipticCurveFamily(0.5, goldX, goldY, goldZ, numCurves, COLOR_GOLD, 0.62, tMax, steps));
+
+        // 青色族：k=0.7，曲线 x=cn(t), y=dn(2.1t), z=sn(1.4t)
+        const cyanX = (sn, cn, dn, t, phi) => cn * Math.cos(1.3 * t + phi * 0.8);
+        const cyanY = (sn, cn, dn, t, phi) => dn * Math.sin(2.1 * t + phi * 0.6);
+        const cyanZ = (sn, cn, dn, t, phi) => Math.cos(1.4 * t + phi) * (0.5 + 0.5 * sn);
+        rootGroup.add(createEllipticCurveFamily(0.7, cyanX, cyanY, cyanZ, numCurves, COLOR_CYAN, 0.62, tMax, steps));
+
+        // 品红族：k=0.9，曲线 x=dn(t), y=sn(1.8t), z=cn(2.6t)
+        const magentaX = (sn, cn, dn, t, phi) => dn * Math.sin(1.5 * t + phi * 0.9);
+        const magentaY = (sn, cn, dn, t, phi) => sn * Math.cos(1.8 * t + phi * 0.4);
+        const magentaZ = (sn, cn, dn, t, phi) => cn * Math.sin(2.6 * t + phi * 0.3);
+        rootGroup.add(createEllipticCurveFamily(0.9, magentaX, magentaY, magentaZ, numCurves, COLOR_MAGENTA, 0.62, tMax, steps));
+
+        // 额外增加密度：k=0.3和k=0.8的曲线，再次丰富编织
+        const goldX2 = (sn, cn, dn, t, phi) => sn * Math.cos(0.9 * t + phi * 1.1);
+        const goldY2 = (sn, cn, dn, t, phi) => cn * Math.sin(1.7 * t + phi * 0.5);
+        const goldZ2 = (sn, cn, dn, t, phi) => dn * Math.cos(2.4 * t + phi * 0.7);
+        rootGroup.add(createEllipticCurveFamily(0.3, goldX2, goldY2, goldZ2, Math.floor(numCurves * 0.7), COLOR_GOLD, 0.52, tMax * 0.9, Math.floor(steps * 0.9)));
+
+        const cyanX2 = (sn, cn, dn, t, phi) => Math.cos(1.1 * t + phi) * (0.7 + 0.3 * cn);
+        const cyanY2 = (sn, cn, dn, t, phi) => dn * Math.sin(1.9 * t + phi * 0.6);
+        const cyanZ2 = (sn, cn, dn, t, phi) => sn * Math.cos(2.3 * t + phi * 0.8);
+        rootGroup.add(createEllipticCurveFamily(0.8, cyanX2, cyanY2, cyanZ2, Math.floor(numCurves * 0.7), COLOR_CYAN, 0.52, tMax * 0.9, Math.floor(steps * 0.9)));
+
+        const magentaX2 = (sn, cn, dn, t, phi) => cn * Math.sin(1.2 * t + phi * 0.3);
+        const magentaY2 = (sn, cn, dn, t, phi) => sn * Math.cos(2.0 * t + phi * 0.7);
+        const magentaZ2 = (sn, cn, dn, t, phi) => dn * Math.sin(2.8 * t + phi * 0.5);
+        rootGroup.add(createEllipticCurveFamily(0.85, magentaX2, magentaY2, magentaZ2, Math.floor(numCurves * 0.6), COLOR_MAGENTA, 0.50, tMax * 0.85, Math.floor(steps * 0.85)));
+
+        // 辅助参考球壳（极淡）
+        const refRadius = 2.8;
+        for (let i = 0; i < 8; i++) {
+            const lat = (i + 0.5) * Math.PI / 8;
+            const r = refRadius * Math.sin(lat);
+            const z = refRadius * Math.cos(lat);
+            const pts = [];
+            for (let j = 0; j <= 200; j++) {
+                const phi = j * 2 * Math.PI / 200;
+                pts.push(new THREE.Vector3(r * Math.cos(phi), z, r * Math.sin(phi)));
+            }
+            const geom = new THREE.BufferGeometry().setFromPoints(pts);
+            rootGroup.add(new THREE.Line(geom, new THREE.LineBasicMaterial({
+                color: 0x403830, transparent: true, opacity: 0.10, depthWrite: true, depthTest: true
+            })));
+        }
+        for (let k = 0; k < 6; k++) {
+            const phi = k * Math.PI / 3;
+            const pts = [];
+            for (let j = 0; j <= 200; j++) {
+                const theta = 0.02 + j * Math.PI / 200;
+                const st = Math.sin(theta);
+                pts.push(new THREE.Vector3(refRadius * st * Math.cos(phi), refRadius * Math.cos(theta), refRadius * st * Math.sin(phi)));
+            }
+            const geom = new THREE.BufferGeometry().setFromPoints(pts);
+            rootGroup.add(new THREE.Line(geom, new THREE.LineBasicMaterial({
+                color: 0x303840, transparent: true, opacity: 0.08, depthWrite: true, depthTest: true
+            })));
+        }
+
+        console.log('雅可比椭圆编织线条总数:', rootGroup.children.length);
+
+        // 背景星点
+        const starsGroup = new THREE.Group();
+        const starsGeom = new THREE.BufferGeometry();
+        const starsCount = 550;
+        const starsPos = new Float32Array(starsCount * 3);
+        for (let i = 0; i < starsCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const dist = 6.5 + Math.random() * 10;
+            starsPos[i * 3] = dist * Math.sin(phi) * Math.cos(theta);
+            starsPos[i * 3 + 1] = dist * Math.sin(phi) * Math.sin(theta);
+            starsPos[i * 3 + 2] = dist * Math.cos(phi);
+        }
+        starsGeom.setAttribute('position', new THREE.BufferAttribute(starsPos, 3));
+        const starsMat = new THREE.PointsMaterial({
+            color: 0x908878, size: 0.018, transparent: true, opacity: 0.5, depthWrite: false,
+        });
+        starsGroup.add(new THREE.Points(starsGeom, starsMat));
+        scene.add(starsGroup);
+
+        // ---- 健壮的动画循环 ----
+        function animate() {
+            const t = getElapsed();
+            rootGroup.rotation.x = t * 0.16;
+            rootGroup.rotation.y = t * 0.27;
+            rootGroup.rotation.z = t * 0.12;
+            starsGroup.rotation.y = t * 0.04;
+            starsGroup.rotation.x = t * 0.025;
+
+            const camRadius = 7.6;
+            const camAngle = t * 0.08;
+            const camHeight = 2.5 + Math.sin(t * 0.16) * 0.7;
+            camera.position.x = Math.cos(camAngle) * camRadius;
+            camera.position.z = Math.sin(camAngle) * camRadius;
+            camera.position.y = camHeight;
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+            requestAnimationFrame(animate);
+        }
+
+        // 预渲染首帧确保立即显示
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+
+        // 响应式
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth,
+                h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth,
+                h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 120));
+
+        console.log('✅ 雅可比椭圆编织动画已稳定运行');
+    </script>
+</body>
+</html>

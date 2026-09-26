@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>六维超立方体投影 · 高维线网</title>
+    <style>
+        :root { --bg: #02040a; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'STSong', 'Songti SC', 'Noto Serif SC', 'SimSun', 'Times New Roman', serif;
+            -webkit-font-smoothing: antialiased;
+            height: 100vh; width: 100vw;
+            user-select: none; -webkit-user-select: none; cursor: default;
+        }
+        #canvas-container { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+        canvas { display: block; }
+        #title-overlay {
+            position: fixed; top: 22px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+        }
+        #title-overlay .title {
+            font-size: clamp(1.0rem, 2.2vw, 1.5rem); font-weight: 400; letter-spacing: 0.08em;
+            color: #cfc7b5; text-shadow: 0 0 42px rgba(200,180,150,0.5), 0 0 70px rgba(170,150,130,0.2);
+            line-height: 1.4; white-space: nowrap;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.48rem, 0.85vw, 0.64rem); font-weight: 300; letter-spacing: 0.12em;
+            color: #a09888; text-shadow: 0 0 14px rgba(155,145,125,0.3);
+            margin-top: 2px; white-space: nowrap;
+        }
+        #formula-overlay {
+            position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+            background: rgba(2,4,10,0.7); padding: 10px 20px; border-radius: 32px;
+            border: 1px solid rgba(175,155,135,0.16);
+            backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); max-width: 95vw;
+        }
+        #formula-overlay .formula {
+            font-size: clamp(0.36rem, 0.68vw, 0.54rem); font-weight: 300; letter-spacing: 0.04em;
+            color: #c5bdaa; text-shadow: 0 0 13px rgba(185,170,145,0.25);
+            line-height: 1.5; white-space: nowrap;
+        }
+        #formula-overlay .formula .c1 { color: #d4885c; }
+        #formula-overlay .formula .c2 { color: #5d9ec6; }
+        #formula-overlay .formula .c3 { color: #c77d9f; }
+        @media (max-width: 600px) {
+            #title-overlay { top: 14px; }
+            #formula-overlay { bottom: 10px; padding: 7px 12px; border-radius: 24px; }
+            #formula-overlay .formula { font-size: 0.32rem; white-space: normal; line-height: 1.3; }
+            #title-overlay .title { font-size: 0.68rem; }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="title-overlay">
+        <div class="title">六维超立方体投影 · 高维线网</div>
+        <div class="subtitle">6‑HYPERCUBE PROJECTION &nbsp;·&nbsp; 64 VERTICES &nbsp;·&nbsp; 192 EDGES</div>
+    </div>
+    <div id="formula-overlay">
+        <div class="formula">
+            <span class="c1">短边:</span> 投影长<1/3分位 &nbsp;
+            <span class="c2">中边:</span> 1/3≤长<2/3分位 &nbsp;
+            <span class="c3">长边:</span> 长≥2/3分位
+            <br>
+            <span style="color:#9aa8b8;">V={±1}⁶⊂ℝ⁶ &nbsp;|&nbsp; 汉明距离=1(邻边) &nbsp;|&nbsp; SO(6)三平面旋转 &nbsp;|&nbsp; 正交投影→ℝ³</span>
+        </div>
+    </div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#02040a');
+        scene.fog = new THREE.Fog('#02040a', 8, 20);
+
+        const camera = new THREE.PerspectiveCamera(
+            50,
+            container.clientWidth / Math.max(container.clientHeight, 1),
+            0.3,
+            23
+        );
+        camera.position.set(0.6, 0.35, 7.2);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = false;
+        container.appendChild(renderer.domElement);
+
+        // ==================== 颜色 ====================
+        const C1 = '#d4885c'; // 暖金 – 短边
+        const C2 = '#5d9ec6'; // 冰蓝 – 中边
+        const C3 = '#c77d9f'; // 玫瑰粉 – 长边
+        const C_SPHERE = '#3a4a5c';
+        const C_GLINT = '#8898aa';
+        const VIEW_R = 2.55;
+        const MAX_DIST = VIEW_R * 1.28;
+
+        // ==================== 生成六维超立方体顶点与边 ====================
+        function generate6Hypercube() {
+            const verts = [];
+            for (let mask = 0; mask < 64; mask++) {
+                const v = [];
+                for (let b = 0; b < 6; b++) {
+                    v.push((mask >> b) & 1 ? 1 : -1);
+                }
+                verts.push(v);
+            }
+            // 边：汉明距离为1的顶点对
+            const edges = [];
+            for (let i = 0; i < 64; i++) {
+                for (let j = i + 1; j < 64; j++) {
+                    let diff = 0;
+                    for (let b = 0; b < 6; b++) {
+                        if (verts[i][b] !== verts[j][b]) diff++;
+                    }
+                    if (diff === 1) edges.push([i, j]);
+                }
+            }
+            return { verts, edges };
+        }
+
+        const { verts: verts6D, edges } = generate6Hypercube();
+        console.log('六维超立方体顶点:', verts6D.length, '边:', edges.length);
+
+        // ==================== 投影矩阵构建 ====================
+        // 三个正交的6维行向量，具有良好对称性
+        function buildProjMatrix() {
+            const phi = (1 + Math.sqrt(5)) / 2;
+            const v1 = [1, phi, 0, -1, -phi, 0];
+            const v2 = [0, 0, 1, phi, -1, -phi];
+            const v3 = [phi, -1, phi, 0, -phi, 1];
+
+            function norm(arr) {
+                const len = Math.sqrt(arr.reduce((s, x) => s + x * x, 0));
+                return arr.map(x => x / len);
+            }
+
+            let r1 = norm(v1);
+            let r2 = norm(v2);
+            let r3 = norm(v3);
+
+            // Gram-Schmidt正交化
+            const dot12 = r1.reduce((s, x, i) => s + x * r2[i], 0);
+            r2 = r2.map((x, i) => x - dot12 * r1[i]);
+            r2 = norm(r2);
+
+            const dot13 = r1.reduce((s, x, i) => s + x * r3[i], 0);
+            const dot23 = r2.reduce((s, x, i) => s + x * r3[i], 0);
+            r3 = r3.map((x, i) => x - dot13 * r1[i] - dot23 * r2[i]);
+            r3 = norm(r3);
+
+            return [r1, r2, r3];
+        }
+
+        const projMat = buildProjMatrix();
+
+        function project(v6, mat) {
+            const x = v6.reduce((s, v, i) => s + v * mat[0][i], 0);
+            const y = v6.reduce((s, v, i) => s + v * mat[1][i], 0);
+            const z = v6.reduce((s, v, i) => s + v * mat[2][i], 0);
+            return new THREE.Vector3(x, y, z);
+        }
+
+        // ==================== SO(6)三平面旋转 ====================
+        function rotate6D(v, alpha, beta, gamma) {
+            const [x1, x2, x3, x4, x5, x6] = v;
+            const cA = Math.cos(alpha), sA = Math.sin(alpha);
+            const cB = Math.cos(beta), sB = Math.sin(beta);
+            const cG = Math.cos(gamma), sG = Math.sin(gamma);
+            const y1 = x1 * cA - x2 * sA;
+            const y2 = x1 * sA + x2 * cA;
+            const y3 = x3 * cB - x4 * sB;
+            const y4 = x3 * sB + x4 * cB;
+            const y5 = x5 * cG - x6 * sG;
+            const y6 = x5 * sG + x6 * cG;
+            return [y1, y2, y3, y4, y5, y6];
+        }
+
+        function softClamp(vec) {
+            const len = vec.length();
+            if (len > MAX_DIST && len > 0.001) {
+                const excess = len - MAX_DIST;
+                const clamped = MAX_DIST + Math.log(1 + excess) * 1.15;
+                vec.normalize().multiplyScalar(Math.min(clamped, MAX_DIST * 1.3));
+            }
+            return vec;
+        }
+
+        // ==================== 创建三个动态线段几何体 ====================
+        function createDynamicLineSegments(colorHex, opacity) {
+            const geom = new THREE.BufferGeometry();
+            const arr = new Float32Array(0);
+            geom.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+            const mat = new THREE.LineBasicMaterial({
+                color: new THREE.Color(colorHex),
+                transparent: true, opacity: opacity, depthWrite: true,
+            });
+            const lines = new THREE.LineSegments(geom, mat);
+            lines.userData = { positionsArr: arr };
+            return lines;
+        }
+
+        const linesShort = createDynamicLineSegments(C1, 0.68);
+        const linesMid = createDynamicLineSegments(C2, 0.64);
+        const linesLong = createDynamicLineSegments(C3, 0.66);
+
+        const mainGroup = new THREE.Group();
+        mainGroup.add(linesShort);
+        mainGroup.add(linesMid);
+        mainGroup.add(linesLong);
+        scene.add(mainGroup);
+
+        // ==================== 更新函数 ====================
+        function updateAllEdges(alpha, beta, gamma) {
+            const n = verts6D.length;
+            const projPts = new Array(n);
+            const scale = 1.15;
+            for (let i = 0; i < n; i++) {
+                const rot = rotate6D(verts6D[i], alpha, beta, gamma);
+                let p = project(rot, projMat).multiplyScalar(scale);
+                p = softClamp(p);
+                projPts[i] = p;
+            }
+
+            // 计算每条边的投影长度
+            const edgeLengths = edges.map(([i, j]) => projPts[i].distanceTo(projPts[j]));
+            const indices = edgeLengths.map((_, idx) => idx);
+            indices.sort((a, b) => edgeLengths[a] - edgeLengths[b]);
+
+            const total = edges.length;
+            const third = Math.floor(total / 3);
+            const groups = [
+                indices.slice(0, third),
+                indices.slice(third, 2 * third),
+                indices.slice(2 * third)
+            ];
+
+            const lineObjs = [linesShort, linesMid, linesLong];
+            lineObjs.forEach((lineObj, gIdx) => {
+                const idxList = groups[gIdx];
+                const numEdges = idxList.length;
+                const arr = new Float32Array(numEdges * 6);
+                for (let k = 0; k < numEdges; k++) {
+                    const [i, j] = edges[idxList[k]];
+                    const a = projPts[i], b = projPts[j];
+                    const off = k * 6;
+                    arr[off] = a.x;
+                    arr[off + 1] = a.y;
+                    arr[off + 2] = a.z;
+                    arr[off + 3] = b.x;
+                    arr[off + 4] = b.y;
+                    arr[off + 5] = b.z;
+                }
+                const geom = lineObj.geometry;
+                geom.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+                geom.attributes.position.needsUpdate = true;
+            });
+        }
+
+        // ==================== 参考球面线框 ====================
+        function createSphereWireframe(radius, colorHex, opacity) {
+            const group = new THREE.Group();
+            const segs = 170;
+            const circles = [
+                (a) => new THREE.Vector3(Math.cos(a) * radius, Math.sin(a) * radius, 0),
+                (a) => new THREE.Vector3(Math.cos(a) * radius, 0, Math.sin(a) * radius),
+                (a) => new THREE.Vector3(0, Math.cos(a) * radius, Math.sin(a) * radius),
+            ];
+            for (const gen of circles) {
+                const pts = [];
+                for (let i = 0; i <= segs; i++) pts.push(gen((i / segs) * Math.PI * 2));
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(colorHex),
+                    transparent: true, opacity: opacity, depthWrite: true,
+                });
+                group.add(new THREE.Line(geom, mat));
+            }
+            return group;
+        }
+        const sphereRef = createSphereWireframe(VIEW_R, C_SPHERE, 0.2);
+        scene.add(sphereRef);
+
+        // ==================== 原点光点 ====================
+        function originGlint() {
+            const group = new THREE.Group();
+            const sz = 0.07;
+            const pairs = [
+                [new THREE.Vector3(-sz, 0, 0), new THREE.Vector3(sz, 0, 0)],
+                [new THREE.Vector3(0, -sz, 0), new THREE.Vector3(0, sz, 0)],
+                [new THREE.Vector3(0, 0, -sz), new THREE.Vector3(0, 0, sz)],
+            ];
+            for (const [a, b] of pairs) {
+                const g = new THREE.BufferGeometry().setFromPoints([a, b]);
+                const m = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(C_GLINT),
+                    transparent: true, opacity: 0.7, depthWrite: true,
+                });
+                group.add(new THREE.Line(g, m));
+            }
+            return group;
+        }
+        scene.add(originGlint());
+
+        // ==================== 球面参考光点 ====================
+        function createRefDots(radius, colorHex, sz) {
+            const group = new THREE.Group();
+            const dirs = [
+                [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1],
+                [0.577, 0.577, 0.577], [0.577, 0.577, -0.577], [0.577, -0.577, 0.577],
+                [-0.577, 0.577, 0.577], [0.577, -0.577, -0.577], [-0.577, 0.577, -0.577],
+                [-0.577, -0.577, 0.577], [-0.577, -0.577, -0.577]
+            ];
+            for (const d of dirs) {
+                const pt = new THREE.Vector3(d[0], d[1], d[2]).normalize().multiplyScalar(radius);
+                const pairs = [
+                    [pt.clone().add(new THREE.Vector3(-sz, 0, 0)), pt.clone().add(new THREE.Vector3(sz, 0, 0))],
+                    [pt.clone().add(new THREE.Vector3(0, -sz, 0)), pt.clone().add(new THREE.Vector3(0, sz, 0))],
+                ];
+                for (const [a, b] of pairs) {
+                    const g = new THREE.BufferGeometry().setFromPoints([a, b]);
+                    const m = new THREE.LineBasicMaterial({
+                        color: new THREE.Color(colorHex),
+                        transparent: true, opacity: 0.4, depthWrite: true,
+                    });
+                    group.add(new THREE.Line(g, m));
+                }
+            }
+            return group;
+        }
+        const refDots = createRefDots(VIEW_R, C_SPHERE, 0.04);
+        mainGroup.add(refDots);
+
+        // ==================== 动画循环（绝对时间） ====================
+        let time = 0;
+        let lastTime = performance.now();
+        let frameCount = 0;
+        let logTime = 0;
+
+        function animate(now) {
+            requestAnimationFrame(animate);
+            let delta = (now - lastTime) / 1000;
+            if (delta <= 0 || delta > 0.5) delta = 0.016;
+            lastTime = now;
+            time += delta;
+            frameCount++;
+            if (now - logTime > 4000) {
+                console.log(`[动画运行中] 帧:${frameCount} 时间:${time.toFixed(2)}s 边:${edges.length}`);
+                logTime = now;
+            }
+
+            const alpha = time * 0.32;
+            const beta = time * 0.44;
+            const gamma = time * 0.37;
+
+            updateAllEdges(alpha, beta, gamma);
+
+            mainGroup.rotation.y += 0.0014;
+            mainGroup.rotation.x += 0.0007;
+            sphereRef.rotation.copy(mainGroup.rotation);
+
+            const camX = 0.6 + Math.sin(time * 0.15) * 0.5;
+            const camY = 0.35 + Math.cos(time * 0.18) * 0.45;
+            camera.position.set(camX, camY, 7.2);
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        // ==================== 窗口调整 ====================
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth, h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth, h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 100));
+
+        // ==================== 启动 ====================
+        console.log('=== 六维超立方体投影 · 高维线网 ===');
+        console.log('顶点数:', verts6D.length, '边数:', edges.length);
+        console.log('✅ 初始帧渲染完成，启动绝对时间动画循环...');
+
+        updateAllEdges(0, 0, 0);
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

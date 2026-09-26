@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>四元数指数流 · Quaternion Exponential Flow</title>
+    <style>
+        :root { --bg: #060a14; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: var(--bg); overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'Noto Serif SC', serif;
+            width: 100vw; height: 100vh; height: 100dvh;
+            -webkit-tap-highlight-color: transparent;
+            user-select: none; -webkit-user-select: none;
+        }
+        #canvas-container { position: fixed; inset: 0; z-index: 1; }
+        canvas { display: block; }
+        #title-overlay {
+            position: fixed; top: 2.5vh; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+        }
+        #title-overlay .title {
+            font-size: clamp(1.1rem, 2.5vw, 1.8rem); font-weight: 400;
+            letter-spacing: 0.07em; color: rgba(215, 225, 245, 0.93);
+            text-shadow: 0 0 45px rgba(160, 200, 255, 0.55), 0 0 85px rgba(130, 170, 240, 0.3);
+            line-height: 1.3;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.6rem, 1.3vw, 0.85rem); letter-spacing: 0.12em;
+            color: rgba(180, 195, 220, 0.72);
+            text-shadow: 0 0 20px rgba(140, 180, 220, 0.35); margin-top: 0.3vh; font-style: italic;
+        }
+        #formula-overlay {
+            position: fixed; bottom: 3vh; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+        }
+        #formula-overlay .formula {
+            font-size: clamp(0.6rem, 1.3vw, 0.82rem); letter-spacing: 0.04em;
+            color: rgba(190, 200, 225, 0.78); text-shadow: 0 0 30px rgba(150, 180, 220, 0.4);
+            font-style: italic; background: rgba(8, 14, 26, 0.55);
+            padding: 0.5vh 2vw; border-radius: 2rem;
+            border: 1px solid rgba(120, 150, 200, 0.22);
+            backdrop-filter: blur(5px); -webkit-backdrop-filter: blur(5px);
+            white-space: nowrap;
+        }
+        #formula-overlay .formula .highlight {
+            color: rgba(255, 175, 95, 0.9); font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="title-overlay">
+        <div class="title">四元数指数流</div>
+        <div class="subtitle">Quaternion Exponential Map · 双旋转曲线族</div>
+    </div>
+    <div id="formula-overlay">
+        <div class="formula">
+            <span class="highlight">p</span>(t) = <span class="highlight">e<sup>A t</sup></span> · p₀ · <span class="highlight">e<sup>B t</sup></span> | 
+            A, B ∈ Im ℍ ωᵢ ∼ √2, √3, √5
+        </div>
+    </div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.157.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // --- DOM ---
+        const container = document.getElementById('canvas-container');
+
+        // --- 场景 ---
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(48, container.clientWidth / container.clientHeight, 0.1, 20);
+        camera.position.set(4.2, 0.9, 4.2);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x060a14, 1);
+        renderer.outputColorSpace = THREE.SRGBColorSpace;
+        container.appendChild(renderer.domElement);
+
+        // --- 星空 ---
+        const starCount = 600;
+        const starGeom = new THREE.BufferGeometry();
+        const starPos = new Float32Array(starCount * 3);
+        const starSize = new Float32Array(starCount);
+        for (let i = 0; i < starCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const r = 7.5 + Math.random() * 9;
+            starPos[i*3] = r * Math.sin(phi) * Math.cos(theta);
+            starPos[i*3+1] = r * Math.sin(phi) * Math.sin(theta);
+            starPos[i*3+2] = r * Math.cos(phi);
+            starSize[i] = Math.random() * 1.4 + 0.15;
+        }
+        starGeom.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+        starGeom.setAttribute('size', new THREE.BufferAttribute(starSize, 1));
+        const stars = new THREE.Points(starGeom, new THREE.PointsMaterial({
+            color: 0x7d8eb5, size: 0.009, transparent: true, opacity: 0.55,
+            blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true
+        }));
+        scene.add(stars);
+
+        // --- 颜色 ---
+        const COLORS = [
+            new THREE.Color('#00c8f0'), // 青色
+            new THREE.Color('#f0a040'), // 金色
+            new THREE.Color('#f05078')  // 品红
+        ];
+
+        // --- 四元数工具 ---
+        function quatMul(q1, q2) {
+            return {
+                w: q1.w * q2.w - q1.x * q2.x - q1.y * q2.y - q1.z * q2.z,
+                x: q1.w * q2.x + q1.x * q2.w + q1.y * q2.z - q1.z * q2.y,
+                y: q1.w * q2.y - q1.x * q2.z + q1.y * q2.w + q1.z * q2.x,
+                z: q1.w * q2.z + q1.x * q2.y - q1.y * q2.x + q1.z * q2.w
+            };
+        }
+
+        function quatExpPure(axisX, axisY, axisZ, omega, t) {
+            const theta = omega * t;
+            const c = Math.cos(theta);
+            const s = Math.sin(theta);
+            return { w: c, x: axisX * s, y: axisY * s, z: axisZ * s };
+        }
+
+        // --- 无理数频率表 ---
+        const SQRT2 = Math.SQRT2;
+        const SQRT3 = Math.SQRT3;
+        const SQRT5 = Math.sqrt(5);
+        const PHI = (1 + Math.sqrt(5)) / 2;
+
+        // --- 参数 ---
+        const NUM_LINES = 90;
+        const POINTS_PER_LINE = 280;
+        const T_WINDOW = 7.5;          // 时间窗口长度
+        const STEP = T_WINDOW / (POINTS_PER_LINE - 1);
+        const SCALE = 1.6;
+        const MAX_COORD = 3.5;
+
+        // 预生成每条线的参数
+        const lineParams = [];
+        for (let i = 0; i < NUM_LINES; i++) {
+            let group, freqBaseA, freqBaseB;
+            if (i < 30) {
+                group = 0;
+                freqBaseA = SQRT2 * (0.9 + Math.random() * 0.3);
+                freqBaseB = SQRT3 * (0.9 + Math.random() * 0.3);
+            } else if (i < 60) {
+                group = 1;
+                freqBaseA = SQRT3 * (1.1 + Math.random() * 0.4);
+                freqBaseB = SQRT5 * (1.0 + Math.random() * 0.3);
+            } else {
+                group = 2;
+                freqBaseA = SQRT5 * (1.2 + Math.random() * 0.5);
+                freqBaseB = PHI  * (1.0 + Math.random() * 0.3);
+            }
+
+            // 随机单位轴向量 (纯四元数部分归一化)
+            function randomUnit() {
+                const x = Math.random() - 0.5, y = Math.random() - 0.5, z = Math.random() - 0.5;
+                const len = Math.sqrt(x*x + y*y + z*z);
+                return { x: x/len, y: y/len, z: z/len };
+            }
+            const axisA = randomUnit();
+            const axisB = randomUnit();
+
+            // 初始四元数 p0 (作为4D点)
+            const len0 = Math.sqrt(Math.random()) * 2.0 + 0.5;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const theta = Math.random() * Math.PI * 2;
+            const p0 = {
+                x: len0 * Math.sin(phi) * Math.cos(theta),
+                y: len0 * Math.sin(phi) * Math.sin(theta),
+                z: len0 * Math.cos(phi),
+                w: (Math.random() - 0.5) * 1.5
+            };
+
+            lineParams.push({
+                group, axisA, axisB, omegaA: freqBaseA, omegaB: freqBaseB, p0
+            });
+        }
+
+        // --- 创建线条对象 ---
+        const lineGeoms = [];
+        const linePosArrays = [];
+        for (let i = 0; i < NUM_LINES; i++) {
+            const positions = new Float32Array(POINTS_PER_LINE * 3);
+            const geom = new THREE.BufferGeometry();
+            geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            geom.setDrawRange(0, POINTS_PER_LINE);
+            const mat = new THREE.LineBasicMaterial({
+                color: COLORS[lineParams[i].group],
+                linewidth: 1,
+                transparent: true,
+                opacity: 0.80,
+                depthTest: true,
+                depthWrite: true,
+                blending: THREE.NormalBlending
+            });
+            const line = new THREE.Line(geom, mat);
+            line.frustumCulled = false;
+            scene.add(line);
+            lineGeoms.push(geom);
+            linePosArrays.push(positions);
+        }
+
+        // --- 计算一条线的所有点 (给定全局时间T) ---
+        function computeLinePositions(param, T, outArray) {
+            const { axisA, axisB, omegaA, omegaB, p0 } = param;
+            const tStart = T - T_WINDOW;
+            for (let j = 0; j < POINTS_PER_LINE; j++) {
+                const t = tStart + j * STEP;
+                // 计算左右指数
+                const qA = quatExpPure(axisA.x, axisA.y, axisA.z, omegaA, t);
+                const qB = quatExpPure(axisB.x, axisB.y, axisB.z, omegaB, t);
+                // p(t) = qA * p0 * qB
+                const qA_p0 = quatMul(qA, p0);
+                const p = quatMul(qA_p0, qB);
+                // 取前三维，缩放并钳制
+                let x = p.x * SCALE;
+                let y = p.y * SCALE;
+                let z = p.z * SCALE;
+                x = Math.max(-MAX_COORD, Math.min(MAX_COORD, x));
+                y = Math.max(-MAX_COORD, Math.min(MAX_COORD, y));
+                z = Math.max(-MAX_COORD, Math.min(MAX_COORD, z));
+                const idx = j * 3;
+                outArray[idx]   = x;
+                outArray[idx+1] = y;
+                outArray[idx+2] = z;
+            }
+        }
+
+        function updateAllLines(globalTime) {
+            for (let i = 0; i < NUM_LINES; i++) {
+                const geom = lineGeoms[i];
+                const positions = linePosArrays[i];
+                computeLinePositions(lineParams[i], globalTime, positions);
+                geom.attributes.position.needsUpdate = true;
+            }
+        }
+
+        // --- 动画循环 ---
+        let globalTime = 0;
+        let animId = null;
+        let lastTimestamp = performance.now();
+        let frameCount = 0;
+
+        function animate(now) {
+            animId = requestAnimationFrame(animate);
+            let dt = (now - lastTimestamp) / 1000;
+            if (dt <= 0) dt = 0.016;
+            if (dt > 0.2) dt = 0.2;
+            lastTimestamp = now;
+            globalTime += dt;
+
+            try {
+                updateAllLines(globalTime);
+            } catch (e) { console.error(e); }
+
+            // 相机自动环绕
+            const camAngle = globalTime * 0.13 + 0.55;
+            const camRadius = 4.6;
+            const camY = 0.7 + 0.65 * Math.sin(0.27 * globalTime + 2.0);
+            camera.position.set(
+                camRadius * Math.sin(camAngle),
+                camY,
+                camRadius * Math.cos(camAngle)
+            );
+            camera.lookAt(0, 0, 0);
+
+            stars.rotation.y += dt * 0.025;
+            stars.rotation.x += dt * 0.01;
+
+            renderer.render(scene, camera);
+            frameCount++;
+        }
+
+        // --- 初始帧立即渲染 ---
+        function renderFirstFrame() {
+            updateAllLines(0);
+            camera.position.set(4.2, 0.9, 4.2);
+            camera.lookAt(0, 0, 0);
+            renderer.render(scene, camera);
+        }
+
+        // --- 看门狗 ---
+        let lastWatchFrame = 0;
+        setInterval(() => {
+            if (frameCount === lastWatchFrame && frameCount > 5) {
+                console.warn('检测到动画停滞，重启循环...');
+                if (animId) cancelAnimationFrame(animId);
+                lastTimestamp = performance.now();
+                animId = requestAnimationFrame(animate);
+            }
+            lastWatchFrame = frameCount;
+        }, 2000);
+
+        // --- 窗口调整 ---
+        window.addEventListener('resize', () => {
+            camera.aspect = container.clientWidth / Math.max(container.clientHeight, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        });
+
+        // --- 启动 ---
+        renderFirstFrame();
+        setTimeout(() => {
+            lastTimestamp = performance.now();
+            animId = requestAnimationFrame(animate);
+        }, 100);
+
+        console.log('四元数指数流动画已启动，线条数:', NUM_LINES);
+    </script>
+</body>
+</html>

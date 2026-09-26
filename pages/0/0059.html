@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kuen曲面 · 常负曲率线网</title>
+    <style>
+        :root {
+            --bg: #06060c;
+            --gold: #d4a843;
+            --cyan: #45b7aa;
+            --magenta: #d4708a;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'SimSun', serif;
+            -webkit-font-smoothing: antialiased;
+            user-select: none;
+        }
+        #canvas-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+        }
+        canvas {
+            display: block;
+        }
+        .overlay-title {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 22px 20px 8px;
+            text-align: center;
+            background: linear-gradient(180deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.8) 55%, rgba(6,6,12,0) 100%);
+        }
+        .overlay-title h2 {
+            font-size: clamp(1.1rem, 2.2vw, 1.8rem);
+            font-weight: 400;
+            letter-spacing: 0.13em;
+            color: #e8d5b0;
+            text-shadow: 0 0 30px rgba(212,168,67,0.45), 0 0 60px rgba(212,168,67,0.18);
+            margin: 0 0 2px;
+            line-height: 1.3;
+        }
+        .overlay-title .sub {
+            font-size: clamp(0.65rem, 1.1vw, 0.85rem);
+            letter-spacing: 0.22em;
+            color: rgba(200,180,150,0.65);
+        }
+        .overlay-formula {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 8px 20px 18px;
+            text-align: center;
+            background: linear-gradient(0deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.82) 55%, rgba(6,6,12,0) 100%);
+        }
+        .formula-text {
+            font-size: clamp(0.6rem, 1.0vw, 0.8rem);
+            color: rgba(210,200,185,0.8);
+            letter-spacing: 0.03em;
+            line-height: 1.7;
+        }
+        .clr-gold { color: #d4a843; font-weight: bold; }
+        .clr-cyan { color: #45b7aa; font-weight: bold; }
+        .clr-magenta { color: #d4708a; font-weight: bold; }
+        .formula-sep {
+            display: inline-block;
+            margin: 0 14px;
+            color: rgba(150,140,130,0.35);
+        }
+    </style>
+</head>
+<body>
+    <div class="overlay-title">
+        <h2>Kuen曲面 · 常负曲率线网</h2>
+        <div class="sub">Kuen surface · Constant negative curvature · Asymptotic lines</div>
+    </div>
+    <div class="overlay-formula">
+        <div class="formula-text">
+            <span class="clr-gold">u‑曲线 (v=const)</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-cyan">v‑曲线 (u=const)</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-magenta">渐近线 u±v = const</span>
+        </div>
+    </div>
+    <div id="canvas-container"></div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(46, container.clientWidth / container.clientHeight, 0.5, 22);
+        camera.position.set(3.5, 2.5, 7.5);
+        camera.lookAt(0, 0, 0);
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x06060c, 1);
+        container.appendChild(renderer.domElement);
+
+        let startTime = performance.now();
+        const getElapsed = () => (performance.now() - startTime) * 0.001;
+
+        const COLOR_GOLD = 0xd4a843;
+        const COLOR_CYAN = 0x45b7aa;
+        const COLOR_MAGENTA = 0xd4708a;
+        const SCALE = 0.72;
+
+        // Kuen曲面参数方程
+        function kuenPoint(u, v) {
+            const ch = Math.cosh(v);
+            const sh = Math.sinh(v);
+            const cosu = Math.cos(u);
+            const sinu = Math.sin(u);
+            const denom = u * u + ch * ch;
+            if (Math.abs(denom) < 0.001) return null;
+            const factor = 2 * ch / denom;
+            const x = factor * (cosu + u * sinu);
+            const y = factor * (sinu - u * cosu);
+            const z = v - (2 * sh * ch) / denom;
+            return new THREE.Vector3(x, y, z).multiplyScalar(SCALE);
+        }
+
+        // 生成曲线
+        function createCurves(paramDefs, color, opacity, numPoints = 320) {
+            const group = new THREE.Group();
+            for (const def of paramDefs) {
+                const pts = [];
+                for (let i = 0; i <= numPoints; i++) {
+                    const t = i / numPoints;
+                    const u = def.uRange[0] + t * (def.uRange[1] - def.uRange[0]);
+                    const v = def.vFunc ? def.vFunc(u) : def.vRange[0] + t * (def.vRange[1] - def.vRange[0]);
+                    const p = kuenPoint(u, v);
+                    if (p && p.length() < 7.0) pts.push(p);
+                }
+                if (pts.length >= 2) {
+                    const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                    const mat = new THREE.LineBasicMaterial({
+                        color, transparent: true, opacity,
+                        depthWrite: true, depthTest: true,
+                    });
+                    group.add(new THREE.Line(geom, mat));
+                }
+            }
+            return group;
+        }
+
+        // 参数范围
+        const uMin = -4.5, uMax = 4.5;
+        const vMin = -1.8, vMax = 1.8;
+
+        // 金色：u-曲线 (固定v)
+        const vValues = [];
+        const vCount = 25;
+        for (let i = 0; i < vCount; i++) vValues.push(vMin + i * (vMax - vMin) / (vCount - 1));
+        const uCurveDefs = vValues.map(v => ({ uRange: [uMin, uMax], vFunc: () => v }));
+
+        // 青色：v-曲线 (固定u)
+        const uValues = [];
+        const uCount = 25;
+        for (let i = 0; i < uCount; i++) uValues.push(uMin + i * (uMax - uMin) / (uCount - 1));
+        const vCurveDefs = uValues.map(u => ({ uRange: [vMin, vMax], vFunc: () => u, uRev: true }));
+        // 修正：v曲线用参数t控制v，u固定。所以需要交换参数
+        function createVCurves(uValues, color, opacity, numPoints) {
+            const group = new THREE.Group();
+            for (const u of uValues) {
+                const pts = [];
+                for (let i = 0; i <= numPoints; i++) {
+                    const v = vMin + i * (vMax - vMin) / numPoints;
+                    const p = kuenPoint(u, v);
+                    if (p && p.length() < 7.0) pts.push(p);
+                }
+                if (pts.length >= 2) {
+                    const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                    const mat = new THREE.LineBasicMaterial({
+                        color, transparent: true, opacity,
+                        depthWrite: true, depthTest: true,
+                    });
+                    group.add(new THREE.Line(geom, mat));
+                }
+            }
+            return group;
+        }
+
+        // 品红：渐近线（u+v=const, u-v=const）
+        function createAsymptoticLines(color, opacity, numPoints = 360) {
+            const group = new THREE.Group();
+            const constValues = [];
+            const constMin = -5.0, constMax = 5.0, constStep = 0.22;
+            for (let c = constMin; c <= constMax; c += constStep) constValues.push(c);
+
+            for (const c of constValues) {
+                // u+v = c
+                {
+                    const pts = [];
+                    for (let i = 0; i <= numPoints; i++) {
+                        const u = uMin + i * (uMax - uMin) / numPoints;
+                        const v = c - u;
+                        if (v < vMin || v > vMax) continue;
+                        const p = kuenPoint(u, v);
+                        if (p && p.length() < 7.0) pts.push(p);
+                    }
+                    if (pts.length >= 2) {
+                        const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                        group.add(new THREE.Line(geom, new THREE.LineBasicMaterial({
+                            color, transparent: true, opacity,
+                            depthWrite: true, depthTest: true,
+                        })));
+                    }
+                }
+                // u-v = c
+                {
+                    const pts = [];
+                    for (let i = 0; i <= numPoints; i++) {
+                        const u = uMin + i * (uMax - uMin) / numPoints;
+                        const v = u - c;
+                        if (v < vMin || v > vMax) continue;
+                        const p = kuenPoint(u, v);
+                        if (p && p.length() < 7.0) pts.push(p);
+                    }
+                    if (pts.length >= 2) {
+                        const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                        group.add(new THREE.Line(geom, new THREE.LineBasicMaterial({
+                            color, transparent: true, opacity,
+                            depthWrite: true, depthTest: true,
+                        })));
+                    }
+                }
+            }
+            return group;
+        }
+
+        const rootGroup = new THREE.Group();
+        rootGroup.name = 'kuen-weave';
+        scene.add(rootGroup);
+
+        rootGroup.add(createCurves(uCurveDefs, COLOR_GOLD, 0.58));
+        rootGroup.add(createVCurves(uValues, COLOR_CYAN, 0.58));
+        rootGroup.add(createAsymptoticLines(COLOR_MAGENTA, 0.52));
+
+        // 背景星点
+        const starsGroup = new THREE.Group();
+        const starsGeom = new THREE.BufferGeometry();
+        const starsCount = 500;
+        const starsPos = new Float32Array(starsCount * 3);
+        for (let i = 0; i < starsCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const dist = 6.5 + Math.random() * 10;
+            starsPos[i * 3] = dist * Math.sin(phi) * Math.cos(theta);
+            starsPos[i * 3 + 1] = dist * Math.sin(phi) * Math.sin(theta);
+            starsPos[i * 3 + 2] = dist * Math.cos(phi);
+        }
+        starsGeom.setAttribute('position', new THREE.BufferAttribute(starsPos, 3));
+        const starsMat = new THREE.PointsMaterial({
+            color: 0x908878, size: 0.018, transparent: true, opacity: 0.5, depthWrite: false,
+        });
+        starsGroup.add(new THREE.Points(starsGeom, starsMat));
+        scene.add(starsGroup);
+
+        // ---- 稳定动画循环 ----
+        function animate() {
+            const t = getElapsed();
+            rootGroup.rotation.x = t * 0.17;
+            rootGroup.rotation.y = t * 0.28;
+            rootGroup.rotation.z = t * 0.12;
+            starsGroup.rotation.y = t * 0.04;
+            starsGroup.rotation.x = t * 0.025;
+
+            const camRadius = 7.6;
+            const camAngle = t * 0.08;
+            const camHeight = 2.6 + Math.sin(t * 0.16) * 0.7;
+            camera.position.x = Math.cos(camAngle) * camRadius;
+            camera.position.z = Math.sin(camAngle) * camRadius;
+            camera.position.y = camHeight;
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+            requestAnimationFrame(animate);
+        }
+
+        // 预渲染首帧
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+
+        // 响应式
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth, h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth, h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 120));
+
+        console.log('✅ Kuen曲面常负曲率线网动画已稳定运行');
+    </script>
+</body>
+</html>

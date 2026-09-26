@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GLITCH · 像素置换</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #0a0a14;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2;
+            text-align: center;
+            pointer-events: none;
+            opacity: 0.5;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+        .overlay:hover {
+            opacity: 0.85;
+        }
+        .title {
+            color: rgba(220, 235, 240, 0.7);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 20px rgba(100, 180, 200, 0.4);
+        }
+        .hint {
+            color: rgba(160, 190, 200, 0.45);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+        @media (max-width: 768px) {
+            .overlay { bottom: 18px; }
+            .title { font-size: 8px; letter-spacing: 0.45em; }
+            .hint { font-size: 6px; letter-spacing: 0.22em; }
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <div class="overlay">
+        <div class="title">Glitch</div>
+        <div class="hint">move · click</div>
+    </div>
+    <script>
+        (function() {
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            let mouse = { x: -9999, y: -9999, active: false, vx: 0, vy: 0, lastX: -9999, lastY: -9999 };
+            let time = 0;
+            let colorShift = 0;
+            let glitchParticles = [];
+            let scanlineY = 0;
+            let scanlineSpeed = 2.5;
+
+            // 像素置换参数
+            let displacement = [];
+            let dispCols = 0;
+            let dispRows = 0;
+            let cellSize = 8;
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                ctx.fillStyle = '#0a0a14';
+                ctx.fillRect(0, 0, W, H);
+                initDisplacement();
+            }
+
+            function initDisplacement() {
+                cellSize = Math.max(6, Math.min(12, Math.floor(W / 80)));
+                dispCols = Math.ceil(W / cellSize) + 1;
+                dispRows = Math.ceil(H / cellSize) + 1;
+                displacement = new Float32Array(dispCols * dispRows);
+                for (let i = 0; i < displacement.length; i++) {
+                    displacement[i] = 0;
+                }
+            }
+
+            // ─── 更新置换场 ─────────────────────────────────────────────
+            function updateDisplacement(dt) {
+                // 重置
+                for (let i = 0; i < displacement.length; i++) {
+                    displacement[i] *= 0.92; // 衰减
+                }
+
+                // 基础噪声置换
+                for (let j = 0; j < dispRows; j++) {
+                    for (let i = 0; i < dispCols; i++) {
+                        const noise1 = Math.sin(i * 0.3 + time * 2.5 + j * 0.5) * 0.6;
+                        const noise2 = Math.cos(j * 0.25 + time * 1.8 + i * 0.4) * 0.5;
+                        const noise3 = Math.sin((i + j) * 0.35 + time * 3.2) * 0.5;
+                        const idx = j * dispCols + i;
+                        displacement[idx] += (noise1 + noise2 + noise3) * 0.08;
+                    }
+                }
+
+                // 鼠标影响
+                if (mouse.active) {
+                    const cellX = Math.floor(mouse.x / cellSize);
+                    const cellY = Math.floor(mouse.y / cellSize);
+                    const radius = 8;
+                    for (let j = -radius; j <= radius; j++) {
+                        for (let i = -radius; i <= radius; i++) {
+                            const gx = cellX + i;
+                            const gy = cellY + j;
+                            if (gx >= 0 && gx < dispCols && gy >= 0 && gy < dispRows) {
+                                const distSq = i * i + j * j;
+                                const radiusSq = radius * radius;
+                                if (distSq < radiusSq) {
+                                    const idx = gy * dispCols + gx;
+                                    const falloff = 1 - Math.sqrt(distSq) / radius;
+                                    displacement[idx] += falloff * 4.5;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 扫描线效果
+                scanlineY += scanlineSpeed * dt;
+                if (scanlineY > H + 50) scanlineY = -50;
+                const scanCellY = Math.floor(scanlineY / cellSize);
+                if (scanCellY >= 0 && scanCellY < dispRows) {
+                    for (let i = 0; i < dispCols; i++) {
+                        const idx = scanCellY * dispCols + i;
+                        displacement[idx] += Math.sin(i * 0.7 + time * 6) * 2.0;
+                    }
+                }
+            }
+
+            // ─── 绘制像素置换画面 ───────────────────────────────────────
+            function drawGlitch(ctx) {
+                const rgbOffset = 2 + Math.sin(time * 1.5) * 1.5;
+
+                for (let j = 0; j < dispRows; j++) {
+                    for (let i = 0; i < dispCols; i++) {
+                        const idx = j * dispCols + i;
+                        const disp = displacement[idx];
+                        if (Math.abs(disp) < 0.1 && Math.random() > 0.005) continue;
+
+                        const px = i * cellSize;
+                        const py = j * cellSize;
+
+                        // 根据置换值计算颜色
+                        const intensity = Math.min(1, Math.abs(disp) * 0.25);
+                        const hue = 200 + colorShift + disp * 30 + Math.sin(i * 0.2 + j * 0.3) * 20;
+                        const sat = 55 + intensity * 30;
+                        const light = 25 + intensity * 45;
+                        const alpha = 0.3 + intensity * 0.5;
+
+                        // RGB分离：根据disp移动红蓝通道
+                        const rOffset = disp * cellSize * 0.4;
+                        const bOffset = -disp * cellSize * 0.4;
+
+                        // 红色通道
+                        ctx.fillStyle = `hsla(${hue + 10}, ${sat + 15}%, ${light + 12}%, ${alpha * 0.6})`;
+                        ctx.fillRect(px + rOffset, py, cellSize, cellSize);
+
+                        // 蓝色通道
+                        ctx.fillStyle = `hsla(${hue - 10}, ${sat + 10}%, ${light + 8}%, ${alpha * 0.6})`;
+                        ctx.fillRect(px + bOffset, py, cellSize, cellSize);
+
+                        // 绿色通道（主）
+                        ctx.fillStyle = `hsla(${hue}, ${sat}%, ${light}%, ${alpha})`;
+                        ctx.fillRect(px, py, cellSize, cellSize);
+                    }
+                }
+            }
+
+            // ─── 故障粒子 ───────────────────────────────────────────────
+            function createGlitchBurst(x, y) {
+                const count = 25 + Math.floor(Math.random() * 15);
+                for (let i = 0; i < count; i++) {
+                    const angle = Math.random() * Math.PI * 2;
+                    const speed = 2 + Math.random() * 7;
+                    glitchParticles.push({
+                        x, y,
+                        vx: Math.cos(angle) * speed,
+                        vy: Math.sin(angle) * speed,
+                        life: 0.7 + Math.random() * 0.6,
+                        maxLife: 1.3,
+                        size: 2 + Math.random() * 4,
+                        hue: 200 + colorShift + Math.random() * 60 - 30,
+                        sat: 70 + Math.random() * 20,
+                        light: 55 + Math.random() * 25,
+                        alpha: 0.8,
+                    });
+                }
+                if (glitchParticles.length > 200) {
+                    glitchParticles.splice(0, glitchParticles.length - 200);
+                }
+            }
+
+            function updateGlitchParticles(dt) {
+                for (let i = glitchParticles.length - 1; i >= 0; i--) {
+                    const p = glitchParticles[i];
+                    p.x += p.vx * dt;
+                    p.y += p.vy * dt;
+                    p.vx *= 0.93;
+                    p.vy *= 0.93;
+                    p.life -= 0.02 * dt;
+                    if (p.life <= 0) {
+                        glitchParticles.splice(i, 1);
+                    }
+                }
+            }
+
+            function drawGlitchParticles(ctx) {
+                for (const p of glitchParticles) {
+                    const alpha = p.life * p.alpha;
+                    const size = p.size * p.life;
+                    const gradient = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, size * 2);
+                    gradient.addColorStop(0, `hsla(${p.hue}, ${p.sat}%, ${p.light}%, ${alpha})`);
+                    gradient.addColorStop(0.5, `hsla(${p.hue}, ${p.sat}%, ${p.light - 8}%, ${alpha * 0.5})`);
+                    gradient.addColorStop(1, 'transparent');
+                    ctx.fillStyle = gradient;
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, size * 2, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            // ─── 鼠标光晕 ──────────────────────────────────────────────
+            function drawCursorGlow(ctx) {
+                if (!mouse.active) return;
+                const radius = 60;
+                const hue = 210 + colorShift;
+                const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                gradient.addColorStop(0, `hsla(${hue}, 65%, 75%, 0.06)`);
+                gradient.addColorStop(0.7, `hsla(${hue}, 55%, 70%, 0.02)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // ─── 主循环 ─────────────────────────────────────────────────
+            let lastTime = 0;
+            let accumulator = 0;
+            const fixedStep = 1000 / 60;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+
+                accumulator += dt;
+                const steps = Math.min(Math.floor(accumulator / fixedStep), 3);
+                accumulator -= steps * fixedStep;
+
+                for (let s = 0; s < steps; s++) {
+                    time += 0.016;
+                    const dtNorm = fixedStep / 1000 * 60;
+                    // 更新鼠标速度
+                    if (mouse.active && mouse.lastX > -9000) {
+                        mouse.vx = (mouse.x - mouse.lastX) * 0.04;
+                        mouse.vy = (mouse.y - mouse.lastY) * 0.04;
+                    } else {
+                        mouse.vx *= 0.9;
+                        mouse.vy *= 0.9;
+                    }
+                    mouse.lastX = mouse.x;
+                    mouse.lastY = mouse.y;
+
+                    updateDisplacement(dtNorm);
+                    updateGlitchParticles(dtNorm);
+                }
+
+                // 深色背景，无拖尾
+                ctx.fillStyle = '#0a0a14';
+                ctx.fillRect(0, 0, W, H);
+
+                // 绘制像素置换
+                drawGlitch(ctx);
+
+                // 绘制故障粒子
+                drawGlitchParticles(ctx);
+
+                // 鼠标光晕
+                drawCursorGlow(ctx);
+
+                requestAnimationFrame(animate);
+            }
+
+            // ─── 交互事件 ──────────────────────────────────────────────
+            function onMouseMove(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+                mouse.lastX = -9999;
+                mouse.lastY = -9999;
+                mouse.vx = 0;
+                mouse.vy = 0;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                createGlitchBurst(mouse.x, mouse.y);
+                colorShift += 25 + Math.random() * 30;
+                if (colorShift > 140) colorShift = -25;
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    createGlitchBurst(mouse.x, mouse.y);
+                    colorShift += 25 + Math.random() * 30;
+                    if (colorShift > 140) colorShift = -25;
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+                mouse.lastX = -9999;
+                mouse.lastY = -9999;
+                mouse.vx = 0;
+                mouse.vy = 0;
+            }
+
+            function onResize() {
+                setupCanvas();
+                glitchParticles = [];
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+                mouse.lastX = -9999;
+                mouse.lastY = -9999;
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#0a0a14';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+        })();
+    </script>
+</body>
+</html>

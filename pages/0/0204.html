@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>星形多面体交织 · Kepler-Poinsot网络</title>
+    <style>
+        :root { --bg: #02040a; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'STSong', 'Songti SC', 'Noto Serif SC', 'SimSun', 'Times New Roman', serif;
+            -webkit-font-smoothing: antialiased;
+            height: 100vh; width: 100vw;
+            user-select: none; -webkit-user-select: none; cursor: default;
+        }
+        #canvas-container { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+        canvas { display: block; }
+        #title-overlay {
+            position: fixed; top: 24px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+        }
+        #title-overlay .title {
+            font-size: clamp(1.0rem, 2.2vw, 1.5rem); font-weight: 400; letter-spacing: 0.08em;
+            color: #cfc7b5; text-shadow: 0 0 42px rgba(200,180,150,0.5), 0 0 72px rgba(170,150,130,0.22);
+            line-height: 1.4; white-space: nowrap;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.5rem, 0.9vw, 0.66rem); font-weight: 300; letter-spacing: 0.12em;
+            color: #a09888; text-shadow: 0 0 16px rgba(155,145,125,0.32);
+            margin-top: 2px; white-space: nowrap;
+        }
+        #formula-overlay {
+            position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+            background: rgba(2,4,10,0.68); padding: 10px 20px; border-radius: 32px;
+            border: 1px solid rgba(175,155,135,0.16);
+            backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); max-width: 95vw;
+        }
+        #formula-overlay .formula {
+            font-size: clamp(0.38rem, 0.7vw, 0.56rem); font-weight: 300; letter-spacing: 0.04em;
+            color: #c5bdaa; text-shadow: 0 0 13px rgba(185,170,145,0.25);
+            line-height: 1.55; white-space: nowrap;
+        }
+        #formula-overlay .formula .c1 { color: #d4885c; }
+        #formula-overlay .formula .c2 { color: #5d9ec6; }
+        #formula-overlay .formula .c3 { color: #c77d9f; }
+        @media (max-width: 600px) {
+            #title-overlay { top: 14px; }
+            #formula-overlay { bottom: 10px; padding: 7px 12px; border-radius: 24px; }
+            #formula-overlay .formula { font-size: 0.32rem; white-space: normal; line-height: 1.3; }
+            #title-overlay .title { font-size: 0.68rem; }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="title-overlay">
+        <div class="title">星形多面体交织 · Kepler-Poinsot网络</div>
+        <div class="subtitle">STELLATED POLYHEDRA &nbsp;·&nbsp; {3,5} · {5,5/2} · {5/2,5}</div>
+    </div>
+    <div id="formula-overlay">
+        <div class="formula">
+            <span class="c1">{3,5}</span> 正二十面体 · 30边 &nbsp;
+            <span class="c2">{5,5/2}</span> 大十二面体 · 30星边 &nbsp;
+            <span class="c3">{5/2,5}</span> 小星形十二面体 · 30星边
+            <br>
+            <span style="color:#9aa8b8;">R=2.7 &nbsp;|&nbsp; 近邻边&amp;次近邻边 &nbsp;|&nbsp; 球面参考系 &nbsp;|&nbsp; 绝对时间驱动</span>
+        </div>
+    </div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#02040a');
+        scene.fog = new THREE.Fog('#02040a', 8, 22);
+
+        const camera = new THREE.PerspectiveCamera(
+            48,
+            container.clientWidth / Math.max(container.clientHeight, 1),
+            0.3,
+            26
+        );
+        camera.position.set(1.3, 0.65, 7.2);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = false;
+        container.appendChild(renderer.domElement);
+
+        // ==================== 颜色 ====================
+        const C1 = '#d4885c'; // 暖金 – 正二十面体
+        const C2 = '#5d9ec6'; // 冰蓝 – 大十二面体
+        const C3 = '#c77d9f'; // 玫瑰粉 – 小星形十二面体
+        const C_SPHERE = '#3a4a5c';
+        const C_GLINT = '#8898aa';
+
+        const R = 2.7;
+        const phi = (1 + Math.sqrt(5)) / 2;
+        const invPhi = 1 / phi;
+
+        // ==================== 顶点生成 ====================
+        function normalizeVerts(verts, radius) {
+            return verts.map(v => {
+                const len = Math.sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
+                const s = radius / len;
+                return [v[0]*s, v[1]*s, v[2]*s];
+            });
+        }
+
+        // 正二十面体12顶点
+        function icoVertices(r) {
+            const raw = [];
+            const perms = [[0,1,2],[2,0,1],[1,2,0]];
+            for (const [i,j,k] of perms) {
+                for (let si=-1; si<=1; si+=2) {
+                    for (let sj=-1; sj<=1; sj+=2) {
+                        const v = [0,0,0];
+                        v[i] = 0; v[j] = si; v[k] = sj * phi;
+                        raw.push(v);
+                    }
+                }
+            }
+            return normalizeVerts(raw, r);
+        }
+
+        // 正十二面体20顶点
+        function dodVertices(r) {
+            const raw = [];
+            for (let x=-1; x<=1; x+=2)
+                for (let y=-1; y<=1; y+=2)
+                    for (let z=-1; z<=1; z+=2)
+                        raw.push([x,y,z]);
+            const perms = [[0,1,2],[2,0,1],[1,2,0]];
+            for (const [i,j,k] of perms) {
+                for (let sj=-1; sj<=1; sj+=2) {
+                    for (let sk=-1; sk<=1; sk+=2) {
+                        const v = [0,0,0];
+                        v[i] = 0; v[j] = sj * invPhi; v[k] = sk * phi;
+                        raw.push(v);
+                    }
+                }
+            }
+            return normalizeVerts(raw, r);
+        }
+
+        const icoPts = icoVertices(R).map(v => new THREE.Vector3(v[0], v[1], v[2]));
+        const dodPts = dodVertices(R).map(v => new THREE.Vector3(v[0], v[1], v[2]));
+
+        // ==================== 边提取工具 ====================
+        function buildEdgeSets(pts, distThresholds, colorMappings) {
+            const n = pts.length;
+            const dists = [];
+            for (let i=0; i<n; i++) {
+                for (let j=i+1; j<n; j++) {
+                    dists.push(pts[i].distanceTo(pts[j]));
+                }
+            }
+            dists.sort((a,b)=>a-b);
+            const minDist = dists[0];
+            console.log('最小距离:', minDist);
+
+            const sets = { edgesShort: [], edgesStar: [] };
+            const th1 = minDist * 1.15;
+            const th2_low = minDist * 1.4;
+            const th2_high = minDist * 1.8;
+
+            for (let i=0; i<n; i++) {
+                for (let j=i+1; j<n; j++) {
+                    const d = pts[i].distanceTo(pts[j]);
+                    if (d <= th1) {
+                        sets.edgesShort.push([i, j]);
+                    } else if (d >= th2_low && d <= th2_high) {
+                        sets.edgesStar.push([i, j]);
+                    }
+                }
+            }
+            return sets;
+        }
+
+        // 正二十面体：近邻边（30条）和次近邻边（大十二面体，30条）
+        const icoSets = buildEdgeSets(icoPts);
+        console.log('正二十面体近邻边:', icoSets.edgesShort.length, '次近邻边（大十二面体）:', icoSets.edgesStar.length);
+
+        // 正十二面体：近邻边（30条）和次近邻边（小星形十二面体，30条）
+        const dodSets = buildEdgeSets(dodPts);
+        console.log('正十二面体近邻边:', dodSets.edgesShort.length, '次近邻边（小星形十二面体）:', dodSets.edgesStar.length);
+
+        // ==================== 创建线段 ====================
+        function createSegments(points, edges, colorHex, opacity) {
+            if (edges.length === 0) return new THREE.Group();
+            const verts = [];
+            for (const [i, j] of edges) {
+                const a = points[i], b = points[j];
+                verts.push(a.x, a.y, a.z, b.x, b.y, b.z);
+            }
+            const geom = new THREE.BufferGeometry();
+            geom.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+            const mat = new THREE.LineBasicMaterial({
+                color: new THREE.Color(colorHex),
+                transparent: true,
+                opacity: opacity,
+                depthWrite: true,
+            });
+            return new THREE.LineSegments(geom, mat);
+        }
+
+        const icoShortLines = createSegments(icoPts, icoSets.edgesShort, C1, 0.68);
+        const greatDodecaLines = createSegments(icoPts, icoSets.edgesStar, C2, 0.6);
+        const smallStellLines = createSegments(dodPts, dodSets.edgesStar, C3, 0.62);
+
+        const mainGroup = new THREE.Group();
+        mainGroup.add(icoShortLines);
+        mainGroup.add(greatDodecaLines);
+        mainGroup.add(smallStellLines);
+        scene.add(mainGroup);
+
+        // 可选：加上正十二面体近邻边（显式），但不用，为了清晰只显示三族星边。
+
+        // ==================== 顶点光点 ====================
+        function createGlints(points, colorHex, sz) {
+            const group = new THREE.Group();
+            for (const p of points) {
+                const pairs = [
+                    [p.clone().add(new THREE.Vector3(-sz,0,0)), p.clone().add(new THREE.Vector3(sz,0,0))],
+                    [p.clone().add(new THREE.Vector3(0,-sz,0)), p.clone().add(new THREE.Vector3(0,sz,0))],
+                    [p.clone().add(new THREE.Vector3(0,0,-sz)), p.clone().add(new THREE.Vector3(0,0,sz))],
+                ];
+                for (const [a,b] of pairs) {
+                    const g = new THREE.BufferGeometry().setFromPoints([a,b]);
+                    const m = new THREE.LineBasicMaterial({
+                        color: new THREE.Color(colorHex),
+                        transparent: true, opacity: 0.55, depthWrite: true,
+                    });
+                    group.add(new THREE.Line(g, m));
+                }
+            }
+            return group;
+        }
+        const glintsIco = createGlints(icoPts, C1, 0.06);
+        const glintsDod = createGlints(dodPts, C3, 0.05);
+        mainGroup.add(glintsIco);
+        mainGroup.add(glintsDod);
+
+        // ==================== 参考球面线框 ====================
+        function createSphereWireframe(radius, colorHex, opacity) {
+            const group = new THREE.Group();
+            const segs = 170;
+            const circles = [
+                (a) => new THREE.Vector3(Math.cos(a)*radius, Math.sin(a)*radius, 0),
+                (a) => new THREE.Vector3(Math.cos(a)*radius, 0, Math.sin(a)*radius),
+                (a) => new THREE.Vector3(0, Math.cos(a)*radius, Math.sin(a)*radius),
+            ];
+            for (const gen of circles) {
+                const pts = [];
+                for (let i=0; i<=segs; i++) pts.push(gen((i/segs)*Math.PI*2));
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(colorHex),
+                    transparent: true, opacity: opacity, depthWrite: true,
+                });
+                group.add(new THREE.Line(geom, mat));
+            }
+            return group;
+        }
+        const sphereRef = createSphereWireframe(R, C_SPHERE, 0.2);
+        scene.add(sphereRef);
+
+        // 原点光点
+        function originGlint() {
+            const group = new THREE.Group();
+            const sz = 0.1;
+            const pairs = [
+                [new THREE.Vector3(-sz,0,0), new THREE.Vector3(sz,0,0)],
+                [new THREE.Vector3(0,-sz,0), new THREE.Vector3(0,sz,0)],
+                [new THREE.Vector3(0,0,-sz), new THREE.Vector3(0,0,sz)],
+            ];
+            for (const [a,b] of pairs) {
+                const g = new THREE.BufferGeometry().setFromPoints([a,b]);
+                const m = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(C_GLINT),
+                    transparent: true, opacity: 0.7, depthWrite: true,
+                });
+                group.add(new THREE.Line(g, m));
+            }
+            return group;
+        }
+        scene.add(originGlint());
+
+        // ==================== 动画（绝对时间） ====================
+        let time = 0;
+        let lastTime = performance.now();
+        let frameCount = 0;
+        let logTime = 0;
+
+        function animate(now) {
+            requestAnimationFrame(animate);
+            let delta = (now - lastTime) / 1000;
+            if (delta <= 0 || delta > 0.5) delta = 0.016;
+            lastTime = now;
+            time += delta;
+            frameCount++;
+            if (now - logTime > 4000) {
+                console.log(`[动画运行中] 帧:${frameCount} 时间:${time.toFixed(2)}s 边:${icoSets.edgesShort.length+icoSets.edgesStar.length+dodSets.edgesStar.length}`);
+                logTime = now;
+            }
+
+            mainGroup.rotation.y = time * 0.27;
+            mainGroup.rotation.x = time * 0.16 + Math.sin(time * 0.23) * 0.22;
+            mainGroup.rotation.z = Math.cos(time * 0.19) * 0.14;
+
+            sphereRef.rotation.copy(mainGroup.rotation);
+
+            const camX = 1.3 + Math.sin(time * 0.15) * 0.55;
+            const camY = 0.65 + Math.cos(time * 0.18) * 0.48;
+            const camZ = 7.2 + Math.sin(time * 0.12) * 0.5;
+            camera.position.set(camX, camY, camZ);
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        // 窗口调整
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth;
+            const h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth;
+            const h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 100));
+
+        console.log('=== 星形多面体交织 · Kepler-Poinsot网络 ===');
+        console.log('正二十面体边（暖金）:', icoSets.edgesShort.length);
+        console.log('大十二面体边（冰蓝）:', icoSets.edgesStar.length);
+        console.log('小星形十二面体边（玫瑰粉）:', dodSets.edgesStar.length);
+        console.log('总线段数:', icoSets.edgesShort.length + icoSets.edgesStar.length + dodSets.edgesStar.length);
+        console.log('✅ 初始帧渲染完成，启动绝对时间动画循环...');
+
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

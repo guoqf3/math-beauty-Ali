@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AURORA · 极光光幕</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #050510;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            left: 32px;
+            z-index: 2;
+            text-align: left;
+            pointer-events: none;
+            opacity: 0.5;
+            transition: opacity 0.8s ease;
+            mix-blend-mode: screen;
+        }
+
+        .overlay:hover {
+            opacity: 0.85;
+        }
+
+        .title {
+            color: rgba(200, 220, 255, 0.8);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.7em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 20px rgba(100, 160, 255, 0.5);
+        }
+
+        .hint {
+            color: rgba(170, 190, 230, 0.45);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.4em;
+            text-transform: uppercase;
+        }
+
+        @media (max-width: 768px) {
+            .overlay {
+                bottom: 18px;
+                left: 20px;
+            }
+            .title {
+                font-size: 8px;
+                letter-spacing: 0.5em;
+            }
+            .hint {
+                font-size: 6px;
+                letter-spacing: 0.3em;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="canvas"></canvas>
+
+    <div class="overlay">
+        <div class="title">Aurora</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script>
+        (function() {
+            // ─── 画布初始化 ───────────────────────────────────────────────
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            let beams = [];
+            let bursts = [];
+            let mouse = { x: -9999, y: -9999, px: -9999, py: -9999, active: false };
+            let time = 0;
+            let colorScheme = 0; // 色彩主题索引
+
+            // 色彩主题：极光常见色系
+            const schemes = [
+                { baseHue: 160, sat: 85, light: 60 },  // 翡翠绿
+                { baseHue: 210, sat: 90, light: 65 },  // 冰蓝
+                { baseHue: 280, sat: 80, light: 65 },  // 紫罗兰
+                { baseHue: 140, sat: 85, light: 58 },  // 青绿
+                { baseHue: 320, sat: 75, light: 62 },  // 粉紫
+            ];
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                // 深色背景
+                ctx.fillStyle = '#050510';
+                ctx.fillRect(0, 0, W, H);
+            }
+
+            // ─── 光束类 ──────────────────────────────────────────────────
+            class Beam {
+                constructor(index) {
+                    this.index = index;
+                    this.baseX = (index + 0.5) * (W / Math.max(24, Math.floor(W / 45)));
+                    this.width = 0.8 + Math.random() * 1.6;
+                    this.segments = Math.max(18, Math.min(40, Math.floor(H / 22)));
+                    this.phase = Math.random() * Math.PI * 2;
+                    this.speed = 0.5 + Math.random() * 0.9;
+                    this.amplitude = 20 + Math.random() * 45;
+                    this.frequency = 0.008 + Math.random() * 0.012;
+                    this.hueOffset = Math.random() * 50 - 25;
+                    this.alphaBase = 0.12 + Math.random() * 0.2;
+                    this.mouseInfluence = 0.7 + Math.random() * 0.6;
+                    this.points = [];
+                    this.initPoints();
+                }
+
+                initPoints() {
+                    this.points = [];
+                    const seg = this.segments;
+                    for (let i = 0; i <= seg; i++) {
+                        const t = i / seg; // 0顶部 → 1底部
+                        this.points.push({
+                            y: t * H,
+                            offsetX: 0,
+                            glowIntensity: 0.6 + 0.4 * Math.sin(t * Math.PI),
+                        });
+                    }
+                }
+
+                update(dt, t, mouse) {
+                    this.phase += dt * 0.12 * this.speed;
+                    const seg = this.segments;
+
+                    for (let i = 0; i <= seg; i++) {
+                        const p = this.points[i];
+                        const ratio = i / seg;
+
+                        // 基础波动
+                        let waveOffset =
+                            Math.sin(ratio * 8 + this.phase * 2) * this.amplitude * 0.7 +
+                            Math.sin(ratio * 4 + this.phase * 1.3) * this.amplitude * 0.5 +
+                            Math.cos(ratio * 11 + t * 0.6 + this.index) * this.amplitude * 0.35;
+
+                        // 鼠标扰动
+                        if (mouse.active) {
+                            const dx = mouse.x - (this.baseX + p.offsetX);
+                            const dy = mouse.y - p.y;
+                            const distSq = dx * dx + dy * dy;
+                            const influenceRadius = 160;
+                            const infSq = influenceRadius * influenceRadius;
+                            if (distSq < infSq) {
+                                const dist = Math.sqrt(distSq);
+                                const force = (1 - dist / influenceRadius) * this.mouseInfluence * 55;
+                                const normX = dx / (dist || 1);
+                                waveOffset += normX * force * Math.sin(ratio * Math.PI);
+                            }
+                        }
+
+                        p.offsetX = waveOffset;
+                    }
+                }
+
+                draw(ctx, t) {
+                    const scheme = schemes[colorScheme];
+                    const seg = this.segments;
+
+                    // 绘制每段（从顶部到底部）
+                    for (let i = 0; i < seg; i++) {
+                        const p1 = this.points[i];
+                        const p2 = this.points[i + 1];
+                        const ratio = i / seg;
+                        const nextRatio = (i + 1) / seg;
+
+                        const x1 = this.baseX + p1.offsetX;
+                        const y1 = p1.y;
+                        const x2 = this.baseX + p2.offsetX;
+                        const y2 = p2.y;
+
+                        // 透明度从上到下逐渐增强再减弱（模拟光幕）
+                        const fadeCurve = Math.sin(ratio * Math.PI * 0.9 + 0.05);
+                        const alpha = this.alphaBase * (0.35 + fadeCurve * 0.65) *
+                            (0.5 + 0.5 * Math.sin(ratio * 12 + t + this.index));
+
+                        const hue = scheme.baseHue + this.hueOffset + Math.sin(ratio * 8 + t * 0.5 + this.index) * 22;
+                        const sat = scheme.sat + Math.sin(ratio * 6 + t * 0.4) * 8;
+                        const light = scheme.light + Math.cos(ratio * 9 + t * 0.7) * 15;
+
+                        const alphaClamped = Math.max(0.02, Math.min(0.5, alpha));
+
+                        // 使用渐变线段
+                        const gradient = ctx.createLinearGradient(x1, y1, x2, y2);
+                        gradient.addColorStop(0, `hsla(${hue}, ${sat}%, ${light}%, ${alphaClamped})`);
+                        gradient.addColorStop(0.5, `hsla(${hue + 10}, ${sat - 5}%, ${light + 10}%, ${alphaClamped * 1.2})`);
+                        gradient.addColorStop(1, `hsla(${hue - 5}, ${sat + 5}%, ${light - 5}%, ${alphaClamped * 0.8})`);
+
+                        ctx.strokeStyle = gradient;
+                        ctx.lineWidth = this.width * (0.7 + 0.5 * p1.glowIntensity);
+                        ctx.lineCap = 'round';
+                        ctx.beginPath();
+                        ctx.moveTo(x1, y1);
+                        ctx.lineTo(x2, y2);
+                        ctx.stroke();
+                    }
+                }
+            }
+
+            // ─── 爆发光晕 ───────────────────────────────────────────────
+            function createBurst(x, y) {
+                bursts.push({
+                    x,
+                    y,
+                    radius: 10,
+                    maxRadius: Math.max(W, H) * 0.35,
+                    life: 1.0,
+                    decay: 0.012,
+                    growth: 6 + Math.random() * 3,
+                    hue: schemes[colorScheme].baseHue + Math.random() * 30,
+                });
+                if (bursts.length > 6) bursts.shift();
+            }
+
+            function updateBursts(dt) {
+                for (let i = bursts.length - 1; i >= 0; i--) {
+                    const b = bursts[i];
+                    b.radius += b.growth * dt;
+                    b.life -= b.decay * dt;
+                    if (b.life <= 0 || b.radius > b.maxRadius) {
+                        bursts.splice(i, 1);
+                    }
+                }
+            }
+
+            function drawBursts(ctx) {
+                for (const b of bursts) {
+                    const alpha = b.life * 0.15;
+                    const lineWidth = 2 + b.life * 3;
+                    // 外圈
+                    ctx.strokeStyle = `hsla(${b.hue}, 80%, 70%, ${alpha})`;
+                    ctx.lineWidth = lineWidth;
+                    ctx.lineCap = 'round';
+                    ctx.beginPath();
+                    ctx.arc(b.x, b.y, b.radius, 0, Math.PI * 2);
+                    ctx.stroke();
+
+                    // 内圈光晕
+                    if (b.radius > 25) {
+                        const innerR = b.radius * 0.7;
+                        const innerAlpha = b.life * 0.1;
+                        ctx.strokeStyle = `hsla(${b.hue + 30}, 70%, 80%, ${innerAlpha})`;
+                        ctx.lineWidth = lineWidth * 0.5;
+                        ctx.beginPath();
+                        ctx.arc(b.x, b.y, innerR, 0, Math.PI * 2);
+                        ctx.stroke();
+                    }
+
+                    // 径向光晕填充
+                    const radialAlpha = b.life * 0.05;
+                    const gradient = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, b.radius);
+                    gradient.addColorStop(0, `hsla(${b.hue}, 60%, 70%, ${radialAlpha})`);
+                    gradient.addColorStop(1, 'transparent');
+                    ctx.fillStyle = gradient;
+                    ctx.beginPath();
+                    ctx.arc(b.x, b.y, b.radius, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            // ─── 初始化光束 ─────────────────────────────────────────────
+            function initBeams() {
+                const count = Math.max(24, Math.min(45, Math.floor(W / 40)));
+                beams = [];
+                for (let i = 0; i < count; i++) {
+                    beams.push(new Beam(i));
+                }
+            }
+
+            // ─── 鼠标光晕 ───────────────────────────────────────────────
+            function drawCursorGlow(ctx) {
+                if (!mouse.active) return;
+                const scheme = schemes[colorScheme];
+                const radius = 70;
+                const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                gradient.addColorStop(0, `hsla(${scheme.baseHue}, 75%, 75%, 0.06)`);
+                gradient.addColorStop(0.6, `hsla(${scheme.baseHue}, 65%, 70%, 0.02)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // ─── 主循环 ─────────────────────────────────────────────────
+            let lastTime = 0;
+            let accumulator = 0;
+            const fixedStep = 1000 / 60;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+
+                accumulator += dt;
+                const steps = Math.min(Math.floor(accumulator / fixedStep), 3);
+                accumulator -= steps * fixedStep;
+
+                for (let s = 0; s < steps; s++) {
+                    time += 0.015;
+                    updateBursts(fixedStep / 1000 * 60);
+                    for (const beam of beams) {
+                        beam.update(1, time, mouse);
+                    }
+                }
+
+                // 半透明清除产生拖尾
+                ctx.fillStyle = 'rgba(5, 5, 16, 0.08)';
+                ctx.fillRect(0, 0, W, H);
+
+                // 绘制光束
+                for (const beam of beams) {
+                    beam.draw(ctx, time);
+                }
+
+                // 绘制爆发
+                drawBursts(ctx);
+
+                // 鼠标光晕
+                drawCursorGlow(ctx);
+
+                requestAnimationFrame(animate);
+            }
+
+            // ─── 交互事件 ───────────────────────────────────────────────
+            function onMouseMove(e) {
+                mouse.px = mouse.x;
+                mouse.py = mouse.y;
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                createBurst(mouse.x, mouse.y);
+                colorScheme = (colorScheme + 1) % schemes.length;
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.px = mouse.x;
+                    mouse.py = mouse.y;
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    createBurst(mouse.x, mouse.y);
+                    colorScheme = (colorScheme + 1) % schemes.length;
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onResize() {
+                setupCanvas();
+                // 重新初始化光束位置
+                const count = Math.max(24, Math.min(45, Math.floor(W / 40)));
+                beams = [];
+                for (let i = 0; i < count; i++) {
+                    beams.push(new Beam(i));
+                }
+                bursts = [];
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+                initBeams();
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#050510';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+
+        })();
+    </script>
+</body>
+</html>

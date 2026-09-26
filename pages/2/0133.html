@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>数字烟花 · 流星延长版</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #050510;
+            font-family: sans-serif;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="fireworksCanvas"></canvas>
+    <script>
+        (function() {
+            'use strict';
+
+            const canvas = document.getElementById('fireworksCanvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            // ---------- 配置参数 ----------
+            const CONFIG = {
+                maxParticles: 500,          // 最大粒子数
+                explosionParticles: 70,     // 每次爆炸的粒子数
+                trailParticles: 8,          // 流星拖尾粒子数
+                gravity: 0.06,              // 重力
+                friction: 0.98,             // 摩擦系数
+                explosionSpeed: 7,          // 爆炸初速度
+                trailSpeed: 0.8,            // 流星速度
+                fadeOutSpeed: 0.015,        // 粒子淡出速度（控制消失速率）
+                backgroundFade: 0.22,       // 背景拖尾强度
+                hueMin: 180,                // 色相范围
+                hueMax: 320,
+                saturation: 90,
+                lightness: 65,
+                lineWidth: 2.2,             // 粒子线条宽度
+            };
+
+            let width = 0;
+            let height = 0;
+            let dpr = 1;
+            let particles = [];
+            let mouseX = -9999;
+            let mouseY = -9999;
+            let mouseActive = false;
+            let targetMouseX = -9999;
+            let targetMouseY = -9999;
+            let smoothMouseX = -9999;
+            let smoothMouseY = -9999;
+            let animationId = null;
+            let lastTime = 0;
+            let time = 0;
+
+            // ---------- 粒子类 ----------
+            class Particle {
+                constructor(x, y, vx, vy, hue, sat, light, life) {
+                    this.x = x;
+                    this.y = y;
+                    this.vx = vx;
+                    this.vy = vy;
+                    this.hue = hue;
+                    this.saturation = sat;
+                    this.lightness = light;
+                    this.life = life;          // 生命值 1 -> 0
+                    this.maxLife = life;
+                    this.size = Math.random() * 2.5 + 1.2;
+                }
+
+                update(dt) {
+                    // 应用重力
+                    this.vy += CONFIG.gravity * dt * 0.8;
+                    // 摩擦
+                    this.vx *= CONFIG.friction;
+                    this.vy *= CONFIG.friction;
+
+                    this.x += this.vx * dt;
+                    this.y += this.vy * dt;
+
+                    // 生命衰减
+                    this.life -= CONFIG.fadeOutSpeed * dt;
+                }
+
+                isDead() {
+                    return this.life <= 0;
+                }
+
+                // 绘制粒子
+                draw(ctx) {
+                    const alpha = Math.max(0, Math.min(1, this.life));
+                    const size = this.size * (0.5 + this.life * 0.5);
+                    const glowRadius = size * 3;
+
+                    // 光晕
+                    const glowGrad = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, glowRadius);
+                    glowGrad.addColorStop(0, `hsla(${this.hue}, ${this.saturation}%, ${this.lightness}%, ${alpha * 0.55})`);
+                    glowGrad.addColorStop(0.5, `hsla(${this.hue}, ${this.saturation}%, ${this.lightness}%, ${alpha * 0.25})`);
+                    glowGrad.addColorStop(1, `hsla(${this.hue}, ${this.saturation}%, ${this.lightness}%, 0)`);
+                    ctx.fillStyle = glowGrad;
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, glowRadius, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // 核心
+                    ctx.fillStyle = `hsla(${this.hue}, 100%, ${this.lightness + 15}%, ${alpha * 0.9})`;
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, size, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            // ---------- 创建爆炸 ----------
+            function createExplosion(x, y) {
+                const particleCount = CONFIG.explosionParticles;
+                const hue = CONFIG.hueMin + Math.random() * (CONFIG.hueMax - CONFIG.hueMin);
+                const sat = CONFIG.saturation + Math.random() * 10;
+                const light = CONFIG.lightness + Math.random() * 15;
+
+                for (let i = 0; i < particleCount; i++) {
+                    const angle = (i / particleCount) * Math.PI * 2 + Math.random() * 0.3;
+                    const speed = CONFIG.explosionSpeed * (0.5 + Math.random() * 0.7);
+                    const vx = Math.cos(angle) * speed;
+                    const vy = Math.sin(angle) * speed;
+                    const life = 0.8 + Math.random() * 0.5;  // 爆炸粒子持续约1秒
+                    const particle = new Particle(x, y, vx, vy, hue + Math.random() * 40, sat, light, life);
+                    particles.push(particle);
+                }
+
+                // 限制最大粒子数
+                if (particles.length > CONFIG.maxParticles) {
+                    particles.splice(0, particles.length - CONFIG.maxParticles);
+                }
+            }
+
+            // ---------- 创建流星拖尾（生命延长至3秒） ----------
+            function createTrail(x, y) {
+                const trailCount = CONFIG.trailParticles;
+                const hue = 190 + Math.random() * 60;
+                const sat = 80;
+                const light = 70;
+
+                for (let i = 0; i < trailCount; i++) {
+                    const angle = Math.random() * Math.PI * 2;
+                    const speed = CONFIG.trailSpeed * (0.3 + Math.random() * 0.5);
+                    const vx = Math.cos(angle) * speed;
+                    const vy = Math.sin(angle) * speed;
+                    // 关键修改：生命值设为3秒左右（考虑每秒减少约0.9，3秒约需2.7）
+                    const life = 3.0;
+                    const particle = new Particle(x + (Math.random() - 0.5) * 15, y + (Math.random() - 0.5) * 15, vx,
+                        vy, hue + Math.random() * 30, sat, light, life);
+                    particles.push(particle);
+                }
+
+                if (particles.length > CONFIG.maxParticles) {
+                    particles.splice(0, particles.length - CONFIG.maxParticles);
+                }
+            }
+
+            // ---------- 调整画布尺寸 ----------
+            function resizeCanvas() {
+                dpr = Math.min(window.devicePixelRatio || 1, 2);
+                width = window.innerWidth;
+                height = window.innerHeight;
+                canvas.width = Math.floor(width * dpr);
+                canvas.height = Math.floor(height * dpr);
+                canvas.style.width = width + 'px';
+                canvas.style.height = height + 'px';
+                ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                ctx.fillStyle = '#050510';
+                ctx.fillRect(0, 0, width, height);
+                particles = [];
+            }
+
+            // ---------- 更新粒子 ----------
+            function updateParticles(dt) {
+                for (let i = particles.length - 1; i >= 0; i--) {
+                    const p = particles[i];
+                    p.update(dt);
+                    if (p.isDead()) {
+                        particles.splice(i, 1);
+                    }
+                }
+            }
+
+            // ---------- 绘制场景 ----------
+            function drawScene() {
+                ctx.fillStyle = 'rgba(5, 5, 16, ' + CONFIG.backgroundFade + ')';
+                ctx.fillRect(0, 0, width, height);
+
+                ctx.globalCompositeOperation = 'lighter';
+
+                for (const p of particles) {
+                    p.draw(ctx);
+                }
+
+                ctx.globalCompositeOperation = 'source-over';
+            }
+
+            // ---------- 动画循环 ----------
+            function animate(timestamp) {
+                const now = performance.now();
+                if (lastTime === 0) lastTime = now;
+                const dt = Math.min(2, (now - lastTime) / 16.67) || 1;
+                lastTime = now;
+
+                updateParticles(dt);
+                drawScene();
+
+                animationId = requestAnimationFrame(animate);
+            }
+
+            // ---------- 交互事件 ----------
+            function updateMousePosition(clientX, clientY) {
+                targetMouseX = clientX;
+                targetMouseY = clientY;
+                if (!mouseActive) {
+                    mouseActive = true;
+                    smoothMouseX = targetMouseX;
+                    smoothMouseY = targetMouseY;
+                }
+            }
+
+            function handleClick(clientX, clientY) {
+                createExplosion(clientX, clientY);
+                for (let i = 0; i < 5; i++) {
+                    createExplosion(
+                        clientX + (Math.random() - 0.5) * 30,
+                        clientY + (Math.random() - 0.5) * 30
+                    );
+                }
+            }
+
+            let lastTrailTime = 0;
+
+            function setupEvents() {
+                window.addEventListener('mousemove', (e) => {
+                    updateMousePosition(e.clientX, e.clientY);
+                    const now = performance.now();
+                    if (now - lastTrailTime > 40 && particles.length < CONFIG.maxParticles - 20) {
+                        createTrail(e.clientX, e.clientY);
+                        lastTrailTime = now;
+                    }
+                }, { passive: true });
+
+                window.addEventListener('mouseleave', () => {
+                    mouseActive = false;
+                    smoothMouseX = -9999;
+                    smoothMouseY = -9999;
+                });
+
+                window.addEventListener('mousedown', (e) => {
+                    handleClick(e.clientX, e.clientY);
+                });
+
+                window.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        handleClick(touch.clientX, touch.clientY);
+                    }
+                }, { passive: false });
+
+                window.addEventListener('touchmove', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        updateMousePosition(touch.clientX, touch.clientY);
+                        const now = performance.now();
+                        if (now - lastTrailTime > 40 && particles.length < CONFIG.maxParticles - 20) {
+                            createTrail(touch.clientX, touch.clientY);
+                            lastTrailTime = now;
+                        }
+                    }
+                }, { passive: false });
+
+                window.addEventListener('touchend', () => {
+                    mouseActive = false;
+                    smoothMouseX = -9999;
+                    smoothMouseY = -9999;
+                });
+
+                window.addEventListener('resize', () => {
+                    resizeCanvas();
+                });
+
+                document.addEventListener('visibilitychange', () => {
+                    if (document.hidden) {
+                        if (animationId) {
+                            cancelAnimationFrame(animationId);
+                            animationId = null;
+                        }
+                        lastTime = 0;
+                    } else {
+                        if (!animationId) {
+                            lastTime = 0;
+                            animationId = requestAnimationFrame(animate);
+                        }
+                    }
+                });
+            }
+
+            // ---------- 启动 ----------
+            function init() {
+                resizeCanvas();
+                setupEvents();
+                lastTime = 0;
+                animationId = requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.__fireworks = {
+                config: CONFIG,
+                particles: particles,
+            };
+        })();
+    </script>
+</body>
+</html>

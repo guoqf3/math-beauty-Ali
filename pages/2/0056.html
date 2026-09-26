@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FIREFLY · 萤火虫同步</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #0a0a14;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2;
+            text-align: center;
+            pointer-events: none;
+            opacity: 0.5;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+        .overlay:hover {
+            opacity: 0.85;
+        }
+        .title {
+            color: rgba(230, 235, 250, 0.7);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 20px rgba(160, 180, 240, 0.4);
+        }
+        .hint {
+            color: rgba(175, 185, 215, 0.45);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+        @media (max-width: 768px) {
+            .overlay { bottom: 18px; }
+            .title { font-size: 8px; letter-spacing: 0.45em; }
+            .hint { font-size: 6px; letter-spacing: 0.22em; }
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <div class="overlay">
+        <div class="title">Firefly</div>
+        <div class="hint">move · click</div>
+    </div>
+    <script>
+        (function() {
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            let fireflies = [];
+            let mouse = { x: -9999, y: -9999, active: false };
+            let time = 0;
+            let colorShift = 0;
+            let syncStrength = 0.04;
+
+            // ─── 性能参数 ───────────────────────────────────────────────
+            const FIREFLY_COUNT = () => Math.max(80, Math.min(180, Math.floor(W * H / 6000)));
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                ctx.fillStyle = '#0a0a14';
+                ctx.fillRect(0, 0, W, H);
+            }
+
+            // ─── 萤火虫类 ───────────────────────────────────────────────
+            class Firefly {
+                constructor() {
+                    this.x = Math.random() * W;
+                    this.y = Math.random() * H;
+                    this.phase = Math.random() * Math.PI * 2;  // 闪光相位
+                    this.naturalFreq = 0.8 + Math.random() * 0.7;  // 自然频率
+                    this.frequency = this.naturalFreq;
+                    this.size = 1.5 + Math.random() * 2.0;
+                    this.brightness = 0.5 + Math.random() * 0.4;
+                    this.hueOffset = Math.random() * 40 - 20;
+                    this.vx = (Math.random() - 0.5) * 0.6;
+                    this.vy = (Math.random() - 0.5) * 0.6;
+                    this.glowRadius = 10 + Math.random() * 25;
+                    this.syncRadius = 60 + Math.random() * 40;
+                    this.memoryPhase = this.phase;
+                }
+
+                update(dt, mouse, t, fireflies) {
+                    // ─── 邻近萤火虫同步 ───────────────────────────────────
+                    let phaseDiffSum = 0;
+                    let neighborCount = 0;
+
+                    const syncRadiusSq = this.syncRadius * this.syncRadius;
+
+                    for (const other of fireflies) {
+                        if (other === this) continue;
+                        const dx = other.x - this.x;
+                        const dy = other.y - this.y;
+                        const distSq = dx * dx + dy * dy;
+                        if (distSq < syncRadiusSq) {
+                            const dist = Math.sqrt(distSq);
+                            const falloff = 1 - dist / this.syncRadius;
+                            // 相位差（考虑环绕）
+                            let diff = other.phase - this.phase;
+                            diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+                            phaseDiffSum += diff * falloff;
+                            neighborCount++;
+                        }
+                    }
+
+                    // 应用同步力
+                    if (neighborCount > 0) {
+                        const syncForce = (phaseDiffSum / neighborCount) * syncStrength;
+                        this.phase += syncForce;
+                    }
+
+                    // 自然频率驱动
+                    this.phase += this.frequency * 0.03 * dt;
+
+                    // 保持相位在0到2π之间
+                    this.phase = ((this.phase % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+
+                    // ─── 运动 ─────────────────────────────────────────────
+                    // 微小随机漂移
+                    this.vx += (Math.random() - 0.5) * 0.03;
+                    this.vy += (Math.random() - 0.5) * 0.03;
+
+                    // 鼠标吸引（温和）
+                    if (mouse.active) {
+                        const dx = mouse.x - this.x;
+                        const dy = mouse.y - this.y;
+                        const distSq = dx * dx + dy * dy;
+                        const radius = 180;
+                        const radiusSq = radius * radius;
+                        if (distSq < radiusSq && distSq > 0.01) {
+                            const dist = Math.sqrt(distSq);
+                            const falloff = 1 - dist / radius;
+                            const normX = dx / dist;
+                            const normY = dy / dist;
+                            this.vx += normX * falloff * 0.25;
+                            this.vy += normY * falloff * 0.25;
+                            // 靠近鼠标时略微增亮
+                            this.brightness = Math.min(1, this.brightness + 0.012);
+                        }
+                    }
+
+                    // 阻尼
+                    this.vx *= 0.97;
+                    this.vy *= 0.97;
+
+                    // 速度限制
+                    const maxSpeed = 1.8;
+                    const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
+                    if (speed > maxSpeed) {
+                        this.vx = (this.vx / speed) * maxSpeed;
+                        this.vy = (this.vy / speed) * maxSpeed;
+                    }
+
+                    this.x += this.vx * dt;
+                    this.y += this.vy * dt;
+
+                    // 边界环绕
+                    if (this.x < -30) this.x = W + 30;
+                    if (this.x > W + 30) this.x = -30;
+                    if (this.y < -30) this.y = H + 30;
+                    if (this.y > H + 30) this.y = -30;
+                }
+
+                draw(ctx, t) {
+                    // 闪光强度：相位接近峰值时发光
+                    const flashIntensity = Math.sin(this.phase);
+                    const isLit = flashIntensity > 0.55;
+                    const flashStrength = Math.max(0, (flashIntensity - 0.55) / 0.45);
+                    const glowStrength = Math.max(0, Math.sin(this.phase) * 0.9);
+                    const alpha = this.brightness * (0.15 + flashStrength * 0.85);
+                    const hue = 55 + colorShift + this.hueOffset;
+                    const sat = 50 + flashStrength * 30;
+                    const light = 50 + flashStrength * 40;
+
+                    // 光晕
+                    const glowRadius = this.glowRadius * (0.6 + flashStrength * 1.2);
+                    const gradient = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, glowRadius);
+                    gradient.addColorStop(0, `hsla(${hue}, ${sat}%, ${light + 25}%, ${alpha})`);
+                    gradient.addColorStop(0.5, `hsla(${hue}, ${sat}%, ${light}%, ${alpha * 0.5})`);
+                    gradient.addColorStop(1, 'transparent');
+                    ctx.fillStyle = gradient;
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, glowRadius, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // 核心亮点（仅在明亮时显示）
+                    if (flashStrength > 0.3) {
+                        ctx.fillStyle = `hsla(${hue}, ${sat}%, ${light + 35}%, ${alpha * 0.9})`;
+                        ctx.beginPath();
+                        ctx.arc(this.x, this.y, this.size * flashStrength, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+
+                    // 微弱的呼吸光（始终存在）
+                    const baseGlow = this.brightness * 0.15;
+                    ctx.fillStyle = `hsla(${hue}, ${sat}%, ${light}%, ${baseGlow})`;
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, this.size * 0.8, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            // ─── 初始化萤火虫 ───────────────────────────────────────────
+            function initFireflies() {
+                const count = FIREFLY_COUNT();
+                fireflies = [];
+                for (let i = 0; i < count; i++) {
+                    fireflies.push(new Firefly());
+                }
+            }
+
+            // ─── 绘制同步连接线 ─────────────────────────────────────────
+            function drawSyncConnections(ctx, t) {
+                const maxDist = 50;
+                const maxDistSq = maxDist * maxDist;
+                let drawn = 0;
+                const maxLines = 400;
+
+                for (let i = 0; i < fireflies.length; i++) {
+                    const f1 = fireflies[i];
+                    for (let j = i + 1; j < fireflies.length; j++) {
+                        if (drawn > maxLines) return;
+                        const f2 = fireflies[j];
+                        const dx = f1.x - f2.x;
+                        const dy = f1.y - f2.y;
+                        if (Math.abs(dx) > maxDist || Math.abs(dy) > maxDist) continue;
+                        const distSq = dx * dx + dy * dy;
+                        if (distSq < maxDistSq) {
+                            const dist = Math.sqrt(distSq);
+                            // 连接线亮度取决于两者的同步程度
+                            let phaseDiff = f1.phase - f2.phase;
+                            const sync = Math.abs(Math.sin(phaseDiff));
+                            const alpha = (1 - dist / maxDist) * sync * 0.2;
+                            if (alpha < 0.02) continue;
+                            const hue = 50 + colorShift;
+                            ctx.strokeStyle = `hsla(${hue}, 60%, 70%, ${alpha})`;
+                            ctx.lineWidth = 0.5;
+                            ctx.beginPath();
+                            ctx.moveTo(f1.x, f1.y);
+                            ctx.lineTo(f2.x, f2.y);
+                            ctx.stroke();
+                            drawn++;
+                        }
+                    }
+                }
+            }
+
+            // ─── 鼠标光晕 ───────────────────────────────────────────────
+            function drawCursorGlow(ctx) {
+                if (!mouse.active) return;
+                const radius = 55;
+                const hue = 50 + colorShift;
+                const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                gradient.addColorStop(0, `hsla(${hue}, 60%, 75%, 0.06)`);
+                gradient.addColorStop(0.7, `hsla(${hue}, 55%, 70%, 0.02)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // ─── 主循环 ─────────────────────────────────────────────────
+            let lastTime = 0;
+            let accumulator = 0;
+            const fixedStep = 1000 / 60;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+
+                accumulator += dt;
+                const steps = Math.min(Math.floor(accumulator / fixedStep), 3);
+                accumulator -= steps * fixedStep;
+
+                for (let s = 0; s < steps; s++) {
+                    time += 0.016;
+                    const dtNorm = fixedStep / 1000 * 60;
+                    for (const fly of fireflies) {
+                        fly.update(dtNorm, mouse, time, fireflies);
+                    }
+                }
+
+                // 半透明清除，产生拖尾效果
+                ctx.fillStyle = 'rgba(10, 10, 20, 0.28)';
+                ctx.fillRect(0, 0, W, H);
+
+                // 绘制同步连接线
+                drawSyncConnections(ctx, time);
+
+                // 绘制萤火虫
+                for (const fly of fireflies) {
+                    fly.draw(ctx, time);
+                }
+
+                // 鼠标光晕
+                drawCursorGlow(ctx);
+
+                requestAnimationFrame(animate);
+            }
+
+            // ─── 交互事件 ───────────────────────────────────────────────
+            function onMouseMove(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                // 重置所有萤火虫的相位，打破同步状态
+                for (const fly of fireflies) {
+                    fly.phase = Math.random() * Math.PI * 2;
+                    fly.frequency = 0.6 + Math.random() * 0.9;
+                }
+                // 色彩偏移
+                colorShift += 15 + Math.random() * 20;
+                if (colorShift > 80) colorShift = -15;
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    for (const fly of fireflies) {
+                        fly.phase = Math.random() * Math.PI * 2;
+                        fly.frequency = 0.6 + Math.random() * 0.9;
+                    }
+                    colorShift += 15 + Math.random() * 20;
+                    if (colorShift > 80) colorShift = -15;
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onResize() {
+                setupCanvas();
+                const targetCount = FIREFLY_COUNT();
+                if (targetCount !== fireflies.length) {
+                    while (fireflies.length < targetCount) {
+                        fireflies.push(new Firefly());
+                    }
+                    if (fireflies.length > targetCount) {
+                        fireflies.length = targetCount;
+                    }
+                }
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+                initFireflies();
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#0a0a14';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+        })();
+    </script>
+</body>
+</html>

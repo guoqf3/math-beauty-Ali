@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>超空间跳跃 · 曲速航行</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #000005;
+            font-family: system-ui, sans-serif;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            user-select: none;
+        }
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+        #hint {
+            position: fixed;
+            bottom: 24px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: rgba(255, 255, 255, 0.4);
+            font-size: 12px;
+            letter-spacing: 1px;
+            pointer-events: none;
+            z-index: 10;
+            transition: opacity 1.5s ease;
+            font-weight: 300;
+            white-space: nowrap;
+        }
+        #fps-badge {
+            position: fixed;
+            top: 16px;
+            right: 18px;
+            color: rgba(255, 255, 255, 0.3);
+            font-size: 11px;
+            pointer-events: none;
+            z-index: 10;
+            font-weight: 300;
+            letter-spacing: 0.5px;
+        }
+    </style>
+</head>
+<body>
+    <div id="fps-badge"></div>
+    <div id="hint">移动改变方向 · 点击曲速加速</div>
+
+    <script src="https://cdn.jsdelivr.net/npm/pixi.js@7.4.2/dist/pixi.min.js">
+    </script>
+    <script>
+        (function() {
+            'use strict';
+
+            // ─── 性能与安全检查 ───
+            if (!window.PIXI) {
+                console.warn('PixiJS 加载失败');
+                document.body.innerHTML = '<div style="color:#fff;text-align:center;padding-top:40vh;font-size:16px;">需要WebGL支持</div>';
+                return;
+            }
+
+            // ─── 常量定义 ───
+            const FOCAL_LENGTH = 1200;
+            const BASE_PARTICLE_SCALE = 0.1;
+            const STAR_COUNT = 1800;       // 超空间粒子数量
+            const BACKGROUND_STARS = 250;   // 背景静态星点
+            const MAX_DISTANCE = 1400;      // 粒子最大飞行距离
+            const SPAWN_RADIUS = 20;        // 粒子重生半径
+            const AUTO_ROTATE_SPEED = 0.0;  // 自动旋转（超空间不需要，靠鼠标）
+            const VIEW_SENSITIVITY_X = 0.8;
+            const VIEW_SENSITIVITY_Y = 0.5;
+            const SPEED_MULTIPLIER = 1.0;
+
+            // 颜色主题（不同色调的曲速轨迹）
+            const COLOR_THEMES = [
+                { name: '量子蓝', main: 0x4D9FFF, secondary: 0x6B6BFF, glow: 0x4DFFD9 },
+                { name: '脉冲紫', main: 0xB06BFF, secondary: 0xFF6B9D, glow: 0xFF9D4D },
+                { name: '翡翠流光', main: 0x4DFFD9, secondary: 0x6BFF6B, glow: 0xB0FF6B },
+                { name: '炽热金', main: 0xFFD447, secondary: 0xFF9D4D, glow: 0xFFB85C },
+                { name: '全息粉', main: 0xFF6B9D, secondary: 0xFF4D6B, glow: 0xFFB0C8 },
+            ];
+            let currentThemeIndex = 0;
+
+            // ─── DOM 元素 ───
+            const fpsBadge = document.getElementById('fps-badge');
+            const hintEl = document.getElementById('hint');
+
+            // ─── PixiJS 应用初始化 ───
+            let app;
+            try {
+                app = new PIXI.Application({
+                    width: window.innerWidth,
+                    height: window.innerHeight,
+                    backgroundColor: 0x000005,
+                    antialias: false,
+                    autoDensity: true,
+                    resolution: Math.min(window.devicePixelRatio || 1, 2),
+                    powerPreference: 'high-performance',
+                    forceCanvas: !isWebGLAvailable(),
+                });
+            } catch (err) {
+                console.error('PixiJS 初始化失败:', err);
+                document.body.innerHTML = '<div style="color:#fff;text-align:center;padding-top:40vh;font-size:16px;">初始化失败</div>';
+                return;
+            }
+
+            function isWebGLAvailable() {
+                try {
+                    const canvas = document.createElement('canvas');
+                    return !!(window.WebGLRenderingContext &&
+                        (canvas.getContext('webgl') || canvas.getContext('experimental-webgl')));
+                } catch (e) { return false; }
+            }
+
+            document.body.appendChild(app.view);
+
+            // ─── 创建发光纹理 ───
+            function createGlowTexture(size) {
+                const c = document.createElement('canvas');
+                c.width = size;
+                c.height = size;
+                const ctx = c.getContext('2d');
+                const half = size / 2;
+                const gradient = ctx.createRadialGradient(half, half, 0, half, half, half);
+                gradient.addColorStop(0.0, 'rgba(255,255,255,1)');
+                gradient.addColorStop(0.08, 'rgba(255,255,255,0.95)');
+                gradient.addColorStop(0.3, 'rgba(255,255,255,0.6)');
+                gradient.addColorStop(0.6, 'rgba(255,255,255,0.2)');
+                gradient.addColorStop(1.0, 'rgba(255,255,255,0)');
+                ctx.fillStyle = gradient;
+                ctx.fillRect(0, 0, size, size);
+                const tex = PIXI.Texture.from(c);
+                tex.baseTexture.scaleMode = PIXI.SCALE_MODES.LINEAR;
+                return tex;
+            }
+
+            const glowTex64 = createGlowTexture(64);
+            const glowTex128 = createGlowTexture(128);
+
+            // ─── 粒子容器 ───
+            // 主超空间粒子
+            const hyperspaceContainer = new PIXI.ParticleContainer(STAR_COUNT, {
+                position: true,
+                scale: true,
+                tint: true,
+                alpha: true,
+            }, STAR_COUNT, true);
+            hyperspaceContainer.blendMode = PIXI.BLEND_MODES.ADD;
+            app.stage.addChild(hyperspaceContainer);
+
+            // 背景静态星点
+            const backgroundContainer = new PIXI.ParticleContainer(BACKGROUND_STARS, {
+                position: true,
+                scale: true,
+                tint: true,
+                alpha: true,
+            }, BACKGROUND_STARS, true);
+            backgroundContainer.blendMode = PIXI.BLEND_MODES.ADD;
+            app.stage.addChild(backgroundContainer);
+
+            // ─── 中心光晕 ───
+            const centerGlow = new PIXI.Sprite(glowTex128);
+            centerGlow.anchor.set(0.5);
+            centerGlow.tint = 0x4D9FFF;
+            centerGlow.alpha = 0.3;
+            centerGlow.scale.set(2.0);
+            centerGlow.blendMode = PIXI.BLEND_MODES.ADD;
+            app.stage.addChild(centerGlow);
+
+            const centerCore = new PIXI.Sprite(glowTex64);
+            centerCore.anchor.set(0.5);
+            centerCore.tint = 0xFFFFFF;
+            centerCore.alpha = 0.7;
+            centerCore.scale.set(0.4);
+            centerCore.blendMode = PIXI.BLEND_MODES.ADD;
+            app.stage.addChild(centerCore);
+
+            // ─── 数据结构 ───
+            const hyperspaceSprites = [];
+            const hyperspaceData = [];
+            const bgSprites = [];
+            const bgData = [];
+
+            let mouseX = 0;
+            let mouseY = 0;
+            let smoothMouseX = 0;
+            let smoothMouseY = 0;
+            let targetCenterX = window.innerWidth / 2;
+            let targetCenterY = window.innerHeight / 2;
+            let currentCenterX = targetCenterX;
+            let currentCenterY = targetCenterY;
+            let warpBoost = 1.0;    // 曲速加速系数
+            let time = 0;
+            let frameCount = 0;
+            let fpsLastTime = 0;
+
+            // ─── 初始化超空间粒子 ───
+            function initHyperspace() {
+                const theme = COLOR_THEMES[currentThemeIndex];
+                for (let i = 0; i < STAR_COUNT; i++) {
+                    const sprite = new PIXI.Sprite(glowTex64);
+                    sprite.anchor.set(0.5);
+                    // 随机初始角度和距离
+                    const angle = Math.random() * Math.PI * 2;
+                    const dist = Math.pow(Math.random(), 1.5) * MAX_DISTANCE * 0.6;
+                    // 速度随距离增加，模拟透视
+                    const baseSpeed = 180 + Math.random() * 220;
+                    const data = {
+                        angle: angle,
+                        dist: dist,
+                        speed: baseSpeed,
+                        baseSpeed: baseSpeed,
+                        colorIdx: Math.floor(Math.random() * 5),
+                        baseAlpha: 0.55 + Math.random() * 0.35,
+                        pulsePhase: Math.random() * Math.PI * 2,
+                        sizeScale: 0.8 + Math.random() * 0.6,
+                    };
+                    // 设置初始颜色
+                    sprite.tint = theme.main;
+                    sprite.alpha = data.baseAlpha;
+                    sprite.scale.set(BASE_PARTICLE_SCALE * data.sizeScale);
+                    hyperspaceData.push(data);
+                    hyperspaceSprites.push(sprite);
+                    hyperspaceContainer.addChild(sprite);
+                }
+            }
+
+            // ─── 初始化背景星点 ───
+            function initBackgroundStars() {
+                const w = window.innerWidth;
+                const h = window.innerHeight;
+                for (let i = 0; i < BACKGROUND_STARS; i++) {
+                    const sprite = new PIXI.Sprite(glowTex64);
+                    sprite.anchor.set(0.5);
+                    const tintChoice = Math.random();
+                    if (tintChoice < 0.4) sprite.tint = 0xCCCCFF;
+                    else if (tintChoice < 0.7) sprite.tint = 0xFFEECC;
+                    else sprite.tint = 0xAADDFF;
+                    sprite.alpha = 0.08 + Math.random() * 0.25;
+                    const depth = 0.2 + Math.random() * 0.8;
+                    sprite.scale.set((0.02 + Math.random() * 0.04) * depth);
+                    const data = {
+                        x: Math.random() * w,
+                        y: Math.random() * h,
+                        vx: (Math.random() - 0.5) * 0.04,
+                        vy: (Math.random() - 0.5) * 0.03,
+                        depth: depth,
+                        twinklePhase: Math.random() * Math.PI * 2,
+                        twinkleSpeed: 0.2 + Math.random() * 0.8,
+                    };
+                    sprite.position.set(data.x, data.y);
+                    bgData.push(data);
+                    bgSprites.push(sprite);
+                    backgroundContainer.addChild(sprite);
+                }
+            }
+
+            // ─── 更新超空间粒子 ───
+            function updateHyperspace(delta) {
+                const theme = COLOR_THEMES[currentThemeIndex];
+                const maxDist = MAX_DISTANCE * 1.1;
+                for (let i = 0; i < hyperspaceSprites.length; i++) {
+                    const data = hyperspaceData[i];
+                    const sprite = hyperspaceSprites[i];
+
+                    // 曲速加速影响速度
+                    const currentSpeed = data.speed * warpBoost;
+                    data.dist += currentSpeed * delta * 0.6;
+
+                    // 当粒子超出最大距离，重置到中心附近
+                    if (data.dist > maxDist || data.dist < 0) {
+                        data.dist = SPAWN_RADIUS + Math.random() * 30;
+                        data.angle = Math.random() * Math.PI * 2;
+                        data.baseSpeed = 180 + Math.random() * 220;
+                        data.speed = data.baseSpeed;
+                        data.pulsePhase = Math.random() * Math.PI * 2;
+                    }
+
+                    // 根据距离计算位置（以currentCenter为原点）
+                    const px = currentCenterX + data.dist * Math.cos(data.angle);
+                    const py = currentCenterY + data.dist * Math.sin(data.angle);
+
+                    // 透视效果：距离越远，粒子越小且透明度略降，但增加速度感
+                    const depthFactor = Math.min(1.2, Math.max(0.4, 1 - data.dist / MAX_DISTANCE));
+                    const sizeFactor = data.dist / MAX_DISTANCE;
+                    const scale = BASE_PARTICLE_SCALE * data.sizeScale * (0.6 + sizeFactor * 0.8);
+                    const alpha = data.baseAlpha * depthFactor * (0.7 + 0.3 * Math.sin(data.pulsePhase + time * 2.0));
+
+                    // 颜色根据距离和角度变化，制造彩虹效果
+                    const hueShift = (data.angle / (Math.PI * 2)) * 3 + sizeFactor * 2;
+                    const colorChoice = Math.floor(hueShift) % COLOR_THEMES[0].length;
+                    const finalColor = [theme.main, theme.secondary, theme.glow][colorChoice % 3] || theme.main;
+
+                    sprite.position.set(px, py);
+                    sprite.scale.set(scale);
+                    sprite.alpha = Math.max(0.05, Math.min(1, alpha));
+                    sprite.tint = finalColor;
+                }
+            }
+
+            // ─── 更新背景星点 ───
+            function updateBackgroundStars(delta) {
+                const w = window.innerWidth;
+                const h = window.innerHeight;
+                for (let i = 0; i < bgSprites.length; i++) {
+                    const data = bgData[i];
+                    const sprite = bgSprites[i];
+                    data.x += data.vx * delta * 10;
+                    data.y += data.vy * delta * 10;
+                    if (data.x < -20) data.x = w + 20;
+                    if (data.x > w + 20) data.x = -20;
+                    if (data.y < -20) data.y = h + 20;
+                    if (data.y > h + 20) data.y = -20;
+
+                    const twinkle = 0.5 + 0.5 * Math.sin(data.twinklePhase + time * data.twinkleSpeed);
+                    sprite.position.set(data.x, data.y);
+                    sprite.alpha = 0.08 * data.depth * twinkle + 0.05;
+                    sprite.scale.set((0.02 + 0.03) * data.depth * twinkle);
+                }
+            }
+
+            // ─── 更新中心光晕 ───
+            function updateCenterGlow() {
+                const pulse = 0.25 + 0.1 * Math.sin(time * 2.0) + 0.05 * Math.sin(time * 4.5);
+                centerGlow.position.set(currentCenterX, currentCenterY);
+                centerGlow.alpha = Math.max(0.15, Math.min(0.4, pulse));
+                centerGlow.scale.set(1.8 + 0.4 * Math.sin(time * 1.5));
+                centerCore.position.set(currentCenterX, currentCenterY);
+                centerCore.scale.set(0.38 + 0.08 * Math.sin(time * 2.5));
+                centerCore.alpha = 0.65 + 0.2 * Math.sin(time * 1.8);
+                // 颜色跟随当前主题
+                const theme = COLOR_THEMES[currentThemeIndex];
+                centerGlow.tint = theme.glow;
+                centerCore.tint = theme.main;
+            }
+
+            // ─── 切换颜色主题 ───
+            function switchTheme() {
+                currentThemeIndex = (currentThemeIndex + 1) % COLOR_THEMES.length;
+                // 触发瞬间加速反馈
+                warpBoost = 1.8;
+                setTimeout(() => {
+                    warpBoost = 1.0;
+                }, 400);
+            }
+
+            // ─── 主循环 ───
+            app.ticker.add((delta) => {
+                const dt = Math.min(delta / 60, 0.05);
+                time += dt;
+                frameCount++;
+
+                // 平滑鼠标追踪
+                smoothMouseX += (mouseX - smoothMouseX) * 0.055;
+                smoothMouseY += (mouseY - smoothMouseY) * 0.055;
+
+                // 目标中心点由鼠标控制
+                targetCenterX = window.innerWidth / 2 + (smoothMouseX - window.innerWidth / 2) * 0.35;
+                targetCenterY = window.innerHeight / 2 + (smoothMouseY - window.innerHeight / 2) * 0.35;
+
+                // 中心点平滑移动
+                currentCenterX += (targetCenterX - currentCenterX) * 0.08;
+                currentCenterY += (targetCenterY - currentCenterY) * 0.08;
+
+                // 更新
+                updateHyperspace(dt);
+                updateBackgroundStars(dt);
+                updateCenterGlow();
+
+                // FPS 显示
+                if (time - fpsLastTime > 0.5) {
+                    const fps = Math.round(frameCount / (time - fpsLastTime));
+                    fpsBadge.textContent = fps + ' fps';
+                    frameCount = 0;
+                    fpsLastTime = time;
+                }
+
+                // 曲速加速衰减
+                if (warpBoost > 1.0) {
+                    warpBoost = Math.max(1.0, warpBoost - dt * 1.2);
+                }
+            });
+
+            // ─── 交互事件 ───
+            function getCanvasCoords(e) {
+                const rect = app.view.getBoundingClientRect();
+                let clientX, clientY;
+                if (e.touches && e.touches.length > 0) {
+                    clientX = e.touches[0].clientX;
+                    clientY = e.touches[0].clientY;
+                } else {
+                    clientX = e.clientX;
+                    clientY = e.clientY;
+                }
+                return { x: clientX - rect.left, y: clientY - rect.top };
+            }
+
+            function onPointerMove(e) {
+                const coords = getCanvasCoords(e);
+                mouseX = coords.x;
+                mouseY = coords.y;
+            }
+
+            function onPointerDown(e) {
+                e.preventDefault();
+                const coords = getCanvasCoords(e);
+                mouseX = coords.x;
+                mouseY = coords.y;
+                switchTheme();
+                // 中心闪光
+                centerCore.alpha = 1.0;
+                centerGlow.alpha = 0.6;
+                setTimeout(() => {
+                    centerCore.alpha = 0.65;
+                    centerGlow.alpha = 0.3;
+                }, 150);
+            }
+
+            function onPointerLeave() {
+                mouseX = window.innerWidth / 2;
+                mouseY = window.innerHeight / 2;
+            }
+
+            app.view.addEventListener('mousemove', onPointerMove);
+            app.view.addEventListener('mousedown', onPointerDown);
+            document.addEventListener('mouseleave', onPointerLeave);
+
+            app.view.addEventListener('touchmove', onPointerMove, { passive: true });
+            app.view.addEventListener('touchstart', onPointerDown, { passive: false });
+            app.view.addEventListener('touchend', (e) => {
+                // 保持最后位置
+            });
+
+            // ─── 窗口大小调整 ───
+            function handleResize() {
+                const w = window.innerWidth;
+                const h = window.innerHeight;
+                app.renderer.resize(w, h);
+                // 重置背景星点位置
+                for (let i = 0; i < bgData.length; i++) {
+                    const d = bgData[i];
+                    if (d.x > w) d.x = Math.random() * w;
+                    if (d.y > h) d.y = Math.random() * h;
+                }
+                // 更新中心点初始位置
+                targetCenterX = w / 2;
+                targetCenterY = h / 2;
+                currentCenterX = targetCenterX;
+                currentCenterY = targetCenterY;
+            }
+            window.addEventListener('resize', handleResize);
+            window.addEventListener('orientationchange', () => {
+                setTimeout(handleResize, 300);
+            });
+
+            // ─── 键盘交互 ───
+            window.addEventListener('keydown', (e) => {
+                if (e.key === ' ' || e.key === 'Space') {
+                    e.preventDefault();
+                    switchTheme();
+                }
+            });
+
+            // ─── 启动 ───
+            initHyperspace();
+            initBackgroundStars();
+
+            mouseX = window.innerWidth / 2;
+            mouseY = window.innerHeight / 2;
+            smoothMouseX = mouseX;
+            smoothMouseY = mouseY;
+            currentCenterX = window.innerWidth / 2;
+            currentCenterY = window.innerHeight / 2;
+            targetCenterX = currentCenterX;
+            targetCenterY = currentCenterY;
+
+            setTimeout(() => {
+                if (hintEl) {
+                    hintEl.style.opacity = '0';
+                    setTimeout(() => {
+                        if (hintEl) hintEl.style.display = 'none';
+                    }, 1600);
+                }
+            }, 3500);
+
+            handleResize();
+            console.log('✨ 超空间跳跃 已启动 — 粒子数:', STAR_COUNT, ' 背景星点:', BACKGROUND_STARS);
+        })();
+    </script>
+</body>
+</html>

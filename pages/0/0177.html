@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>抛物坐标网格 · 正交曲线网</title>
+    <style>
+        :root { --bg: #02040a; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'STSong', 'Songti SC', 'Noto Serif SC', 'SimSun', 'Times New Roman', serif;
+            -webkit-font-smoothing: antialiased;
+            height: 100vh; width: 100vw;
+            user-select: none; -webkit-user-select: none; cursor: default;
+        }
+        #canvas-container { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+        canvas { display: block; }
+        #title-overlay {
+            position: fixed; top: 24px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+        }
+        #title-overlay .title {
+            font-size: clamp(1.0rem, 2.2vw, 1.5rem); font-weight: 400; letter-spacing: 0.08em;
+            color: #cfc7b5; text-shadow: 0 0 42px rgba(200,180,150,0.5), 0 0 70px rgba(170,150,130,0.2);
+            line-height: 1.4; white-space: nowrap;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.48rem, 0.85vw, 0.64rem); font-weight: 300; letter-spacing: 0.12em;
+            color: #a09888; text-shadow: 0 0 14px rgba(155,145,125,0.3);
+            margin-top: 2px; white-space: nowrap;
+        }
+        #formula-overlay {
+            position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+            background: rgba(2,4,10,0.7); padding: 10px 22px; border-radius: 32px;
+            border: 1px solid rgba(175,155,135,0.18);
+            backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); max-width: 95vw;
+        }
+        #formula-overlay .formula {
+            font-size: clamp(0.36rem, 0.68vw, 0.54rem); font-weight: 300; letter-spacing: 0.04em;
+            color: #c5bdaa; text-shadow: 0 0 13px rgba(185,170,145,0.25);
+            line-height: 1.5; white-space: nowrap;
+        }
+        #formula-overlay .formula .c1 { color: #d4885c; }
+        #formula-overlay .formula .c2 { color: #5d9ec6; }
+        #formula-overlay .formula .c3 { color: #c77d9f; }
+        @media (max-width: 600px) {
+            #title-overlay { top: 14px; }
+            #formula-overlay { bottom: 10px; padding: 7px 12px; border-radius: 24px; }
+            #formula-overlay .formula { font-size: 0.32rem; white-space: normal; line-height: 1.3; }
+            #title-overlay .title { font-size: 0.68rem; }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="title-overlay">
+        <div class="title">抛物坐标网格 · 正交曲线网</div>
+        <div class="subtitle">ROTATIONAL PARABOLIC COORDINATES &nbsp;·&nbsp; 3 FAMILIES OF ORTHOGONAL CURVES</div>
+    </div>
+    <div id="formula-overlay">
+        <div class="formula">
+            <span class="c1">u‑线:</span> x=uv cos φ, y=uv sin φ, z=(u²−v²)/2 &nbsp;
+            <span class="c2">v‑线:</span> 同理固定v &nbsp;
+            <span class="c3">φ‑线:</span> 固定φ
+            <br>
+            <span style="color:#9aa8b8;">u,v∈[0.15,2.4] · φ∈[0,2π] · 球半径R=2.6 · 绝对时间驱动</span>
+        </div>
+    </div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#02040a');
+        scene.fog = new THREE.Fog('#02040a', 8, 22);
+
+        const camera = new THREE.PerspectiveCamera(
+            50, container.clientWidth / Math.max(container.clientHeight, 1), 0.3, 25
+        );
+        camera.position.set(1.1, 0.55, 7.0);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = false;
+        container.appendChild(renderer.domElement);
+
+        const C1 = '#d4885c', C2 = '#5d9ec6', C3 = '#c77d9f';
+        const C_SPHERE = '#3a4a5c', C_GLINT = '#8898aa';
+        const R = 2.6;
+        const SCALE = 1.15;
+
+        const uMin = 0.15, uMax = 2.4;
+        const vMin = 0.15, vMax = 2.4;
+        const NUM_U = 22, NUM_V = 22, NUM_PHI = 20;
+        const SAMPLES = 300;
+
+        function parabolic(u, v, phi) {
+            const cosP = Math.cos(phi), sinP = Math.sin(phi);
+            const uv = u * v * SCALE;
+            const x = uv * cosP;
+            const y = uv * sinP;
+            const z = (u * u - v * v) * 0.5 * SCALE;
+            return new THREE.Vector3(x, y, z);
+        }
+
+        function softClamp(vec) {
+            const len = vec.length();
+            if (len > R && len > 0.001) {
+                const excess = len - R;
+                vec.normalize().multiplyScalar(R + Math.log(1 + excess) * 0.9);
+            }
+            return vec;
+        }
+
+        // 生成一族线
+        function generateULines() {
+            const curves = [];
+            const vVals = [];
+            const phiVals = [];
+            for (let i=0; i<NUM_V; i++) vVals.push(vMin + i/(NUM_V-1)*(vMax-vMin));
+            for (let j=0; j<NUM_PHI; j++) phiVals.push(j/NUM_PHI * Math.PI*2);
+            for (const v of vVals) {
+                for (const phi of phiVals) {
+                    const pts = [];
+                    const du = (uMax - uMin) / SAMPLES;
+                    for (let k=0; k<=SAMPLES; k++) {
+                        const u = uMin + k*du;
+                        let pt = parabolic(u, v, phi);
+                        pt = softClamp(pt);
+                        pts.push(pt);
+                    }
+                    curves.push(pts);
+                }
+            }
+            return curves;
+        }
+
+        function generateVLines() {
+            const curves = [];
+            const uVals = [];
+            const phiVals = [];
+            for (let i=0; i<NUM_U; i++) uVals.push(uMin + i/(NUM_U-1)*(uMax-uMin));
+            for (let j=0; j<NUM_PHI; j++) phiVals.push(j/NUM_PHI * Math.PI*2);
+            for (const u of uVals) {
+                for (const phi of phiVals) {
+                    const pts = [];
+                    const dv = (vMax - vMin) / SAMPLES;
+                    for (let k=0; k<=SAMPLES; k++) {
+                        const v = vMin + k*dv;
+                        let pt = parabolic(u, v, phi);
+                        pt = softClamp(pt);
+                        pts.push(pt);
+                    }
+                    curves.push(pts);
+                }
+            }
+            return curves;
+        }
+
+        function generatePhiLines() {
+            const curves = [];
+            const uVals = [], vVals = [];
+            for (let i=0; i<NUM_U; i++) uVals.push(uMin + i/(NUM_U-1)*(uMax-uMin));
+            for (let j=0; j<NUM_V; j++) vVals.push(vMin + j/(NUM_V-1)*(vMax-vMin));
+            for (const u of uVals) {
+                for (const v of vVals) {
+                    const pts = [];
+                    const dPhi = (2*Math.PI) / SAMPLES;
+                    for (let k=0; k<=SAMPLES; k++) {
+                        const phi = k*dPhi;
+                        let pt = parabolic(u, v, phi);
+                        pt = softClamp(pt);
+                        pts.push(pt);
+                    }
+                    curves.push(pts);
+                }
+            }
+            return curves;
+        }
+
+        const uCurves = generateULines();
+        const vCurves = generateVLines();
+        const phiCurves = generatePhiLines();
+        console.log('u-线:', uCurves.length, 'v-线:', vCurves.length, 'φ-线:', phiCurves.length);
+
+        function createGroup(curves, color, opacity) {
+            const group = new THREE.Group();
+            for (const pts of curves) {
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(color),
+                    transparent: true, opacity: opacity, depthWrite: true
+                });
+                group.add(new THREE.Line(geom, mat));
+            }
+            return group;
+        }
+
+        const uGroup = createGroup(uCurves, C1, 0.55);
+        const vGroup = createGroup(vCurves, C2, 0.52);
+        const phiGroup = createGroup(phiCurves, C3, 0.5);
+        const mainGroup = new THREE.Group();
+        mainGroup.add(uGroup);
+        mainGroup.add(vGroup);
+        mainGroup.add(phiGroup);
+        scene.add(mainGroup);
+
+        // 参考球面线框
+        function createSphereWireframe(radius, color, opacity) {
+            const group = new THREE.Group();
+            const segs = 180;
+            const gen = (f) => {
+                const pts = [];
+                for (let i=0; i<=segs; i++) pts.push(f(i/segs*Math.PI*2));
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(color),
+                    transparent: true, opacity: opacity, depthWrite: true
+                });
+                group.add(new THREE.Line(geom, mat));
+            };
+            gen((a)=>new THREE.Vector3(Math.cos(a)*radius, Math.sin(a)*radius, 0));
+            gen((a)=>new THREE.Vector3(Math.cos(a)*radius, 0, Math.sin(a)*radius));
+            gen((a)=>new THREE.Vector3(0, Math.cos(a)*radius, Math.sin(a)*radius));
+            gen((a)=>{ const r = Math.sqrt(radius*radius - (radius*0.5)**2); return new THREE.Vector3(Math.cos(a)*r, radius*0.5, Math.sin(a)*r); });
+            gen((a)=>{ const r = Math.sqrt(radius*radius - (radius*0.5)**2); return new THREE.Vector3(Math.cos(a)*r, -radius*0.5, Math.sin(a)*r); });
+            return group;
+        }
+        const sphereRef = createSphereWireframe(R, C_SPHERE, 0.22);
+        scene.add(sphereRef);
+
+        // 轴端点光点
+        (()=>{
+            const axes = [[R,0,0],[-R,0,0],[0,R,0],[0,-R,0],[0,0,R],[0,0,-R]];
+            const sz = 0.06;
+            axes.forEach(p=>{
+                const pt = new THREE.Vector3(p[0],p[1],p[2]);
+                [[-sz,0,0],[sz,0,0],[0,-sz,0],[0,sz,0],[0,0,-sz],[0,0,sz]].forEach(([dx,dy,dz])=>{
+                    const g = new THREE.BufferGeometry().setFromPoints([pt.clone().add(new THREE.Vector3(dx,dy,dz)), pt]);
+                    const m = new THREE.LineBasicMaterial({ color: new THREE.Color(C_GLINT), transparent:true, opacity:0.55, depthWrite:true });
+                    mainGroup.add(new THREE.Line(g,m));
+                });
+            });
+        })();
+
+        // 原点光点
+        (()=>{
+            const sz = 0.08;
+            const g = new THREE.BufferGeometry().setFromPoints([
+                new THREE.Vector3(-sz,0,0), new THREE.Vector3(sz,0,0),
+                new THREE.Vector3(0,-sz,0), new THREE.Vector3(0,sz,0),
+                new THREE.Vector3(0,0,-sz), new THREE.Vector3(0,0,sz)
+            ]);
+            const m = new THREE.LineBasicMaterial({ color: new THREE.Color(C_GLINT), transparent:true, opacity:0.8, depthWrite:true });
+            scene.add(new THREE.LineSegments(g,m));
+        })();
+
+        let time = 0, lastTime = performance.now(), frameCount = 0;
+        function animate(now) {
+            requestAnimationFrame(animate);
+            let delta = (now - lastTime)/1000;
+            if (delta <=0 || delta>0.5) delta=0.016;
+            lastTime = now;
+            time += delta;
+            frameCount++;
+
+            mainGroup.rotation.y = time * 0.28;
+            mainGroup.rotation.x = time * 0.16 + Math.sin(time*0.24)*0.2;
+            mainGroup.rotation.z = Math.cos(time*0.19)*0.12;
+            sphereRef.rotation.copy(mainGroup.rotation);
+
+            camera.position.set(1.1+Math.sin(time*0.14)*0.5, 0.55+Math.cos(time*0.17)*0.45, 7.0+Math.sin(time*0.11)*0.45);
+            camera.lookAt(0,0,0);
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', ()=>{
+            const w = container.clientWidth, h = Math.max(container.clientHeight,1);
+            camera.aspect = w/h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w,h);
+        });
+
+        console.log('=== 抛物坐标网格 · 正交曲线网 ===');
+        console.log('总曲线数:', uCurves.length+vCurves.length+phiCurves.length);
+        console.log('✅ 初始帧渲染完成，启动绝对时间动画循环...');
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

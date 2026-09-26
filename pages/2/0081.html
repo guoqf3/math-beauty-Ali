@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JELLY · 水母漂游</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #0a0a18;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            right: 32px;
+            z-index: 2;
+            text-align: right;
+            pointer-events: none;
+            opacity: 0.55;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+
+        .overlay:hover {
+            opacity: 0.9;
+        }
+
+        .title {
+            color: rgba(220, 230, 255, 0.8);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 20px rgba(120, 180, 240, 0.5);
+        }
+
+        .hint {
+            color: rgba(170, 190, 220, 0.5);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+
+        @media (max-width: 768px) {
+            .overlay {
+                bottom: 18px;
+                right: 20px;
+            }
+            .title {
+                font-size: 8px;
+                letter-spacing: 0.45em;
+            }
+            .hint {
+                font-size: 6px;
+                letter-spacing: 0.22em;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="canvas"></canvas>
+
+    <div class="overlay">
+        <div class="title">Jelly</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script>
+        (function() {
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            let jellies = [];
+            let spores = [];
+            let mouse = { x: -9999, y: -9999, active: false, vx: 0, vy: 0, px: 0, py: 0 };
+            let time = 0;
+            let colorShift = 0;
+            let maxJellies = 9;
+            let maxSpores = 200;
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                ctx.fillStyle = '#0a0a18';
+                ctx.fillRect(0, 0, W, H);
+            }
+
+            // ─── 水母类 ─────────────────────────────────────────────────
+            class Jelly {
+                constructor(x, y) {
+                    this.x = x || Math.random() * W;
+                    this.y = y || Math.random() * H;
+                    this.vx = (Math.random() - 0.5) * 0.5;
+                    this.vy = (Math.random() - 0.5) * 0.5;
+                    this.size = 20 + Math.random() * 25;          // 头部半径
+                    this.hue = 190 + Math.random() * 60 - 30;     // 蓝绿紫范围
+                    this.sat = 65 + Math.random() * 25;
+                    this.light = 55 + Math.random() * 20;
+                    this.phase = Math.random() * Math.PI * 2;
+                    this.pulseSpeed = 0.8 + Math.random() * 0.8;
+                    this.tentacleCount = 5 + Math.floor(Math.random() * 3);
+                    this.tentaclePoints = [];  // 每条触须的点集合
+                    this.tentacleLength = 12 + Math.floor(Math.random() * 8);
+                    this.initTentacles();
+                }
+
+                initTentacles() {
+                    this.tentaclePoints = [];
+                    for (let t = 0; t < this.tentacleCount; t++) {
+                        const points = [];
+                        const baseAngle = Math.random() * Math.PI * 2;
+                        for (let i = 0; i <= this.tentacleLength; i++) {
+                            points.push({
+                                offsetX: 0,
+                                offsetY: 0,
+                                baseAngle: baseAngle,
+                                segmentLength: 3 + Math.random() * 2,
+                                wobbleAmp: 4 + Math.random() * 6,
+                                wobblePhase: Math.random() * Math.PI * 2,
+                            });
+                        }
+                        this.tentaclePoints.push(points);
+                    }
+                }
+
+                update(dt, mouse, t) {
+                    // 水母自身脉冲
+                    this.phase += this.pulseSpeed * dt * 0.1;
+
+                    // 水流浮力
+                    this.vy -= 0.005 * dt;  // 轻微上浮
+                    this.vx += Math.sin(t * 0.3 + this.phase) * 0.01;
+                    this.vy += Math.cos(t * 0.4 + this.phase) * 0.01;
+
+                    // 鼠标水流影响
+                    if (mouse.active) {
+                        const dx = mouse.x - this.x;
+                        const dy = mouse.y - this.y;
+                        const distSq = dx * dx + dy * dy;
+                        const radius = 200;
+                        const radiusSq = radius * radius;
+                        if (distSq < radiusSq && distSq > 0.01) {
+                            const dist = Math.sqrt(distSq);
+                            const force = (1 - dist / radius) * 0.6;
+                            const normX = dx / dist;
+                            const normY = dy / dist;
+                            this.vx += normX * force * dt;
+                            this.vy += normY * force * dt;
+                        }
+                    }
+
+                    // 阻尼
+                    this.vx *= 0.985;
+                    this.vy *= 0.985;
+
+                    // 速度限制
+                    const maxSpeed = 1.8;
+                    const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
+                    if (speed > maxSpeed) {
+                        this.vx = (this.vx / speed) * maxSpeed;
+                        this.vy = (this.vy / speed) * maxSpeed;
+                    }
+
+                    this.x += this.vx * dt;
+                    this.y += this.vy * dt;
+
+                    // 边界温和反弹
+                    const margin = 50;
+                    if (this.x < margin) this.vx += 0.1;
+                    if (this.x > W - margin) this.vx -= 0.1;
+                    if (this.y < margin) this.vy += 0.1;
+                    if (this.y > H - margin) this.vy -= 0.1;
+
+                    // 更新触须点
+                    for (let t = 0; t < this.tentacleCount; t++) {
+                        const points = this.tentaclePoints[t];
+                        for (let i = 0; i <= this.tentacleLength; i++) {
+                            const p = points[i];
+                            const prog = i / this.tentacleLength;
+                            const angle = p.baseAngle + Math.sin(t * 0.5 + p.wobblePhase + this.phase) * 0.3;
+                            const swayX = Math.sin(time * 2 + p.wobblePhase + i * 0.5) * p.wobbleAmp * prog;
+                            const swayY = Math.cos(time * 1.8 + p.wobblePhase + i * 0.4) * p.wobbleAmp * prog * 0.5;
+                            p.offsetX = Math.cos(angle) * (i * p.segmentLength) + swayX;
+                            p.offsetY = Math.sin(angle) * (i * p.segmentLength) + swayY + (i * p.segmentLength) * 0.3;
+                            // 额外下垂
+                            p.offsetY += prog * prog * 15;
+                        }
+                    }
+                }
+
+                draw(ctx, t) {
+                    const pulse = 1 + Math.sin(this.phase) * 0.08;
+                    const headRadius = this.size * pulse;
+
+                    // 绘制触须
+                    for (let t = 0; t < this.tentacleCount; t++) {
+                        const points = this.tentaclePoints[t];
+                        ctx.beginPath();
+                        const startX = this.x + points[0].offsetX;
+                        const startY = this.y + points[0].offsetY;
+                        ctx.moveTo(startX, startY);
+                        for (let i = 1; i <= this.tentacleLength; i++) {
+                            const px = this.x + points[i].offsetX;
+                            const py = this.y + points[i].offsetY;
+                            ctx.lineTo(px, py);
+                        }
+                        const alpha = 0.3 + 0.2 * Math.sin(this.phase + t);
+                        const hue = this.hue + colorShift;
+                        ctx.strokeStyle = `hsla(${hue}, ${this.sat}%, ${this.light + 10}%, ${alpha})`;
+                        ctx.lineWidth = 1.2;
+                        ctx.lineCap = 'round';
+                        ctx.stroke();
+
+                        // 触须顶端亮点
+                        const lastX = this.x + points[this.tentacleLength].offsetX;
+                        const lastY = this.y + points[this.tentacleLength].offsetY;
+                        ctx.fillStyle = `hsla(${hue}, ${this.sat}%, ${this.light + 20}%, ${alpha * 0.7})`;
+                        ctx.beginPath();
+                        ctx.arc(lastX, lastY, 1.5, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+
+                    // 绘制水母头部（半透明圆顶）
+                    const gradient = ctx.createRadialGradient(this.x, this.y - headRadius * 0.3, 0, this.x, this.y, headRadius);
+                    gradient.addColorStop(0, `hsla(${this.hue + colorShift}, ${this.sat}%, ${this.light + 25}%, 0.55)`);
+                    gradient.addColorStop(0.6, `hsla(${this.hue + colorShift}, ${this.sat}%, ${this.light}%, 0.35)`);
+                    gradient.addColorStop(1, 'transparent');
+                    ctx.fillStyle = gradient;
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, headRadius, Math.PI, 0);
+                    ctx.closePath();
+                    ctx.fill();
+
+                    // 头部边缘光
+                    ctx.strokeStyle = `hsla(${this.hue + colorShift}, ${this.sat + 10}%, ${this.light + 20}%, 0.4)`;
+                    ctx.lineWidth = 0.8;
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, headRadius, Math.PI, 0);
+                    ctx.stroke();
+                }
+            }
+
+            // ─── 孢子粒子 ───────────────────────────────────────────────
+            function createSpores(x, y, count) {
+                for (let i = 0; i < count; i++) {
+                    spores.push({
+                        x: x,
+                        y: y,
+                        vx: (Math.random() - 0.5) * 2,
+                        vy: (Math.random() - 0.5) * 2 - 0.5,
+                        life: 1.0,
+                        decay: 0.008 + Math.random() * 0.01,
+                        size: 1 + Math.random() * 2.5,
+                        hue: 190 + colorShift + Math.random() * 40 - 20,
+                        alpha: 0.7,
+                        phase: Math.random() * Math.PI * 2,
+                    });
+                }
+                if (spores.length > maxSpores) {
+                    spores.splice(0, spores.length - maxSpores);
+                }
+            }
+
+            function updateSpores(dt) {
+                for (let i = spores.length - 1; i >= 0; i--) {
+                    const s = spores[i];
+                    s.x += s.vx * dt;
+                    s.y += s.vy * dt;
+                    s.vy += 0.01 * dt; // 轻微上浮
+                    s.phase += 0.1 * dt;
+                    s.vx *= 0.99;
+                    s.vy *= 0.99;
+                    s.life -= s.decay * dt;
+                    if (s.life <= 0 || s.x < -20 || s.x > W + 20 || s.y < -20 || s.y > H + 20) {
+                        spores.splice(i, 1);
+                    }
+                }
+            }
+
+            function drawSpores(ctx) {
+                for (const s of spores) {
+                    const alpha = s.life * s.alpha;
+                    const size = s.size * s.life;
+                    const hue = s.hue + Math.sin(s.phase) * 20;
+                    const gradient = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, size * 2);
+                    gradient.addColorStop(0, `hsla(${hue}, 80%, 75%, ${alpha})`);
+                    gradient.addColorStop(1, 'transparent');
+                    ctx.fillStyle = gradient;
+                    ctx.beginPath();
+                    ctx.arc(s.x, s.y, size * 2, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            // ─── 鼠标光晕 ───────────────────────────────────────────────
+            function drawCursorGlow(ctx) {
+                if (!mouse.active) return;
+                const radius = 60;
+                const hue = 200 + colorShift;
+                const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                gradient.addColorStop(0, `hsla(${hue}, 70%, 75%, 0.05)`);
+                gradient.addColorStop(0.7, `hsla(${hue}, 60%, 70%, 0.02)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // ─── 主循环 ─────────────────────────────────────────────────
+            let lastTime = 0;
+            let accumulator = 0;
+            const fixedStep = 1000 / 60;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+
+                accumulator += dt;
+                const steps = Math.min(Math.floor(accumulator / fixedStep), 3);
+                accumulator -= steps * fixedStep;
+
+                for (let s = 0; s < steps; s++) {
+                    time += 0.015;
+                    const dtNorm = fixedStep / 1000 * 60;
+                    for (const jelly of jellies) {
+                        jelly.update(dtNorm, mouse, time);
+                    }
+                    updateSpores(dtNorm);
+                }
+
+                // 清除画布
+                ctx.fillStyle = '#0a0a18';
+                ctx.fillRect(0, 0, W, H);
+
+                // 绘制水母
+                for (const jelly of jellies) {
+                    jelly.draw(ctx, time);
+                }
+
+                // 绘制孢子
+                drawSpores(ctx);
+
+                // 鼠标光晕
+                drawCursorGlow(ctx);
+
+                requestAnimationFrame(animate);
+            }
+
+            // ─── 初始化水母 ────────────────────────────────────────────
+            function initJellies() {
+                jellies = [];
+                const count = maxJellies;
+                for (let i = 0; i < count; i++) {
+                    const x = W * (0.1 + Math.random() * 0.8);
+                    const y = H * (0.2 + Math.random() * 0.6);
+                    jellies.push(new Jelly(x, y));
+                }
+            }
+
+            // ─── 交互事件 ───────────────────────────────────────────────
+            function onMouseMove(e) {
+                mouse.px = mouse.x;
+                mouse.py = mouse.y;
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+                mouse.px = -9999;
+                mouse.py = -9999;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                // 释放孢子
+                createSpores(mouse.x, mouse.y, 15 + Math.floor(Math.random() * 15));
+                // 轻微色彩偏移
+                colorShift += 20 + Math.random() * 20;
+                if (colorShift > 80) colorShift = -20;
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.px = mouse.x;
+                    mouse.py = mouse.y;
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    createSpores(mouse.x, mouse.y, 15 + Math.floor(Math.random() * 15));
+                    colorShift += 20 + Math.random() * 20;
+                    if (colorShift > 80) colorShift = -20;
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+                mouse.px = -9999;
+                mouse.py = -9999;
+            }
+
+            function onResize() {
+                setupCanvas();
+                // 重新放置水母，避免全部聚集
+                initJellies();
+                spores = [];
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+                initJellies();
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#0a0a18';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+        })();
+    </script>
+</body>
+</html>

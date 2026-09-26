@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Frenet标架演化 · 曲率挠率编织 · 空间对偶曲线</title>
+    <style>
+        :root {
+            --bg: #05050f;
+            --gold: #d8a646;
+            --cyan: #3cbda5;
+            --rose: #da414f;
+            --text: #cfbf8c;
+            --text-dim: #897a58;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'SimSun', 'Noto Serif SC', 'Songti SC', serif;
+            -webkit-font-smoothing: antialiased;
+            height: 100vh;
+            width: 100vw;
+            cursor: default;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        #canvas-container {
+            position: fixed;
+            inset: 0;
+            z-index: 1;
+        }
+
+        canvas {
+            display: block;
+        }
+
+        #title-overlay {
+            position: fixed;
+            top: 1.7vh;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+        }
+
+        #title-overlay h1 {
+            font-size: clamp(1rem, 2.1vw, 1.55rem);
+            font-weight: 400;
+            letter-spacing: 0.16em;
+            color: #e2ce9a;
+            text-shadow: 0 0 40px rgba(216, 166, 70, 0.45), 0 0 80px rgba(216, 166, 70, 0.14);
+            margin: 0;
+            line-height: 1.35;
+        }
+
+        #title-overlay .subtitle {
+            font-size: clamp(0.47rem, 0.93vw, 0.66rem);
+            letter-spacing: 0.22em;
+            color: #a08d6c;
+            opacity: 0.62;
+            margin-top: 0.3vh;
+            font-style: italic;
+        }
+
+        #formula-overlay {
+            position: fixed;
+            bottom: 2.1vh;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+            background: rgba(5, 5, 15, 0.65);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            border: 1px solid rgba(140, 118, 84, 0.18);
+            border-radius: 16px;
+            padding: 1vh 2.4vw;
+            max-width: 95vw;
+        }
+
+        #formula-overlay .formula-main {
+            font-size: clamp(0.62rem, 1.3vw, 0.9rem);
+            color: #cdb886;
+            letter-spacing: 0.07em;
+            line-height: 1.6;
+            font-style: italic;
+        }
+
+        #formula-overlay .formula-detail {
+            font-size: clamp(0.42rem, 0.8vw, 0.58rem);
+            color: #8a7a5a;
+            letter-spacing: 0.1em;
+            margin-top: 0.25vh;
+            opacity: 0.7;
+        }
+
+        .accent-gold {
+            color: #d8a646;
+        }
+        .accent-cyan {
+            color: #3cbda5;
+        }
+        .accent-rose {
+            color: #da414f;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateX(-50%) translateY(7px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(-50%) translateY(0);
+            }
+        }
+        #title-overlay,
+        #formula-overlay {
+            animation: fadeIn 1.5s ease-out 0.3s both;
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+
+    <div id="title-overlay">
+        <h1>Frenet标架演化 · 曲率挠率编织 · 空间对偶曲线</h1>
+        <div class="subtitle">T′ = κN, N′ = −κT + τB, B′ = −τN &nbsp;·&nbsp; 球面对偶映射 &nbsp;·&nbsp; 曲率挠率流形</div>
+    </div>
+
+    <div id="formula-overlay">
+        <div class="formula-main">
+            <span class="accent-gold">γ(s)</span> = ∫<span class="accent-gold">T</span> ds
+            &nbsp;⊗&nbsp;
+            <span class="accent-cyan">γ̂</span> = R²·γ/|γ|²
+            &nbsp;⊗&nbsp;
+            <span class="accent-rose">τ(s)</span> → −τ(s)
+        </div>
+        <div class="formula-detail">
+            Frenet-Serret 曲线演化 &nbsp;·&nbsp; 三维反演对偶 &nbsp;·&nbsp; 挠率翻转变体 &nbsp;·&nbsp; 动态曲率挠率震荡
+        </div>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setClearColor(0x05050f, 1);
+        container.appendChild(renderer.domElement);
+
+        const camera = new THREE.PerspectiveCamera(54, window.innerWidth / window.innerHeight, 0.5, 30);
+        camera.position.set(2.6, 1.5, 7.5);
+        camera.lookAt(0, 0, 0);
+
+        // 颜色
+        const colorGold = new THREE.Color('#d8a646');
+        const colorCyan = new THREE.Color('#3cbda5');
+        const colorRose = new THREE.Color('#da414f');
+
+        // 球体约束半径
+        const CLAMP_RADIUS = 2.8;
+        const DUAL_RADIUS = 2.2; // 对偶球半径
+
+        // ==================== 背景星点 ====================
+        const starsGeom = new THREE.BufferGeometry();
+        const starCount = 210;
+        const starPos = new Float32Array(starCount * 3);
+        const starSizes = new Float32Array(starCount);
+        for (let i = 0; i < starCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const rad = 5.4 + Math.random() * 8.5;
+            starPos[i * 3] = rad * Math.sin(phi) * Math.cos(theta);
+            starPos[i * 3 + 1] = rad * Math.sin(phi) * Math.sin(theta);
+            starPos[i * 3 + 2] = rad * Math.cos(phi);
+            starSizes[i] = Math.random() * 1.8 + 0.28;
+        }
+        starsGeom.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+        starsGeom.setAttribute('size', new THREE.BufferAttribute(starSizes, 1));
+        const starsMat = new THREE.PointsMaterial({
+            color: 0x2e2618,
+            size: 0.02,
+            transparent: true,
+            opacity: 0.48,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            sizeAttenuation: true,
+        });
+        const stars = new THREE.Points(starsGeom, starsMat);
+        scene.add(stars);
+
+        // 极淡参考球壳
+        const refSphereGeom = new THREE.SphereGeometry(2.7, 52, 36);
+        const refSphereWire = new THREE.LineSegments(
+            new THREE.WireframeGeometry(refSphereGeom),
+            new THREE.LineBasicMaterial({ color: 0x17120c, transparent: true, opacity: 0.08, depthWrite: false })
+        );
+        scene.add(refSphereWire);
+
+        // 极淡参考环面
+        const refTorusGeom = new THREE.TorusGeometry(2.05, 0.6, 12, 32);
+        const refTorusWire = new THREE.LineSegments(
+            new THREE.WireframeGeometry(refTorusGeom),
+            new THREE.LineBasicMaterial({ color: 0x0f1517, transparent: true, opacity: 0.07, depthWrite: false })
+        );
+        refTorusWire.rotation.x = Math.PI / 2;
+        scene.add(refTorusWire);
+
+        // ==================== 数值积分Frenet曲线 ====================
+        // 使用RK4积分Frenet方程，给定曲率函数和挠率函数
+        function integrateFrenetCurve(initialPos, initialT, initialN, initialB, kappaFn, tauFn, sRange, steps) {
+            const points = [];
+            const ds = (sRange[1] - sRange[0]) / steps;
+            let pos = [...initialPos];
+            let T = [...initialT];
+            let N = [...initialN];
+            let B = [...initialB];
+            const totalSteps = Math.floor(steps);
+            for (let i = 0; i <= totalSteps; i++) {
+                // 记录当前点
+                points.push([...pos]);
+                const s = sRange[0] + i * ds;
+                const k = kappaFn(s);
+                const tau = tauFn(s);
+
+                // RK4步进T, N, B, pos
+                function frenetDeriv(T, N, B, k, tau) {
+                    const dT = [k * N[0], k * N[1], k * N[2]];
+                    const dN = [-k * T[0] + tau * B[0], -k * T[1] + tau * B[1], -k * T[2] + tau * B[2]];
+                    const dB = [-tau * N[0], -tau * N[1], -tau * N[2]];
+                    return { dT, dN, dB };
+                }
+
+                const f0 = frenetDeriv(T, N, B, k, tau);
+                const T1 = [T[0] + ds * 0.5 * f0.dT[0], T[1] + ds * 0.5 * f0.dT[1], T[2] + ds * 0.5 * f0.dT[2]];
+                const N1 = [N[0] + ds * 0.5 * f0.dN[0], N[1] + ds * 0.5 * f0.dN[1], N[2] + ds * 0.5 * f0.dN[2]];
+                const B1 = [B[0] + ds * 0.5 * f0.dB[0], B[1] + ds * 0.5 * f0.dB[1], B[2] + ds * 0.5 * f0.dB[2]];
+                const f1 = frenetDeriv(T1, N1, B1, k, tau);
+
+                const T2 = [T[0] + ds * 0.5 * f1.dT[0], T[1] + ds * 0.5 * f1.dT[1], T[2] + ds * 0.5 * f1.dT[2]];
+                const N2 = [N[0] + ds * 0.5 * f1.dN[0], N[1] + ds * 0.5 * f1.dN[1], N[2] + ds * 0.5 * f1.dN[2]];
+                const B2 = [B[0] + ds * 0.5 * f1.dB[0], B[1] + ds * 0.5 * f1.dB[1], B[2] + ds * 0.5 * f1.dB[2]];
+                const f2 = frenetDeriv(T2, N2, B2, k, tau);
+
+                const T3 = [T[0] + ds * f2.dT[0], T[1] + ds * f2.dT[1], T[2] + ds * f2.dT[2]];
+                const N3 = [N[0] + ds * f2.dN[0], N[1] + ds * f2.dN[1], N[2] + ds * f2.dN[2]];
+                const B3 = [B[0] + ds * f2.dB[0], B[1] + ds * f2.dB[1], B[2] + ds * f2.dB[2]];
+                const f3 = frenetDeriv(T3, N3, B3, k, tau);
+
+                // 更新T, N, B
+                T = [
+                    T[0] + ds / 6 * (f0.dT[0] + 2 * f1.dT[0] + 2 * f2.dT[0] + f3.dT[0]),
+                    T[1] + ds / 6 * (f0.dT[1] + 2 * f1.dT[1] + 2 * f2.dT[1] + f3.dT[1]),
+                    T[2] + ds / 6 * (f0.dT[2] + 2 * f1.dT[2] + 2 * f2.dT[2] + f3.dT[2])
+                ];
+                N = [
+                    N[0] + ds / 6 * (f0.dN[0] + 2 * f1.dN[0] + 2 * f2.dN[0] + f3.dN[0]),
+                    N[1] + ds / 6 * (f0.dN[1] + 2 * f1.dN[1] + 2 * f2.dN[1] + f3.dN[1]),
+                    N[2] + ds / 6 * (f0.dN[2] + 2 * f1.dN[2] + 2 * f2.dN[2] + f3.dN[2])
+                ];
+                B = [
+                    B[0] + ds / 6 * (f0.dB[0] + 2 * f1.dB[0] + 2 * f2.dB[0] + f3.dB[0]),
+                    B[1] + ds / 6 * (f0.dB[1] + 2 * f1.dB[1] + 2 * f2.dB[1] + f3.dB[1]),
+                    B[2] + ds / 6 * (f0.dB[2] + 2 * f1.dB[2] + 2 * f2.dB[2] + f3.dB[2])
+                ];
+                // 归一化
+                const normT = Math.sqrt(T[0] ** 2 + T[1] ** 2 + T[2] ** 2);
+                if (normT > 1e-9) { T[0] /= normT;
+                    T[1] /= normT;
+                    T[2] /= normT; }
+                const normN = Math.sqrt(N[0] ** 2 + N[1] ** 2 + N[2] ** 2);
+                if (normN > 1e-9) { N[0] /= normN;
+                    N[1] /= normN;
+                    N[2] /= normN; }
+                // 重新正交化
+                const Bc = [
+                    T[1] * N[2] - T[2] * N[1],
+                    T[2] * N[0] - T[0] * N[2],
+                    T[0] * N[1] - T[1] * N[0]
+                ];
+                B = Bc;
+                const Nc = [
+                    B[1] * T[2] - B[2] * T[1],
+                    B[2] * T[0] - B[0] * T[2],
+                    B[0] * T[1] - B[1] * T[0]
+                ];
+                N = Nc;
+
+                // 更新位置
+                pos = [
+                    pos[0] + ds * T[0],
+                    pos[1] + ds * T[1],
+                    pos[2] + ds * T[2]
+                ];
+                // 钳制到球内
+                const r = Math.sqrt(pos[0] ** 2 + pos[1] ** 2 + pos[2] ** 2);
+                if (r > CLAMP_RADIUS && r > 0.001) {
+                    const scl = CLAMP_RADIUS / r;
+                    pos[0] *= scl;
+                    pos[1] *= scl;
+                    pos[2] *= scl;
+                }
+            }
+            return points;
+        }
+
+        // 对偶映射: 球面反演 R^2 * x/|x|^2
+        function dualPoint(point, radius = DUAL_RADIUS) {
+            const r2 = point[0] ** 2 + point[1] ** 2 + point[2] ** 2;
+            if (r2 < 1e-8) return [...point];
+            const scale = (radius * radius) / r2;
+            return [point[0] * scale, point[1] * scale, point[2] * scale];
+        }
+
+        // ==================== 曲线系统 ====================
+        const allCurves = [];
+        const POINTS_PER_CURVE = 240; // 每条曲线采样点数
+
+        function createCurve(color) {
+            const geom = new THREE.BufferGeometry();
+            const positions = new Float32Array(POINTS_PER_CURVE * 3);
+            for (let i = 0; i < POINTS_PER_CURVE; i++) {
+                positions[i * 3] = (Math.random() - 0.5) * 0.4;
+                positions[i * 3 + 1] = (Math.random() - 0.5) * 0.4;
+                positions[i * 3 + 2] = (Math.random() - 0.5) * 0.4;
+            }
+            geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            const material = new THREE.LineBasicMaterial({
+                color: color,
+                linewidth: 1,
+                transparent: true,
+                opacity: 0.84,
+                depthTest: true,
+                depthWrite: true,
+            });
+            const line = new THREE.Line(geom, material);
+            scene.add(line);
+            const obj = { line, geometry: geom, positions };
+            allCurves.push(obj);
+            return obj;
+        }
+
+        // 生成种子标架 (随机单位正交)
+        function randomFrenetFrame() {
+            // 随机单位向量作为T
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const T = [Math.sin(phi) * Math.cos(theta), Math.sin(phi) * Math.sin(theta), Math.cos(phi)];
+            // 生成一个与T正交的单位向量N
+            let N;
+            if (Math.abs(T[0]) < 0.9) {
+                N = [-T[1], T[0], 0];
+            } else {
+                N = [0, -T[2], T[1]];
+            }
+            const nNorm = Math.sqrt(N[0] ** 2 + N[1] ** 2 + N[2] ** 2);
+            N = [N[0] / nNorm, N[1] / nNorm, N[2] / nNorm];
+            const B = [T[1] * N[2] - T[2] * N[1], T[2] * N[0] - T[0] * N[2], T[0] * N[1] - T[1] * N[0]];
+            return { T, N, B };
+        }
+
+        // 创建多组曲线（原始、对偶、挠率翻转）
+        const groupCounts = { gold: 18, cyan: 18, rose: 18 };
+        const curveConfigs = [];
+
+        // 金色组：原始Frenet曲线
+        for (let k = 0; k < groupCounts.gold; k++) {
+            const seed = [((k / groupCounts.gold) - 0.5) * 1.6, Math.sin(k * 0.7) * 1.2, Math.cos(k * 0.9) * 1.3];
+            const frame = randomFrenetFrame();
+            curveConfigs.push({
+                color: colorGold,
+                seed,
+                frame,
+                dual: false,
+                flipTau: false,
+            });
+        }
+        // 青色组：对偶曲线 (球面反演)
+        for (let k = 0; k < groupCounts.cyan; k++) {
+            const seed = [((k / groupCounts.cyan) - 0.5) * 1.5, Math.sin(k * 0.8 + 1) * 1.1, Math.cos(k * 0.7 + 2) * 1.2];
+            const frame = randomFrenetFrame();
+            curveConfigs.push({
+                color: colorCyan,
+                seed,
+                frame,
+                dual: true,
+                flipTau: false,
+            });
+        }
+        // 玫红组：挠率翻转曲线
+        for (let k = 0; k < groupCounts.rose; k++) {
+            const seed = [((k / groupCounts.rose) - 0.5) * 1.55, Math.sin(k * 0.85 + 3) * 1.2, Math.cos(k * 0.75 + 1) * 1.3];
+            const frame = randomFrenetFrame();
+            curveConfigs.push({
+                color: colorRose,
+                seed,
+                frame,
+                dual: false,
+                flipTau: true,
+            });
+        }
+
+        // 创建曲线对象并绑定更新函数
+        for (const cfg of curveConfigs) {
+            const curve = createCurve(cfg.color);
+            curve.cfg = cfg;
+        }
+
+        console.log(`✅ 曲线总数: ${allCurves.length} (金:${groupCounts.gold}, 青:${groupCounts.cyan}, 玫红:${groupCounts.rose})`);
+
+        // 动态曲率与挠率生成函数（时间t作为额外参数，在更新时传入）
+        function makeKappaTau(t, kIndex) {
+            // 曲率：0.6 + 0.35 sin混合
+            const kappa = (s) => {
+                return 0.65 + 0.4 * Math.sin(s * 1.7 + t * 0.45 + kIndex) * Math.cos(s * 0.9 - t * 0.3);
+            };
+            // 挠率：0.4 + 0.45 cos混合
+            const tau = (s, flip) => {
+                const val = 0.5 + 0.5 * Math.cos(s * 2.1 - t * 0.55 + kIndex) * Math.sin(s * 1.3 + t * 0.4);
+                return flip ? -val : val;
+            };
+            return { kappa, tau };
+        }
+
+        // 更新所有曲线
+        function updateAllCurves(t) {
+            for (let c = 0; c < allCurves.length; c++) {
+                try {
+                    const curve = allCurves[c];
+                    const cfg = curve.cfg;
+                    const { seed, frame, dual, flipTau } = cfg;
+                    const { kappa, tau } = makeKappaTau(t, c);
+
+                    // 积分曲线
+                    const rawPoints = integrateFrenetCurve(
+                        seed,
+                        frame.T,
+                        frame.N,
+                        frame.B,
+                        kappa,
+                        (s) => tau(s, flipTau),
+                        [-3.0, 3.0],
+                        POINTS_PER_CURVE - 1
+                    );
+
+                    // 应用变换（对偶/钳制）
+                    const finalPoints = rawPoints.map(pt => {
+                        let p = dual ? dualPoint(pt, DUAL_RADIUS) : pt;
+                        // 整体钳制到球内
+                        const r = Math.sqrt(p[0] ** 2 + p[1] ** 2 + p[2] ** 2);
+                        const maxR = dual ? 2.6 : 2.8;
+                        if (r > maxR && r > 0.001) {
+                            const scl = maxR / r;
+                            p = [p[0] * scl, p[1] * scl, p[2] * scl];
+                        }
+                        return p;
+                    });
+
+                    // 写入顶点数组
+                    const positions = curve.positions;
+                    for (let i = 0; i < POINTS_PER_CURVE; i++) {
+                        const pt = finalPoints[Math.min(i, finalPoints.length - 1)];
+                        positions[i * 3] = pt[0];
+                        positions[i * 3 + 1] = pt[1];
+                        positions[i * 3 + 2] = pt[2];
+                    }
+                    curve.geometry.attributes.position.needsUpdate = true;
+                } catch (e) {
+                    console.warn(`曲线${c}更新异常, 已跳过`, e);
+                }
+            }
+        }
+
+        // ==================== 流动粒子 ====================
+        const particleCount = 22;
+        const particlesGeom = new THREE.BufferGeometry();
+        const particlePosArr = new Float32Array(particleCount * 3);
+        const particleColArr = new Float32Array(particleCount * 3);
+        const particleData = [];
+        for (let i = 0; i < particleCount; i++) {
+            const ci = i % allCurves.length;
+            particleData.push({
+                curveIndex: ci,
+                progress: Math.random(),
+                speed: 0.00055 + Math.random() * 0.0023,
+            });
+            let col;
+            if (i < 8) col = colorGold.clone();
+            else if (i < 15) col = colorCyan.clone();
+            else col = colorRose.clone();
+            particleColArr[i * 3] = col.r;
+            particleColArr[i * 3 + 1] = col.g;
+            particleColArr[i * 3 + 2] = col.b;
+            particlePosArr[i * 3] = (Math.random() - 0.5) * 0.3;
+            particlePosArr[i * 3 + 1] = (Math.random() - 0.5) * 0.3;
+            particlePosArr[i * 3 + 2] = (Math.random() - 0.5) * 0.3;
+        }
+        particlesGeom.setAttribute('position', new THREE.BufferAttribute(particlePosArr, 3));
+        particlesGeom.setAttribute('color', new THREE.BufferAttribute(particleColArr, 3));
+        const particlesMat = new THREE.PointsMaterial({
+            size: 0.05,
+            vertexColors: true,
+            transparent: true,
+            opacity: 0.85,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            sizeAttenuation: true,
+        });
+        const particlesMesh = new THREE.Points(particlesGeom, particlesMat);
+        scene.add(particlesMesh);
+
+        function updateParticles() {
+            try {
+                for (let p = 0; p < particleCount; p++) {
+                    const pd = particleData[p];
+                    pd.progress += pd.speed;
+                    if (pd.progress >= 1.0) pd.progress -= 1.0;
+                    if (pd.progress < 0) pd.progress += 1.0;
+                    const curveObj = allCurves[pd.curveIndex];
+                    if (!curveObj || !curveObj.positions) continue;
+                    const posArr = curveObj.positions;
+                    const floatIdx = pd.progress * (POINTS_PER_CURVE - 1);
+                    const idx0 = Math.floor(floatIdx);
+                    const idx1 = Math.min(idx0 + 1, POINTS_PER_CURVE - 1);
+                    const frac = Math.max(0, Math.min(1, floatIdx - idx0));
+                    const i0 = idx0 * 3,
+                        i1 = idx1 * 3;
+                    particlePosArr[p * 3] = posArr[i0] + (posArr[i1] - posArr[i0]) * frac;
+                    particlePosArr[p * 3 + 1] = posArr[i0 + 1] + (posArr[i1 + 1] - posArr[i0 + 1]) * frac;
+                    particlePosArr[p * 3 + 2] = posArr[i0 + 2] + (posArr[i1 + 2] - posArr[i0 + 2]) * frac;
+                }
+                particlesGeom.attributes.position.needsUpdate = true;
+            } catch (e) {
+                console.warn('粒子更新异常, 已跳过', e);
+            }
+        }
+
+        // ==================== 极度健壮的动画循环 ====================
+        const clock = new THREE.Clock();
+        let animationTime = 0;
+        let frameCount = 0;
+        let lastLogTime = performance.now();
+
+        function animate() {
+            requestAnimationFrame(animate);
+            try {
+                let dt = clock.getDelta();
+                if (dt <= 0 || dt > 0.25 || !isFinite(dt)) dt = 0.016;
+                animationTime += dt;
+                frameCount++;
+
+                const now = performance.now();
+                if (now - lastLogTime > 5000) {
+                    const elapsed = (now - lastLogTime) / 1000;
+                    const fps = Math.round(frameCount / elapsed);
+                    console.log(`🔄 运行中 | FPS: ${fps} | 时间: ${animationTime.toFixed(1)}s | dt: ${(dt*1000).toFixed(1)}ms`);
+                    frameCount = 0;
+                    lastLogTime = now;
+                }
+
+                updateAllCurves(animationTime);
+                updateParticles();
+
+                const breathe = 1 + 0.05 * Math.sin(animationTime * 0.42) * Math.cos(animationTime * 0.3);
+                refSphereWire.scale.setScalar(breathe);
+                refSphereWire.rotation.x += dt * 0.06;
+                refSphereWire.rotation.y += dt * 0.05;
+
+                refTorusWire.rotation.z += dt * 0.065;
+                const torBreathe = 1 + 0.06 * Math.sin(animationTime * 0.45) * Math.cos(animationTime * 0.34);
+                refTorusWire.scale.setScalar(torBreathe);
+
+                const camH = animationTime * 0.1;
+                const camV = 0.33 + 0.18 * Math.sin(animationTime * 0.15);
+                const camD = 7.2 + 0.65 * Math.sin(animationTime * 0.2) * Math.cos(animationTime * 0.26);
+                camera.position.set(
+                    camD * Math.cos(camV) * Math.sin(camH),
+                    camD * Math.sin(camV),
+                    camD * Math.cos(camV) * Math.cos(camH)
+                );
+                camera.lookAt(0.06 * Math.sin(animationTime * 0.1), 0.03 * Math.cos(animationTime * 0.13), 0);
+
+                stars.rotation.y += dt * 0.014;
+                stars.rotation.x += dt * 0.01;
+
+                renderer.render(scene, camera);
+            } catch (e) {
+                console.error('动画主循环异常, 循环仍继续:', e);
+            }
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }, { passive: true });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }, 150), { passive: true });
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') {
+                clock.getDelta();
+            }
+        });
+
+        // ==================== 启动 ====================
+        console.log('🚀 Frenet标架·对偶曲线动画初始化... 预渲染第一帧');
+        updateAllCurves(0);
+        updateParticles();
+        renderer.render(scene, camera);
+        clock.start();
+        animationTime = 0;
+        requestAnimationFrame(animate);
+        console.log('✅ 动画循环已启动，54条空间曲线在曲率挠率驱动下持续编织');
+    </script>
+</body>
+</html>

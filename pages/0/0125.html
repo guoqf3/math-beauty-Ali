@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>复动力外射线编织 · Julia集边界直觉 · 共形投影</title>
+    <style>
+        :root {
+            --bg: #04040e;
+            --gold: #d6a745;
+            --cyan: #3dbca5;
+            --rose: #d94050;
+            --text: #cebc8a;
+            --text-dim: #887a58;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'SimSun', 'Noto Serif SC', 'Songti SC', serif;
+            -webkit-font-smoothing: antialiased;
+            height: 100vh;
+            width: 100vw;
+            cursor: default;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+        #canvas-container {
+            position: fixed;
+            inset: 0;
+            z-index: 1;
+        }
+        canvas {
+            display: block;
+        }
+        #title-overlay {
+            position: fixed;
+            top: 1.6vh;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+        }
+        #title-overlay h1 {
+            font-size: clamp(1rem, 2.1vw, 1.55rem);
+            font-weight: 400;
+            letter-spacing: 0.15em;
+            color: #e2cf9c;
+            text-shadow: 0 0 38px rgba(214, 167, 69, 0.45), 0 0 78px rgba(214, 167, 69, 0.14);
+            margin: 0;
+            line-height: 1.35;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.44rem, 0.9vw, 0.62rem);
+            letter-spacing: 0.22em;
+            color: #a08d6a;
+            opacity: 0.6;
+            margin-top: 0.3vh;
+            font-style: italic;
+        }
+        #formula-overlay {
+            position: fixed;
+            bottom: 2.0vh;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+            background: rgba(4, 4, 14, 0.62);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            border: 1px solid rgba(140, 118, 84, 0.17);
+            border-radius: 16px;
+            padding: 1vh 2.2vw;
+            max-width: 95vw;
+        }
+        #formula-overlay .formula-main {
+            font-size: clamp(0.58rem, 1.25vw, 0.85rem);
+            color: #cdb886;
+            letter-spacing: 0.06em;
+            line-height: 1.6;
+            font-style: italic;
+        }
+        #formula-overlay .formula-detail {
+            font-size: clamp(0.38rem, 0.75vw, 0.54rem);
+            color: #8a7a58;
+            letter-spacing: 0.09em;
+            margin-top: 0.25vh;
+            opacity: 0.7;
+        }
+        .accent-gold {
+            color: #d6a745;
+        }
+        .accent-cyan {
+            color: #3dbca5;
+        }
+        .accent-rose {
+            color: #d94050;
+        }
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateX(-50%) translateY(6px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(-50%) translateY(0);
+            }
+        }
+        #title-overlay,
+        #formula-overlay {
+            animation: fadeIn 1.4s ease-out 0.25s both;
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="title-overlay">
+        <h1>复动力外射线编织 · Julia集边界直觉 · 共形投影</h1>
+        <div class="subtitle">Böttcher坐标 φ: ℂ̂\K → ℂ̂\𝔻 &nbsp;·&nbsp; 射线 R(θ)={φ⁻¹(re^{iθ})} &nbsp;·&nbsp; 动态Möbius变换</div>
+    </div>
+    <div id="formula-overlay">
+        <div class="formula-main">
+            <span class="accent-gold">R(θ₁) 族</span>
+            ⊗ <span class="accent-cyan">R(θ₂) 族</span>
+            ⊗ <span class="accent-rose">R(θ₃) 族</span>
+        </div>
+        <div class="formula-detail">
+            外射线逼近 Julia 集边界 · 参数 c(t) 漂移 · 球极逆投影 · 三维空间编织
+        </div>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+            }
+        }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ---------- 场景 ----------
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setClearColor(0x04040e, 1);
+        container.appendChild(renderer.domElement);
+
+        const camera = new THREE.PerspectiveCamera(54, window.innerWidth / window.innerHeight, 0.4, 32);
+        camera.position.set(2.3, 1.4, 7.8);
+        camera.lookAt(0, 0, 0);
+
+        const colorGold = new THREE.Color('#d6a745');
+        const colorCyan = new THREE.Color('#3dbca5');
+        const colorRose = new THREE.Color('#d94050');
+        const CLAMP_RADIUS = 2.75;
+
+        // 背景星点
+        const starsGeom = new THREE.BufferGeometry();
+        const starCount = 140;
+        const starPos = new Float32Array(starCount * 3);
+        const starSizes = new Float32Array(starCount);
+        for (let i = 0; i < starCount; i++) {
+            const th = Math.random() * Math.PI * 2;
+            const ph = Math.acos(2 * Math.random() - 1);
+            const rad = 5.4 + Math.random() * 8.4;
+            starPos[i * 3] = rad * Math.sin(ph) * Math.cos(th);
+            starPos[i * 3 + 1] = rad * Math.sin(ph) * Math.sin(th);
+            starPos[i * 3 + 2] = rad * Math.cos(ph);
+            starSizes[i] = Math.random() * 1.5 + 0.2;
+        }
+        starsGeom.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+        starsGeom.setAttribute('size', new THREE.BufferAttribute(starSizes, 1));
+        const starsMat = new THREE.PointsMaterial({
+            color: 0x2e2618,
+            size: 0.018,
+            transparent: true,
+            opacity: 0.45,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            sizeAttenuation: true,
+        });
+        const stars = new THREE.Points(starsGeom, starsMat);
+        scene.add(stars);
+
+        const refSphereGeom = new THREE.SphereGeometry(2.6, 50, 34);
+        const refSphereWire = new THREE.LineSegments(
+            new THREE.WireframeGeometry(refSphereGeom),
+            new THREE.LineBasicMaterial({ color: 0x17120c, transparent: true, opacity: 0.06, depthWrite: false })
+        );
+        scene.add(refSphereWire);
+        const refTorusGeom = new THREE.TorusGeometry(2.0, 0.55, 10, 28);
+        const refTorusWire = new THREE.LineSegments(
+            new THREE.WireframeGeometry(refTorusGeom),
+            new THREE.LineBasicMaterial({ color: 0x0f1416, transparent: true, opacity: 0.05, depthWrite: false })
+        );
+        refTorusWire.rotation.x = Math.PI / 2;
+        scene.add(refTorusWire);
+
+        // ---------- 工具函数 ----------
+        function clampPt(p) {
+            let [x, y, z] = p;
+            if (!Number.isFinite(x)) x = 0;
+            if (!Number.isFinite(y)) y = 0;
+            if (!Number.isFinite(z)) z = 0;
+            const r = Math.sqrt(x * x + y * y + z * z);
+            if (r > CLAMP_RADIUS && r > 0.001) {
+                const s = CLAMP_RADIUS / r;
+                return [x * s, y * s, z * s];
+            }
+            return [x, y, z];
+        }
+
+        // 球极逆投影（半径2.5的球）
+        function invStereo(x, y) {
+            const r2 = x * x + y * y;
+            const denom = 1 + r2 / (2.5 * 2.5);
+            return [(2 * x) / denom, (2 * y) / denom, ((1 - r2 / (2.5 * 2.5)) * 2.5) / denom];
+        }
+
+        function so3Matrix(t) {
+            const angle = t * 0.25;
+            const ax = Math.cos(t * 0.17) * 0.55;
+            const ay = Math.sin(t * 0.13) * 0.45;
+            const az = Math.cos(t * 0.19 + 1.3) * 0.5;
+            const n = Math.sqrt(ax * ax + ay * ay + az * az) || 1;
+            const ux = ax / n,
+                uy = ay / n,
+                uz = az / n;
+            const c = Math.cos(angle),
+                s = Math.sin(angle),
+                t1 = 1 - c;
+            return [
+                c + ux * ux * t1,
+                ux * uy * t1 - uz * s,
+                ux * uz * t1 + uy * s,
+                uy * ux * t1 + uz * s,
+                c + uy * uy * t1,
+                uy * uz * t1 - ux * s,
+                uz * ux * t1 - uy * s,
+                uz * uy * t1 + ux * s,
+                c + uz * uz * t1,
+            ];
+        }
+
+        function applyRot(pt, R) {
+            return [
+                R[0] * pt[0] + R[1] * pt[1] + R[2] * pt[2],
+                R[3] * pt[0] + R[4] * pt[1] + R[5] * pt[2],
+                R[6] * pt[0] + R[7] * pt[1] + R[8] * pt[2],
+            ];
+        }
+
+        // 复数运算
+        function cpx(a, b) { return { re: a, im: b }; }
+
+        function cpxMul(u, v) { return cpx(u.re * v.re - u.im * v.im, u.re * v.im + u.im * v.re); }
+
+        function cpxAdd(u, v) { return cpx(u.re + v.re, u.im + v.im); }
+
+        function cpxExp(th) { return cpx(Math.cos(th), Math.sin(th)); }
+
+        function cpxAbs2(z) { return z.re * z.re + z.im * z.im; }
+
+        // Möbius变换: z -> (a z + b) / (c z + d)
+        function mobius(z, a, b, c, d) {
+            const num = cpxAdd(cpxMul(a, z), b);
+            const den = cpxAdd(cpxMul(c, z), d);
+            const d2 = cpxAbs2(den);
+            return cpx((num.re * den.re + num.im * den.im) / d2, (num.im * den.re - num.re * den.im) / d2);
+        }
+
+        // 生成一条外射线（逼近无限远到单位圆附近）
+        function sampleRay(theta, a, b, c, d, nPoints) {
+            const pts = [];
+            for (let i = 0; i < nPoints; i++) {
+                const tParam = (i / (nPoints - 1)) * 1.2 + 0.4; // 范围 [0.4, 1.6] 映射到外部
+                const r = 2.5 * Math.exp(-1.2 * tParam);
+                const angle = theta + 0.5 * Math.sin(3.0 * tParam);
+                const z0 = cpx(r * Math.cos(angle), r * Math.sin(angle));
+                const z = mobius(z0, a, b, c, d);
+                pts.push(z);
+            }
+            return pts;
+        }
+
+        // ---------- 曲线系统 ----------
+        const POINTS_PER_RAY = 70;
+        const allCurves = [];
+
+        function createCurve(color) {
+            const geom = new THREE.BufferGeometry();
+            const positions = new Float32Array(POINTS_PER_RAY * 3);
+            geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            const mat = new THREE.LineBasicMaterial({
+                color,
+                linewidth: 1,
+                transparent: true,
+                opacity: 0.82,
+                depthTest: true,
+                depthWrite: true,
+            });
+            const line = new THREE.Line(geom, mat);
+            scene.add(line);
+            const obj = { line, geom, positions, updateFn: null };
+            allCurves.push(obj);
+            return obj;
+        }
+
+        // 生成三族射线（金、青、玫红），每族不同Möbius参数和基础角度分布
+        function buildRayFamily(count, baseTheta, aFunc, bFunc, cFunc, dFunc, color) {
+            for (let k = 0; k < count; k++) {
+                const thetaBase = baseTheta + (k / count) * Math.PI * 2;
+                const curve = createCurve(color);
+                curve.thetaBase = thetaBase;
+                curve.aFunc = aFunc;
+                curve.bFunc = bFunc;
+                curve.cFunc = cFunc;
+                curve.dFunc = dFunc;
+                curve.updateFn = (t) => {
+                    const positions = curve.positions;
+                    const a = curve.aFunc(t, k);
+                    const b = curve.bFunc(t, k);
+                    const c = curve.cFunc(t, k);
+                    const d = curve.dFunc(t, k);
+                    const theta = curve.thetaBase + t * 0.1;
+                    const pts = sampleRay(theta, a, b, c, d, POINTS_PER_RAY);
+                    const R = so3Matrix(t);
+                    for (let i = 0; i < POINTS_PER_RAY; i++) {
+                        const p2 = invStereo(pts[i].re, pts[i].im);
+                        let p = applyRot(p2, R);
+                        p = clampPt(p);
+                        positions[i * 3] = p[0];
+                        positions[i * 3 + 1] = p[1];
+                        positions[i * 3 + 2] = p[2];
+                    }
+                    curve.geom.attributes.position.needsUpdate = true;
+                };
+            }
+        }
+
+        // 定义三族不同的Möbius参数函数（随时间变化）
+        const goldAFn = (t, k) => cpx(1.2 * Math.cos(t * 0.3 + k * 0.2), 0.3 * Math.sin(t * 0.25));
+        const goldBFn = (t, k) => cpx(-0.2 * Math.sin(t * 0.4), 0.1 * Math.cos(t * 0.35 + k));
+        const goldCFn = (t, k) => cpx(0.1 * Math.cos(t * 0.5), -0.15 * Math.sin(t * 0.45));
+        const goldDFn = (t, k) => cpx(1.1 + 0.2 * Math.cos(t * 0.2), 0.1 * Math.sin(t * 0.22));
+
+        const cyanAFn = (t, k) => cpx(0.9 * Math.cos(t * 0.22 + 1), 0.4 * Math.sin(t * 0.35 + k * 0.3));
+        const cyanBFn = (t, k) => cpx(0.15 * Math.sin(t * 0.3 + k), 0.05 * Math.cos(t * 0.28));
+        const cyanCFn = (t, k) => cpx(-0.1 * Math.sin(t * 0.42), 0.2 * Math.cos(t * 0.38 + k * 0.2));
+        const cyanDFn = (t, k) => cpx(1.0 + 0.15 * Math.cos(t * 0.25 + k), 0.05 * Math.sin(t * 0.2));
+
+        const roseAFn = (t, k) => cpx(1.0 * Math.cos(t * 0.27), 0.35 * Math.sin(t * 0.33 + k * 0.25));
+        const roseBFn = (t, k) => cpx(-0.1 * Math.cos(t * 0.35), 0.2 * Math.sin(t * 0.3 + k));
+        const roseCFn = (t, k) => cpx(0.05 * Math.sin(t * 0.48), -0.1 * Math.cos(t * 0.44 + k));
+        const roseDFn = (t, k) => cpx(0.95 + 0.25 * Math.sin(t * 0.18 + k * 0.1), 0.1 * Math.cos(t * 0.26));
+
+        buildRayFamily(25, 0.0, goldAFn, goldBFn, goldCFn, goldDFn, colorGold);
+        buildRayFamily(25, Math.PI / 3, cyanAFn, cyanBFn, cyanCFn, cyanDFn, colorCyan);
+        buildRayFamily(25, 2 * Math.PI / 3, roseAFn, roseBFn, roseCFn, roseDFn, colorRose);
+
+        console.log(`✅ 外射线总数: ${allCurves.length}`);
+
+        // ---------- 流动粒子 ----------
+        const particleCount = 22;
+        const particlesGeom = new THREE.BufferGeometry();
+        const particlePosArr = new Float32Array(particleCount * 3);
+        const particleColArr = new Float32Array(particleCount * 3);
+        const particleData = [];
+        for (let i = 0; i < particleCount; i++) {
+            particleData.push({
+                curveIndex: i % allCurves.length,
+                progress: Math.random(),
+                speed: 0.0005 + Math.random() * 0.0025,
+            });
+            const col = i < 8 ? colorGold : i < 15 ? colorCyan : colorRose;
+            particleColArr[i * 3] = col.r;
+            particleColArr[i * 3 + 1] = col.g;
+            particleColArr[i * 3 + 2] = col.b;
+        }
+        particlesGeom.setAttribute('position', new THREE.BufferAttribute(particlePosArr, 3));
+        particlesGeom.setAttribute('color', new THREE.BufferAttribute(particleColArr, 3));
+        const particlesMat = new THREE.PointsMaterial({
+            size: 0.048,
+            vertexColors: true,
+            transparent: true,
+            opacity: 0.84,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            sizeAttenuation: true,
+        });
+        const particlesMesh = new THREE.Points(particlesGeom, particlesMat);
+        scene.add(particlesMesh);
+
+        function updateParticles() {
+            for (let p = 0; p < particleCount; p++) {
+                const pd = particleData[p];
+                pd.progress += pd.speed;
+                if (pd.progress >= 1.0) pd.progress -= 1.0;
+                if (pd.progress < 0) pd.progress += 1.0;
+                const curveObj = allCurves[pd.curveIndex];
+                if (!curveObj || !curveObj.positions) continue;
+                const posArr = curveObj.positions;
+                const floatIdx = pd.progress * (POINTS_PER_RAY - 1);
+                const idx0 = Math.floor(floatIdx);
+                const idx1 = Math.min(idx0 + 1, POINTS_PER_RAY - 1);
+                const frac = Math.max(0, Math.min(1, floatIdx - idx0));
+                const i0 = idx0 * 3,
+                    i1 = idx1 * 3;
+                particlePosArr[p * 3] = posArr[i0] + (posArr[i1] - posArr[i0]) * frac;
+                particlePosArr[p * 3 + 1] = posArr[i0 + 1] + (posArr[i1 + 1] - posArr[i0 + 1]) * frac;
+                particlePosArr[p * 3 + 2] = posArr[i0 + 2] + (posArr[i1 + 2] - posArr[i0 + 2]) * frac;
+            }
+            particlesGeom.attributes.position.needsUpdate = true;
+        }
+
+        // ---------- 防御性动画循环（绝对时间） ----------
+        const startTime = performance.now();
+        let frameCount = 0,
+            lastLogTime = startTime;
+
+        function animate(nowTS) {
+            requestAnimationFrame(animate);
+            try {
+                const now = nowTS || performance.now();
+                const elapsed = (now - startTime) / 1000;
+                frameCount++;
+                if (now - lastLogTime > 5000) {
+                    console.log(`🔄 运行中 | FPS:${Math.round(frameCount/((now-lastLogTime)/1000))} | 时间:${elapsed.toFixed(1)}s`);
+                    frameCount = 0;
+                    lastLogTime = now;
+                }
+
+                for (const curve of allCurves) {
+                    try { if (curve.updateFn) curve.updateFn(elapsed); } catch (e) {}
+                }
+                updateParticles();
+
+                const breathe = 1 + 0.04 * Math.sin(elapsed * 0.38);
+                refSphereWire.scale.setScalar(breathe);
+                refSphereWire.rotation.x += 0.00085;
+                refSphereWire.rotation.y += 0.00072;
+                refTorusWire.rotation.z += 0.00082;
+                refTorusWire.scale.setScalar(1 + 0.05 * Math.sin(elapsed * 0.43));
+
+                const camH = elapsed * 0.09;
+                const camV = 0.32 + 0.18 * Math.sin(elapsed * 0.16);
+                const camD = 7.5 + 0.6 * Math.sin(elapsed * 0.19);
+                camera.position.set(camD * Math.cos(camV) * Math.sin(camH), camD * Math.sin(camV), camD * Math.cos(camV) * Math.cos(camH));
+                camera.lookAt(0, 0, 0);
+                stars.rotation.y += 0.0002;
+                renderer.render(scene, camera);
+            } catch (e) { console.error('动画循环错误', e); }
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }, { passive: true });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }, 150), { passive: true });
+
+        // 启动
+        console.log('🚀 复动力外射线动画初始化...');
+        for (const curve of allCurves) { try { if (curve.updateFn) curve.updateFn(0); } catch (e) {} }
+        updateParticles();
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+        console.log('✅ 动画循环已启动（绝对时间驱动，永不停止）');
+    </script>
+</body>
+</html>

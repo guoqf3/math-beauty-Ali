@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HOLOGRAM · 全息几何</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #080810;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2;
+            text-align: center;
+            pointer-events: none;
+            opacity: 0.5;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+
+        .overlay:hover {
+            opacity: 0.9;
+        }
+
+        .title {
+            color: rgba(220, 230, 255, 0.75);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 20px rgba(120, 150, 240, 0.5);
+        }
+
+        .hint {
+            color: rgba(170, 180, 210, 0.45);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+
+        @media (max-width: 768px) {
+            .overlay {
+                bottom: 18px;
+            }
+            .title {
+                font-size: 8px;
+                letter-spacing: 0.45em;
+            }
+            .hint {
+                font-size: 6px;
+                letter-spacing: 0.22em;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="canvas"></canvas>
+
+    <div class="overlay">
+        <div class="title">Hologram</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script>
+        (function() {
+            // ─── 画布初始化 ───────────────────────────────────────────────
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            let geometryObjects = [];
+            let mouse = { x: -9999, y: -9999, active: false, vx: 0, vy: 0 };
+            let time = 0;
+            let colorShift = 0;        // 点击切换色相偏移
+            let sceneRotationX = 0;    // 场景整体旋转
+            let sceneRotationY = 0;
+
+            // ─── 几何体定义（顶点和边） ─────────────────────────────────
+            // 立方体
+            const cubeVertices = [
+                [-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1],
+                [-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]
+            ];
+            const cubeEdges = [
+                [0, 1], [1, 2], [2, 3], [3, 0],
+                [4, 5], [5, 6], [6, 7], [7, 4],
+                [0, 4], [1, 5], [2, 6], [3, 7]
+            ];
+
+            // 八面体
+            const octaVertices = [
+                [0, 0, -1.4], [0, 0, 1.4],
+                [1.4, 0, 0], [-1.4, 0, 0],
+                [0, 1.4, 0], [0, -1.4, 0]
+            ];
+            const octaEdges = [
+                [0, 2], [0, 3], [0, 4], [0, 5],
+                [1, 2], [1, 3], [1, 4], [1, 5],
+                [2, 4], [4, 3], [3, 5], [5, 2]
+            ];
+
+            // 四面体
+            const tetraVertices = [
+                [1, 1, 1], [1, -1, -1], [-1, 1, -1], [-1, -1, 1]
+            ];
+            const tetraEdges = [
+                [0, 1], [0, 2], [0, 3], [1, 2], [2, 3], [3, 1]
+            ];
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                ctx.fillStyle = '#080810';
+                ctx.fillRect(0, 0, W, H);
+            }
+
+            // ─── 几何体对象 ─────────────────────────────────────────────
+            class GeometryObject {
+                constructor(x, y, size, type, hue) {
+                    this.x = x;
+                    this.y = y;
+                    this.size = size;
+                    this.type = type;
+                    this.hue = hue;
+                    this.rotationX = Math.random() * Math.PI * 2;
+                    this.rotationY = Math.random() * Math.PI * 2;
+                    this.speedX = (Math.random() - 0.5) * 0.03;
+                    this.speedY = (Math.random() - 0.5) * 0.02;
+                    this.spinX = (Math.random() - 0.5) * 0.02;
+                    this.spinY = (Math.random() - 0.5) * 0.025;
+                    this.alpha = 0.4 + Math.random() * 0.3;
+                    this.driftX = (Math.random() - 0.5) * 0.5;
+                    this.driftY = (Math.random() - 0.5) * 0.5;
+                    this.maxDriftX = W * 0.3;
+                    this.maxDriftY = H * 0.3;
+                    this.originX = x;
+                    this.originY = y;
+                    this.vertexData = [];
+                    this.edgeData = [];
+                    this.initGeometry();
+                }
+
+                initGeometry() {
+                    let verts, edges;
+                    switch (this.type) {
+                        case 'cube':
+                            verts = cubeVertices;
+                            edges = cubeEdges;
+                            break;
+                        case 'octa':
+                            verts = octaVertices;
+                            edges = octaEdges;
+                            break;
+                        case 'tetra':
+                            verts = tetraVertices;
+                            edges = tetraEdges;
+                            break;
+                    }
+                    this.vertexData = verts.map(v => [...v]);
+                    this.edgeData = edges;
+                }
+
+                update(dt, mouse) {
+                    // 旋转
+                    this.rotationX += this.spinX * dt;
+                    this.rotationY += this.spinY * dt;
+
+                    // 漂移（正弦运动）
+                    const driftFactor = 0.3;
+                    this.x = this.originX + Math.sin(time * 0.4 + this.hue) * this.maxDriftX * driftFactor;
+                    this.y = this.originY + Math.cos(time * 0.5 + this.hue) * this.maxDriftY * driftFactor;
+
+                    // 鼠标影响旋转速度
+                    if (mouse.active) {
+                        const dx = mouse.x - this.x;
+                        const dy = mouse.y - this.y;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        if (dist < 200) {
+                            const influence = (1 - dist / 200) * 0.04;
+                            this.spinX += (mouse.vx * 0.001) * influence;
+                            this.spinY += (mouse.vy * 0.001) * influence;
+                            // 限制旋转速度
+                            this.spinX = Math.max(-0.05, Math.min(0.05, this.spinX));
+                            this.spinY = Math.max(-0.04, Math.min(0.04, this.spinY));
+                        }
+                    }
+
+                    // 缓慢恢复基础旋转速度
+                    this.spinX *= 0.998;
+                    this.spinY *= 0.998;
+                }
+
+                getProjectedVertices() {
+                    const cosX = Math.cos(this.rotationX);
+                    const sinX = Math.sin(this.rotationX);
+                    const cosY = Math.cos(this.rotationY);
+                    const sinY = Math.sin(this.rotationY);
+                    const scale = this.size;
+                    const offsetX = this.x;
+                    const offsetY = this.y;
+
+                    return this.vertexData.map(v => {
+                        let [x, y, z] = v;
+                        // 绕X轴旋转
+                        let y1 = y * cosX - z * sinX;
+                        let z1 = y * sinX + z * cosX;
+                        // 绕Y轴旋转
+                        let x1 = x * cosY + z1 * sinY;
+                        let z2 = -x * sinY + z1 * cosY;
+                        // 透视投影
+                        const perspective = 3.5;
+                        const fov = 1.5;
+                        const denom = perspective + z2 * 0.01;
+                        const px = offsetX + x1 * scale * fov / denom;
+                        const py = offsetY + y1 * scale * fov / denom;
+                        return { px, py, depth: z2 };
+                    });
+                }
+
+                draw(ctx) {
+                    const proj = this.getProjectedVertices();
+                    const alpha = this.alpha;
+                    const hue = this.hue + colorShift;
+                    const sat = 65 + Math.sin(time * 0.3 + this.hue) * 15;
+                    const light = 50 + Math.cos(time * 0.4 + this.hue) * 20;
+
+                    ctx.lineCap = 'round';
+                    ctx.lineJoin = 'round';
+                    ctx.strokeStyle = `hsla(${hue}, ${sat}%, ${light}%, ${alpha})`;
+                    ctx.lineWidth = 1.0 + Math.random() * 0.3;
+
+                    for (const edge of this.edgeData) {
+                        const p1 = proj[edge[0]];
+                        const p2 = proj[edge[1]];
+                        if (!p1 || !p2) continue;
+                        ctx.beginPath();
+                        ctx.moveTo(p1.px, p1.py);
+                        ctx.lineTo(p2.px, p2.py);
+                        ctx.stroke();
+                    }
+
+                    // 顶点发光点
+                    for (const p of proj) {
+                        const size = 2.2;
+                        ctx.fillStyle = `hsla(${hue}, ${sat}%, ${light + 20}%, ${alpha * 1.3})`;
+                        ctx.beginPath();
+                        ctx.arc(p.px, p.py, size, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+
+                    // 微弱的光晕
+                    const centerX = (proj.reduce((s, p) => s + p.px, 0) / proj.length);
+                    const centerY = (proj.reduce((s, p) => s + p.py, 0) / proj.length);
+                    const glowRadius = this.size * 0.35;
+                    const glow = ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, glowRadius);
+                    glow.addColorStop(0, `hsla(${hue}, ${sat}%, ${light + 15}%, ${alpha * 0.25})`);
+                    glow.addColorStop(1, 'transparent');
+                    ctx.fillStyle = glow;
+                    ctx.beginPath();
+                    ctx.arc(centerX, centerY, glowRadius, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            // ─── 初始化几何体 ────────────────────────────────────────────
+            function initGeometryObjects() {
+                geometryObjects = [];
+                const types = ['cube', 'octa', 'tetra'];
+                const count = 6 + Math.floor(Math.random() * 3);
+                for (let i = 0; i < count; i++) {
+                    const x = W * (0.15 + Math.random() * 0.7);
+                    const y = H * (0.15 + Math.random() * 0.7);
+                    const size = 30 + Math.random() * 55;
+                    const type = types[Math.floor(Math.random() * types.length)];
+                    const hue = 200 + Math.random() * 80 - 40;
+                    geometryObjects.push(new GeometryObject(x, y, size, type, hue));
+                }
+            }
+
+            // ─── 鼠标光晕 ───────────────────────────────────────────────
+            function drawCursorGlow(ctx) {
+                if (!mouse.active) return;
+                const radius = 100;
+                const hue = 215 + colorShift;
+                const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                gradient.addColorStop(0, `hsla(${hue}, 60%, 75%, 0.05)`);
+                gradient.addColorStop(0.7, `hsla(${hue}, 50%, 70%, 0.015)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // ─── 主循环 ─────────────────────────────────────────────────
+            let lastTime = 0;
+            let accumulator = 0;
+            const fixedStep = 1000 / 60;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+
+                accumulator += dt;
+                const steps = Math.min(Math.floor(accumulator / fixedStep), 3);
+                accumulator -= steps * fixedStep;
+
+                for (let s = 0; s < steps; s++) {
+                    time += 0.016;
+                    const dtNorm = fixedStep / 1000 * 60;
+                    for (const obj of geometryObjects) {
+                        obj.update(dtNorm, mouse);
+                    }
+                }
+
+                // 清除画布
+                ctx.fillStyle = 'rgba(8, 8, 16, 0.22)';
+                ctx.fillRect(0, 0, W, H);
+
+                // 绘制几何体
+                for (const obj of geometryObjects) {
+                    obj.draw(ctx);
+                }
+
+                // 鼠标光晕
+                drawCursorGlow(ctx);
+
+                requestAnimationFrame(animate);
+            }
+
+            // ─── 交互事件 ───────────────────────────────────────────────
+            function onMouseMove(e) {
+                const prevX = mouse.x;
+                const prevY = mouse.y;
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                mouse.vx = mouse.x - prevX;
+                mouse.vy = mouse.y - prevY;
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+                mouse.vx = 0;
+                mouse.vy = 0;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                // 创建新的几何体
+                const types = ['cube', 'octa', 'tetra'];
+                const size = 25 + Math.random() * 50;
+                const type = types[Math.floor(Math.random() * types.length)];
+                const hue = 200 + colorShift + Math.random() * 60 - 30;
+                geometryObjects.push(new GeometryObject(mouse.x, mouse.y, size, type, hue));
+                // 限制数量
+                if (geometryObjects.length > 15) {
+                    geometryObjects.shift();
+                }
+                // 切换色彩偏移
+                colorShift += 35 + Math.random() * 25;
+                if (colorShift > 150) colorShift = -30;
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    const prevX = mouse.x;
+                    const prevY = mouse.y;
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    mouse.vx = mouse.x - prevX;
+                    mouse.vy = mouse.y - prevY;
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    const types = ['cube', 'octa', 'tetra'];
+                    const size = 25 + Math.random() * 50;
+                    const type = types[Math.floor(Math.random() * types.length)];
+                    const hue = 200 + colorShift + Math.random() * 60 - 30;
+                    geometryObjects.push(new GeometryObject(mouse.x, mouse.y, size, type, hue));
+                    if (geometryObjects.length > 15) {
+                        geometryObjects.shift();
+                    }
+                    colorShift += 35 + Math.random() * 25;
+                    if (colorShift > 150) colorShift = -30;
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+                mouse.vx = 0;
+                mouse.vy = 0;
+            }
+
+            function onResize() {
+                setupCanvas();
+                // 调整几何体位置
+                for (const obj of geometryObjects) {
+                    obj.originX = Math.max(20, Math.min(W - 20, obj.originX));
+                    obj.originY = Math.max(20, Math.min(H - 20, obj.originY));
+                    obj.maxDriftX = W * 0.25;
+                    obj.maxDriftY = H * 0.25;
+                }
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+                initGeometryObjects();
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            // 确保初始背景填充
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#080810';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+
+        })();
+    </script>
+</body>
+</html>

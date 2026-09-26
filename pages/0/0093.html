@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>球面调和纤维 · 正交三族网</title>
+    <style>
+        :root {
+            --bg: #06060c;
+            --gold: #d4a843;
+            --cyan: #45b7aa;
+            --magenta: #d4708a;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'SimSun', serif;
+            -webkit-font-smoothing: antialiased;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        #canvas-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+        }
+        canvas { display: block; }
+        .overlay-title {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 22px 20px 8px;
+            text-align: center;
+            background: linear-gradient(180deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.8) 55%, rgba(6,6,12,0) 100%);
+        }
+        .overlay-title h2 {
+            font-size: clamp(1.1rem, 2.2vw, 1.8rem);
+            font-weight: 400;
+            letter-spacing: 0.13em;
+            color: #e8d5b0;
+            text-shadow: 0 0 30px rgba(212,168,67,0.45), 0 0 60px rgba(212,168,67,0.18);
+            margin: 0 0 2px;
+            line-height: 1.3;
+        }
+        .overlay-title .sub {
+            font-size: clamp(0.65rem, 1.1vw, 0.85rem);
+            letter-spacing: 0.22em;
+            color: rgba(200,180,150,0.65);
+        }
+        .overlay-formula {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 8px 20px 18px;
+            text-align: center;
+            background: linear-gradient(0deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.82) 55%, rgba(6,6,12,0) 100%);
+        }
+        .formula-text {
+            font-size: clamp(0.6rem, 1.0vw, 0.8rem);
+            color: rgba(210,200,185,0.8);
+            letter-spacing: 0.03em;
+            line-height: 1.7;
+            font-style: italic;
+        }
+        .clr-gold { color: #d4a843; font-style: normal; font-weight: bold; }
+        .clr-cyan { color: #45b7aa; font-style: normal; font-weight: bold; }
+        .clr-magenta { color: #d4708a; font-style: normal; font-weight: bold; }
+        .formula-sep {
+            display: inline-block;
+            margin: 0 14px;
+            color: rgba(150,140,130,0.35);
+            font-style: normal;
+        }
+    </style>
+</head>
+<body>
+    <div class="overlay-title">
+        <h2>球面调和纤维 · 正交三族网</h2>
+        <div class="sub">Spherical harmonic modulation · Orthogonal triad fibration</div>
+    </div>
+    <div class="overlay-formula">
+        <div class="formula-text">
+            <span class="clr-gold">Γ₁: θ=s, φ=φ₀+α sin(ms)</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-cyan">Γ₂: φ=s, θ=θ₀+β cos(ns)</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-magenta">Γ₃: s↦(θ(s),φ(s)) 斜向缠绕</span>
+        </div>
+    </div>
+    <div id="canvas-container"></div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ---------- 场景初始化 ----------
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(48, container.clientWidth / container.clientHeight, 0.5, 20);
+        camera.position.set(3.0, 2.2, 7.0);
+        camera.lookAt(0, 0, 0);
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x06060c, 1);
+        container.appendChild(renderer.domElement);
+
+        // 手动时钟——彻底杜绝暂停
+        let startTime = performance.now();
+        let elapsed = 0;
+        function tick() { elapsed = (performance.now() - startTime) * 0.001; return elapsed; }
+
+        const COLOR_GOLD = 0xd4a843;
+        const COLOR_CYAN = 0x45b7aa;
+        const COLOR_MAGENTA = 0xd4708a;
+        const SPHERE_R = 2.85;
+
+        // 球面点（θ是极角/余纬，φ是方位角）
+        function spherePoint(theta, phi) {
+            const st = Math.sin(theta);
+            return new THREE.Vector3(
+                SPHERE_R * st * Math.cos(phi),
+                SPHERE_R * st * Math.sin(phi),
+                SPHERE_R * Math.cos(theta)
+            );
+        }
+
+        // ---- 曲线族生成 ----
+        // 金色：类经线（沿θ方向，φ受调制）
+        function createGoldCurves(count, t, numPoints = 360) {
+            const group = new THREE.Group();
+            const amp = 0.35 + 0.12 * Math.sin(t * 0.4);
+            const freq = 3.5 + 0.6 * Math.cos(t * 0.35);
+            for (let i = 0; i < count; i++) {
+                const phi0 = i * 2 * Math.PI / count;
+                const pts = [];
+                const dTheta = Math.PI / numPoints;
+                for (let j = 0; j <= numPoints; j++) {
+                    const theta = 0.02 + j * dTheta;
+                    const phi = phi0 + amp * Math.sin(freq * theta + t * 0.7 + i * 0.4);
+                    pts.push(spherePoint(theta, phi));
+                }
+                if (pts.length < 2) continue;
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                group.add(new THREE.Line(geom, new THREE.LineBasicMaterial({
+                    color: COLOR_GOLD, transparent: true, opacity: 0.82, depthWrite: true, depthTest: true
+                })));
+            }
+            return group;
+        }
+
+        // 青色：类纬线（沿φ方向，θ受调制）
+        function createCyanCurves(count, t, numPoints = 400) {
+            const group = new THREE.Group();
+            const amp = 0.28 + 0.10 * Math.cos(t * 0.45);
+            const freq = 4.2 + 0.5 * Math.sin(t * 0.38);
+            for (let i = 0; i < count; i++) {
+                const theta0 = 0.08 + i * (Math.PI - 0.16) / (count - 1);
+                const pts = [];
+                const dPhi = 2 * Math.PI / numPoints;
+                for (let j = 0; j <= numPoints; j++) {
+                    const phi = j * dPhi;
+                    const theta = theta0 + amp * Math.cos(freq * phi + t * 0.6 + i * 0.5);
+                    if (theta < 0.01 || theta > Math.PI - 0.01) continue;
+                    pts.push(spherePoint(theta, phi));
+                }
+                if (pts.length < 2) continue;
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                group.add(new THREE.Line(geom, new THREE.LineBasicMaterial({
+                    color: COLOR_CYAN, transparent: true, opacity: 0.82, depthWrite: true, depthTest: true
+                })));
+            }
+            return group;
+        }
+
+        // 品红：斜向缠绕曲线（沿对角线方向）
+        function createMagentaCurves(count, t, numPoints = 500) {
+            const group = new THREE.Group();
+            const slopeBase = 1.8 + 0.3 * Math.sin(t * 0.32);
+            const modAmp = 0.25 + 0.08 * Math.cos(t * 0.42);
+            for (let i = 0; i < count; i++) {
+                const offset = i * 2 * Math.PI / count;
+                const slope = slopeBase + 0.15 * Math.sin(i * 0.9);
+                const pts = [];
+                const sMax = 5 * Math.PI;
+                const ds = sMax / numPoints;
+                for (let j = 0; j <= numPoints; j++) {
+                    const s = j * ds;
+                    let theta = (s + offset) % Math.PI;
+                    let phi = (slope * s + offset) % (2 * Math.PI);
+                    // 调制
+                    theta += modAmp * Math.sin(3 * s + t * 0.5 + i);
+                    phi += modAmp * Math.cos(2 * s + t * 0.55 + i);
+                    // 反射保持θ在[0,π]
+                    if (theta < 0) theta = -theta;
+                    if (theta > Math.PI) theta = 2 * Math.PI - theta;
+                    theta = Math.max(0.01, Math.min(Math.PI - 0.01, theta));
+                    pts.push(spherePoint(theta, phi));
+                }
+                if (pts.length < 2) continue;
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                group.add(new THREE.Line(geom, new THREE.LineBasicMaterial({
+                    color: COLOR_MAGENTA, transparent: true, opacity: 0.78, depthWrite: true, depthTest: true
+                })));
+            }
+            return group;
+        }
+
+        // ---- 主结构 ----
+        const rootGroup = new THREE.Group();
+        rootGroup.name = 'spherical-fibration';
+        scene.add(rootGroup);
+
+        // 初始时直接填充（t=0）
+        rootGroup.add(createGoldCurves(36, 0));
+        rootGroup.add(createCyanCurves(36, 0));
+        rootGroup.add(createMagentaCurves(42, 0));
+
+        console.log('球面纤维初始线条总数:', rootGroup.children.length);
+
+        // ---- 背景星点 ----
+        const starsGroup = new THREE.Group();
+        const starsGeom = new THREE.BufferGeometry();
+        const starsCount = 550;
+        const starsPos = new Float32Array(starsCount * 3);
+        for (let i = 0; i < starsCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const dist = 6.5 + Math.random() * 10;
+            starsPos[i * 3] = dist * Math.sin(phi) * Math.cos(theta);
+            starsPos[i * 3 + 1] = dist * Math.sin(phi) * Math.sin(theta);
+            starsPos[i * 3 + 2] = dist * Math.cos(phi);
+        }
+        starsGeom.setAttribute('position', new THREE.BufferAttribute(starsPos, 3));
+        const starsMat = new THREE.PointsMaterial({
+            color: 0x908878,
+            size: 0.018,
+            transparent: true,
+            opacity: 0.55,
+            depthWrite: false,
+        });
+        starsGroup.add(new THREE.Points(starsGeom, starsMat));
+        scene.add(starsGroup);
+
+        // ---- 动态更新曲线（每2秒重建一次，避免每帧重建的性能问题） ----
+        let lastUpdateTime = -10;
+        const updateInterval = 2.0; // 每2秒更新曲线几何
+
+        function rebuildCurves(t) {
+            // 清除旧曲线
+            while (rootGroup.children.length > 0) {
+                rootGroup.remove(rootGroup.children[0]);
+            }
+            // 重建
+            rootGroup.add(createGoldCurves(36, t));
+            rootGroup.add(createCyanCurves(36, t));
+            rootGroup.add(createMagentaCurves(42, t));
+        }
+
+        // ---- 稳定动画循环 ----
+        function animate() {
+            tick();
+            const t = elapsed;
+
+            // 每隔一定时间重建曲线几何以反映时间演化
+            if (t - lastUpdateTime > updateInterval) {
+                rebuildCurves(t);
+                lastUpdateTime = t;
+                console.log('曲线已更新 (t=' + t.toFixed(1) + ')');
+            }
+
+            rootGroup.rotation.x = t * 0.15;
+            rootGroup.rotation.y = t * 0.25;
+            rootGroup.rotation.z = t * 0.10;
+
+            starsGroup.rotation.y = t * 0.03;
+            starsGroup.rotation.x = t * 0.02;
+
+            const camRadius = 7.2;
+            const camAngle = t * 0.08;
+            const camHeight = 2.3 + Math.sin(t * 0.15) * 0.7;
+            camera.position.x = Math.cos(camAngle) * camRadius;
+            camera.position.z = Math.sin(camAngle) * camRadius;
+            camera.position.y = camHeight;
+            camera.lookAt(0, 0, 0);
+            renderer.render(scene, camera);
+            requestAnimationFrame(animate);
+        }
+
+        // 预渲染首帧
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+
+        // 响应式调整
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth, h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth, h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 120));
+
+        console.log('✅ 球面调和纤维动画已稳定运行');
+    </script>
+</body>
+</html>

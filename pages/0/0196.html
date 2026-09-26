@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>截角八面体蜂巢 · 空间填充线网</title>
+    <style>
+        :root { --bg: #02040a; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'STSong', 'Songti SC', 'Noto Serif SC', 'SimSun', 'Times New Roman', serif;
+            -webkit-font-smoothing: antialiased;
+            height: 100vh; width: 100vw;
+            user-select: none; -webkit-user-select: none; cursor: default;
+        }
+        #canvas-container { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+        canvas { display: block; }
+        #title-overlay {
+            position: fixed; top: 24px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+        }
+        #title-overlay .title {
+            font-size: clamp(1.0rem, 2.2vw, 1.5rem); font-weight: 400; letter-spacing: 0.08em;
+            color: #cfc7b5; text-shadow: 0 0 42px rgba(200,180,150,0.5), 0 0 72px rgba(170,150,130,0.22);
+            line-height: 1.4; white-space: nowrap;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.48rem, 0.85vw, 0.64rem); font-weight: 300; letter-spacing: 0.12em;
+            color: #a09888; text-shadow: 0 0 16px rgba(155,145,125,0.32);
+            margin-top: 2px; white-space: nowrap;
+        }
+        #formula-overlay {
+            position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+            background: rgba(2,4,10,0.7); padding: 10px 22px; border-radius: 32px;
+            border: 1px solid rgba(175,155,135,0.16);
+            backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); max-width: 95vw;
+        }
+        #formula-overlay .formula {
+            font-size: clamp(0.38rem, 0.7vw, 0.56rem); font-weight: 300; letter-spacing: 0.04em;
+            color: #c5bdaa; text-shadow: 0 0 13px rgba(185,170,145,0.25);
+            line-height: 1.5; white-space: nowrap;
+        }
+        #formula-overlay .formula .c1 { color: #d4885c; }
+        #formula-overlay .formula .c2 { color: #5d9ec6; }
+        #formula-overlay .formula .c3 { color: #c77d9f; }
+        @media (max-width: 600px) {
+            #title-overlay { top: 14px; }
+            #formula-overlay { bottom: 10px; padding: 7px 12px; border-radius: 24px; }
+            #formula-overlay .formula { font-size: 0.32rem; white-space: normal; line-height: 1.3; }
+            #title-overlay .title { font-size: 0.68rem; }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="title-overlay">
+        <div class="title">截角八面体蜂巢 · 空间填充线网</div>
+        <div class="subtitle">TRUNCATED OCTAHEDRAL HONEYCOMB &nbsp;·&nbsp; BCC VORONOI</div>
+    </div>
+    <div id="formula-overlay">
+        <div class="formula">
+            <span class="c1">六边形-六边形:</span> 8个六边形面间的12条边 &nbsp;
+            <span class="c2">六边形-正方形:</span> 24条边 &nbsp;
+            <span class="c3">相邻胞体桥接:</span> 桥接边
+            <br>
+            <span style="color:#9aa8b8;">顶点(0,±1,±2)㊨ ±平移矢 &nbsp;|&nbsp; BCC格点 &nbsp;|&nbsp; 球半径R=2.8</span>
+        </div>
+    </div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#02040a');
+        scene.fog = new THREE.Fog('#02040a', 8, 20);
+
+        const camera = new THREE.PerspectiveCamera(
+            50, container.clientWidth / Math.max(container.clientHeight, 1), 0.3, 24
+        );
+        camera.position.set(0.7, 0.35, 7.0);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = false;
+        container.appendChild(renderer.domElement);
+
+        const C1 = '#d4885c', C2 = '#5d9ec6', C3 = '#c77d9f';
+        const C_SPHERE = '#3a4a5c', C_GLINT = '#8898aa';
+        const SPHERE_R = 2.8;
+
+        // ==================== 截角八面体基本顶点 ====================
+        // 标准截角八面体顶点：(0, ±1, ±2) 的所有排列及符号组合
+        function baseTruncatedOctahedronVertices() {
+            const verts = [];
+            const coords = [0, 1, 2];
+            const perms = [[0,1,2],[0,2,1],[1,0,2],[1,2,0],[2,0,1],[2,1,0]];
+            for (const p of perms) {
+                for (let s0=-1; s0<=1; s0+=2) {
+                    for (let s1=-1; s1<=1; s1+=2) {
+                        for (let s2=-1; s2<=1; s2+=2) {
+                            verts.push(new THREE.Vector3(
+                                s0*coords[p[0]], s1*coords[p[1]], s2*coords[p[2]]
+                            ));
+                        }
+                    }
+                }
+            }
+            // 去重
+            const uniq = [];
+            const eps = 0.001;
+            for (const v of verts) {
+                if (!uniq.some(u => u.distanceTo(v) < eps)) uniq.push(v.clone());
+            }
+            return uniq;
+        }
+
+        const baseVerts = baseTruncatedOctahedronVertices();
+        console.log('基本截角八面体顶点:', baseVerts.length);
+
+        // 确定顶点类型：六边形-六边形边的顶点的特点是？
+        // 根据顶点坐标和：顶点(0,1,2)类型在截角八面体中，所有顶点等价（全排列）
+        // 但边的类型取决于连接的两个顶点之间的差异向量类型
+        // 差异向量有三种：六边形-六边形边（长边）、六边形-正方形边（短边）
+        // 从顶点集生成基本胞体的边
+        function buildBaseEdges(verts) {
+            const edges = [];
+            const n = verts.length;
+            for (let i=0; i<n; i++) {
+                for (let j=i+1; j<n; j++) {
+                    const d = verts[i].distanceTo(verts[j]);
+                    if (d < 2.01 && d > 0.01) edges.push([i, j]);
+                }
+            }
+            return edges;
+        }
+
+        const baseEdges = buildBaseEdges(baseVerts);
+        console.log('基本胞体边数:', baseEdges.length);
+
+        // 对边分类：根据距离（六边形-正方形边更短，六边形-六边形边较长）
+        // 在未缩放的坐标中，(0,1,2)到(0,1,0)距离=2（正方形边）
+        // (0,1,2)到(0,-1,2)距离=2（六边形边？）实际上需要仔细区分
+        // 直接根据距离分类：距离≈2的为正方形边，距离≈√8≈2.828的为六边形-六边形边
+        // 但在原始坐标中距离可能是2或√8，缩放后也相应。
+        function classifyBaseEdge(i, j, verts) {
+            const d = verts[i].distanceTo(verts[j]);
+            if (d < 2.1) return 'hex-square'; // 约2.0
+            return 'hex-hex'; // 约2.828
+        }
+
+        // ==================== BCC格点平移生成蜂巢 ====================
+        // 截角八面体蜂巢的平移矢量：体心立方 (BCC) 格点
+        // BCC格点 = SC格点 ∪ (SC格点 + (1,1,1))
+        const bccShifts = [];
+        const gridRange = [-2, -1, 0, 1, 2];
+        for (const i of gridRange) {
+            for (const j of gridRange) {
+                for (const k of gridRange) {
+                    bccShifts.push(new THREE.Vector3(i, j, k));
+                    bccShifts.push(new THREE.Vector3(i+0.5, j+0.5, k+0.5));
+                }
+            }
+        }
+        // 去重
+        const uniqueShifts = [];
+        const epsS = 0.001;
+        for (const s of bccShifts) {
+            if (!uniqueShifts.some(u => u.distanceTo(s) < epsS)) uniqueShifts.push(s.clone());
+        }
+
+        // 缩放因子：使蜂巢适配球半径
+        const CELL_SCALE = SPHERE_R / 3.2;
+
+        // 收集所有边（去重）
+        const edgeMap = new Map();
+        const allVertSet = new Map();
+
+        function vertexKey(v) {
+            const s = CELL_SCALE;
+            return `${(v.x*s).toFixed(6)},${(v.y*s).toFixed(6)},${(v.z*s).toFixed(6)}`;
+        }
+
+        function edgeKey(a, b) {
+            const ka = vertexKey(a), kb = vertexKey(b);
+            return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+        }
+
+        for (const shift of uniqueShifts) {
+            const s = shift.clone().multiplyScalar(CELL_SCALE);
+            const shiftedVerts = baseVerts.map(v => v.clone().multiplyScalar(CELL_SCALE).add(s));
+            for (const [i, j] of baseEdges) {
+                const a = shiftedVerts[i], b = shiftedVerts[j];
+                if (a.length() > SPHERE_R*1.2 && b.length() > SPHERE_R*1.2) continue;
+                const ek = edgeKey(a, b);
+                if (!edgeMap.has(ek)) {
+                    edgeMap.set(ek, { a: a.clone(), b: b.clone(), type: classifyBaseEdge(i, j, baseVerts) });
+                }
+            }
+        }
+
+        console.log('蜂巢总独特边数:', edgeMap.size);
+
+        // 分离三种颜色的边
+        const edgesHexHex = [], edgesHexSquare = [], edgesBridge = [];
+        for (const [_, { a, b, type }] of edgeMap) {
+            if (type === 'hex-hex') edgesHexHex.push([a, b]);
+            else edgesHexSquare.push([a, b]);
+        }
+        // 桥接边：不属于基本胞体的边，由相邻胞体共享顶点形成
+        // 这些是不同胞体之间的额外连接，距离与基本边不同
+        // 为了增加线条丰富度，我们在所有顶点对之间寻找中等距离的边
+        // 收集所有顶点
+        const allVertsArr = [];
+        const vertSet = new Set();
+        for (const [_, { a, b }] of edgeMap) {
+            if (!vertSet.has(vertexKey(a))) { vertSet.add(vertexKey(a)); allVertsArr.push(a.clone()); }
+            if (!vertSet.has(vertexKey(b))) { vertSet.add(vertexKey(b)); allVertsArr.push(b.clone()); }
+        }
+        // 寻找所有顶点对中距离在1.8~2.6（缩放后）之间的边，这些是桥接边
+        const midDistLow = 1.65, midDistHigh = 2.5;
+        for (let i=0; i<allVertsArr.length; i++) {
+            for (let j=i+1; j<allVertsArr.length; j++) {
+                const d = allVertsArr[i].distanceTo(allVertsArr[j]);
+                if (d > midDistLow && d < midDistHigh) {
+                    const ek = edgeKey(allVertsArr[i], allVertsArr[j]);
+                    if (!edgeMap.has(ek)) {
+                        edgesBridge.push([allVertsArr[i].clone(), allVertsArr[j].clone()]);
+                    }
+                }
+            }
+        }
+        console.log('六边形-六边形边:', edgesHexHex.length);
+        console.log('六边形-正方形边:', edgesHexSquare.length);
+        console.log('桥接边:', edgesBridge.length);
+
+        // ==================== 创建线段 ====================
+        function createLineSegments(edgeList, colorHex, opacity) {
+            if (edgeList.length === 0) return new THREE.Group();
+            const verts = [];
+            for (const [a, b] of edgeList) {
+                verts.push(a.x, a.y, a.z, b.x, b.y, b.z);
+            }
+            const geom = new THREE.BufferGeometry();
+            geom.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+            const mat = new THREE.LineBasicMaterial({
+                color: new THREE.Color(colorHex),
+                transparent: true, opacity: opacity, depthWrite: true,
+            });
+            return new THREE.LineSegments(geom, mat);
+        }
+
+        const lines1 = createLineSegments(edgesHexHex, C1, 0.68);
+        const lines2 = createLineSegments(edgesHexSquare, C2, 0.64);
+        const lines3 = createLineSegments(edgesBridge, C3, 0.58);
+
+        const mainGroup = new THREE.Group();
+        mainGroup.add(lines1);
+        mainGroup.add(lines2);
+        mainGroup.add(lines3);
+        scene.add(mainGroup);
+
+        // ==================== 参考球面线框 ====================
+        function createSphereWireframe(radius, colorHex, opacity) {
+            const group = new THREE.Group();
+            const segs = 170;
+            const circles = [
+                (a) => new THREE.Vector3(Math.cos(a)*radius, Math.sin(a)*radius, 0),
+                (a) => new THREE.Vector3(Math.cos(a)*radius, 0, Math.sin(a)*radius),
+                (a) => new THREE.Vector3(0, Math.cos(a)*radius, Math.sin(a)*radius),
+            ];
+            for (const gen of circles) {
+                const pts = [];
+                for (let i=0; i<=segs; i++) pts.push(gen((i/segs)*Math.PI*2));
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(colorHex),
+                    transparent: true, opacity: opacity, depthWrite: true,
+                });
+                group.add(new THREE.Line(geom, mat));
+            }
+            return group;
+        }
+        const sphereRef = createSphereWireframe(SPHERE_R, C_SPHERE, 0.22);
+        scene.add(sphereRef);
+
+        function originGlint() {
+            const group = new THREE.Group();
+            const sz = 0.07;
+            const pairs = [
+                [new THREE.Vector3(-sz,0,0), new THREE.Vector3(sz,0,0)],
+                [new THREE.Vector3(0,-sz,0), new THREE.Vector3(0,sz,0)],
+                [new THREE.Vector3(0,0,-sz), new THREE.Vector3(0,0,sz)],
+            ];
+            for (const [a,b] of pairs) {
+                const g = new THREE.BufferGeometry().setFromPoints([a,b]);
+                const m = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(C_GLINT),
+                    transparent: true, opacity: 0.7, depthWrite: true,
+                });
+                group.add(new THREE.Line(g, m));
+            }
+            return group;
+        }
+        scene.add(originGlint());
+
+        // ==================== 动画循环 ====================
+        let time = 0, lastTime = performance.now(), frameCount = 0, logTime = 0;
+
+        function animate(now) {
+            requestAnimationFrame(animate);
+            let delta = (now - lastTime) / 1000;
+            if (delta <= 0 || delta > 0.5) delta = 0.016;
+            lastTime = now;
+            time += delta;
+            frameCount++;
+            if (now - logTime > 4000) {
+                console.log(`[动画运行中] 帧:${frameCount} 时间:${time.toFixed(2)}s`);
+                logTime = now;
+            }
+
+            mainGroup.rotation.y = time * 0.3;
+            mainGroup.rotation.x = time * 0.17 + Math.sin(time * 0.24) * 0.2;
+            mainGroup.rotation.z = Math.cos(time * 0.2) * 0.14;
+            sphereRef.rotation.copy(mainGroup.rotation);
+
+            const camX = 0.7 + Math.sin(time * 0.15) * 0.5;
+            const camY = 0.35 + Math.cos(time * 0.18) * 0.45;
+            const camZ = 7.0 + Math.sin(time * 0.12) * 0.45;
+            camera.position.set(camX, camY, camZ);
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth, h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth, h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 100));
+
+        console.log('=== 截角八面体蜂巢 · 空间填充线网 ===');
+        console.log('总边数:', edgesHexHex.length + edgesHexSquare.length + edgesBridge.length);
+        console.log('✅ 初始帧渲染完成，启动绝对时间动画循环...');
+
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

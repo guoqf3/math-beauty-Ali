@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>等距偏移编织 · 球面平行线网</title>
+    <style>
+        :root {
+            --bg: #06060c;
+            --gold: #d4a843;
+            --cyan: #45b7aa;
+            --magenta: #d4708a;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'SimSun', serif;
+            -webkit-font-smoothing: antialiased;
+            user-select: none;
+        }
+        #canvas-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+        }
+        canvas { display: block; }
+        .overlay-title {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 22px 20px 8px;
+            text-align: center;
+            background: linear-gradient(180deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.8) 55%, rgba(6,6,12,0) 100%);
+        }
+        .overlay-title h2 {
+            font-size: clamp(1.1rem, 2.2vw, 1.8rem);
+            font-weight: 400;
+            letter-spacing: 0.13em;
+            color: #e8d5b0;
+            text-shadow: 0 0 30px rgba(212,168,67,0.45), 0 0 60px rgba(212,168,67,0.18);
+            margin: 0 0 2px;
+            line-height: 1.3;
+        }
+        .overlay-title .sub {
+            font-size: clamp(0.65rem, 1.1vw, 0.85rem);
+            letter-spacing: 0.22em;
+            color: rgba(200,180,150,0.65);
+        }
+        .overlay-formula {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 8px 20px 18px;
+            text-align: center;
+            background: linear-gradient(0deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.82) 55%, rgba(6,6,12,0) 100%);
+        }
+        .formula-text {
+            font-size: clamp(0.6rem, 1.0vw, 0.8rem);
+            color: rgba(210,200,185,0.8);
+            letter-spacing: 0.03em;
+            line-height: 1.7;
+        }
+        .clr-gold { color: #d4a843; font-weight: bold; }
+        .clr-cyan { color: #45b7aa; font-weight: bold; }
+        .clr-magenta { color: #d4708a; font-weight: bold; }
+        .formula-sep {
+            display: inline-block;
+            margin: 0 14px;
+            color: rgba(150,140,130,0.35);
+        }
+    </style>
+</head>
+<body>
+    <div class="overlay-title">
+        <h2>等距偏移编织 · 球面平行线网</h2>
+        <div class="sub">Equidistant offsets from great circles · Parallel curve families on S²</div>
+    </div>
+    <div class="overlay-formula">
+        <div class="formula-text">
+            <span class="clr-gold">基圆⊥x: 等距偏移Δ₁∈[0,π/2]</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-cyan">基圆⊥y: 等距偏移Δ₂∈[0,π/2]</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-magenta">基圆⊥z: 等距偏移Δ₃∈[0,π/2]</span>
+        </div>
+    </div>
+    <div id="canvas-container"></div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(46, container.clientWidth / container.clientHeight, 0.5, 22);
+        camera.position.set(3.5, 2.4, 7.2);
+        camera.lookAt(0, 0, 0);
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x06060c, 1);
+        container.appendChild(renderer.domElement);
+
+        // 手动时钟——杜绝暂停
+        let startTime = performance.now();
+        const getElapsed = () => (performance.now() - startTime) * 0.001;
+
+        const COLOR_GOLD = 0xd4a843;
+        const COLOR_CYAN = 0x45b7aa;
+        const COLOR_MAGENTA = 0xd4708a;
+        const RADIUS = 2.65;
+
+        // 球面点
+        function spherePoint(theta, phi) {
+            const st = Math.sin(theta);
+            return new THREE.Vector3(
+                RADIUS * st * Math.cos(phi),
+                RADIUS * Math.cos(theta),
+                RADIUS * st * Math.sin(phi)
+            );
+        }
+
+        // 生成等距偏移曲线：以过极轴的大圆为基圆，做角度为offset的平行圆
+        // 基圆在xz平面（垂直于y轴），用θ参数化，偏移角度δ使曲线向y轴方向移动
+        function createOffsetCurves(axis, offsets, color, opacity, numPoints) {
+            const group = new THREE.Group();
+            // 构建局部正交基
+            let u, v;
+            if (Math.abs(axis.x) < 0.9) {
+                u = new THREE.Vector3(1, 0, 0).cross(axis).normalize();
+            } else {
+                u = new THREE.Vector3(0, 1, 0).cross(axis).normalize();
+            }
+            v = axis.clone().cross(u).normalize();
+
+            for (const delta of offsets) {
+                const cosDelta = Math.cos(delta);
+                const sinDelta = Math.sin(delta);
+                const pts = [];
+                const dAngle = 2 * Math.PI / numPoints;
+                for (let i = 0; i <= numPoints; i++) {
+                    const ang = i * dAngle;
+                    // 基圆上的点：沿u*cos(ang)+v*sin(ang)
+                    const basePt = u.clone().multiplyScalar(Math.cos(ang)).add(v.clone().multiplyScalar(Math.sin(ang))).normalize().multiplyScalar(RADIUS);
+                    // 沿法向（即axis方向）偏移角度delta：绕着u×v方向旋转delta（将basePt沿球面等距偏移）
+                    const rotAxis = new THREE.Vector3().crossVectors(basePt.clone().normalize(), axis).normalize();
+                    if (rotAxis.length() < 1e-6) rotAxis.set(axis.y, -axis.x, 0).normalize();
+                    const quat = new THREE.Quaternion().setFromAxisAngle(rotAxis, delta);
+                    const pt = basePt.clone().applyQuaternion(quat);
+                    pts.push(pt);
+                }
+                if (pts.length >= 2) {
+                    const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                    const mat = new THREE.LineBasicMaterial({
+                        color, transparent: true, opacity, depthWrite: true, depthTest: true,
+                    });
+                    group.add(new THREE.Line(geom, mat));
+                }
+            }
+            return group;
+        }
+
+        // 偏差角度值（从0到π/2，非均匀分布——在赤道附近更密）
+        const offsetCount = 26;
+        const maxDelta = Math.PI * 0.46;
+        const offsets = [];
+        for (let i = 0; i < offsetCount; i++) {
+            const t = i / (offsetCount - 1);
+            // 在边缘更密的分布
+            const delta = maxDelta * (t * t * t * 0.6 + t * 0.4);
+            offsets.push(delta);
+        }
+
+        // 主组
+        const rootGroup = new THREE.Group();
+        rootGroup.name = 'equidistant-weave';
+        scene.add(rootGroup);
+
+        const curvePoints = 340;
+
+        // 金色族：基圆垂直于x轴（即基圆在yz平面），偏移沿x轴方向
+        const axisX = new THREE.Vector3(1, 0, 0);
+        rootGroup.add(createOffsetCurves(axisX, offsets, COLOR_GOLD, 0.62, curvePoints));
+
+        // 青色族：基圆垂直于y轴（即基圆在xz平面），偏移沿y轴方向
+        const axisY = new THREE.Vector3(0, 1, 0);
+        rootGroup.add(createOffsetCurves(axisY, offsets, COLOR_CYAN, 0.62, curvePoints));
+
+        // 品红族：基圆垂直于z轴（即基圆在xy平面），偏移沿z轴方向
+        const axisZ = new THREE.Vector3(0, 0, 1);
+        rootGroup.add(createOffsetCurves(axisZ, offsets, COLOR_MAGENTA, 0.62, curvePoints));
+
+        // 额外密度：更小的偏移步长
+        const extraOffsets = [];
+        for (let i = 0; i < 18; i++) {
+            const t = (i + 0.5) / 18;
+            extraOffsets.push(maxDelta * (t * t * 0.5 + t * 0.5));
+        }
+        rootGroup.add(createOffsetCurves(axisX, extraOffsets, COLOR_GOLD, 0.38, curvePoints));
+        rootGroup.add(createOffsetCurves(axisY, extraOffsets, COLOR_CYAN, 0.38, curvePoints));
+        rootGroup.add(createOffsetCurves(axisZ, extraOffsets, COLOR_MAGENTA, 0.38, curvePoints));
+
+        // 辅助球面参考网格
+        for (let i = 0; i < 10; i++) {
+            const lat = (i + 0.5) * Math.PI / 10;
+            const r = RADIUS * Math.sin(lat);
+            const z = RADIUS * Math.cos(lat);
+            const pts = [];
+            for (let j = 0; j <= 240; j++) {
+                const phi = j * 2 * Math.PI / 240;
+                pts.push(new THREE.Vector3(r * Math.cos(phi), z, r * Math.sin(phi)));
+            }
+            const geom = new THREE.BufferGeometry().setFromPoints(pts);
+            rootGroup.add(new THREE.Line(geom, new THREE.LineBasicMaterial({
+                color: 0x403830, transparent: true, opacity: 0.08, depthWrite: true, depthTest: true
+            })));
+        }
+        for (let k = 0; k < 8; k++) {
+            const phi = k * Math.PI / 4;
+            const pts = [];
+            for (let j = 0; j <= 240; j++) {
+                const theta = 0.02 + j * Math.PI / 240;
+                const st = Math.sin(theta);
+                pts.push(new THREE.Vector3(RADIUS * st * Math.cos(phi), RADIUS * Math.cos(theta), RADIUS * st * Math.sin(phi)));
+            }
+            const geom = new THREE.BufferGeometry().setFromPoints(pts);
+            rootGroup.add(new THREE.Line(geom, new THREE.LineBasicMaterial({
+                color: 0x303840, transparent: true, opacity: 0.06, depthWrite: true, depthTest: true
+            })));
+        }
+
+        console.log('等距偏移编织线条总数:', rootGroup.children.length);
+
+        // 背景星点
+        const starsGroup = new THREE.Group();
+        const starsGeom = new THREE.BufferGeometry();
+        const starsCount = 550;
+        const starsPos = new Float32Array(starsCount * 3);
+        for (let i = 0; i < starsCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const dist = 6.5 + Math.random() * 10;
+            starsPos[i * 3] = dist * Math.sin(phi) * Math.cos(theta);
+            starsPos[i * 3 + 1] = dist * Math.sin(phi) * Math.sin(theta);
+            starsPos[i * 3 + 2] = dist * Math.cos(phi);
+        }
+        starsGeom.setAttribute('position', new THREE.BufferAttribute(starsPos, 3));
+        const starsMat = new THREE.PointsMaterial({
+            color: 0x908878, size: 0.018, transparent: true, opacity: 0.55, depthWrite: false,
+        });
+        starsGroup.add(new THREE.Points(starsGeom, starsMat));
+        scene.add(starsGroup);
+
+        // ---- 双保险动画循环 ----
+        let animFrameId;
+        function mainLoop() {
+            const t = getElapsed();
+            rootGroup.rotation.x = t * 0.14;
+            rootGroup.rotation.y = t * 0.24;
+            rootGroup.rotation.z = t * 0.10;
+            starsGroup.rotation.y = t * 0.04;
+            starsGroup.rotation.x = t * 0.025;
+
+            const camRadius = 7.3;
+            const camAngle = t * 0.08;
+            const camHeight = 2.5 + Math.sin(t * 0.16) * 0.7;
+            camera.position.x = Math.cos(camAngle) * camRadius;
+            camera.position.z = Math.sin(camAngle) * camRadius;
+            camera.position.y = camHeight;
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        function scheduleFrame() {
+            animFrameId = requestAnimationFrame(() => {
+                try { mainLoop(); } catch (e) { console.warn('动画异常:', e); }
+                scheduleFrame();
+            });
+        }
+
+        const backupTimer = setInterval(() => {
+            if (animFrameId !== undefined) {
+                cancelAnimationFrame(animFrameId);
+                scheduleFrame();
+            }
+        }, 3000);
+
+        // 预渲染首帧确保立即显示
+        renderer.render(scene, camera);
+        scheduleFrame();
+
+        // 响应式
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth, h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth, h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 120));
+
+        console.log('✅ 等距偏移编织动画已稳定运行');
+    </script>
+</body>
+</html>

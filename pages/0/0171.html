@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Jacobi椭圆函数 · 双周期空间曲线网</title>
+    <style>
+        :root { --bg: #02040a; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'STSong', 'Songti SC', 'Noto Serif SC', 'SimSun', 'Times New Roman', serif;
+            -webkit-font-smoothing: antialiased;
+            height: 100vh; width: 100vw;
+            user-select: none; -webkit-user-select: none; cursor: default;
+        }
+        #canvas-container { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+        canvas { display: block; }
+        #title-overlay {
+            position: fixed; top: 22px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+        }
+        #title-overlay .title {
+            font-size: clamp(1.0rem, 2.2vw, 1.5rem); font-weight: 400; letter-spacing: 0.09em;
+            color: #cfc7b5; text-shadow: 0 0 42px rgba(200,180,150,0.5), 0 0 70px rgba(170,150,130,0.2);
+            line-height: 1.4; white-space: nowrap;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.46rem, 0.82vw, 0.62rem); font-weight: 300; letter-spacing: 0.12em;
+            color: #a09888; text-shadow: 0 0 14px rgba(155,145,125,0.3);
+            margin-top: 2px; white-space: nowrap;
+        }
+        #formula-overlay {
+            position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+            background: rgba(2,4,10,0.7); padding: 10px 22px; border-radius: 32px;
+            border: 1px solid rgba(175,155,135,0.18);
+            backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); max-width: 95vw;
+        }
+        #formula-overlay .formula {
+            font-size: clamp(0.36rem, 0.68vw, 0.54rem); font-weight: 300; letter-spacing: 0.04em;
+            color: #c5bdaa; text-shadow: 0 0 13px rgba(185,170,145,0.25);
+            line-height: 1.5; white-space: nowrap;
+        }
+        #formula-overlay .formula .c1 { color: #d4885c; }
+        #formula-overlay .formula .c2 { color: #5d9ec6; }
+        #formula-overlay .formula .c3 { color: #c77d9f; }
+        @media (max-width: 600px) {
+            #title-overlay { top: 14px; }
+            #formula-overlay { bottom: 10px; padding: 7px 12px; border-radius: 24px; }
+            #formula-overlay .formula { font-size: 0.32rem; white-space: normal; line-height: 1.3; }
+            #title-overlay .title { font-size: 0.68rem; }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="title-overlay">
+        <div class="title">Jacobi椭圆函数 · 双周期空间曲线网</div>
+        <div class="subtitle">JACOBI ELLIPTIC FUNCTIONS &nbsp;·&nbsp; sn·cn·dn SPATIAL WEAVE</div>
+    </div>
+    <div id="formula-overlay">
+        <div class="formula">
+            <span class="c1">𝒞₀.₅:</span> x=sn(u,k₁) y=cn(u,k₁) z=dn(u,k₁) k₁=0.50 &nbsp;
+            <span class="c2">𝒞₀.₇₅:</span> x=sn(u,k₂) y=cn(u,k₂) z=dn(u,k₂) k₂=0.75
+            <br>
+            <span class="c3">𝒞₀.₉₂:</span> x=sn(u,k₃) y=cn(u,k₃) z=dn(u,k₃) k₃=0.92 &nbsp;|&nbsp; 每族12条 | u∈[−4K,4K] | 球半径R=2.6
+        </div>
+    </div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#02040a');
+        scene.fog = new THREE.Fog('#02040a', 9, 23);
+
+        const camera = new THREE.PerspectiveCamera(
+            50, container.clientWidth / Math.max(container.clientHeight, 1), 0.3, 26
+        );
+        camera.position.set(1.1, 0.55, 7.4);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = false;
+        container.appendChild(renderer.domElement);
+
+        // ==================== 常数 ====================
+        const C1 = '#d4885c', C2 = '#5d9ec6', C3 = '#c77d9f';
+        const C_REF = '#3a4a5c', C_GLINT = '#8898aa';
+        const R = 2.6;
+        const AMP = 2.2;
+        const NUM_CURVES = 12;
+        const SAMPLES = 500;
+
+        // ==================== Jacobi椭圆函数（AGM算法） ====================
+        function agmJacobiSnCnDn(u, k) {
+            if (k < 0) return agmJacobiSnCnDn(u, -k);
+            if (k > 0.9999) k = 0.9999;
+            if (k < 0.0001) {
+                return { sn: Math.sin(u), cn: Math.cos(u), dn: 1.0 };
+            }
+            const K = completeEllipticK(k);
+            // 归约u到 [-K, K] 再利用奇偶性扩展
+            const period = 4 * K;
+            let uRed = ((u % period) + period) % period;
+            const signSn = uRed > 2 * K ? -1 : 1;
+            if (uRed > 2 * K) uRed = 4 * K - uRed;
+            if (uRed > K) {
+                // 使用变换 u = K + v => sn = cd(v), cn = -k'·sd(v), dn = k'·nd(v)
+                const v = uRed - K;
+                const resV = agmCore(v, k);
+                const kp = Math.sqrt(1 - k * k);
+                const sn = resV.cn / resV.dn;
+                const cn = -kp * resV.sn / resV.dn;
+                const dn = kp / resV.dn;
+                return { sn: signSn * sn, cn, dn };
+            }
+            const res = agmCore(uRed, k);
+            return { sn: signSn * res.sn, cn: res.cn, dn: res.dn };
+        }
+
+        function agmCore(u, k) {
+            let a = 1.0;
+            let b = Math.sqrt(1 - k * k);
+            let c = k;
+            const N = 8;
+            const phiArr = [];
+            for (let n = 0; n < N; n++) {
+                const aNew = (a + b) / 2;
+                const bNew = Math.sqrt(a * b);
+                const cNew = (a - b) / 2;
+                phiArr.push({ a, b, c });
+                a = aNew;
+                b = bNew;
+                c = cNew;
+                if (c < 1e-12) break;
+            }
+            const aN = a;
+            const phi = Math.pow(2, phiArr.length) * aN * u;
+            let sinPhi = Math.sin(phi);
+            let cosPhi = Math.cos(phi);
+            for (let n = phiArr.length - 1; n >= 0; n--) {
+                const { a: an, c: cn } = phiArr[n];
+                const denom = an * (cosPhi * cosPhi + sinPhi * sinPhi * (cn * cn) / (an * an));
+                if (denom < 1e-15) break;
+                const sn = sinPhi / denom * an;
+                const cnVal = cosPhi / denom * an;
+                const dnVal = Math.sqrt(1 - k * k * sn * sn);
+                sinPhi = sn;
+                cosPhi = cnVal;
+            }
+            const sn = sinPhi;
+            const cn = cosPhi;
+            const dn = Math.sqrt(1 - k * k * sn * sn);
+            return { sn, cn, dn };
+        }
+
+        function completeEllipticK(k) {
+            let a = 1.0;
+            let b = Math.sqrt(1 - k * k);
+            let sum = 0;
+            for (let n = 0; n < 10; n++) {
+                const aNew = (a + b) / 2;
+                const bNew = Math.sqrt(a * b);
+                const c = (a - b) / 2;
+                sum += Math.pow(2, n) * c * c;
+                a = aNew;
+                b = bNew;
+                if (c < 1e-14) break;
+            }
+            return Math.PI / (2 * a);
+        }
+
+        function softClamp(vec) {
+            const len = vec.length();
+            if (len > R && len > 0.001) {
+                const excess = len - R;
+                vec.normalize().multiplyScalar(R + Math.log(1 + excess) * 0.75);
+            }
+            return vec;
+        }
+
+        // ==================== 生成曲线 ====================
+        function generateEllipticCurves(k, numCurves, samples) {
+            const curves = [];
+            const K = completeEllipticK(k);
+            const uRange = 4 * K;
+            const du = (2 * uRange) / samples;
+            for (let i = 0; i < numCurves; i++) {
+                const phase = (i / numCurves) * Math.PI * 2;
+                const pts = [];
+                for (let j = 0; j <= samples; j++) {
+                    const u = -uRange + j * du + phase * K / Math.PI;
+                    const { sn, cn, dn } = agmJacobiSnCnDn(u, k);
+                    let pt = new THREE.Vector3(
+                        AMP * sn,
+                        AMP * cn,
+                        AMP * (dn - 0.5)
+                    );
+                    pt = softClamp(pt);
+                    pts.push(pt);
+                }
+                curves.push(pts);
+            }
+            return curves;
+        }
+
+        console.log('生成k=0.50族...');
+        const curves050 = generateEllipticCurves(0.50, NUM_CURVES, SAMPLES);
+        console.log('生成k=0.75族...');
+        const curves075 = generateEllipticCurves(0.75, NUM_CURVES, SAMPLES);
+        console.log('生成k=0.92族...');
+        const curves092 = generateEllipticCurves(0.92, NUM_CURVES, SAMPLES);
+        console.log('总曲线数:', curves050.length + curves075.length + curves092.length);
+
+        function createGroup(curves, colorHex, opacity) {
+            const group = new THREE.Group();
+            for (const pts of curves) {
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(colorHex),
+                    transparent: true, opacity: opacity, depthWrite: true
+                });
+                group.add(new THREE.Line(geom, mat));
+            }
+            return group;
+        }
+
+        const group050 = createGroup(curves050, C1, 0.6);
+        const group075 = createGroup(curves075, C2, 0.56);
+        const group092 = createGroup(curves092, C3, 0.58);
+        const mainGroup = new THREE.Group();
+        mainGroup.add(group050);
+        mainGroup.add(group075);
+        mainGroup.add(group092);
+        scene.add(mainGroup);
+
+        // ==================== 参考球面线框 ====================
+        function createSphereWireframe(radius, colorHex, opacity) {
+            const group = new THREE.Group();
+            const segs = 180;
+            const gen = (f) => {
+                const pts = [];
+                for (let i = 0; i <= segs; i++) pts.push(f((i / segs) * Math.PI * 2));
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(colorHex),
+                    transparent: true, opacity: opacity, depthWrite: true
+                });
+                group.add(new THREE.Line(geom, mat));
+            };
+            gen((a) => new THREE.Vector3(Math.cos(a) * radius, Math.sin(a) * radius, 0));
+            gen((a) => new THREE.Vector3(Math.cos(a) * radius, 0, Math.sin(a) * radius));
+            gen((a) => new THREE.Vector3(0, Math.cos(a) * radius, Math.sin(a) * radius));
+            const addLat = (zVal) => {
+                const r = Math.sqrt(Math.max(0.001, radius * radius - zVal * zVal));
+                const pts = [];
+                for (let i = 0; i <= segs; i++) {
+                    const a = (i / segs) * Math.PI * 2;
+                    pts.push(new THREE.Vector3(Math.cos(a) * r, zVal, Math.sin(a) * r));
+                }
+                const g = new THREE.BufferGeometry().setFromPoints(pts);
+                const m = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(colorHex),
+                    transparent: true, opacity: opacity * 0.65, depthWrite: true
+                });
+                group.add(new THREE.Line(g, m));
+            };
+            addLat(radius * 0.52);
+            addLat(-radius * 0.52);
+            return group;
+        }
+        const sphereRef = createSphereWireframe(R, C_REF, 0.22);
+        scene.add(sphereRef);
+
+        // ==================== 轴端点光点 ====================
+        (() => {
+            const sz = 0.06;
+            const axes = [[R, 0, 0], [-R, 0, 0], [0, R, 0], [0, -R, 0], [0, 0, R], [0, 0, -R]];
+            const gGroup = new THREE.Group();
+            axes.forEach(([ax, ay, az]) => {
+                const pt = new THREE.Vector3(ax, ay, az);
+                [[-sz, 0, 0], [sz, 0, 0], [0, -sz, 0], [0, sz, 0], [0, 0, -sz], [0, 0, sz]].forEach(
+                ([dx, dy, dz]) => {
+                    const g = new THREE.BufferGeometry().setFromPoints([
+                        pt.clone().add(new THREE.Vector3(dx, dy, dz)), pt
+                    ]);
+                    const m = new THREE.LineBasicMaterial({
+                        color: new THREE.Color(C_GLINT),
+                        transparent: true, opacity: 0.5, depthWrite: true
+                    });
+                    gGroup.add(new THREE.Line(g, m));
+                });
+            });
+            mainGroup.add(gGroup);
+        })();
+
+        // ==================== 原点光点 ====================
+        (() => {
+            const sz = 0.08;
+            const g = new THREE.BufferGeometry().setFromPoints([
+                new THREE.Vector3(-sz, 0, 0), new THREE.Vector3(sz, 0, 0),
+                new THREE.Vector3(0, -sz, 0), new THREE.Vector3(0, sz, 0),
+                new THREE.Vector3(0, 0, -sz), new THREE.Vector3(0, 0, sz)
+            ]);
+            const m = new THREE.LineBasicMaterial({
+                color: new THREE.Color(C_GLINT),
+                transparent: true, opacity: 0.72, depthWrite: true
+            });
+            scene.add(new THREE.LineSegments(g, m));
+        })();
+
+        // ==================== 动画循环（绝对时间） ====================
+        const startTime = performance.now();
+        let frameCount = 0;
+        let currentTime = 0;
+
+        function animate(now) {
+            requestAnimationFrame(animate);
+            const elapsed = (now - startTime) / 1000;
+            if (elapsed <= 0) { renderer.render(scene, camera); return; }
+            currentTime = elapsed;
+            frameCount++;
+            if (frameCount === 1 || frameCount % 180 === 0) {
+                console.log(`[动画运行中] 帧:${frameCount} 时间:${currentTime.toFixed(2)}s 曲线:${NUM_CURVES*3}`);
+            }
+
+            mainGroup.rotation.y = currentTime * 0.28;
+            mainGroup.rotation.x = currentTime * 0.16 + Math.sin(currentTime * 0.25) * 0.2;
+            mainGroup.rotation.z = Math.cos(currentTime * 0.19) * 0.13;
+            sphereRef.rotation.copy(mainGroup.rotation);
+
+            const camX = 1.1 + Math.sin(currentTime * 0.14) * 0.55;
+            const camY = 0.55 + Math.cos(currentTime * 0.17) * 0.48;
+            const camZ = 7.4 + Math.sin(currentTime * 0.11) * 0.48;
+            camera.position.set(camX, camY, camZ);
+            camera.lookAt(0, 0, 0);
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth, h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth, h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 100));
+
+        console.log('=== Jacobi椭圆函数 · 双周期空间曲线网 ===');
+        console.log('k=0.50族(暖金):', curves050.length);
+        console.log('k=0.75族(冰蓝):', curves075.length);
+        console.log('k=0.92族(玫瑰粉):', curves092.length);
+        console.log('总曲线数:', curves050.length + curves075.length + curves092.length);
+        console.log('每条采样点:', SAMPLES + 1, '| 球半径:', R);
+        console.log('✅ 初始帧渲染完成，启动绝对时间动画循环...');
+
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

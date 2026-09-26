@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hopf纤维化投影 · 四维球面编织</title>
+    <style>
+        :root {
+            --bg: #02010d;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'Noto Serif SC', serif;
+            height: 100vh;
+            width: 100vw;
+            user-select: none;
+            -webkit-user-select: none;
+            cursor: default;
+            -webkit-tap-highlight-color: transparent;
+        }
+        #canvas-container {
+            position: fixed;
+            inset: 0;
+            z-index: 1;
+        }
+        canvas {
+            display: block;
+        }
+
+        #title-overlay {
+            position: fixed;
+            top: clamp(16px, 3.5vh, 42px);
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+            white-space: nowrap;
+        }
+        #title-overlay h1 {
+            color: #e1d0b5;
+            font-size: clamp(1.2rem, 2.3vw, 1.9rem);
+            font-weight: 400;
+            letter-spacing: 0.08em;
+            text-shadow: 0 0 28px rgba(215, 180, 130, 0.55), 0 0 75px rgba(190, 150, 100, 0.25);
+            margin: 0;
+        }
+        #title-overlay .subtitle {
+            color: #bda78c;
+            font-size: clamp(0.68rem, 1.15vw, 0.92rem);
+            letter-spacing: 0.06em;
+            margin-top: 0.28em;
+            text-shadow: 0 0 14px rgba(180, 140, 100, 0.4);
+        }
+
+        #formula-overlay {
+            position: fixed;
+            bottom: clamp(24px, 4.5vh, 54px);
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+            padding: 0 16px;
+        }
+        #formula-overlay .formula-box {
+            display: inline-block;
+            background: rgba(15, 11, 20, 0.72);
+            border: 1px solid rgba(170, 145, 115, 0.28);
+            border-radius: 12px;
+            padding: clamp(10px, 1.4vh, 16px) clamp(16px, 3vw, 28px);
+            backdrop-filter: blur(7px);
+            -webkit-backdrop-filter: blur(7px);
+        }
+        #formula-overlay .formula-main {
+            color: #f2dec5;
+            font-size: clamp(0.75rem, 1.3vw, 1.1rem);
+            letter-spacing: 0.04em;
+            line-height: 1.7;
+        }
+        #formula-overlay .formula-detail {
+            color: #a6947c;
+            font-size: clamp(0.58rem, 0.85vw, 0.76rem);
+            letter-spacing: 0.03em;
+            margin-top: 0.22em;
+            line-height: 1.5;
+        }
+
+        @media (max-width: 600px) {
+            #title-overlay h1 {
+                letter-spacing: 0.05em;
+            }
+            #formula-overlay .formula-box {
+                padding: 10px 16px;
+                border-radius: 10px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+
+    <div id="title-overlay">
+        <h1>Hopf纤维化投影</h1>
+        <div class="subtitle">Hopf Fibration · S³ → S² · Stereographic Projection</div>
+    </div>
+
+    <div id="formula-overlay">
+        <div class="formula-box">
+            <div class="formula-main">
+                k = r·e<sup>iα</sup> | 纤维: β ↦ (r·e<sup>i(α+β)</sup>, e<sup>iβ</sup>)/√(1+r²)
+            </div>
+            <div class="formula-detail">
+                S³ ⊂ ℂ² | 立体投影 → ℝ³ | r∈[0.12, 4.2] | 20 fibers
+            </div>
+        </div>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.157.0/build/three.module.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#02010d');
+        scene.fog = new THREE.Fog('#02010d', 6.5, 21);
+
+        const camera = new THREE.PerspectiveCamera(
+            46,
+            container.clientWidth / Math.max(container.clientHeight, 1),
+            0.3,
+            27
+        );
+        camera.position.set(0, 0.3, 7.8);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.25;
+        container.appendChild(renderer.domElement);
+
+        scene.add(new THREE.AmbientLight('#1e1e3a', 0.4));
+
+        // ==================== 主图案组 ====================
+        const mainGroup = new THREE.Group();
+        scene.add(mainGroup);
+
+        const totalPoints = 2000; // 每条纤维的采样点数
+        const allLines = [];
+        const fiberCount = 20;
+
+        const globalScale = 0.48;   // 全局缩放，确保不超出画面
+        const zModAmp = 0.07;       // 轻微z轴调制振幅
+
+        /**
+         * 生成Hopf纤维（经立体投影到ℝ³）
+         * @param {number} r - |k| 值
+         * @param {number} alpha - arg(k)
+         * @param {number} modFreq - 调制频率
+         * @param {number} modPhase - 调制相位
+         * @returns {Float32Array} 顶点坐标
+         */
+        function createHopfFiber(r, alpha, modFreq, modPhase) {
+            const vertices = new Float32Array(totalPoints * 3);
+            const invSqrt = 1 / Math.sqrt(1 + r * r);
+
+            for (let i = 0; i < totalPoints; i++) {
+                const beta = (i / (totalPoints - 1)) * Math.PI * 2; // 0→2π
+
+                // S³ 中的坐标 (u,v,w,x4)
+                const angle = alpha + beta;
+                const u = r * Math.cos(angle) * invSqrt;
+                const v = r * Math.sin(angle) * invSqrt;
+                const w = Math.cos(beta) * invSqrt;
+                const x4 = Math.sin(beta) * invSqrt;
+
+                // 立体投影：ℝ³ = (u,v,w) / (1 - x4)
+                const denom = 1 - x4;
+                const X = u / denom;
+                const Y = v / denom;
+                const Z = w / denom;
+
+                // 轻微z轴调制，增加视觉纹理
+                const modZ = zModAmp * Math.sin(modFreq * beta + modPhase);
+
+                const vec = new THREE.Vector3(X, Y + modZ, Z);
+                vec.multiplyScalar(globalScale);
+
+                vertices[i * 3] = vec.x;
+                vertices[i * 3 + 1] = vec.y;
+                vertices[i * 3 + 2] = vec.z;
+            }
+            return vertices;
+        }
+
+        function createLine(vertices, hue, opacity = 0.78) {
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+            geometry.setDrawRange(0, 0); // 初始不可见
+
+            const material = new THREE.LineBasicMaterial({
+                color: new THREE.Color().setHSL(hue, 0.90, 0.63),
+                transparent: true,
+                opacity: opacity,
+                linewidth: 1,
+                blending: THREE.AdditiveBlending,
+                depthWrite: true,
+                depthTest: true,
+            });
+
+            const line = new THREE.Line(geometry, material);
+            line.visible = false;
+            line.frustumCulled = false;
+            return line;
+        }
+
+        // ==================== 生成20条Hopf纤维 ====================
+        for (let j = 0; j < fiberCount; j++) {
+            // r值在对数尺度上均匀分布，覆盖从小到大的范围
+            const rMin = 0.12;
+            const rMax = 4.2;
+            const logRMin = Math.log(rMin);
+            const logRMax = Math.log(rMax);
+            const r = Math.exp(logRMin + (logRMax - logRMin) * (j / (fiberCount - 1)));
+            // alpha均匀分布
+            const alpha = (j / fiberCount) * Math.PI * 2;
+            // 调制参数
+            const modFreq = 3 + (j % 6);
+            const modPhase = j * 0.45;
+
+            const vertices = createHopfFiber(r, alpha, modFreq, modPhase);
+            const hue = (j / fiberCount) * 0.82;
+            const line = createLine(vertices, hue, 0.75);
+            mainGroup.add(line);
+            allLines.push(line);
+        }
+
+        console.log(`✅ 已生成 ${fiberCount} 条Hopf纤维`);
+
+        // ==================== 动画状态机 ====================
+        const APPEAR_TIME = 5.0;      // 生长5秒
+        const PAUSE_TIME = 1.5;       // 停顿1.5秒
+        const DISAPPEAR_TIME = 5.0;   // 消散5秒
+        const CYCLE_TOTAL = APPEAR_TIME + PAUSE_TIME + DISAPPEAR_TIME; // 11.5秒
+
+        let animationStartTime = null;
+        let firstFrameDone = false;
+
+        function easeOutCubic(t) {
+            return 1 - Math.pow(1 - t, 3);
+        }
+        function easeInCubic(t) {
+            return t * t * t;
+        }
+
+        function getProgress(elapsedSeconds) {
+            const cycle = elapsedSeconds % CYCLE_TOTAL;
+            if (cycle < APPEAR_TIME) {
+                const t = cycle / APPEAR_TIME;
+                return { progress: easeOutCubic(t), phase: 'appear' };
+            } else if (cycle < APPEAR_TIME + PAUSE_TIME) {
+                return { progress: 1.0, phase: 'pause' };
+            } else {
+                const t = (cycle - APPEAR_TIME - PAUSE_TIME) / DISAPPEAR_TIME;
+                return { progress: 1.0 - easeInCubic(t), phase: 'disappear' };
+            }
+        }
+
+        // ==================== 渲染循环 ====================
+        function animate(timestamp) {
+            requestAnimationFrame(animate);
+
+            // 第一帧：强制渲染空白，确保无残留图形
+            if (animationStartTime === null) {
+                animationStartTime = timestamp;
+                allLines.forEach(line => {
+                    line.visible = false;
+                    if (line.geometry) line.geometry.setDrawRange(0, 0);
+                });
+                renderer.render(scene, camera);
+                firstFrameDone = true;
+                return;
+            }
+
+            const elapsed = (timestamp - animationStartTime) / 1000;
+            const { progress } = getProgress(elapsed);
+            const drawCount = Math.floor(progress * totalPoints);
+            const shouldBeVisible = drawCount >= 2;
+
+            // 批量更新所有纤维的绘制范围
+            for (let i = 0; i < allLines.length; i++) {
+                const line = allLines[i];
+                if (!line || !line.geometry) continue;
+                const maxPts = line.geometry.attributes.position.count;
+                const lineDraw = Math.min(drawCount, maxPts);
+                if (shouldBeVisible && lineDraw >= 2) {
+                    line.visible = true;
+                    line.geometry.setDrawRange(0, lineDraw);
+                } else {
+                    line.visible = false;
+                    line.geometry.setDrawRange(0, 0);
+                }
+            }
+
+            // 整体缓慢旋转，展现编织结构
+            const rotY = elapsed * 0.065;
+            const rotX = Math.sin(elapsed * 0.14) * 0.04;
+            const rotZ = Math.cos(elapsed * 0.19) * 0.035;
+            mainGroup.rotation.set(rotX, rotY, rotZ);
+
+            // 相机轻柔晃动，增强立体感
+            camera.position.x = Math.sin(elapsed * 0.13) * 0.2;
+            camera.position.y = 0.3 + Math.cos(elapsed * 0.17) * 0.16;
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        // ==================== 响应式处理 ====================
+        function onResize() {
+            const w = container.clientWidth;
+            const h = container.clientHeight;
+            if (h <= 0) return;
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        }
+        window.addEventListener('resize', onResize, { passive: true });
+        window.addEventListener('orientationchange', () => setTimeout(onResize, 150), { passive: true });
+
+        // ==================== 启动 ====================
+        console.log('🚀 Hopf纤维化投影动画启动');
+        console.log(`   - 纤维数量: ${fiberCount}`);
+        console.log(`   - 采样点/纤维: ${totalPoints}`);
+        console.log(`   - 动画周期: ${CYCLE_TOTAL}s (生长${APPEAR_TIME}s + 停顿${PAUSE_TIME}s + 消散${DISAPPEAR_TIME}s)`);
+
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

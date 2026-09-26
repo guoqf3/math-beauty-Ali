@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>织光锦缎</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #0d0d1a;
+            font-family: sans-serif;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="weaveCanvas"></canvas>
+    <script>
+        (function() {
+            'use strict';
+
+            const canvas = document.getElementById('weaveCanvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            // ---------- 配置参数 ----------
+            const CONFIG = {
+                horizontalLines: 36,        // 水平线数量（经线）
+                verticalLines: 52,          // 垂直线数量（纬线）
+                pointCountPerLine: 60,      // 每条线的采样点数量
+                waveAmplitude: 26,          // 基础波浪振幅
+                waveFrequency: 0.015,       // 波浪频率
+                waveSpeed: 0.0015,          // 波浪动画速度
+                mouseAttractRadius: 200,    // 鼠标吸引半径
+                mouseAttractStrength: 35,   // 吸引导致的位移强度
+                mouseReleaseDamping: 0.06,  // 鼠标释放后的回弹速度
+                clickRippleRadius: 260,     // 点击波纹半径
+                clickRippleDuration: 900,   // 波纹持续时间(ms)
+                clickRippleStrength: 48,    // 波纹位移强度
+                maxRipples: 5,              // 最大同时波纹数量
+                returnForce: 0.055,         // 回弹力系数
+                damping: 0.94,              // 速度阻尼
+                lineWidth: 1.4,             // 线条宽度
+                hueBase: 225,               // 基础色相（蓝紫）
+                hueVariation: 40,           // 色相变化范围
+                saturation: 75,             // 饱和度
+                lightnessBase: 50,          // 基础亮度
+                lightnessMax: 78,           // 最高亮度
+                backgroundFade: 0.22,       // 背景拖尾强度
+                backgroundColor: '#0d0d1a',
+            };
+
+            let width = 0;
+            let height = 0;
+            let dpr = 1;
+            // 线条存储：line { type: 'h'|'v', index: number, points: [{x, y, baseX, baseY, offsetX, offsetY, vx, vy}] }
+            let lines = [];
+            let ripples = [];
+            let mouseX = -9999;
+            let mouseY = -9999;
+            let mouseActive = false;
+            let targetMouseX = -9999;
+            let targetMouseY = -9999;
+            let smoothMouseX = -9999;
+            let smoothMouseY = -9999;
+            let animationId = null;
+            let lastTime = 0;
+            let time = 0;
+
+            // ---------- 波纹类 ----------
+            class Ripple {
+                constructor(x, y, startTime) {
+                    this.x = x;
+                    this.y = y;
+                    this.startTime = startTime;
+                    this.duration = CONFIG.clickRippleDuration;
+                    this.maxRadius = CONFIG.clickRippleRadius;
+                    this.strength = CONFIG.clickRippleStrength;
+                }
+
+                getProgress(now) {
+                    return Math.min(1, (now - this.startTime) / this.duration);
+                }
+
+                // 获取波纹对某点的位移影响（向外推）
+                getDisplacement(px, py, now) {
+                    const progress = this.getProgress(now);
+                    if (progress >= 1) return { dx: 0, dy: 0 };
+                    const dx = px - this.x;
+                    const dy = py - this.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    const radius = this.maxRadius * (0.2 + 0.8 * progress);
+                    if (dist > radius || dist < 0.01) return { dx: 0, dy: 0 };
+                    const envelope = Math.max(0, 1 - progress) * (1 - dist / radius);
+                    const waveFactor = Math.sin((dist / radius) * Math.PI * 3 - progress * 9);
+                    const magnitude = this.strength * envelope * waveFactor;
+                    return {
+                        dx: (dx / dist) * magnitude,
+                        dy: (dy / dist) * magnitude,
+                    };
+                }
+            }
+
+            // ---------- 初始化线条网格 ----------
+            function initLines() {
+                lines = [];
+                const cols = CONFIG.verticalLines;
+                const rows = CONFIG.horizontalLines;
+                const cellW = width / (cols - 1);
+                const cellH = height / (rows - 1);
+                const ptsPerLine = CONFIG.pointCountPerLine;
+
+                // 水平线（沿行方向）
+                for (let r = 0; r < rows; r++) {
+                    const y = r * cellH;
+                    const points = [];
+                    for (let i = 0; i < ptsPerLine; i++) {
+                        const t = i / (ptsPerLine - 1);
+                        const x = t * width;
+                        points.push({
+                            x: x,
+                            y: y,
+                            baseX: x,
+                            baseY: y,
+                            offsetX: 0,
+                            offsetY: 0,
+                            vx: 0,
+                            vy: 0,
+                        });
+                    }
+                    lines.push({ type: 'h', index: r, points: points });
+                }
+
+                // 垂直线（沿列方向）
+                for (let c = 0; c < cols; c++) {
+                    const x = c * cellW;
+                    const points = [];
+                    for (let i = 0; i < ptsPerLine; i++) {
+                        const t = i / (ptsPerLine - 1);
+                        const y = t * height;
+                        points.push({
+                            x: x,
+                            y: y,
+                            baseX: x,
+                            baseY: y,
+                            offsetX: 0,
+                            offsetY: 0,
+                            vx: 0,
+                            vy: 0,
+                        });
+                    }
+                    lines.push({ type: 'v', index: c, points: points });
+                }
+            }
+
+            // ---------- 调整画布尺寸 ----------
+            function resizeCanvas() {
+                dpr = Math.min(window.devicePixelRatio || 1, 2);
+                width = window.innerWidth;
+                height = window.innerHeight;
+                canvas.width = Math.floor(width * dpr);
+                canvas.height = Math.floor(height * dpr);
+                canvas.style.width = width + 'px';
+                canvas.style.height = height + 'px';
+                ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                ctx.fillStyle = CONFIG.backgroundColor;
+                ctx.fillRect(0, 0, width, height);
+                initLines();
+                drawScene(performance.now());
+            }
+
+            // ---------- 更新线条点位置 ----------
+            function updateLines(now) {
+                const dt = Math.min(2, (now - lastTime) / 16.67) || 1;
+                time = now * 0.001;
+
+                // 平滑鼠标位置
+                if (mouseActive) {
+                    smoothMouseX += (targetMouseX - smoothMouseX) * 0.16;
+                    smoothMouseY += (targetMouseY - smoothMouseY) * 0.16;
+                }
+
+                // 遍历所有线条的所有点
+                for (const line of lines) {
+                    for (const pt of line.points) {
+                        // 目标偏移初始为0
+                        let targetOffX = 0;
+                        let targetOffY = 0;
+
+                        // 基础波浪（正弦叠加，使织物有自然起伏）
+                        const wavePhase = time * CONFIG.waveSpeed * 1000;
+                        if (line.type === 'h') {
+                            // 水平线：在垂直方向波动
+                            targetOffY += Math.sin(pt.baseX * CONFIG.waveFrequency + wavePhase) * CONFIG
+                                .waveAmplitude * 0.6;
+                            targetOffY += Math.sin(pt.baseX * CONFIG.waveFrequency * 2.7 + wavePhase * 1.7) * CONFIG
+                                .waveAmplitude * 0.3;
+                        } else {
+                            // 垂直线：在水平方向波动
+                            targetOffX += Math.sin(pt.baseY * CONFIG.waveFrequency + wavePhase * 1.3) * CONFIG
+                                .waveAmplitude * 0.6;
+                            targetOffX += Math.sin(pt.baseY * CONFIG.waveFrequency * 2.3 + wavePhase * 0.9) * CONFIG
+                                .waveAmplitude * 0.3;
+                        }
+
+                        // 鼠标吸引：将点拉向鼠标位置
+                        if (mouseActive && smoothMouseX > -1000) {
+                            const dx = smoothMouseX - pt.x;
+                            const dy = smoothMouseY - pt.y;
+                            const dist = Math.sqrt(dx * dx + dy * dy);
+                            if (dist < CONFIG.mouseAttractRadius && dist > 0.01) {
+                                const influence = (1 - dist / CONFIG.mouseAttractRadius);
+                                const strength = influence * influence * CONFIG.mouseAttractStrength;
+                                targetOffX += (dx / dist) * strength;
+                                targetOffY += (dy / dist) * strength;
+                            }
+                        }
+
+                        // 波纹影响
+                        for (const ripple of ripples) {
+                            const disp = ripple.getDisplacement(pt.baseX, pt.baseY, now);
+                            targetOffX += disp.dx;
+                            targetOffY += disp.dy;
+                        }
+
+                        // 弹性回弹（向0偏移靠拢，因为目标偏移已经包含了所有力）
+                        const returnX = -pt.offsetX * CONFIG.returnForce;
+                        const returnY = -pt.offsetY * CONFIG.returnForce;
+
+                        pt.vx += (returnX + targetOffX * CONFIG.returnForce * 1.2) * dt;
+                        pt.vy += (returnY + targetOffY * CONFIG.returnForce * 1.2) * dt;
+                        pt.vx *= CONFIG.damping;
+                        pt.vy *= CONFIG.damping;
+
+                        pt.offsetX += pt.vx * dt;
+                        pt.offsetY += pt.vy * dt;
+
+                        // 更新实际位置
+                        pt.x = pt.baseX + pt.offsetX;
+                        pt.y = pt.baseY + pt.offsetY;
+
+                        // 限制偏移量，防止跑飞
+                        const maxOffset = 100;
+                        if (pt.offsetX > maxOffset) pt.offsetX = maxOffset;
+                        if (pt.offsetX < -maxOffset) pt.offsetX = -maxOffset;
+                        if (pt.offsetY > maxOffset) pt.offsetY = maxOffset;
+                        if (pt.offsetY < -maxOffset) pt.offsetY = -maxOffset;
+
+                        pt.x = pt.baseX + pt.offsetX;
+                        pt.y = pt.baseY + pt.offsetY;
+                    }
+                }
+
+                // 移除过期波纹
+                ripples = ripples.filter(r => r.getProgress(now) < 1);
+                if (ripples.length > CONFIG.maxRipples) {
+                    ripples = ripples.slice(-CONFIG.maxRipples);
+                }
+            }
+
+            // ---------- 绘制场景 ----------
+            function drawScene(now) {
+                // 半透明背景拖尾
+                ctx.fillStyle = 'rgba(13, 13, 26, ' + CONFIG.backgroundFade + ')';
+                ctx.fillRect(0, 0, width, height);
+
+                // 鼠标光晕
+                if (mouseActive && smoothMouseX > -1000) {
+                    const glowRadius = 140;
+                    const grad = ctx.createRadialGradient(smoothMouseX, smoothMouseY, 0, smoothMouseX, smoothMouseY,
+                        glowRadius);
+                    grad.addColorStop(0, 'rgba(130, 160, 255, 0.07)');
+                    grad.addColorStop(1, 'rgba(0,0,0,0)');
+                    ctx.fillStyle = grad;
+                    ctx.beginPath();
+                    ctx.arc(smoothMouseX, smoothMouseY, glowRadius, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+
+                // 绘制所有线条
+                for (const line of lines) {
+                    const pts = line.points;
+                    if (pts.length < 2) continue;
+
+                    // 根据线条类型和索引设置颜色
+                    const hue = (CONFIG.hueBase + (line.index / (line.type === 'h' ? CONFIG.horizontalLines : CONFIG
+                        .verticalLines)) * CONFIG.hueVariation) % 360;
+                    const lightOffset = Math.sin(time + line.index * 0.1) * 5;
+
+                    ctx.beginPath();
+                    ctx.moveTo(pts[0].x, pts[0].y);
+                    for (let i = 1; i < pts.length; i++) {
+                        const prev = pts[i - 1];
+                        const curr = pts[i];
+                        const midX = (prev.x + curr.x) / 2;
+                        const midY = (prev.y + curr.y) / 2;
+                        ctx.quadraticCurveTo(prev.x, prev.y, midX, midY);
+                    }
+                    const last = pts[pts.length - 1];
+                    ctx.lineTo(last.x, last.y);
+
+                    const lightness = CONFIG.lightnessBase + lightOffset + Math.sin(time * 2 + line.index) * 8;
+                    const clampedLight = Math.max(35, Math.min(85, lightness));
+                    ctx.strokeStyle = `hsla(${hue}, ${CONFIG.saturation}%, ${clampedLight}%, 0.55)`;
+                    ctx.lineWidth = CONFIG.lineWidth;
+                    ctx.stroke();
+                }
+
+                // 绘制线条交点的高光（每隔几个交点）
+                const hLines = lines.filter(l => l.type === 'h');
+                const vLines = lines.filter(l => l.type === 'v');
+                if (hLines.length > 0 && vLines.length > 0) {
+                    const hStep = Math.max(1, Math.floor(hLines.length / 18));
+                    const vStep = Math.max(1, Math.floor(vLines.length / 28));
+                    for (let hi = 0; hi < hLines.length; hi += hStep) {
+                        const hLine = hLines[hi];
+                        for (let vi = 0; vi < vLines.length; vi += vStep) {
+                            const vLine = vLines[vi];
+                            // 找近似交点（使用线条中点附近的点）
+                            const hPt = hLine.points[Math.floor(hLine.points.length / 2)];
+                            const vPt = vLine.points[Math.floor(vLine.points.length / 2)];
+                            const ix = (hPt.x + vPt.x) / 2;
+                            const iy = (hPt.y + vPt.y) / 2;
+                            // 计算到鼠标距离决定亮度
+                            let bright = 0.25;
+                            if (mouseActive && smoothMouseX > -1000) {
+                                const dx = ix - smoothMouseX;
+                                const dy = iy - smoothMouseY;
+                                const dist = Math.sqrt(dx * dx + dy * dy);
+                                if (dist < 120) bright = 0.5 + (1 - dist / 120) * 0.5;
+                            }
+                            if (bright > 0.3) {
+                                ctx.fillStyle = `hsla(${CONFIG.hueBase + 20}, 100%, 90%, ${bright * 0.35})`;
+                                ctx.beginPath();
+                                ctx.arc(ix, iy, 1.6, 0, Math.PI * 2);
+                                ctx.fill();
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ---------- 动画循环 ----------
+            function animate(timestamp) {
+                const now = performance.now();
+                if (lastTime === 0) lastTime = now;
+                const dt = now - lastTime;
+                if (dt > 100) {
+                    lastTime = now - 16;
+                } else {
+                    lastTime = now;
+                }
+
+                updateLines(now);
+                drawScene(now);
+
+                animationId = requestAnimationFrame(animate);
+            }
+
+            // ---------- 交互事件 ----------
+            function updateMousePosition(clientX, clientY) {
+                targetMouseX = clientX;
+                targetMouseY = clientY;
+                if (!mouseActive) {
+                    mouseActive = true;
+                    smoothMouseX = targetMouseX;
+                    smoothMouseY = targetMouseY;
+                }
+            }
+
+            function handleClick(clientX, clientY) {
+                const now = performance.now();
+                ripples.push(new Ripple(clientX, clientY, now));
+                if (ripples.length > CONFIG.maxRipples) {
+                    ripples = ripples.slice(-CONFIG.maxRipples);
+                }
+            }
+
+            function setupEvents() {
+                window.addEventListener('mousemove', (e) => {
+                    updateMousePosition(e.clientX, e.clientY);
+                }, { passive: true });
+
+                window.addEventListener('mouseleave', () => {
+                    mouseActive = false;
+                    smoothMouseX = -9999;
+                    smoothMouseY = -9999;
+                });
+
+                window.addEventListener('mousedown', (e) => {
+                    handleClick(e.clientX, e.clientY);
+                });
+
+                window.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        updateMousePosition(touch.clientX, touch.clientY);
+                        handleClick(touch.clientX, touch.clientY);
+                    }
+                }, { passive: false });
+
+                window.addEventListener('touchmove', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        updateMousePosition(touch.clientX, touch.clientY);
+                    }
+                }, { passive: false });
+
+                window.addEventListener('touchend', () => {
+                    mouseActive = false;
+                    smoothMouseX = -9999;
+                    smoothMouseY = -9999;
+                });
+
+                window.addEventListener('resize', () => {
+                    resizeCanvas();
+                });
+
+                document.addEventListener('visibilitychange', () => {
+                    if (document.hidden) {
+                        if (animationId) {
+                            cancelAnimationFrame(animationId);
+                            animationId = null;
+                        }
+                        lastTime = 0;
+                    } else {
+                        if (!animationId) {
+                            lastTime = 0;
+                            animationId = requestAnimationFrame(animate);
+                        }
+                    }
+                });
+            }
+
+            // ---------- 启动 ----------
+            function init() {
+                resizeCanvas();
+                setupEvents();
+                lastTime = 0;
+                animationId = requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.__weaveGlow = {
+                config: CONFIG,
+                lines: lines,
+                ripples: ripples,
+            };
+        })();
+    </script>
+</body>
+</html>

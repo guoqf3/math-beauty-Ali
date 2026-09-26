@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>黎曼zeta等模线 · 临界编织</title>
+    <style>
+        :root {
+            --bg: #06060c;
+            --gold: #d4a843;
+            --cyan: #45b7aa;
+            --magenta: #d4708a;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'SimSun', serif;
+            -webkit-font-smoothing: antialiased;
+            user-select: none;
+        }
+        #canvas-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+        }
+        canvas { display: block; }
+        .overlay-title {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 22px 20px 8px;
+            text-align: center;
+            background: linear-gradient(180deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.8) 55%, rgba(6,6,12,0) 100%);
+        }
+        .overlay-title h2 {
+            font-size: clamp(1.1rem, 2.2vw, 1.8rem);
+            font-weight: 400;
+            letter-spacing: 0.13em;
+            color: #e8d5b0;
+            text-shadow: 0 0 30px rgba(212,168,67,0.45), 0 0 60px rgba(212,168,67,0.18);
+            margin: 0 0 2px;
+            line-height: 1.3;
+        }
+        .overlay-title .sub {
+            font-size: clamp(0.65rem, 1.1vw, 0.85rem);
+            letter-spacing: 0.22em;
+            color: rgba(200,180,150,0.65);
+        }
+        .overlay-formula {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 8px 20px 18px;
+            text-align: center;
+            background: linear-gradient(0deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.82) 55%, rgba(6,6,12,0) 100%);
+        }
+        .formula-text {
+            font-size: clamp(0.6rem, 1.0vw, 0.8rem);
+            color: rgba(210,200,185,0.8);
+            letter-spacing: 0.03em;
+            line-height: 1.7;
+        }
+        .clr-gold { color: #d4a843; font-weight: bold; }
+        .clr-cyan { color: #45b7aa; font-weight: bold; }
+        .clr-magenta { color: #d4708a; font-weight: bold; }
+        .formula-sep {
+            display: inline-block;
+            margin: 0 14px;
+            color: rgba(150,140,130,0.35);
+        }
+    </style>
+</head>
+<body>
+    <div class="overlay-title">
+        <h2>黎曼zeta等模线 · 临界编织</h2>
+        <div class="sub">Riemann zeta modulus contours · Critical strip · Stereographic projection</div>
+    </div>
+    <div class="overlay-formula">
+        <div class="formula-text">
+            <span class="clr-gold">ζ(s) = Σ n⁻ˢ</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-cyan">|ζ(σ+it)| = cₖ</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-magenta">s ∈ [0.1,0.9]×[10,30]</span>
+        </div>
+    </div>
+    <div id="canvas-container"></div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(46, container.clientWidth / container.clientHeight, 0.5, 22);
+        camera.position.set(3.2, 2.1, 7.0);
+        camera.lookAt(0, 0, 0);
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x06060c, 1);
+        container.appendChild(renderer.domElement);
+
+        // 手动时钟——杜绝暂停
+        let startTime = performance.now();
+        const getElapsed = () => (performance.now() - startTime) * 0.001;
+
+        const COLOR_GOLD = 0xd4a843;
+        const COLOR_CYAN = 0x45b7aa;
+        const COLOR_MAGENTA = 0xd4708a;
+        const SPHERE_R = 2.65;
+        const PROJ_D = 2.3;
+
+        // 球极投影（矩形区域映射到球面）
+        function stereographic(px, py) {
+            const denom = px * px + py * py + PROJ_D * PROJ_D;
+            return new THREE.Vector3(
+                2 * PROJ_D * px / denom,
+                2 * PROJ_D * py / denom,
+                (px * px + py * py - PROJ_D * PROJ_D) / denom
+            ).multiplyScalar(SPHERE_R);
+        }
+
+        // 将复平面坐标 (σ, t) 映射到显示平面 (px, py)
+        function mapToPlane(sigma, t) {
+            const px = (sigma - 0.5) * 8.0;
+            const py = (t - 20) * 0.32;
+            return { px, py };
+        }
+
+        // ---------- 黎曼zeta函数近似 (Euler-Maclaurin部分和) ----------
+        function zetaApprox(sigma, t) {
+            const sRe = sigma;
+            const sIm = t;
+            const N = 60; // 求和项数
+            let sumRe = 0, sumIm = 0;
+            for (let n = 1; n <= N; n++) {
+                const logN = Math.log(n);
+                const expRe = Math.exp(-sRe * logN);
+                const angle = -sIm * logN;
+                sumRe += expRe * Math.cos(angle);
+                sumIm += expRe * Math.sin(angle);
+            }
+            // 余项近似（简化处理）
+            const N1 = N + 0.5;
+            const logN1 = Math.log(N1);
+            const expTail = Math.exp(-sRe * logN1);
+            const tailRe = expTail * (Math.cos(-sIm * logN1) * 0.5 / (sRe - 1 + 1e-10));
+            const tailIm = expTail * (Math.sin(-sIm * logN1) * 0.5 / (sRe - 1 + 1e-10));
+            if (sRe > 0.3) {
+                sumRe += tailRe;
+                sumIm += tailIm;
+            }
+            const mod = Math.sqrt(sumRe * sumRe + sumIm * sumIm);
+            return mod;
+        }
+
+        // 梯度计算 (数值微分)
+        function gradMod(sigma, t) {
+            const h = 1e-5;
+            const f0 = zetaApprox(sigma, t);
+            const fx = zetaApprox(sigma + h, t);
+            const fy = zetaApprox(sigma, t + h);
+            return {
+                dx: (fx - f0) / h,
+                dy: (fy - f0) / h
+            };
+        }
+
+        // 等值线追踪
+        function traceLevelCurve(sigma0, t0, targetVal, maxSteps, stepSize) {
+            const pts = [];
+            let sigma = sigma0;
+            let t = t0;
+            const visited = new Set();
+
+            for (let s = 0; s < maxSteps; s++) {
+                if (sigma < 0.12 || sigma > 0.88 || t < 10.5 || t > 29.5) break;
+                const key = Math.round(sigma * 120) + ',' + Math.round(t * 60);
+                if (visited.has(key) && s > 30) break;
+                if (s > 20) visited.add(key);
+
+                const val = zetaApprox(sigma, t);
+                const err = targetVal - val;
+                const gr = gradMod(sigma, t);
+                const g2 = gr.dx * gr.dx + gr.dy * gr.dy;
+                if (g2 < 1e-14) break;
+
+                // 牛顿校正
+                sigma += err * gr.dx / g2;
+                t += err * gr.dy / g2;
+
+                const { px, py } = mapToPlane(sigma, t);
+                const sp = stereographic(px, py);
+                if (sp && sp.length() < 9.0) pts.push(sp);
+
+                // 切线方向推进
+                const tx = -gr.dy;
+                const ty = gr.dx;
+                const tn = Math.sqrt(tx * tx + ty * ty);
+                if (tn < 1e-10) break;
+                sigma += stepSize * tx / tn;
+                t += stepSize * ty / tn;
+            }
+            return pts;
+        }
+
+        // 寻找种子点
+        function findSeeds(targetVal, scanSteps) {
+            const seeds = [];
+            const dSigma = 0.7 / scanSteps;
+            const dT = 19 / scanSteps;
+            for (let i = 0; i <= scanSteps; i++) {
+                const sigma = 0.15 + i * dSigma;
+                for (let j = 0; j <= scanSteps; j++) {
+                    const t = 11 + j * dT;
+                    const val = zetaApprox(sigma, t);
+                    if (Math.abs(val - targetVal) < 0.20 && val < 30) {
+                        let tooClose = false;
+                        for (const [ss, st] of seeds) {
+                            if (Math.abs(sigma - ss) < 0.06 && Math.abs(t - st) < 0.6) { tooClose = true; break; }
+                        }
+                        if (!tooClose) seeds.push([sigma, t]);
+                    }
+                }
+            }
+            return seeds;
+        }
+
+        // 生成一族等值线
+        function createLevelCurves(targetVals, color, opacity, stepSize, maxSteps) {
+            const group = new THREE.Group();
+            for (const tv of targetVals) {
+                const seeds = findSeeds(tv, 32);
+                const usedSeeds = new Set();
+                for (const [sx, st] of seeds) {
+                    const key = Math.round(sx * 80) + ',' + Math.round(st * 30);
+                    if (usedSeeds.has(key)) continue;
+                    usedSeeds.add(key);
+                    const pts = traceLevelCurve(sx, st, tv, maxSteps, stepSize);
+                    if (pts.length < 2) continue;
+                    const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                    const mat = new THREE.LineBasicMaterial({
+                        color, transparent: true, opacity, depthWrite: true, depthTest: true,
+                    });
+                    group.add(new THREE.Line(geom, mat));
+                }
+            }
+            return group;
+        }
+
+        // 在搜索范围内采样函数值
+        function sampleRange() {
+            const samples = [];
+            for (let i = 0; i < 40; i++) {
+                const sigma = 0.15 + i * 0.7 / 39;
+                for (let j = 0; j < 40; j++) {
+                    const t = 11 + j * 19 / 39;
+                    const v = zetaApprox(sigma, t);
+                    if (v < 20) samples.push(v);
+                }
+            }
+            samples.sort((a, b) => a - b);
+            return {
+                min: samples[Math.floor(samples.length * 0.05)],
+                max: samples[Math.floor(samples.length * 0.95)]
+            };
+        }
+
+        // 主组
+        const rootGroup = new THREE.Group();
+        rootGroup.name = 'zeta-contours';
+        scene.add(rootGroup);
+
+        const { min, max } = sampleRange();
+        const step = (max - min) / 28;
+        const allTargets = [];
+        for (let i = 0; i < 28; i++) allTargets.push(min + (i + 0.5) * step);
+
+        // 分配三种颜色
+        const goldTargets = [], cyanTargets = [], magentaTargets = [];
+        allTargets.forEach((v, i) => {
+            if (i % 3 === 0) goldTargets.push(v);
+            else if (i % 3 === 1) cyanTargets.push(v);
+            else magentaTargets.push(v);
+        });
+
+        rootGroup.add(createLevelCurves(goldTargets, COLOR_GOLD, 0.55, 0.022, 450));
+        rootGroup.add(createLevelCurves(cyanTargets, COLOR_CYAN, 0.55, 0.022, 450));
+        rootGroup.add(createLevelCurves(magentaTargets, COLOR_MAGENTA, 0.55, 0.022, 450));
+
+        console.log('zeta等模线总数:', rootGroup.children.length);
+
+        // 背景星点
+        const starsGroup = new THREE.Group();
+        const starsGeom = new THREE.BufferGeometry();
+        const starsCount = 550;
+        const starsPos = new Float32Array(starsCount * 3);
+        for (let i = 0; i < starsCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const dist = 6.5 + Math.random() * 10;
+            starsPos[i * 3] = dist * Math.sin(phi) * Math.cos(theta);
+            starsPos[i * 3 + 1] = dist * Math.sin(phi) * Math.sin(theta);
+            starsPos[i * 3 + 2] = dist * Math.cos(phi);
+        }
+        starsGeom.setAttribute('position', new THREE.BufferAttribute(starsPos, 3));
+        const starsMat = new THREE.PointsMaterial({
+            color: 0x908878, size: 0.018, transparent: true, opacity: 0.55, depthWrite: false,
+        });
+        starsGroup.add(new THREE.Points(starsGeom, starsMat));
+        scene.add(starsGroup);
+
+        // 辅助参考球面
+        for (let i = 0; i < 10; i++) {
+            const lat = (i + 0.5) * Math.PI / 10;
+            const r = SPHERE_R * Math.sin(lat);
+            const z = SPHERE_R * Math.cos(lat);
+            const pts = [];
+            for (let j = 0; j <= 240; j++) {
+                const phi = j * 2 * Math.PI / 240;
+                pts.push(new THREE.Vector3(r * Math.cos(phi), z, r * Math.sin(phi)));
+            }
+            const geom = new THREE.BufferGeometry().setFromPoints(pts);
+            rootGroup.add(new THREE.Line(geom, new THREE.LineBasicMaterial({
+                color: 0x403830, transparent: true, opacity: 0.10, depthWrite: true, depthTest: true
+            })));
+        }
+        for (let k = 0; k < 8; k++) {
+            const phi = k * Math.PI / 4;
+            const pts = [];
+            for (let j = 0; j <= 240; j++) {
+                const theta = 0.02 + j * Math.PI / 240;
+                const st = Math.sin(theta);
+                pts.push(new THREE.Vector3(SPHERE_R * st * Math.cos(phi), SPHERE_R * Math.cos(theta), SPHERE_R * st * Math.sin(phi)));
+            }
+            const geom = new THREE.BufferGeometry().setFromPoints(pts);
+            rootGroup.add(new THREE.Line(geom, new THREE.LineBasicMaterial({
+                color: 0x303840, transparent: true, opacity: 0.08, depthWrite: true, depthTest: true
+            })));
+        }
+
+        // ---- 双保险动画循环 ----
+        let animFrameId;
+        function mainLoop() {
+            const t = getElapsed();
+            rootGroup.rotation.x = t * 0.14;
+            rootGroup.rotation.y = t * 0.24;
+            rootGroup.rotation.z = t * 0.10;
+            starsGroup.rotation.y = t * 0.04;
+            starsGroup.rotation.x = t * 0.025;
+
+            const camRadius = 7.2;
+            const camAngle = t * 0.08;
+            const camHeight = 2.2 + Math.sin(t * 0.16) * 0.7;
+            camera.position.x = Math.cos(camAngle) * camRadius;
+            camera.position.z = Math.sin(camAngle) * camRadius;
+            camera.position.y = camHeight;
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        function scheduleFrame() {
+            animFrameId = requestAnimationFrame(() => {
+                try { mainLoop(); } catch (e) { console.warn('动画异常:', e); }
+                scheduleFrame();
+            });
+        }
+
+        const backupTimer = setInterval(() => {
+            if (animFrameId !== undefined) {
+                cancelAnimationFrame(animFrameId);
+                scheduleFrame();
+            }
+        }, 3000);
+
+        // 预渲染首帧确保立即显示
+        renderer.render(scene, camera);
+        scheduleFrame();
+
+        // 响应式
+        window.addEventListener('resize', () => {
+            camera.aspect = container.clientWidth / Math.max(container.clientHeight, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            camera.aspect = container.clientWidth / Math.max(container.clientHeight, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        }, 120));
+
+        console.log('✅ 黎曼zeta等模线临界编织动画已稳定运行');
+    </script>
+</body>
+</html>

@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>科赫雪花 · 分形边界</title>
+    <style>
+        :root {
+            --bg: #02010e;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'Noto Serif SC', serif;
+            height: 100vh;
+            width: 100vw;
+            user-select: none;
+            -webkit-user-select: none;
+            cursor: default;
+            -webkit-tap-highlight-color: transparent;
+        }
+        #canvas-container {
+            position: fixed;
+            inset: 0;
+            z-index: 1;
+        }
+        canvas {
+            display: block;
+        }
+
+        #title-overlay {
+            position: fixed;
+            top: clamp(16px, 3.5vh, 42px);
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+            white-space: nowrap;
+        }
+        #title-overlay h1 {
+            color: #e0cfb4;
+            font-size: clamp(1.1rem, 2.1vw, 1.8rem);
+            font-weight: 400;
+            letter-spacing: 0.08em;
+            text-shadow: 0 0 28px rgba(210, 175, 130, 0.55), 0 0 75px rgba(185, 145, 100, 0.25);
+            margin: 0;
+        }
+        #title-overlay .subtitle {
+            color: #bca689;
+            font-size: clamp(0.64rem, 1.1vw, 0.88rem);
+            letter-spacing: 0.06em;
+            margin-top: 0.28em;
+            text-shadow: 0 0 14px rgba(180, 140, 100, 0.4);
+        }
+
+        #formula-overlay {
+            position: fixed;
+            bottom: clamp(24px, 4.5vh, 54px);
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+            padding: 0 16px;
+        }
+        #formula-overlay .formula-box {
+            display: inline-block;
+            background: rgba(14, 10, 20, 0.72);
+            border: 1px solid rgba(165, 140, 110, 0.28);
+            border-radius: 12px;
+            padding: clamp(10px, 1.4vh, 16px) clamp(16px, 3vw, 28px);
+            backdrop-filter: blur(7px);
+            -webkit-backdrop-filter: blur(7px);
+        }
+        #formula-overlay .formula-main {
+            color: #f1ddc3;
+            font-size: clamp(0.68rem, 1.15vw, 1.0rem);
+            letter-spacing: 0.04em;
+            line-height: 1.7;
+        }
+        #formula-overlay .formula-detail {
+            color: #a59279;
+            font-size: clamp(0.52rem, 0.75vw, 0.68rem);
+            letter-spacing: 0.03em;
+            margin-top: 0.22em;
+            line-height: 1.5;
+        }
+
+        @media (max-width: 600px) {
+            #title-overlay h1 {
+                letter-spacing: 0.05em;
+            }
+            #formula-overlay .formula-box {
+                padding: 10px 16px;
+                border-radius: 10px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+
+    <div id="title-overlay">
+        <h1>科赫雪花 · 分形边界</h1>
+        <div class="subtitle">Koch Snowflake · Self‑Similar Boundary</div>
+    </div>
+
+    <div id="formula-overlay">
+        <div class="formula-box">
+            <div class="formula-main">
+                L<sub>n</sub> = (4/3)<sup>n</sup> L₀<br>
+                N<sub>n</sub> = 3·4<sup>n</sup>
+            </div>
+            <div class="formula-detail">
+                5次迭代 | 3073个顶点 | 无限周长 有限面积
+            </div>
+        </div>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.157.0/build/three.module.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#02010e');
+        scene.fog = new THREE.Fog('#02010e', 7, 22);
+
+        const camera = new THREE.PerspectiveCamera(
+            46,
+            container.clientWidth / Math.max(container.clientHeight, 1),
+            0.3,
+            28
+        );
+        camera.position.set(0, 0.25, 7.2);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.2;
+        container.appendChild(renderer.domElement);
+
+        scene.add(new THREE.AmbientLight('#1e1e3a', 0.4));
+
+        // ==================== 主图案组 ====================
+        const mainGroup = new THREE.Group();
+        scene.add(mainGroup);
+
+        // ==================== 生成科赫雪花顶点 ====================
+        function generateKochSnowflake(depth) {
+            // 初始等边三角形，边长2.4左右便于缩放
+            const side = 2.6;
+            const h = side * Math.sqrt(3) / 2;
+            // 三个顶点，中心在(0,0)附近
+            const p1 = { x: -side/2, y: -h/3 };
+            const p2 = { x: side/2, y: -h/3 };
+            const p3 = { x: 0, y: 2*h/3 };
+
+            // 递归细分一条线段
+            function subdivide(pA, pB, level) {
+                if (level === 0) {
+                    return [pA, pB];
+                }
+                const dx = pB.x - pA.x;
+                const dy = pB.y - pA.y;
+                // 三等分点
+                const p1 = { x: pA.x + dx/3, y: pA.y + dy/3 };
+                const p3 = { x: pA.x + 2*dx/3, y: pA.y + 2*dy/3 };
+                // 中间点，旋转60度
+                const cos60 = 0.5;
+                const sin60 = Math.sqrt(3)/2;
+                // 将向量旋转60度：x' = cos60*dx/3 - sin60*dy/3, y' = sin60*dx/3 + cos60*dy/3
+                const dx3 = dx/3;
+                const dy3 = dy/3;
+                const px = p1.x + cos60*dx3 - sin60*dy3;
+                const py = p1.y + sin60*dx3 + cos60*dy3;
+                const pMid = { x: px, y: py };
+
+                const part1 = subdivide(pA, p1, level-1);
+                const part2 = subdivide(p1, pMid, level-1);
+                const part3 = subdivide(pMid, p3, level-1);
+                const part4 = subdivide(p3, pB, level-1);
+                // 合并（去掉重复的连接点）
+                return [...part1, ...part2.slice(1), ...part3.slice(1), ...part4.slice(1)];
+            }
+
+            const depthClamped = Math.max(1, Math.min(depth, 7));
+            // 三条边
+            const points1 = subdivide(p1, p2, depthClamped);
+            const points2 = subdivide(p2, p3, depthClamped);
+            const points3 = subdivide(p3, p1, depthClamped);
+            // 合并为闭合环（去掉每个线段最后一点以避免重复）
+            const verticesList = [
+                ...points1,
+                ...points2.slice(1),
+                ...points3.slice(1)
+            ];
+            return verticesList;
+        }
+
+        const depth = 5; // 5次迭代，顶点数 = 3*4^5 + 1 = 3073
+        console.log('🌀 开始生成科赫雪花，深度:', depth);
+        const rawPoints = generateKochSnowflake(depth);
+        const totalVertices = rawPoints.length;
+        console.log('   - 顶点数:', totalVertices);
+
+        // ==================== 计算包围盒并缩放 ====================
+        let minX = Infinity, maxX = -Infinity;
+        let minY = Infinity, maxY = -Infinity;
+        for (const p of rawPoints) {
+            if (p.x < minX) minX = p.x;
+            if (p.x > maxX) maxX = p.x;
+            if (p.y < minY) minY = p.y;
+            if (p.y > maxY) maxY = p.y;
+        }
+        const centerX = (minX + maxX) / 2;
+        const centerY = (minY + maxY) / 2;
+        const rangeX = maxX - minX;
+        const rangeY = maxY - minY;
+        const maxRange = Math.max(rangeX, rangeY, 0.1);
+        const targetScale = 5.2 / maxRange; // 使雪花适配屏幕
+
+        console.log('📐 包围盒:', { maxRange: maxRange.toFixed(2), targetScale: targetScale.toFixed(4) });
+
+        // 居中、缩放，并转换为三维顶点（平面在xy平面）
+        const vertices = new Float32Array(totalVertices * 3);
+        for (let i = 0; i < totalVertices; i++) {
+            const px = (rawPoints[i].x - centerX) * targetScale;
+            const py = (rawPoints[i].y - centerY) * targetScale;
+            vertices[i * 3] = px;
+            vertices[i * 3 + 1] = py;
+            vertices[i * 3 + 2] = 0;
+        }
+
+        // 创建线条几何体
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+        geometry.setDrawRange(0, 0); // 初始完全不可见
+
+        const material = new THREE.LineBasicMaterial({
+            color: new THREE.Color().setHSL(0.12, 0.9, 0.65),
+            transparent: true,
+            opacity: 0.85,
+            linewidth: 1,
+            blending: THREE.AdditiveBlending,
+            depthWrite: true,
+            depthTest: true,
+        });
+
+        const snowflakeLine = new THREE.Line(geometry, material);
+        snowflakeLine.visible = false;
+        snowflakeLine.frustumCulled = false;
+        mainGroup.add(snowflakeLine);
+
+        // 给整个组一个初始的轻柔倾斜，增加立体感
+        mainGroup.rotation.set(Math.PI * 0.12, 0, Math.PI * 0.04);
+
+        console.log('✅ 科赫雪花曲线已创建');
+
+        // ==================== 动画状态机 ====================
+        const APPEAR_TIME = 8.0;
+        const PAUSE_TIME = 1.5;
+        const DISAPPEAR_TIME = 8.0;
+        const CYCLE_TOTAL = APPEAR_TIME + PAUSE_TIME + DISAPPEAR_TIME; // 17.5秒
+
+        let animationStartTime = null;
+        let firstFrameDone = false;
+
+        function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+        function easeInCubic(t) { return t * t * t; }
+
+        function getProgress(elapsedSeconds) {
+            const cycle = elapsedSeconds % CYCLE_TOTAL;
+            if (cycle < APPEAR_TIME) {
+                const t = cycle / APPEAR_TIME;
+                return { progress: easeOutCubic(t), phase: 'appear' };
+            } else if (cycle < APPEAR_TIME + PAUSE_TIME) {
+                return { progress: 1.0, phase: 'pause' };
+            } else {
+                const t = (cycle - APPEAR_TIME - PAUSE_TIME) / DISAPPEAR_TIME;
+                return { progress: 1.0 - easeInCubic(t), phase: 'disappear' };
+            }
+        }
+
+        // ==================== 渲染循环 ====================
+        function animate(timestamp) {
+            requestAnimationFrame(animate);
+
+            // 第一帧：强制空白，避免残留图形
+            if (animationStartTime === null) {
+                animationStartTime = timestamp;
+                snowflakeLine.visible = false;
+                geometry.setDrawRange(0, 0);
+                renderer.render(scene, camera);
+                firstFrameDone = true;
+                return;
+            }
+
+            const elapsed = (timestamp - animationStartTime) / 1000;
+            const { progress } = getProgress(elapsed);
+            const drawCount = Math.floor(progress * totalVertices);
+            const shouldBeVisible = drawCount >= 2;
+
+            if (shouldBeVisible && drawCount >= 2) {
+                snowflakeLine.visible = true;
+                geometry.setDrawRange(0, Math.min(drawCount, totalVertices));
+            } else {
+                snowflakeLine.visible = false;
+                geometry.setDrawRange(0, 0);
+            }
+
+            // 整体缓慢旋转，展示雪花的分形细节
+            const rotY = elapsed * 0.04;
+            const rotX = Math.PI * 0.12 + Math.sin(elapsed * 0.08) * 0.02;
+            const rotZ = Math.PI * 0.04 + Math.cos(elapsed * 0.1) * 0.02;
+            mainGroup.rotation.set(rotX, rotY, rotZ);
+
+            // 相机轻柔晃动
+            camera.position.x = Math.sin(elapsed * 0.06) * 0.2;
+            camera.position.y = 0.25 + Math.cos(elapsed * 0.09) * 0.14;
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        // ==================== 响应式处理 ====================
+        function onResize() {
+            const w = container.clientWidth;
+            const h = container.clientHeight;
+            if (h <= 0) return;
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        }
+        window.addEventListener('resize', onResize, { passive: true });
+        window.addEventListener('orientationchange', () => setTimeout(onResize, 150), { passive: true });
+
+        // ==================== 启动 ====================
+        console.log('🚀 科赫雪花·分形边界动画启动');
+        console.log(`   - 总顶点数: ${totalVertices}`);
+        console.log(`   - 动画周期: ${CYCLE_TOTAL}s (生长${APPEAR_TIME}s + 停顿${PAUSE_TIME}s + 消散${DISAPPEAR_TIME}s)`);
+
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

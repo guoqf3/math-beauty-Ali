@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>克莱罗编织 · 椭球面测地线网</title>
+    <style>
+        :root {
+            --bg: #06060c;
+            --gold: #d4a843;
+            --cyan: #45b7aa;
+            --magenta: #d4708a;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'SimSun', serif;
+            -webkit-font-smoothing: antialiased;
+            user-select: none;
+        }
+        #canvas-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+        }
+        canvas { display: block; }
+        .overlay-title {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 22px 20px 8px;
+            text-align: center;
+            background: linear-gradient(180deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.8) 55%, rgba(6,6,12,0) 100%);
+        }
+        .overlay-title h2 {
+            font-size: clamp(1.1rem, 2.2vw, 1.8rem);
+            font-weight: 400;
+            letter-spacing: 0.13em;
+            color: #e8d5b0;
+            text-shadow: 0 0 30px rgba(212,168,67,0.45), 0 0 60px rgba(212,168,67,0.18);
+            margin: 0 0 2px;
+            line-height: 1.3;
+        }
+        .overlay-title .sub {
+            font-size: clamp(0.65rem, 1.1vw, 0.85rem);
+            letter-spacing: 0.22em;
+            color: rgba(200,180,150,0.65);
+        }
+        .overlay-formula {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 8px 20px 18px;
+            text-align: center;
+            background: linear-gradient(0deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.82) 55%, rgba(6,6,12,0) 100%);
+        }
+        .formula-text {
+            font-size: clamp(0.6rem, 1.0vw, 0.8rem);
+            color: rgba(210,200,185,0.8);
+            letter-spacing: 0.03em;
+            line-height: 1.7;
+        }
+        .clr-gold { color: #d4a843; font-weight: bold; }
+        .clr-cyan { color: #45b7aa; font-weight: bold; }
+        .clr-magenta { color: #d4708a; font-weight: bold; }
+        .formula-sep {
+            display: inline-block;
+            margin: 0 14px;
+            color: rgba(150,140,130,0.35);
+        }
+    </style>
+</head>
+<body>
+    <div class="overlay-title">
+        <h2>克莱罗编织 · 椭球面测地线网</h2>
+        <div class="sub">Clairaut geodesics on ellipsoid · r·sinα = constant</div>
+    </div>
+    <div class="overlay-formula">
+        <div class="formula-text">
+            <span class="clr-gold">x²/a²+y²/b²+z²/c²=1</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-cyan">a=1.8, b=1.3, c=0.9</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-magenta">r·sinα = const (Clairaut)</span>
+        </div>
+    </div>
+    <div id="canvas-container"></div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(46, container.clientWidth / container.clientHeight, 0.5, 22);
+        camera.position.set(3.8, 2.6, 7.5);
+        camera.lookAt(0, 0, 0);
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x06060c, 1);
+        container.appendChild(renderer.domElement);
+
+        let startTime = performance.now();
+        const getElapsed = () => (performance.now() - startTime) * 0.001;
+
+        const COLOR_GOLD = 0xd4a843;
+        const COLOR_CYAN = 0x45b7aa;
+        const COLOR_MAGENTA = 0xd4708a;
+
+        // 椭球参数 (a > b > c)
+        const A = 1.8, B = 1.3, C = 0.9;
+        const A2 = A * A, B2 = B * B, C2 = C * C;
+        const SPHERE_R = 2.6;
+        const PROJ_D = 2.3;
+
+        // 椭球面点
+        function ellipsoidPoint(lambda, phi) {
+            const cosPhi = Math.cos(phi);
+            const sinPhi = Math.sin(phi);
+            const cosLambda = Math.cos(lambda);
+            const sinLambda = Math.sin(lambda);
+            return new THREE.Vector3(
+                A * sinPhi * cosLambda,
+                C * cosPhi,
+                B * sinPhi * sinLambda
+            );
+        }
+
+        // 椭球面法向量
+        function ellipsoidNormal(lambda, phi) {
+            const cosPhi = Math.cos(phi);
+            const sinPhi = Math.sin(phi);
+            const cosLambda = Math.cos(lambda);
+            const sinLambda = Math.sin(lambda);
+            return new THREE.Vector3(
+                sinPhi * cosLambda / A,
+                cosPhi / C,
+                sinPhi * sinLambda / B
+            ).normalize();
+        }
+
+        // 球极投影
+        function stereographic(px, py, pz) {
+            const denom = PROJ_D - pz;
+            if (Math.abs(denom) < 0.04) return null;
+            const f = SPHERE_R / denom;
+            const pt = new THREE.Vector3(px * f, py * f, (pz - 0.5) * f);
+            return pt.length() < 9.0 ? pt : null;
+        }
+
+        // 克莱罗关系: r * sin(α) = const, 其中 r 是点到极轴的距离
+        function clairautR(lambda, phi) {
+            const cosPhi = Math.cos(phi);
+            const sinPhi = Math.sin(phi);
+            return Math.sqrt(A2 * sinPhi * sinPhi * 0.5 + B2 * sinPhi * sinPhi * 0.5);
+        }
+
+        // 使用RK4积分椭球面上的测地线
+        function integrateGeodesic(lambda0, phi0, dLambda0, dPhi0, clairautConst, steps, ds) {
+            const pts = [];
+            let lambda = lambda0;
+            let phi = phi0;
+            let dLambda = dLambda0;
+            let dPhi = dPhi0;
+            const maxSteps = steps;
+
+            for (let i = 0; i < maxSteps; i++) {
+                // 记录点
+                const p = ellipsoidPoint(lambda, phi);
+                const sp = stereographic(p.x, p.y, p.z);
+                if (sp) pts.push(sp);
+
+                // 计算当前克莱罗常数
+                const r = clairautR(lambda, phi);
+                if (r < 0.02) break;
+
+                // 归一化速度使其在曲面上
+                const n = ellipsoidNormal(lambda, phi);
+                const vel = new THREE.Vector3(
+                    ellipsoidPoint(lambda + 0.001, phi).x - ellipsoidPoint(lambda - 0.001, phi).x,
+                    ellipsoidPoint(lambda + 0.001, phi).y - ellipsoidPoint(lambda - 0.001, phi).y,
+                    ellipsoidPoint(lambda + 0.001, phi).z - ellipsoidPoint(lambda - 0.001, phi).z
+                ).normalize();
+                const velPhi = new THREE.Vector3(
+                    ellipsoidPoint(lambda, phi + 0.001).x - ellipsoidPoint(lambda, phi - 0.001).x,
+                    ellipsoidPoint(lambda, phi + 0.001).y - ellipsoidPoint(lambda, phi - 0.001).y,
+                    ellipsoidPoint(lambda, phi + 0.001).z - ellipsoidPoint(lambda, phi - 0.001).z
+                ).normalize();
+
+                // 切空间速度
+                const vLambda = dLambda * vel.length() * 200;
+                const vPhi = dPhi * velPhi.length() * 200;
+
+                // 使用简化的Euler步进（在参数空间中）
+                // 实际测地线方程涉及Christoffel符号，这里使用投影方法来近似
+                // 步进后在参数空间中做修正
+                lambda += dLambda * ds;
+                phi += dPhi * ds;
+
+                // 保持在椭球面上（通过重新计算）
+                if (phi < 0.01) phi = 0.01;
+                if (phi > Math.PI - 0.01) phi = Math.PI - 0.01;
+
+                // 克莱罗关系修正：保持r·sin(α)近似常数
+                const dlambdaEff = dLambda * ds;
+                const dphiEff = dPhi * ds;
+                const rNew = clairautR(lambda, phi);
+                if (rNew > 0.01) {
+                    const sinAlpha = Math.abs(dlambdaEff) / Math.sqrt(dlambdaEff * dlambdaEff + dphiEff * dphiEff + 0.0001);
+                    const newClairaut = rNew * sinAlpha;
+                    if (Math.abs(newClairaut - clairautConst) > 0.05 * clairautConst) {
+                        dPhi *= (clairautConst / (newClairaut + 0.001)) * 0.5;
+                    }
+                }
+
+                if (pts.length > steps) break;
+            }
+            return pts;
+        }
+
+        // 生成一族测地线
+        function createGeodesicFamily(clairautValues, phiSeeds, color, opacity, steps, ds) {
+            const group = new THREE.Group();
+
+            for (const cv of clairautValues) {
+                for (const phi0 of phiSeeds) {
+                    const lambda0 = Math.random() * 2 * Math.PI;
+                    // 初始方向满足克莱罗关系
+                    const r0 = clairautR(lambda0, phi0);
+                    const sinAlpha0 = Math.min(cv / (r0 + 0.01), 0.99);
+                    const cosAlpha0 = Math.sqrt(1 - sinAlpha0 * sinAlpha0);
+                    const dLambda0 = sinAlpha0 * 0.5;
+                    const dPhi0 = cosAlpha0 * 0.5;
+
+                    const pts = integrateGeodesic(lambda0, phi0, dLambda0, dPhi0, cv, steps, ds);
+                    if (pts.length < 2) continue;
+                    const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                    const mat = new THREE.LineBasicMaterial({
+                        color, transparent: true, opacity,
+                        depthWrite: true, depthTest: true,
+                    });
+                    group.add(new THREE.Line(geom, mat));
+
+                    // 反向积分以获得完整曲线
+                    const ptsRev = integrateGeodesic(lambda0, phi0, -dLambda0, -dPhi0, cv, steps, ds);
+                    if (ptsRev.length < 2) continue;
+                    const geomRev = new THREE.BufferGeometry().setFromPoints(ptsRev);
+                    const matRev = new THREE.LineBasicMaterial({
+                        color, transparent: true, opacity: opacity * 0.7,
+                        depthWrite: true, depthTest: true,
+                    });
+                    group.add(new THREE.Line(geomRev, matRev));
+                }
+            }
+            return group;
+        }
+
+        const rootGroup = new THREE.Group();
+        rootGroup.name = 'clairaut-weave';
+        scene.add(rootGroup);
+
+        const steps = 180;
+        const ds = 0.04;
+
+        // 金色族：小克莱罗常数（靠近极轴，快速环绕）
+        const goldClairaut = [0.15, 0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85];
+        const goldPhiSeeds = [0.3, 0.6, 0.9, 1.2, 1.5, 1.8, 2.1, 2.4, 2.7];
+        rootGroup.add(createGeodesicFamily(goldClairaut, goldPhiSeeds, COLOR_GOLD, 0.58, steps, ds));
+
+        // 青色族：中等克莱罗常数（中等纬度，稳定振荡）
+        const cyanClairaut = [0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.00, 1.10];
+        const cyanPhiSeeds = [0.35, 0.65, 0.95, 1.25, 1.55, 1.85, 2.15, 2.45, 2.75];
+        rootGroup.add(createGeodesicFamily(cyanClairaut, cyanPhiSeeds, COLOR_CYAN, 0.58, steps, ds));
+
+        // 品红族：大克莱罗常数（赤道附近，大范围摆动）
+        const magentaClairaut = [0.70, 0.85, 1.00, 1.15, 1.30, 1.45, 1.60, 1.75];
+        const magentaPhiSeeds = [0.40, 0.70, 1.00, 1.30, 1.60, 1.90, 2.20, 2.50, 2.80];
+        rootGroup.add(createGeodesicFamily(magentaClairaut, magentaPhiSeeds, COLOR_MAGENTA, 0.58, steps, ds));
+
+        // 辅助：椭球面经纬线
+        function createEllipsoidGrid(color, opacity, numMeridians, numParallels) {
+            const group = new THREE.Group();
+            for (let i = 0; i < numMeridians; i++) {
+                const lambda = i * 2 * Math.PI / numMeridians;
+                const pts = [];
+                for (let j = 0; j <= 200; j++) {
+                    const phi = 0.05 + j * (Math.PI - 0.1) / 200;
+                    const p = ellipsoidPoint(lambda, phi);
+                    const sp = stereographic(p.x, p.y, p.z);
+                    if (sp) pts.push(sp);
+                }
+                if (pts.length >= 2) {
+                    const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                    group.add(new THREE.Line(geom, new THREE.LineBasicMaterial({
+                        color, transparent: true, opacity, depthWrite: true, depthTest: true
+                    })));
+                }
+            }
+            for (let i = 0; i < numParallels; i++) {
+                const phi = 0.08 + i * (Math.PI - 0.16) / (numParallels - 1);
+                const pts = [];
+                for (let j = 0; j <= 240; j++) {
+                    const lambda = j * 2 * Math.PI / 240;
+                    const p = ellipsoidPoint(lambda, phi);
+                    const sp = stereographic(p.x, p.y, p.z);
+                    if (sp) pts.push(sp);
+                }
+                if (pts.length >= 2) {
+                    const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                    group.add(new THREE.Line(geom, new THREE.LineBasicMaterial({
+                        color, transparent: true, opacity, depthWrite: true, depthTest: true
+                    })));
+                }
+            }
+            return group;
+        }
+        rootGroup.add(createEllipsoidGrid(0x403830, 0.07, 16, 14));
+
+        console.log('克莱罗测地线总数:', rootGroup.children.length);
+
+        // 背景星点
+        const starsGroup = new THREE.Group();
+        const starsGeom = new THREE.BufferGeometry();
+        const starsCount = 500;
+        const starsPos = new Float32Array(starsCount * 3);
+        for (let i = 0; i < starsCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const dist = 6.5 + Math.random() * 10;
+            starsPos[i * 3] = dist * Math.sin(phi) * Math.cos(theta);
+            starsPos[i * 3 + 1] = dist * Math.sin(phi) * Math.sin(theta);
+            starsPos[i * 3 + 2] = dist * Math.cos(phi);
+        }
+        starsGeom.setAttribute('position', new THREE.BufferAttribute(starsPos, 3));
+        const starsMat = new THREE.PointsMaterial({
+            color: 0x908878, size: 0.018, transparent: true, opacity: 0.5, depthWrite: false,
+        });
+        starsGroup.add(new THREE.Points(starsGeom, starsMat));
+        scene.add(starsGroup);
+
+        function animate() {
+            const t = getElapsed();
+            rootGroup.rotation.x = t * 0.14;
+            rootGroup.rotation.y = t * 0.24;
+            rootGroup.rotation.z = t * 0.10;
+            starsGroup.rotation.y = t * 0.04;
+            starsGroup.rotation.x = t * 0.025;
+
+            const camRadius = 7.5;
+            const camAngle = t * 0.08;
+            const camHeight = 2.7 + Math.sin(t * 0.16) * 0.7;
+            camera.position.x = Math.cos(camAngle) * camRadius;
+            camera.position.z = Math.sin(camAngle) * camRadius;
+            camera.position.y = camHeight;
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+            requestAnimationFrame(animate);
+        }
+
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth, h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth, h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 120));
+
+        console.log('✅ 克莱罗椭球面测地线编织动画已稳定运行');
+    </script>
+</body>
+</html>

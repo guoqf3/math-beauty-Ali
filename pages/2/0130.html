@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>光之编钟</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #07070d;
+            font-family: sans-serif;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="chimeCanvas"></canvas>
+    <script>
+        (function() {
+            'use strict';
+
+            const canvas = document.getElementById('chimeCanvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            const CONFIG = {
+                chainCount: 28,           // 链条数量
+                pointsPerChain: 16,       // 每根链条的光点数
+                chainSpacing: 0.9,        // 链条水平间距（相对宽度）
+                maxSag: 0.32,             // 最大下垂弧度（相对高度）
+                swaySpeed: 0.003,         // 摇摆速度
+                mouseAttractRadius: 160,  // 鼠标吸引半径
+                mouseAttractStrength: 0.06, // 吸引强度
+                clickRepelRadius: 240,    // 点击振动半径
+                clickRepelStrength: 30,   // 振动强度
+                returnForce: 0.04,        // 回弹力
+                damping: 0.94,            // 阻尼
+                backgroundFade: 0.16,     // 背景拖尾强度
+                pointSize: 2.5,           // 光点基础大小
+                glowFactor: 3.0,          // 光晕因子
+                hueBase: 210,             // 基础色相（蓝）
+                hueVariation: 60,         // 色相变化范围
+                saturation: 85,
+                lightness: 68,
+            };
+
+            let width = 0;
+            let height = 0;
+            let dpr = 1;
+            let chains = [];
+            let mouseX = -9999;
+            let mouseY = -9999;
+            let mouseActive = false;
+            let targetMouseX = -9999;
+            let targetMouseY = -9999;
+            let smoothMouseX = -9999;
+            let smoothMouseY = -9999;
+            let animationId = null;
+            let lastTime = 0;
+            let time = 0;
+
+            // ---------- 光点链 ----------
+            class ChainPoint {
+                constructor(baseX, baseY, index, chainIndex) {
+                    this.baseX = baseX;
+                    this.baseY = baseY;
+                    this.index = index;          // 在链中的位置（0=顶端，越大越靠下）
+                    this.chainIndex = chainIndex;
+                    this.x = baseX;
+                    this.y = baseY;
+                    this.offsetX = 0;
+                    this.offsetY = 0;
+                    this.vx = 0;
+                    this.vy = 0;
+                    this.hue = (CONFIG.hueBase + chainIndex * 2 + index * 1.5) % 360;
+                    this.lightness = CONFIG.lightness + Math.sin(index * 0.3) * 8;
+                    this.pulsePhase = Math.random() * Math.PI * 2;
+                    this.pulseSpeed = Math.random() * 0.8 + 0.4;
+                }
+
+                update(dt, time) {
+                    let targetOffX = 0;
+                    let targetOffY = 0;
+
+                    // 自然摇摆（像风铃）
+                    const sway = Math.sin(time * CONFIG.swaySpeed * 1000 + this.chainIndex * 0.7 + this.index * 0.08);
+                    targetOffX += sway * 18 * (this.index / CONFIG.pointsPerChain);
+
+                    // 鼠标吸引（拨动）
+                    if (mouseActive && smoothMouseX > -1000) {
+                        const dx = smoothMouseX - this.x;
+                        const dy = smoothMouseY - this.y;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        if (dist < CONFIG.mouseAttractRadius && dist > 0.01) {
+                            const influence = (CONFIG.mouseAttractRadius - dist) / CONFIG.mouseAttractRadius;
+                            targetOffX += (dx / dist) * influence * influence * CONFIG.mouseAttractStrength * 80 * (1 - this
+                                .index / CONFIG.pointsPerChain * 0.4);
+                            targetOffY += (dy / dist) * influence * influence * CONFIG.mouseAttractStrength * 60 * (1 - this
+                                .index / CONFIG.pointsPerChain * 0.4);
+                        }
+                    }
+
+                    // 弹性回弹
+                    const returnX = (targetOffX - this.offsetX) * CONFIG.returnForce;
+                    const returnY = (targetOffY - this.offsetY) * CONFIG.returnForce;
+                    this.vx += returnX * dt;
+                    this.vy += returnY * dt;
+                    this.vx *= CONFIG.damping;
+                    this.vy *= CONFIG.damping;
+
+                    this.offsetX += this.vx * dt;
+                    this.offsetY += this.vy * dt;
+
+                    // 限制偏移
+                    const maxOffset = 120;
+                    if (this.offsetX > maxOffset) this.offsetX = maxOffset;
+                    if (this.offsetX < -maxOffset) this.offsetX = -maxOffset;
+                    if (this.offsetY > maxOffset) this.offsetY = maxOffset;
+                    if (this.offsetY < -maxOffset) this.offsetY = -maxOffset;
+
+                    this.x = this.baseX + this.offsetX;
+                    this.y = this.baseY + this.offsetY;
+                }
+
+                draw(time) {
+                    const pulse = Math.sin(time * this.pulseSpeed + this.pulsePhase) * 0.25 + 1;
+                    const size = CONFIG.pointSize * pulse;
+                    const glowRadius = size * CONFIG.glowFactor;
+                    const alpha = 0.55 + pulse * 0.2;
+
+                    // 光晕
+                    const glowGrad = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, glowRadius);
+                    glowGrad.addColorStop(0, `hsla(${this.hue}, ${CONFIG.saturation}%, ${this.lightness}%, ${alpha * 0.5})`);
+                    glowGrad.addColorStop(0.5, `hsla(${this.hue}, ${CONFIG.saturation}%, ${this.lightness}%, ${alpha * 0.2})`);
+                    glowGrad.addColorStop(1, `hsla(${this.hue}, ${CONFIG.saturation}%, ${this.lightness}%, 0)`);
+                    ctx.fillStyle = glowGrad;
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, glowRadius, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // 核心光点
+                    ctx.fillStyle = `hsla(${this.hue}, 100%, 90%, ${alpha})`;
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, size, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            // ---------- 链条 ----------
+            class Chain {
+                constructor(chainIndex) {
+                    this.chainIndex = chainIndex;
+                    this.points = [];
+                    const count = CONFIG.pointsPerChain;
+                    const baseX = (chainIndex / (CONFIG.chainCount - 1)) * width;
+                    const topY = height * 0.06;
+                    const bottomY = height * 0.88;
+                    for (let i = 0; i < count; i++) {
+                        const t = i / (count - 1);
+                        // 下垂弧度
+                        const sag = Math.sin(t * Math.PI) * CONFIG.maxSag * height;
+                        const y = topY + t * (bottomY - topY) + sag * 0.6;
+                        const x = baseX;
+                        this.points.push(new ChainPoint(x, y, i, chainIndex));
+                    }
+                    this.color = `hsla(${(CONFIG.hueBase + chainIndex * 2) % 360}, ${CONFIG.saturation}%, ${CONFIG.lightness}%, `;
+                }
+
+                update(dt, time) {
+                    for (const pt of this.points) {
+                        pt.update(dt, time);
+                    }
+                }
+
+                draw(time) {
+                    // 绘制链条连接线
+                    const pts = this.points;
+                    if (pts.length < 2) return;
+                    ctx.beginPath();
+                    ctx.moveTo(pts[0].x, pts[0].y);
+                    for (let i = 1; i < pts.length; i++) {
+                        const prev = pts[i - 1];
+                        const curr = pts[i];
+                        const midX = (prev.x + curr.x) / 2;
+                        const midY = (prev.y + curr.y) / 2;
+                        ctx.quadraticCurveTo(prev.x, prev.y, midX, midY);
+                    }
+                    ctx.lineTo(pts[pts.length - 1].x, pts[pts.length - 1].y);
+                    ctx.strokeStyle = this.color + '0.25)';
+                    ctx.lineWidth = 0.8;
+                    ctx.stroke();
+
+                    // 绘制光点
+                    for (const pt of pts) {
+                        pt.draw(time);
+                    }
+                }
+            }
+
+            // ---------- 初始化 ----------
+            function initChains() {
+                chains = [];
+                for (let i = 0; i < CONFIG.chainCount; i++) {
+                    chains.push(new Chain(i));
+                }
+            }
+
+            function resizeCanvas() {
+                dpr = Math.min(window.devicePixelRatio || 1, 2);
+                width = window.innerWidth;
+                height = window.innerHeight;
+                canvas.width = Math.floor(width * dpr);
+                canvas.height = Math.floor(height * dpr);
+                canvas.style.width = width + 'px';
+                canvas.style.height = height + 'px';
+                ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                ctx.fillStyle = '#07070d';
+                ctx.fillRect(0, 0, width, height);
+                initChains();
+                drawScene(performance.now());
+            }
+
+            // ---------- 绘制 ----------
+            function drawScene(now) {
+                ctx.fillStyle = 'rgba(7, 7, 13, ' + CONFIG.backgroundFade + ')';
+                ctx.fillRect(0, 0, width, height);
+
+                ctx.globalCompositeOperation = 'lighter';
+
+                if (mouseActive) {
+                    smoothMouseX += (targetMouseX - smoothMouseX) * 0.18;
+                    smoothMouseY += (targetMouseY - smoothMouseY) * 0.18;
+                }
+
+                // 鼠标光晕
+                if (mouseActive && smoothMouseX > -1000) {
+                    const glow = ctx.createRadialGradient(smoothMouseX, smoothMouseY, 0, smoothMouseX, smoothMouseY,
+                        120);
+                    glow.addColorStop(0, 'rgba(140, 170, 255, 0.08)');
+                    glow.addColorStop(1, 'rgba(0,0,0,0)');
+                    ctx.fillStyle = glow;
+                    ctx.beginPath();
+                    ctx.arc(smoothMouseX, smoothMouseY, 120, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+
+                // 绘制所有链条
+                for (const chain of chains) {
+                    chain.draw(time);
+                }
+
+                ctx.globalCompositeOperation = 'source-over';
+            }
+
+            // ---------- 更新 ----------
+            function updateChains(now) {
+                const dt = Math.min(2, (now - lastTime) / 16.67) || 1;
+                time = now * 0.001;
+                for (const chain of chains) {
+                    chain.update(dt, time);
+                }
+            }
+
+            // ---------- 动画循环 ----------
+            function animate(timestamp) {
+                const now = performance.now();
+                if (lastTime === 0) lastTime = now;
+                const dt = now - lastTime;
+                if (dt > 100) lastTime = now - 16;
+                else lastTime = now;
+
+                updateChains(now);
+                drawScene(now);
+                animationId = requestAnimationFrame(animate);
+            }
+
+            // ---------- 交互 ----------
+            function updateMousePosition(cx, cy) {
+                targetMouseX = cx;
+                targetMouseY = cy;
+                if (!mouseActive) {
+                    mouseActive = true;
+                    smoothMouseX = cx;
+                    smoothMouseY = cy;
+                }
+            }
+
+            function handleClick(cx, cy) {
+                // 振动所有链条
+                for (const chain of chains) {
+                    for (const pt of chain.points) {
+                        const dx = pt.x - cx;
+                        const dy = pt.y - cy;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        if (dist < CONFIG.clickRepelRadius && dist > 0.01) {
+                            const force = (1 - dist / CONFIG.clickRepelRadius) * CONFIG.clickRepelStrength;
+                            pt.vx += (dx / dist) * force;
+                            pt.vy += (dy / dist) * force;
+                        }
+                    }
+                }
+            }
+
+            function setupEvents() {
+                window.addEventListener('mousemove', (e) => {
+                    updateMousePosition(e.clientX, e.clientY);
+                }, { passive: true });
+                window.addEventListener('mouseleave', () => {
+                    mouseActive = false;
+                    smoothMouseX = -9999;
+                    smoothMouseY = -9999;
+                });
+                window.addEventListener('mousedown', (e) => {
+                    handleClick(e.clientX, e.clientY);
+                });
+                window.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        updateMousePosition(touch.clientX, touch.clientY);
+                        handleClick(touch.clientX, touch.clientY);
+                    }
+                }, { passive: false });
+                window.addEventListener('touchmove', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) updateMousePosition(touch.clientX, touch.clientY);
+                }, { passive: false });
+                window.addEventListener('touchend', () => {
+                    mouseActive = false;
+                    smoothMouseX = -9999;
+                    smoothMouseY = -9999;
+                });
+                window.addEventListener('resize', () => resizeCanvas());
+                document.addEventListener('visibilitychange', () => {
+                    if (document.hidden) {
+                        if (animationId) { cancelAnimationFrame(animationId); animationId = null; }
+                        lastTime = 0;
+                    } else {
+                        if (!animationId) { lastTime = 0; animationId = requestAnimationFrame(animate); }
+                    }
+                });
+            }
+
+            function init() {
+                resizeCanvas();
+                setupEvents();
+                lastTime = 0;
+                animationId = requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.__chimeLights = { config: CONFIG, chains };
+        })();
+    </script>
+</body>
+</html>

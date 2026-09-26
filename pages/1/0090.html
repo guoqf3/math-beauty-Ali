@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>球面Clelia编织 · 球面调和螺旋簇</title>
+    <style>
+        :root {
+            --bg: #02010d;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'Noto Serif SC', serif;
+            height: 100vh;
+            width: 100vw;
+            user-select: none;
+            -webkit-user-select: none;
+            cursor: default;
+            -webkit-tap-highlight-color: transparent;
+        }
+        #canvas-container {
+            position: fixed;
+            inset: 0;
+            z-index: 1;
+        }
+        canvas {
+            display: block;
+        }
+
+        #title-overlay {
+            position: fixed;
+            top: clamp(16px, 3.5vh, 42px);
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+            white-space: nowrap;
+        }
+        #title-overlay h1 {
+            color: #e1d0b5;
+            font-size: clamp(1.2rem, 2.3vw, 1.9rem);
+            font-weight: 400;
+            letter-spacing: 0.08em;
+            text-shadow: 0 0 28px rgba(215, 180, 130, 0.55), 0 0 75px rgba(190, 150, 100, 0.25);
+            margin: 0;
+        }
+        #title-overlay .subtitle {
+            color: #bda78c;
+            font-size: clamp(0.68rem, 1.15vw, 0.92rem);
+            letter-spacing: 0.06em;
+            margin-top: 0.28em;
+            text-shadow: 0 0 14px rgba(180, 140, 100, 0.4);
+        }
+
+        #formula-overlay {
+            position: fixed;
+            bottom: clamp(24px, 4.5vh, 54px);
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+            padding: 0 16px;
+        }
+        #formula-overlay .formula-box {
+            display: inline-block;
+            background: rgba(15, 11, 20, 0.72);
+            border: 1px solid rgba(170, 145, 115, 0.28);
+            border-radius: 12px;
+            padding: clamp(10px, 1.4vh, 16px) clamp(16px, 3vw, 28px);
+            backdrop-filter: blur(7px);
+            -webkit-backdrop-filter: blur(7px);
+        }
+        #formula-overlay .formula-main {
+            color: #f2dec5;
+            font-size: clamp(0.72rem, 1.22vw, 1.05rem);
+            letter-spacing: 0.04em;
+            line-height: 1.7;
+        }
+        #formula-overlay .formula-detail {
+            color: #a6947c;
+            font-size: clamp(0.55rem, 0.8vw, 0.72rem);
+            letter-spacing: 0.03em;
+            margin-top: 0.22em;
+            line-height: 1.5;
+        }
+
+        @media (max-width: 600px) {
+            #title-overlay h1 {
+                letter-spacing: 0.05em;
+            }
+            #formula-overlay .formula-box {
+                padding: 10px 16px;
+                border-radius: 10px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+
+    <div id="title-overlay">
+        <h1>球面Clelia编织</h1>
+        <div class="subtitle">Spherical Clelia Weave · Harmonic Spiral Cluster</div>
+    </div>
+
+    <div id="formula-overlay">
+        <div class="formula-box">
+            <div class="formula-main">
+                r(θ) = R + ε·sin(κθ)<br>
+                x = r·sin(nθ+δ)·cos(mθ+δ)<br>
+                y = r·sin(nθ+δ)·sin(mθ+δ)<br>
+                z = r·cos(nθ+δ)
+            </div>
+            <div class="formula-detail">
+                θ ∈ [0, 2π] | m, n ∈ ℕ | δ ∈ [0, π] | 20 curves
+            </div>
+        </div>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.157.0/build/three.module.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#02010d');
+        scene.fog = new THREE.Fog('#02010d', 6.5, 21);
+
+        const camera = new THREE.PerspectiveCamera(
+            46,
+            container.clientWidth / Math.max(container.clientHeight, 1),
+            0.3,
+            27
+        );
+        camera.position.set(0, 0.3, 7.8);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.2;
+        container.appendChild(renderer.domElement);
+
+        scene.add(new THREE.AmbientLight('#1e1e3a', 0.4));
+
+        // ==================== 主图案组 ====================
+        const mainGroup = new THREE.Group();
+        scene.add(mainGroup);
+
+        const totalPoints = 2000;
+        const allLines = [];
+        const curveCount = 20;
+
+        const R = 2.0;               // 球面基础半径
+        const epsilon = 0.12;        // 径向调制幅度
+        const globalScale = 0.68;    // 全局缩放，确保不超出画面
+
+        // 互质整数对 (m, n)，确保20条各具特色
+        const mnPairs = [
+            [1, 2], [1, 3], [1, 4], [1, 5],
+            [2, 1], [2, 3], [2, 5],
+            [3, 1], [3, 2], [3, 4], [3, 5],
+            [4, 1], [4, 3], [4, 5],
+            [5, 1], [5, 2], [5, 3], [5, 4],
+            [2, 7], [7, 2],
+        ];
+
+        /**
+         * 生成球面Clelia曲线
+         * @param {number} m 经向频率
+         * @param {number} n 纬向频率
+         * @param {number} delta 相位偏移
+         * @param {number} kappa 径向调制频率
+         * @param {THREE.Euler} rotation 空间旋转
+         */
+        function createCleliaCurve(m, n, delta, kappa, rotation) {
+            const rotMatrix = new THREE.Matrix4().makeRotationFromEuler(rotation);
+            const vertices = new Float32Array(totalPoints * 3);
+
+            for (let i = 0; i < totalPoints; i++) {
+                const theta = (i / (totalPoints - 1)) * Math.PI * 2;
+                const angle = theta + delta;
+                const r = R + epsilon * Math.sin(kappa * theta);
+                const sinN = Math.sin(n * angle);
+                const cosN = Math.cos(n * angle);
+                const cosM = Math.cos(m * angle);
+                const sinM = Math.sin(m * angle);
+
+                const x = r * sinN * cosM;
+                const y = r * sinN * sinM;
+                const z = r * cosN;
+
+                const vec = new THREE.Vector3(x, y, z);
+                vec.applyMatrix4(rotMatrix);
+                vec.multiplyScalar(globalScale);
+
+                vertices[i * 3] = vec.x;
+                vertices[i * 3 + 1] = vec.y;
+                vertices[i * 3 + 2] = vec.z;
+            }
+            return vertices;
+        }
+
+        function createLine(vertices, hue, opacity = 0.76) {
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+            geometry.setDrawRange(0, 0);
+
+            const material = new THREE.LineBasicMaterial({
+                color: new THREE.Color().setHSL(hue, 0.90, 0.63),
+                transparent: true,
+                opacity: opacity,
+                linewidth: 1,
+                blending: THREE.AdditiveBlending,
+                depthWrite: true,
+                depthTest: true,
+            });
+
+            const line = new THREE.Line(geometry, material);
+            line.visible = false;
+            line.frustumCulled = false;
+            return line;
+        }
+
+        // ==================== 生成20条球面Clelia曲线 ====================
+        for (let j = 0; j < curveCount; j++) {
+            const [m, n] = mnPairs[j];
+            const delta = (j / curveCount) * Math.PI;       // 相位偏移 0~π
+            const kappa = 4 + (j % 4);                       // 径向调制频率 4~7
+            const rotY = (j / curveCount) * Math.PI * 2;     // 绕Y轴旋转
+            const rotX = (j * 0.55) % Math.PI;               // 绕X轴旋转
+            const rotation = new THREE.Euler(rotX, rotY, 0);
+
+            const vertices = createCleliaCurve(m, n, delta, kappa, rotation);
+            const hue = (j / curveCount) * 0.85;
+            const line = createLine(vertices, hue, 0.74);
+            mainGroup.add(line);
+            allLines.push(line);
+        }
+
+        // ==================== 添加极淡的球面参考框架 ====================
+        function createRefCircle(radius, colorHSL, opacity) {
+            const pts = 400;
+            const vertices = new Float32Array(pts * 3);
+            for (let i = 0; i < pts; i++) {
+                const angle = (i / (pts - 1)) * Math.PI * 2;
+                vertices[i * 3] = radius * Math.cos(angle);
+                vertices[i * 3 + 1] = 0;
+                vertices[i * 3 + 2] = radius * Math.sin(angle);
+            }
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+            geometry.setDrawRange(0, 0);
+            const material = new THREE.LineBasicMaterial({
+                color: new THREE.Color().setHSL(colorHSL.h, colorHSL.s, colorHSL.l),
+                transparent: true,
+                opacity: opacity,
+                linewidth: 1,
+                blending: THREE.NormalBlending,
+                depthWrite: true,
+            });
+            const line = new THREE.Line(geometry, material);
+            line.visible = false;
+            line.frustumCulled = false;
+            return line;
+        }
+
+        const refColor = { h: 0.58, s: 0.1, l: 0.48 };
+        const refCircles = [];
+        [R * 0.55, R * 0.82, R].forEach(r => {
+            const circle = createRefCircle(r * globalScale, refColor, 0.14);
+            mainGroup.add(circle);
+            allLines.push(circle);
+            refCircles.push(circle);
+        });
+
+        console.log(`✅ 已生成 ${curveCount} 条球面Clelia曲线 + ${refCircles.length} 条参考圆`);
+
+        // ==================== 动画状态机 ====================
+        const APPEAR_TIME = 5.0;
+        const PAUSE_TIME = 1.5;
+        const DISAPPEAR_TIME = 5.0;
+        const CYCLE_TOTAL = APPEAR_TIME + PAUSE_TIME + DISAPPEAR_TIME;
+
+        let animationStartTime = null;
+        let firstFrameDone = false;
+
+        function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+        function easeInCubic(t) { return t * t * t; }
+
+        function getProgress(elapsedSeconds) {
+            const cycle = elapsedSeconds % CYCLE_TOTAL;
+            if (cycle < APPEAR_TIME) {
+                const t = cycle / APPEAR_TIME;
+                return { progress: easeOutCubic(t), phase: 'appear' };
+            } else if (cycle < APPEAR_TIME + PAUSE_TIME) {
+                return { progress: 1.0, phase: 'pause' };
+            } else {
+                const t = (cycle - APPEAR_TIME - PAUSE_TIME) / DISAPPEAR_TIME;
+                return { progress: 1.0 - easeInCubic(t), phase: 'disappear' };
+            }
+        }
+
+        // ==================== 渲染循环 ====================
+        function animate(timestamp) {
+            requestAnimationFrame(animate);
+
+            if (animationStartTime === null) {
+                animationStartTime = timestamp;
+                allLines.forEach(line => {
+                    line.visible = false;
+                    if (line.geometry) line.geometry.setDrawRange(0, 0);
+                });
+                renderer.render(scene, camera);
+                firstFrameDone = true;
+                return;
+            }
+
+            const elapsed = (timestamp - animationStartTime) / 1000;
+            const { progress } = getProgress(elapsed);
+            const drawCount = Math.floor(progress * totalPoints);
+            const shouldBeVisible = drawCount >= 2;
+
+            for (let i = 0; i < allLines.length; i++) {
+                const line = allLines[i];
+                if (!line || !line.geometry) continue;
+                const maxPts = line.geometry.attributes.position.count;
+                const lineDraw = Math.min(drawCount, maxPts);
+                if (shouldBeVisible && lineDraw >= 2) {
+                    line.visible = true;
+                    line.geometry.setDrawRange(0, lineDraw);
+                } else {
+                    line.visible = false;
+                    line.geometry.setDrawRange(0, 0);
+                }
+            }
+
+            const rotY = elapsed * 0.06;
+            const rotX = Math.sin(elapsed * 0.13) * 0.035;
+            const rotZ = Math.cos(elapsed * 0.17) * 0.03;
+            mainGroup.rotation.set(rotX, rotY, rotZ);
+
+            camera.position.x = Math.sin(elapsed * 0.12) * 0.18;
+            camera.position.y = 0.3 + Math.cos(elapsed * 0.16) * 0.15;
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        // ==================== 响应式处理 ====================
+        function onResize() {
+            const w = container.clientWidth;
+            const h = container.clientHeight;
+            if (h <= 0) return;
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        }
+        window.addEventListener('resize', onResize, { passive: true });
+        window.addEventListener('orientationchange', () => setTimeout(onResize, 150), { passive: true });
+
+        // ==================== 启动 ====================
+        console.log('🚀 球面Clelia编织动画启动');
+        console.log(`   - 曲线数量: ${curveCount}`);
+        console.log(`   - 采样点/曲线: ${totalPoints}`);
+        console.log(`   - 动画周期: ${CYCLE_TOTAL}s (生长${APPEAR_TIME}s + 停顿${PAUSE_TIME}s + 消散${DISAPPEAR_TIME}s)`);
+
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

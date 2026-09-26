@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ABC流线网络 · Arnold-Beltrami-Childress流</title>
+    <style>
+        :root { --bg: #02040a; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'STSong', 'Songti SC', 'Noto Serif SC', 'SimSun', 'Times New Roman', serif;
+            -webkit-font-smoothing: antialiased;
+            height: 100vh; width: 100vw;
+            user-select: none; -webkit-user-select: none; cursor: default;
+        }
+        #canvas-container { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+        canvas { display: block; }
+        #title-overlay {
+            position: fixed; top: 22px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+        }
+        #title-overlay .title {
+            font-size: clamp(1.0rem, 2.2vw, 1.5rem); font-weight: 400; letter-spacing: 0.08em;
+            color: #cfc7b5; text-shadow: 0 0 42px rgba(200,180,150,0.5), 0 0 70px rgba(170,150,130,0.2);
+            line-height: 1.4; white-space: nowrap;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.46rem, 0.82vw, 0.62rem); font-weight: 300; letter-spacing: 0.12em;
+            color: #a09888; text-shadow: 0 0 14px rgba(155,145,125,0.3);
+            margin-top: 2px; white-space: nowrap;
+        }
+        #formula-overlay {
+            position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+            background: rgba(2,4,10,0.7); padding: 10px 22px; border-radius: 32px;
+            border: 1px solid rgba(175,155,135,0.18);
+            backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); max-width: 95vw;
+        }
+        #formula-overlay .formula {
+            font-size: clamp(0.36rem, 0.68vw, 0.54rem); font-weight: 300; letter-spacing: 0.04em;
+            color: #c5bdaa; text-shadow: 0 0 13px rgba(185,170,145,0.25);
+            line-height: 1.5; white-space: nowrap;
+        }
+        #formula-overlay .formula .c1 { color: #d4885c; }
+        #formula-overlay .formula .c2 { color: #5d9ec6; }
+        #formula-overlay .formula .c3 { color: #c77d9f; }
+        @media (max-width: 600px) {
+            #title-overlay { top: 14px; }
+            #formula-overlay { bottom: 10px; padding: 7px 12px; border-radius: 24px; }
+            #formula-overlay .formula { font-size: 0.32rem; white-space: normal; line-height: 1.3; }
+            #title-overlay .title { font-size: 0.68rem; }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="title-overlay">
+        <div class="title">ABC流线网络 · Arnold-Beltrami-Childress流</div>
+        <div class="subtitle">ABC FLOW STREAMLINES &nbsp;·&nbsp; EULER EQUATION EXACT SOLUTION</div>
+    </div>
+    <div id="formula-overlay">
+        <div class="formula">
+            <span class="c1">ẋ=A·sinz+C·cosy</span> &nbsp;
+            <span class="c2">ẏ=B·sinx+A·cosz</span> &nbsp;
+            <span class="c3">ż=C·siny+B·cosx</span>
+            <br>
+            <span style="color:#9aa8b8;">A=1 B=√2 C=√3 &nbsp;|&nbsp; 70条流线 &nbsp;|&nbsp; 球半径R=2.6 &nbsp;|&nbsp; 绝对时间驱动</span>
+        </div>
+    </div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#02040a');
+        scene.fog = new THREE.Fog('#02040a', 8, 22);
+
+        const camera = new THREE.PerspectiveCamera(
+            48, container.clientWidth / Math.max(container.clientHeight, 1), 0.3, 25
+        );
+        camera.position.set(1.0, 0.55, 7.2);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = false;
+        container.appendChild(renderer.domElement);
+
+        // ==================== 常量 ====================
+        const C1 = '#d4885c', C2 = '#5d9ec6', C3 = '#c77d9f';
+        const C_REF = '#3a4a5c', C_GLINT = '#8898aa';
+        const SPHERE_R = 2.6;
+        const MAX_DIST = SPHERE_R * 1.18;
+
+        // ABC流参数
+        const A = 1.0;
+        const B = Math.sqrt(2);
+        const C = Math.sqrt(3);
+
+        const DT = 0.032;
+        const STEPS_FWD = 340;
+        const STEPS_BWD = 340;
+        const NUM_SEEDS = 70;
+
+        // ==================== ABC流场 ====================
+        function abcFlow(x, y, z) {
+            return [
+                A * Math.sin(z) + C * Math.cos(y),
+                B * Math.sin(x) + A * Math.cos(z),
+                C * Math.sin(y) + B * Math.cos(x)
+            ];
+        }
+
+        // RK4单步
+        function rk4Step(px, py, pz, dt) {
+            const [k1x, k1y, k1z] = abcFlow(px, py, pz);
+            const [k2x, k2y, k2z] = abcFlow(px + 0.5*dt*k1x, py + 0.5*dt*k1y, pz + 0.5*dt*k1z);
+            const [k3x, k3y, k3z] = abcFlow(px + 0.5*dt*k2x, py + 0.5*dt*k2y, pz + 0.5*dt*k2z);
+            const [k4x, k4y, k4z] = abcFlow(px + dt*k3x, py + dt*k3y, pz + dt*k3z);
+            return [
+                px + dt/6 * (k1x + 2*k2x + 2*k3x + k4x),
+                py + dt/6 * (k1y + 2*k2y + 2*k3y + k4y),
+                pz + dt/6 * (k1z + 2*k2z + 2*k3z + k4z)
+            ];
+        }
+
+        function softClamp(pt) {
+            const len = Math.sqrt(pt[0]*pt[0] + pt[1]*pt[1] + pt[2]*pt[2]);
+            if (len > MAX_DIST && len > 0.001) {
+                const excess = len - MAX_DIST;
+                const clamped = MAX_DIST + Math.log(1 + excess) * 0.9;
+                const s = clamped / len;
+                return [pt[0]*s, pt[1]*s, pt[2]*s];
+            }
+            return pt;
+        }
+
+        function traceStreamline(sx, sy, sz, dt, stepsFwd, stepsBwd) {
+            const pts = [];
+            // 向后积分
+            let cx = sx, cy = sy, cz = sz;
+            for (let i = 0; i < stepsBwd; i++) {
+                [cx, cy, cz] = rk4Step(cx, cy, cz, -dt);
+                const [ccx, ccy, ccz] = softClamp([cx, cy, cz]);
+                pts.unshift(new THREE.Vector3(ccx, ccy, ccz));
+            }
+            // 加入初始点
+            const [scx, scy, scz] = softClamp([sx, sy, sz]);
+            pts.push(new THREE.Vector3(scx, scy, scz));
+            // 向前积分
+            cx = sx; cy = sy; cz = sz;
+            for (let i = 0; i < stepsFwd; i++) {
+                [cx, cy, cz] = rk4Step(cx, cy, cz, dt);
+                const [ccx, ccy, ccz] = softClamp([cx, cy, cz]);
+                pts.push(new THREE.Vector3(ccx, ccy, ccz));
+            }
+            return pts;
+        }
+
+        // ==================== 生成种子点 ====================
+        function generateSeeds() {
+            const seeds = [];
+            // 斐波那契球分布 + 随机径向
+            const N = NUM_SEEDS;
+            const phi_golden = (1 + Math.sqrt(5)) / 2;
+            for (let i = 0; i < N; i++) {
+                const theta = 2 * Math.PI * i / phi_golden;
+                const cosPhi = 1 - 2 * (i + 0.5) / N;
+                const sinPhi = Math.sqrt(1 - cosPhi * cosPhi);
+                const r = SPHERE_R * (0.25 + 0.7 * Math.random());
+                seeds.push([
+                    r * sinPhi * Math.cos(theta),
+                    r * sinPhi * Math.sin(theta),
+                    r * cosPhi
+                ]);
+            }
+            return seeds;
+        }
+
+        const seeds = generateSeeds();
+        console.log('种子点数量:', seeds.length);
+
+        // ==================== 追踪所有流线 ====================
+        const allStreamlines = [];
+        const colorGroups = [[], [], []]; // 按z分量分三组
+
+        for (const [sx, sy, sz] of seeds) {
+            const pts = traceStreamline(sx, sy, sz, DT, STEPS_FWD, STEPS_BWD);
+            if (pts.length >= 4) {
+                allStreamlines.push(pts);
+                // 分类：基于初始z坐标
+                const absZ = Math.abs(sz);
+                if (absZ > SPHERE_R * 0.35) {
+                    colorGroups[0].push(pts); // 暖金 - 高纬度
+                } else if (absZ > SPHERE_R * 0.12) {
+                    colorGroups[1].push(pts); // 冰蓝 - 中纬度
+                } else {
+                    colorGroups[2].push(pts); // 玫瑰粉 - 赤道附近
+                }
+            }
+        }
+
+        console.log('流线总数:', allStreamlines.length);
+        console.log('暖金:', colorGroups[0].length, '冰蓝:', colorGroups[1].length, '玫瑰粉:', colorGroups[2].length);
+
+        // ==================== 创建线条组 ====================
+        function createGroup(curves, colorHex, opacity) {
+            const group = new THREE.Group();
+            for (const pts of curves) {
+                if (pts.length < 2) continue;
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(colorHex),
+                    transparent: true, opacity: opacity, depthWrite: true
+                });
+                group.add(new THREE.Line(geom, mat));
+            }
+            return group;
+        }
+
+        const group0 = createGroup(colorGroups[0], C1, 0.58);
+        const group1 = createGroup(colorGroups[1], C2, 0.55);
+        const group2 = createGroup(colorGroups[2], C3, 0.56);
+        const mainGroup = new THREE.Group();
+        mainGroup.add(group0);
+        mainGroup.add(group1);
+        mainGroup.add(group2);
+        scene.add(mainGroup);
+
+        // ==================== 参考球面线框 ====================
+        function createSphereWireframe(radius, colorHex, opacity) {
+            const group = new THREE.Group();
+            const segs = 180;
+            const gen = (f) => {
+                const pts = [];
+                for (let i = 0; i <= segs; i++) pts.push(f((i / segs) * Math.PI * 2));
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(colorHex),
+                    transparent: true, opacity: opacity, depthWrite: true
+                });
+                group.add(new THREE.Line(geom, mat));
+            };
+            gen((a) => new THREE.Vector3(Math.cos(a) * radius, Math.sin(a) * radius, 0));
+            gen((a) => new THREE.Vector3(Math.cos(a) * radius, 0, Math.sin(a) * radius));
+            gen((a) => new THREE.Vector3(0, Math.cos(a) * radius, Math.sin(a) * radius));
+            for (const z of [-radius * 0.5, radius * 0.5]) {
+                const r = Math.sqrt(radius * radius - z * z);
+                const pts = [];
+                for (let i = 0; i <= segs; i++) {
+                    const a = (i / segs) * Math.PI * 2;
+                    pts.push(new THREE.Vector3(Math.cos(a) * r, z, Math.sin(a) * r));
+                }
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(colorHex),
+                    transparent: true, opacity: opacity * 0.6, depthWrite: true
+                });
+                group.add(new THREE.Line(geom, mat));
+            }
+            return group;
+        }
+        const sphereRef = createSphereWireframe(SPHERE_R, C_REF, 0.22);
+        scene.add(sphereRef);
+
+        // ==================== 轴端点光点 ====================
+        (() => {
+            const sz = 0.055;
+            const axes = [[SPHERE_R, 0, 0], [-SPHERE_R, 0, 0], [0, SPHERE_R, 0], [0, -SPHERE_R, 0], [0, 0, SPHERE_R], [0, 0, -SPHERE_R]];
+            const gGroup = new THREE.Group();
+            axes.forEach(([ax, ay, az]) => {
+                const pt = new THREE.Vector3(ax, ay, az);
+                [[-sz, 0, 0], [sz, 0, 0], [0, -sz, 0], [0, sz, 0], [0, 0, -sz], [0, 0, sz]].forEach(([dx, dy, dz]) => {
+                    const g = new THREE.BufferGeometry().setFromPoints([pt.clone().add(new THREE.Vector3(dx, dy, dz)), pt]);
+                    const m = new THREE.LineBasicMaterial({ color: new THREE.Color(C_GLINT), transparent: true, opacity: 0.5, depthWrite: true });
+                    gGroup.add(new THREE.Line(g, m));
+                });
+            });
+            mainGroup.add(gGroup);
+        })();
+
+        // ==================== 种子点光点 ====================
+        (() => {
+            const sz = 0.03;
+            const gGroup = new THREE.Group();
+            for (const [sx, sy, sz2] of seeds) {
+                const pt = new THREE.Vector3(sx, sy, sz2);
+                if (pt.length() > SPHERE_R * 1.2) continue;
+                [[-sz, 0, 0], [sz, 0, 0], [0, -sz, 0], [0, sz, 0]].forEach(([dx, dy, dz]) => {
+                    const g = new THREE.BufferGeometry().setFromPoints([pt.clone().add(new THREE.Vector3(dx, dy, dz)), pt]);
+                    const m = new THREE.LineBasicMaterial({ color: new THREE.Color(C_GLINT), transparent: true, opacity: 0.4, depthWrite: true });
+                    gGroup.add(new THREE.Line(g, m));
+                });
+            }
+            mainGroup.add(gGroup);
+        })();
+
+        // ==================== 原点光点 ====================
+        (() => {
+            const sz = 0.08;
+            const g = new THREE.BufferGeometry().setFromPoints([
+                new THREE.Vector3(-sz, 0, 0), new THREE.Vector3(sz, 0, 0),
+                new THREE.Vector3(0, -sz, 0), new THREE.Vector3(0, sz, 0),
+                new THREE.Vector3(0, 0, -sz), new THREE.Vector3(0, 0, sz)
+            ]);
+            const m = new THREE.LineBasicMaterial({ color: new THREE.Color(C_GLINT), transparent: true, opacity: 0.72, depthWrite: true });
+            scene.add(new THREE.LineSegments(g, m));
+        })();
+
+        // ==================== 动画循环（绝对时间） ====================
+        const startTime = performance.now();
+        let frameCount = 0;
+        let currentTime = 0;
+
+        function animate(now) {
+            requestAnimationFrame(animate);
+            const elapsed = (now - startTime) / 1000;
+            if (elapsed <= 0) { renderer.render(scene, camera); return; }
+            currentTime = elapsed;
+            frameCount++;
+            if (frameCount === 1 || frameCount % 150 === 0) {
+                console.log(`[动画运行中] 帧:${frameCount} 时间:${currentTime.toFixed(2)}s 流线:${allStreamlines.length}`);
+            }
+
+            mainGroup.rotation.y = currentTime * 0.26;
+            mainGroup.rotation.x = currentTime * 0.14 + Math.sin(currentTime * 0.23) * 0.2;
+            mainGroup.rotation.z = Math.cos(currentTime * 0.18) * 0.11;
+            sphereRef.rotation.copy(mainGroup.rotation);
+
+            const camX = 1.0 + Math.sin(currentTime * 0.14) * 0.5;
+            const camY = 0.55 + Math.cos(currentTime * 0.17) * 0.45;
+            camera.position.set(camX, camY, 7.2);
+            camera.lookAt(0, 0, 0);
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth, h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+
+        console.log('=== ABC流线网络 · Arnold-Beltrami-Childress流 ===');
+        console.log('A=1, B=√2≈1.414, C=√3≈1.732');
+        console.log('流线总数:', allStreamlines.length, '| 球半径:', SPHERE_R);
+        console.log('✅ 初始帧渲染完成，启动绝对时间动画循环...');
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

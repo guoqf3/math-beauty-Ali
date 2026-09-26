@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>环面纽结 · 拓扑之美</title>
+    <style>
+        :root {
+            --bg: #04040c;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'Noto Serif SC', 'STSong', 'KaiTi', '楷体', '华文楷体', '宋体', serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            height: 100vh;
+            width: 100vw;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+        #canvas-container {
+            position: fixed;
+            inset: 0;
+            z-index: 1;
+        }
+        canvas {
+            display: block;
+        }
+        .overlay {
+            position: fixed;
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+        #title-overlay {
+            top: clamp(12px, 3.5vh, 36px);
+        }
+        #title-overlay .title {
+            font-size: clamp(1.05rem, 2.1vw, 1.55rem);
+            font-weight: 400;
+            letter-spacing: 0.12em;
+            color: rgba(235, 228, 220, 0.91);
+            text-shadow: 0 0 24px rgba(180, 160, 220, 0.5), 0 0 6px rgba(160, 140, 200, 0.35);
+            line-height: 1.4;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.68rem, 1.25vw, 0.82rem);
+            font-weight: 300;
+            letter-spacing: 0.07em;
+            color: rgba(200, 192, 220, 0.7);
+            margin-top: 0.25em;
+            text-shadow: 0 0 13px rgba(160, 145, 190, 0.3);
+        }
+        #formula-overlay {
+            bottom: clamp(16px, 4vh, 44px);
+        }
+        #formula-overlay .formula {
+            font-size: clamp(0.72rem, 1.35vw, 1.0rem);
+            font-style: italic;
+            letter-spacing: 0.05em;
+            color: rgba(222, 214, 204, 0.84);
+            text-shadow: 0 0 20px rgba(160, 145, 135, 0.42), 0 0 5px rgba(170, 155, 140, 0.28);
+            line-height: 1.55;
+            background: rgba(10, 9, 16, 0.48);
+            padding: 0.42em 1.3em;
+            border-radius: 2em;
+            backdrop-filter: blur(5px);
+            -webkit-backdrop-filter: blur(5px);
+            border: 1px solid rgba(130, 115, 155, 0.22);
+        }
+        @media (max-width: 600px) {
+            #formula-overlay .formula {
+                padding: 0.35em 0.9em;
+                letter-spacing: 0.03em;
+                font-size: 0.66rem;
+            }
+            #title-overlay .title {
+                letter-spacing: 0.07em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+
+    <div class="overlay" id="title-overlay">
+        <div class="title">环面纽结 · Torus Knots</div>
+        <div class="subtitle">gcd(p, q) = 1 闭合曲线</div>
+    </div>
+
+    <div class="overlay" id="formula-overlay">
+        <div class="formula">
+            γ<sub>p,q</sub>(θ) = ( (R+r cos qθ) cos pθ , (R+r cos qθ) sin pθ , r sin qθ )
+            &emsp;|&emsp; θ ∈ [0, 2π]
+        </div>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 时间配置 ====================
+        const DRAW_DURATION = 15.0;
+        const HOLD_DURATION = 1.5;
+        const ERASE_DURATION = 15.0;
+        const CYCLE_DURATION = DRAW_DURATION + HOLD_DURATION + ERASE_DURATION;
+        const DRAW_END = DRAW_DURATION;
+        const ERASE_START = DRAW_END + HOLD_DURATION;
+        const FADE_IN_DURATION = 2.5;
+        const FADE_OUT_START = CYCLE_DURATION - 3.0;
+
+        // 环面参数
+        const TORUS_R = 2.8;  // 大半径
+        const TORUS_r = 1.2;  // 小半径
+        const KNOT_SEGMENTS = 780; // 每条纽结采样数
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x04040c, 0.00008);
+
+        const camera = new THREE.PerspectiveCamera(46, container.clientWidth / container.clientHeight, 0.4, 18);
+        camera.position.set(1.2, 1.8, 4.5);
+        camera.lookAt(0, 0.2, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.2;
+        renderer.outputColorSpace = THREE.SRGBColorSpace;
+        container.appendChild(renderer.domElement);
+
+        // ==================== 主旋转组 ====================
+        const mainGroup = new THREE.Group();
+        scene.add(mainGroup);
+
+        // ==================== 星空背景粒子 ====================
+        const starsGroup = new THREE.Group();
+        mainGroup.add(starsGroup);
+        const starCount = 220;
+        const starPosArr = new Float32Array(starCount * 3);
+        for (let i = 0; i < starCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const r = 3.5 + Math.random() * 3.8;
+            starPosArr[i * 3] = Math.sin(phi) * Math.cos(theta) * r;
+            starPosArr[i * 3 + 1] = Math.sin(phi) * Math.sin(theta) * r;
+            starPosArr[i * 3 + 2] = Math.cos(phi) * r;
+        }
+        const starGeom = new THREE.BufferGeometry();
+        starGeom.setAttribute('position', new THREE.BufferAttribute(starPosArr, 3));
+        const starMat = new THREE.PointsMaterial({
+            color: 0xb8b0d0,
+            size: 0.012,
+            transparent: true,
+            opacity: 0.35,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending,
+        });
+        const starPts = new THREE.Points(starGeom, starMat);
+        starsGroup.add(starPts);
+
+        // 环面附近漂浮光点
+        const glowGroup = new THREE.Group();
+        mainGroup.add(glowGroup);
+        const glowCount = 80;
+        const glowArr = new Float32Array(glowCount * 3);
+        for (let i = 0; i < glowCount; i++) {
+            const u = Math.random() * Math.PI * 2;
+            const v = Math.random() * Math.PI * 2;
+            const x = (TORUS_R + TORUS_r * Math.cos(v)) * Math.cos(u);
+            const y = (TORUS_R + TORUS_r * Math.cos(v)) * Math.sin(u);
+            const z = TORUS_r * Math.sin(v);
+            glowArr[i * 3] = x + (Math.random() - 0.5) * 0.25;
+            glowArr[i * 3 + 1] = y + (Math.random() - 0.5) * 0.25;
+            glowArr[i * 3 + 2] = z + (Math.random() - 0.5) * 0.25;
+        }
+        const glowGeom = new THREE.BufferGeometry();
+        glowGeom.setAttribute('position', new THREE.BufferAttribute(glowArr, 3));
+        const glowMat = new THREE.PointsMaterial({
+            color: 0xf0e2c8,
+            size: 0.025,
+            transparent: true,
+            opacity: 0.45,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending,
+        });
+        const glowPts = new THREE.Points(glowGeom, glowMat);
+        glowGroup.add(glowPts);
+
+        // ==================== 参考环面线框 ====================
+        const torusWireGroup = new THREE.Group();
+        mainGroup.add(torusWireGroup);
+        const torusWireMats = [];
+
+        function addTorusWireSegments(R, r, color, opacity) {
+            const segU = 130;
+            const segV = 65;
+            // 纬线 (固定 v)
+            for (let j = 0; j <= segV; j += 5) {
+                const v = (j / segV) * Math.PI * 2;
+                const pts = [];
+                for (let i = 0; i <= segU; i++) {
+                    const u = (i / segU) * Math.PI * 2;
+                    pts.push(new THREE.Vector3(
+                        (R + r * Math.cos(v)) * Math.cos(u),
+                        (R + r * Math.cos(v)) * Math.sin(u),
+                        r * Math.sin(v)
+                    ));
+                }
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color,
+                    transparent: true,
+                    opacity,
+                    depthWrite: false,
+                });
+                torusWireMats.push(mat);
+                torusWireGroup.add(new THREE.Line(geom, mat));
+            }
+            // 经线 (固定 u)
+            for (let i = 0; i <= segU; i += 8) {
+                const u = (i / segU) * Math.PI * 2;
+                const pts = [];
+                for (let j = 0; j <= segV; j++) {
+                    const v = (j / segV) * Math.PI * 2;
+                    pts.push(new THREE.Vector3(
+                        (R + r * Math.cos(v)) * Math.cos(u),
+                        (R + r * Math.cos(v)) * Math.sin(u),
+                        r * Math.sin(v)
+                    ));
+                }
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color,
+                    transparent: true,
+                    opacity,
+                    depthWrite: false,
+                });
+                torusWireMats.push(mat);
+                torusWireGroup.add(new THREE.Line(geom, mat));
+            }
+        }
+        addTorusWireSegments(TORUS_R, TORUS_r, 0x5a5570, 0.14);
+
+        // ==================== 环面纽结生成 ====================
+        const knotsGroup = new THREE.Group();
+        mainGroup.add(knotsGroup);
+        const allCurveData = [];
+
+        /**
+         * 创建 (p,q) 环面纽结
+         * @param {number} p 环绕大圆次数
+         * @param {number} q 环绕小圆次数
+         * @param {THREE.Color} color
+         * @returns {THREE.Line}
+         */
+        function createTorusKnot(p, q, color) {
+            const positions = new Float32Array((KNOT_SEGMENTS + 1) * 3);
+            for (let i = 0; i <= KNOT_SEGMENTS; i++) {
+                const theta = (i / KNOT_SEGMENTS) * Math.PI * 2;
+                const cosQ = Math.cos(q * theta);
+                const sinQ = Math.sin(q * theta);
+                const cosP = Math.cos(p * theta);
+                const sinP = Math.sin(p * theta);
+                const Rr = TORUS_R + TORUS_r * cosQ;
+                positions[i * 3] = Rr * cosP;
+                positions[i * 3 + 1] = Rr * sinP;
+                positions[i * 3 + 2] = TORUS_r * sinQ;
+            }
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            geometry.setDrawRange(0, 0);
+
+            const material = new THREE.LineBasicMaterial({
+                color,
+                transparent: true,
+                opacity: 0.82,
+                depthWrite: false,
+            });
+            const line = new THREE.Line(geometry, material);
+            allCurveData.push({ geometry, totalVertices: KNOT_SEGMENTS + 1 });
+            return line;
+        }
+
+        // 生成一系列互质的(p,q)对，确保曲线闭合且种类丰富
+        const pqPairs = [];
+        for (let p = 2; p <= 9; p++) {
+            for (let q = 2; q <= p; q++) {
+                if (gcd(p, q) === 1) {
+                    pqPairs.push([p, q]);
+                }
+            }
+        }
+        // 去重，p,q 顺序有讲究，但保留p>q方便观察
+        // 取前32对，保证数量足够
+        const selectedPairs = pqPairs.slice(0, 32);
+
+        // 颜色映射
+        function getKnotColor(index, total) {
+            const hue = (index / total) * 0.9 + 0.05; // 避开红色过暗
+            const color = new THREE.Color();
+            color.setHSL(hue % 1, 0.7, 0.65);
+            return color;
+        }
+
+        selectedPairs.forEach(([p, q], idx) => {
+            const color = getKnotColor(idx, selectedPairs.length);
+            const knot = createTorusKnot(p, q, color);
+            knotsGroup.add(knot);
+        });
+
+        function gcd(a, b) {
+            while (b) { const t = b; b = a % b; a = t; }
+            return a;
+        }
+
+        // ==================== 动画循环 ====================
+        const clock = new THREE.Clock();
+        let animationStartTime = performance.now() / 1000;
+
+        function getCycleTime() {
+            const now = performance.now() / 1000;
+            return (now - animationStartTime) % CYCLE_DURATION;
+        }
+
+        function easeInOutCubic(t) {
+            return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const cycleTime = getCycleTime();
+            const dt = Math.min(clock.getDelta(), 0.1);
+
+            // 主旋转
+            mainGroup.rotation.y += 0.22 * dt;
+            mainGroup.rotation.x += 0.06 * dt;
+            mainGroup.rotation.z += 0.015 * Math.sin(cycleTime * 0.5) * dt;
+
+            // 相机微动
+            const sway = 0.12 * Math.sin(cycleTime * (Math.PI * 2 / 34));
+            camera.position.y = 1.8 + sway;
+            camera.lookAt(0, 0.2, 0);
+
+            // 绘制进度
+            let fraction;
+            if (cycleTime < DRAW_END) {
+                fraction = easeInOutCubic(cycleTime / DRAW_DURATION);
+            } else if (cycleTime < ERASE_START) {
+                fraction = 1.0;
+            } else if (cycleTime < CYCLE_DURATION) {
+                const elapsed = cycleTime - ERASE_START;
+                fraction = 1.0 - easeInOutCubic(elapsed / ERASE_DURATION);
+                fraction = Math.max(0, fraction);
+            } else {
+                fraction = 0;
+            }
+
+            // 更新所有曲线绘制范围
+            for (const data of allCurveData) {
+                const count = Math.round(fraction * data.totalVertices);
+                data.geometry.setDrawRange(0, Math.max(0, Math.min(data.totalVertices, count)));
+            }
+
+            // 背景透明度渐变
+            let bgOp;
+            if (cycleTime < FADE_IN_DURATION) {
+                bgOp = cycleTime / FADE_IN_DURATION;
+            } else if (cycleTime < FADE_OUT_START) {
+                bgOp = 1.0;
+            } else if (cycleTime < CYCLE_DURATION) {
+                bgOp = 1.0 - (cycleTime - FADE_OUT_START) / (CYCLE_DURATION - FADE_OUT_START);
+            } else {
+                bgOp = 0;
+            }
+            bgOp = Math.max(0, Math.min(1, bgOp));
+
+            starMat.opacity = 0.35 * bgOp;
+            glowMat.opacity = 0.45 * bgOp;
+            for (const mat of torusWireMats) {
+                mat.opacity = 0.14 * bgOp;
+            }
+
+            // 粒子微动
+            glowGroup.rotation.y += dt * 0.08;
+            glowGroup.rotation.x += dt * 0.04;
+            starsGroup.rotation.y += dt * 0.03;
+            starsGroup.rotation.x += dt * 0.02;
+
+            renderer.render(scene, camera);
+        }
+
+        // ==================== 响应式处理 ====================
+        window.addEventListener('resize', () => {
+            camera.aspect = container.clientWidth / container.clientHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        });
+
+        // 可选重置
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'r' || e.key === 'R') {
+                animationStartTime = performance.now() / 1000;
+                for (const data of allCurveData) {
+                    data.geometry.setDrawRange(0, 0);
+                }
+                mainGroup.rotation.set(0, 0, 0);
+            }
+        });
+
+        // 预热渲染，避免第一帧空白
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+
+        console.log('🪢 环面纽结动画已启动');
+        console.log(`   - ${selectedPairs.length} 条互质(p,q)纽结 (p≤9, gcd=1)`);
+        console.log(`   - 周期：${CYCLE_DURATION.toFixed(1)}秒`);
+        console.log('   - 按 R 键可重置');
+    </script>
+</body>
+</html>

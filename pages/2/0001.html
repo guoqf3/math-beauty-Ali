@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>灵动水花</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            /* 兜底纯白背景，防黑屏 */
+            background-color: #ffffff; 
+        }
+        #container {
+            width: 100vw;
+            height: 100vh;
+            display: block;
+        }
+        #hint {
+            position: absolute;
+            bottom: 15px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: rgba(50, 100, 150, 0.3);
+            font-family: sans-serif;
+            font-size: 12px;
+            pointer-events: none;
+            user-select: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="container"></div>
+    <div id="hint">移动鼠标聚拢水花 · 点击溅射水滴</div>
+
+    <!-- 引入 PixiJS 7 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.4.2/pixi.min.js"></script>
+
+    <script>
+        // 1. 初始化 PixiJS 应用
+        const app = new PIXI.Application({
+            resizeTo: window,
+            backgroundColor: 0xffffff, 
+            antialias: true,
+            autoDensity: true,
+            resolution: window.devicePixelRatio || 1
+        });
+        document.getElementById('container').appendChild(app.view);
+
+        // 2. 预烘焙纹理（突破性能瓶颈的核心）
+        function createWaterTextures() {
+            const g = new PIXI.Graphics();
+            const textures = [];
+            
+            // 提取原图主色调：深蓝、中蓝、浅蓝
+            const colors = [0x0d47a1, 0x1976d2, 0x29b6f6, 0x4fc3f7];
+
+            for (let i = 0; i < colors.length; i++) {
+                // 绘制大水滴形
+                g.clear();
+                g.beginFill(colors[i], 1);
+                // 用贝塞尔曲线绘制水滴
+                g.moveTo(0, -20);
+                g.bezierCurveTo(18, -5, 15, 15, 0, 20);
+                g.bezierCurveTo(-15, 15, -18, -5, 0, -20);
+                g.endFill();
+                textures.push(app.renderer.generateTexture(g));
+                g.clear();
+
+                // 绘制小飞溅水花（带分叉）
+                g.beginFill(colors[i], 1);
+                g.moveTo(0, 0);
+                g.bezierCurveTo(10, -15, 15, -15, 20, 0); // 主弧线
+                g.lineTo(12, 5);
+                g.bezierCurveTo(10, -5, 5, -5, 0, 10); // 内弧线
+                g.endFill();
+                g.beginFill(colors[i], 1);
+                g.drawCircle(5, -18, 4); // 顶端小点
+                g.drawCircle(-8, -12, 3); // 侧边小点
+                g.endFill();
+                textures.push(app.renderer.generateTexture(g));
+                g.clear();
+
+                // 绘制小圆点
+                g.beginFill(colors[i], 1);
+                g.drawCircle(0, 0, 5);
+                g.endFill();
+                textures.push(app.renderer.generateTexture(g));
+                g.clear();
+            }
+            
+            g.destroy();
+            return textures;
+        }
+
+        const textures = createWaterTextures();
+
+        // 3. 创建对象池（多角度、多大小随机分配）
+        const droplets = [];
+        const count = 80;
+
+        for (let i = 0; i < count; i++) {
+            const tex = textures[Math.floor(Math.random() * textures.length)];
+            const sprite = new PIXI.Sprite(tex);
+            
+            sprite.anchor.set(0.5);
+            sprite.x = Math.random() * app.screen.width;
+            sprite.y = Math.random() * app.screen.height;
+            
+            // 赋予较高的初始速度（满足速度要求）
+            sprite.vx = (Math.random() - 0.5) * 6; 
+            sprite.vy = (Math.random() - 0.5) * 6;
+            
+            sprite.rotSpeed = (Math.random() - 0.5) * 0.15;
+            sprite.scale.set(0.6 + Math.random() * 1.2); // 随机大小
+
+            app.stage.addChild(sprite);
+            droplets.push(sprite);
+        }
+
+        // 4. 交互逻辑
+        let mouse = { x: -999, y: -999 }; // 初始移出屏幕
+        let clickEnergy = 0;
+
+        window.addEventListener('mousemove', (e) => {
+            mouse.x = e.clientX;
+            mouse.y = e.clientY;
+        });
+
+        window.addEventListener('mousedown', (e) => {
+            // 点击瞬间激发全局爆发
+            clickEnergy = 1.0; 
+            mouse.x = e.clientX;
+            mouse.y = e.clientY;
+        });
+
+        // 5. 动画主循环（速度明快不拖沓）
+        app.ticker.add((delta) => {
+            const dt = delta / 60 * 4; // 乘以4倍速，大幅提升动感
+
+            // 能量自然衰减
+            clickEnergy *= 0.96;
+            if (clickEnergy < 0.01) clickEnergy = 0;
+
+            droplets.forEach(sp => {
+                // 基础动量
+                sp.x += sp.vx * dt;
+                sp.y += sp.vy * dt;
+                sp.rotation += sp.rotSpeed * dt;
+
+                // 鼠标距离计算（加入微小偏移量，彻底防止除零报错）
+                const dx = sp.x - mouse.x;
+                const dy = sp.y - mouse.y;
+                const dist = Math.sqrt(dx * dx + dy * dy) + 0.001; 
+
+                // 鼠标移动产生的引力（流体聚拢感）
+                if (dist < 250) {
+                    const force = (250 - dist) / 250;
+                    sp.vx -= (dx / dist) * force * 8 * dt;
+                    sp.vy -= (dy / dist) * force * 8 * dt;
+                }
+
+                // 鼠标点击产生的溅射力（向外排斥）
+                if (clickEnergy > 0 && dist < 300) {
+                    const burst = clickEnergy * 15;
+                    sp.vx += (dx / dist) * burst * dt;
+                    sp.vy += (dy / dist) * burst * dt;
+                }
+
+                // 阻尼（防止无限加速飞出）
+                sp.vx *= 0.98;
+                sp.vy *= 0.98;
+
+                // 边界环绕（防止元素丢失导致报错）
+                if (sp.x < -50) sp.x = app.screen.width + 50;
+                if (sp.x > app.screen.width + 50) sp.x = -50;
+                if (sp.y < -50) sp.y = app.screen.height + 50;
+                if (sp.y > app.screen.height + 50) sp.y = -50;
+            });
+        });
+
+        // 窗口调整
+        window.addEventListener('resize', () => {
+            app.renderer.resize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>

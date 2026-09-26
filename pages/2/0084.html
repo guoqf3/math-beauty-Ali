@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>THERMAL · 热振晶格</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #0a0a18;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2;
+            text-align: center;
+            pointer-events: none;
+            opacity: 0.55;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+
+        .overlay:hover {
+            opacity: 0.9;
+        }
+
+        .title {
+            color: rgba(235, 220, 250, 0.8);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 20px rgba(160, 130, 240, 0.4);
+        }
+
+        .hint {
+            color: rgba(190, 180, 215, 0.5);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+
+        @media (max-width: 768px) {
+            .overlay {
+                bottom: 18px;
+            }
+            .title {
+                font-size: 8px;
+                letter-spacing: 0.45em;
+            }
+            .hint {
+                font-size: 6px;
+                letter-spacing: 0.22em;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="canvas"></canvas>
+
+    <div class="overlay">
+        <div class="title">Thermal</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script>
+        (function() {
+            // ─── 画布初始化 ───────────────────────────────────────────────
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            let atoms = [];          // 原子位置 {x, y, vx, vy, restX, restY}
+            let rows = 0, cols = 0;
+            let spacing = 30;        // 晶格间距
+            let springs = [];        // 弹簧连接 {a, b, restLength}
+            let mouse = { x: -9999, y: -9999, active: false };
+            let time = 0;
+            let colorShift = 0;      // 点击切换色彩
+            let shockwaves = [];     // 冲击波
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                ctx.fillStyle = '#0a0a18';
+                ctx.fillRect(0, 0, W, H);
+            }
+
+            // ─── 初始化晶格 ─────────────────────────────────────────────
+            function initLattice() {
+                const targetAtoms = 1200;
+                const area = W * H;
+                spacing = Math.sqrt(area / targetAtoms);
+                spacing = Math.max(18, Math.min(48, spacing));
+
+                cols = Math.ceil(W / spacing);
+                rows = Math.ceil(H / spacing);
+
+                // 限制原子数
+                if (cols * rows > 1600) {
+                    const scale = Math.sqrt(1600 / (cols * rows));
+                    spacing *= (1 / scale);
+                    cols = Math.ceil(W / spacing);
+                    rows = Math.ceil(H / spacing);
+                }
+
+                atoms = [];
+                springs = [];
+
+                // 创建原子
+                for (let j = 0; j < rows; j++) {
+                    for (let i = 0; i < cols; i++) {
+                        const x = (i + 0.5) * spacing;
+                        const y = (j + 0.5) * spacing;
+                        atoms.push({
+                            x: x,
+                            y: y,
+                            vx: (Math.random() - 0.5) * 0.5,
+                            vy: (Math.random() - 0.5) * 0.5,
+                            restX: x,
+                            restY: y,
+                        });
+                    }
+                }
+
+                // 创建弹簧连接（横向和纵向）
+                const getIndex = (i, j) => i >= 0 && i < cols && j >= 0 && j < rows ? j * cols + i : -1;
+
+                for (let j = 0; j < rows; j++) {
+                    for (let i = 0; i < cols; i++) {
+                        const idx = getIndex(i, j);
+                        if (idx < 0) continue;
+
+                        // 横向弹簧
+                        const rightIdx = getIndex(i + 1, j);
+                        if (rightIdx >= 0) {
+                            springs.push({ a: idx, b: rightIdx, restLength: spacing });
+                        }
+
+                        // 纵向弹簧
+                        const downIdx = getIndex(i, j + 1);
+                        if (downIdx >= 0) {
+                            springs.push({ a: idx, b: downIdx, restLength: spacing });
+                        }
+                    }
+                }
+            }
+
+            // ─── 创建冲击波 ─────────────────────────────────────────────
+            function createShockwave(x, y) {
+                shockwaves.push({
+                    x, y,
+                    radius: 5,
+                    maxRadius: Math.max(W, H) * 0.5,
+                    strength: 12 + Math.random() * 6,
+                    decay: 0.015,
+                    growth: 6 + Math.random() * 2,
+                    life: 1.0,
+                });
+                if (shockwaves.length > 5) shockwaves.shift();
+            }
+
+            function updateShockwaves(dt) {
+                for (let i = shockwaves.length - 1; i >= 0; i--) {
+                    const sw = shockwaves[i];
+                    sw.radius += sw.growth * dt;
+                    sw.strength *= 0.985;
+                    sw.life -= sw.decay * dt;
+                    if (sw.life <= 0 || sw.radius > sw.maxRadius || sw.strength < 0.5) {
+                        shockwaves.splice(i, 1);
+                    }
+                }
+            }
+
+            // ─── 更新晶格物理 ───────────────────────────────────────────
+            function updateLattice(dt) {
+                const springStiffness = 0.12;
+                const damping = 0.92;
+                const mouseRadius = 100;
+                const mouseRadiusSq = mouseRadius * mouseRadius;
+                const maxSpeed = 4.5;
+
+                // 重置弹簧力（通过速度直接累积）
+                for (const atom of atoms) {
+                    atom.ax = 0;
+                    atom.ay = 0;
+                }
+
+                // 弹簧力
+                for (const spring of springs) {
+                    const a = atoms[spring.a];
+                    const b = atoms[spring.b];
+                    const dx = b.x - a.x;
+                    const dy = b.y - a.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    if (dist < 0.01) continue;
+
+                    const force = (dist - spring.restLength) * springStiffness;
+                    const normX = dx / dist;
+                    const normY = dy / dist;
+
+                    a.ax += normX * force;
+                    a.ay += normY * force;
+                    b.ax -= normX * force;
+                    b.ay -= normY * force;
+                }
+
+                // 鼠标加热
+                if (mouse.active) {
+                    for (const atom of atoms) {
+                        const dx = atom.x - mouse.x;
+                        const dy = atom.y - mouse.y;
+                        const distSq = dx * dx + dy * dy;
+                        if (distSq < mouseRadiusSq) {
+                            const dist = Math.sqrt(distSq);
+                            const heat = (1 - dist / mouseRadius) * 1.8;
+                            atom.vx += (Math.random() - 0.5) * heat;
+                            atom.vy += (Math.random() - 0.5) * heat;
+                        }
+                    }
+                }
+
+                // 冲击波影响
+                for (const sw of shockwaves) {
+                    const bandWidth = 30 + sw.radius * 0.08;
+                    const innerR = Math.max(0, sw.radius - bandWidth);
+                    const outerR = sw.radius + bandWidth;
+                    const outerSq = outerR * outerR;
+                    const innerSq = innerR * innerR;
+
+                    for (const atom of atoms) {
+                        const dx = atom.x - sw.x;
+                        const dy = atom.y - sw.y;
+                        const distSq = dx * dx + dy * dy;
+                        if (distSq > innerSq && distSq < outerSq) {
+                            const dist = Math.sqrt(distSq);
+                            const intensity = (1 - Math.abs(dist - sw.radius) / bandWidth) * sw.strength;
+                            const normX = dx / dist;
+                            const normY = dy / dist;
+                            atom.vx += normX * intensity * 0.4;
+                            atom.vy += normY * intensity * 0.4;
+                        }
+                    }
+                }
+
+                // 更新位置（Verlet式）
+                for (const atom of atoms) {
+                    atom.vx += atom.ax * dt;
+                    atom.vy += atom.ay * dt;
+                    atom.vx *= damping;
+                    atom.vy *= damping;
+
+                    // 速度限制
+                    const speed = Math.sqrt(atom.vx * atom.vx + atom.vy * atom.vy);
+                    if (speed > maxSpeed) {
+                        atom.vx = (atom.vx / speed) * maxSpeed;
+                        atom.vy = (atom.vy / speed) * maxSpeed;
+                    }
+
+                    atom.x += atom.vx * dt;
+                    atom.y += atom.vy * dt;
+
+                    // 柔和地拉回平衡位置
+                    const restoreX = (atom.restX - atom.x) * 0.012;
+                    const restoreY = (atom.restY - atom.y) * 0.012;
+                    atom.vx += restoreX;
+                    atom.vy += restoreY;
+                }
+            }
+
+            // ─── 绘制晶格 ───────────────────────────────────────────────
+            function drawLattice(ctx) {
+                // 绘制弹簧
+                ctx.lineCap = 'round';
+                for (const spring of springs) {
+                    const a = atoms[spring.a];
+                    const b = atoms[spring.b];
+                    const dx = b.x - a.x;
+                    const dy = b.y - a.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    const stretch = Math.abs(dist - spring.restLength);
+                    const stretchNorm = Math.min(1, stretch / 25);
+
+                    // 弹簧颜色随拉伸程度变化
+                    const hue = 200 + colorShift - stretchNorm * 120;
+                    const sat = 40 + stretchNorm * 50;
+                    const light = 30 + stretchNorm * 35;
+                    const alpha = 0.15 + stretchNorm * 0.35;
+
+                    ctx.strokeStyle = `hsla(${hue}, ${sat}%, ${light}%, ${alpha})`;
+                    ctx.lineWidth = 0.5 + stretchNorm * 1.2;
+                    ctx.beginPath();
+                    ctx.moveTo(a.x, a.y);
+                    ctx.lineTo(b.x, b.y);
+                    ctx.stroke();
+                }
+
+                // 绘制原子
+                for (const atom of atoms) {
+                    // 计算动能
+                    const kinetic = Math.sqrt(atom.vx * atom.vx + atom.vy * atom.vy);
+                    const normEnergy = Math.min(1, kinetic / 3.5);
+
+                    // 颜色映射：低能=冷蓝，高能=炽热红橙
+                    const hue = 200 + colorShift - normEnergy * 150;
+                    const sat = 50 + normEnergy * 45;
+                    const light = 35 + normEnergy * 40;
+                    const alpha = 0.5 + normEnergy * 0.5;
+
+                    const size = 2.0 + normEnergy * 3.5;
+
+                    // 外发光
+                    const glowRadius = size * 2.5;
+                    const gradient = ctx.createRadialGradient(atom.x, atom.y, 0, atom.x, atom.y, glowRadius);
+                    gradient.addColorStop(0, `hsla(${hue}, ${sat}%, ${light + 20}%, ${alpha * 0.5})`);
+                    gradient.addColorStop(1, 'transparent');
+                    ctx.fillStyle = gradient;
+                    ctx.beginPath();
+                    ctx.arc(atom.x, atom.y, glowRadius, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // 核心
+                    ctx.fillStyle = `hsla(${hue}, ${sat}%, ${light + 15}%, ${alpha})`;
+                    ctx.beginPath();
+                    ctx.arc(atom.x, atom.y, size * 0.65, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            // ─── 绘制冲击波 ─────────────────────────────────────────────
+            function drawShockwaves(ctx) {
+                for (const sw of shockwaves) {
+                    const alpha = sw.life * 0.3;
+                    const hue = 200 + colorShift + sw.radius * 0.1;
+                    ctx.strokeStyle = `hsla(${hue}, 70%, 70%, ${alpha})`;
+                    ctx.lineWidth = 2.5;
+                    ctx.beginPath();
+                    ctx.arc(sw.x, sw.y, sw.radius, 0, Math.PI * 2);
+                    ctx.stroke();
+                }
+            }
+
+            // ─── 鼠标光晕 ───────────────────────────────────────────────
+            function drawCursorGlow(ctx) {
+                if (!mouse.active) return;
+                const radius = 95;
+                const hue = 200 + colorShift;
+                const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                gradient.addColorStop(0, `hsla(${hue}, 70%, 75%, 0.06)`);
+                gradient.addColorStop(0.7, `hsla(${hue}, 60%, 70%, 0.02)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // ─── 主循环 ─────────────────────────────────────────────────
+            let lastTime = 0;
+            let accumulator = 0;
+            const fixedStep = 1000 / 60;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+
+                accumulator += dt;
+                const steps = Math.min(Math.floor(accumulator / fixedStep), 3);
+                accumulator -= steps * fixedStep;
+
+                for (let s = 0; s < steps; s++) {
+                    time += 0.016;
+                    const dtNorm = fixedStep / 1000 * 60;
+                    updateLattice(dtNorm);
+                    updateShockwaves(dtNorm);
+                }
+
+                // 清除画布
+                ctx.fillStyle = '#0a0a18';
+                ctx.fillRect(0, 0, W, H);
+
+                // 绘制晶格
+                drawLattice(ctx);
+
+                // 绘制冲击波
+                drawShockwaves(ctx);
+
+                // 鼠标光晕
+                drawCursorGlow(ctx);
+
+                requestAnimationFrame(animate);
+            }
+
+            // ─── 交互事件 ───────────────────────────────────────────────
+            function onMouseMove(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                createShockwave(mouse.x, mouse.y);
+                colorShift += 30 + Math.random() * 30;
+                if (colorShift > 140) colorShift = -30;
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    createShockwave(mouse.x, mouse.y);
+                    colorShift += 30 + Math.random() * 30;
+                    if (colorShift > 140) colorShift = -30;
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onResize() {
+                setupCanvas();
+                initLattice();
+                shockwaves = [];
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+                initLattice();
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#0a0a18';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+
+        })();
+    </script>
+</body>
+</html>

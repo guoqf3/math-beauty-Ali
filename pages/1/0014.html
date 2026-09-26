@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>圆柱面调和曲线 · 傅里叶之美</title>
+    <style>
+        :root {
+            --bg: #050513;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'Noto Serif SC', 'STSong', 'KaiTi', '楷体', '华文楷体', '宋体', serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            height: 100vh;
+            width: 100vw;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+        #canvas-container {
+            position: fixed;
+            inset: 0;
+            z-index: 1;
+        }
+        canvas {
+            display: block;
+        }
+        .overlay {
+            position: fixed;
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+        #title-overlay {
+            top: clamp(12px, 3.5vh, 36px);
+        }
+        #title-overlay .title {
+            font-size: clamp(1.0rem, 2.0vw, 1.45rem);
+            font-weight: 400;
+            letter-spacing: 0.10em;
+            color: rgba(235, 228, 220, 0.92);
+            text-shadow: 0 0 24px rgba(190, 165, 140, 0.5), 0 0 6px rgba(170, 148, 125, 0.35);
+            line-height: 1.4;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.62rem, 1.15vw, 0.78rem);
+            font-weight: 300;
+            letter-spacing: 0.06em;
+            color: rgba(200, 192, 180, 0.7);
+            margin-top: 0.2em;
+            text-shadow: 0 0 13px rgba(155, 140, 120, 0.3);
+        }
+        #formula-overlay {
+            bottom: clamp(16px, 4vh, 44px);
+        }
+        #formula-overlay .formula {
+            font-size: clamp(0.54rem, 0.95vw, 0.74rem);
+            font-style: italic;
+            letter-spacing: 0.03em;
+            color: rgba(222, 214, 204, 0.84);
+            text-shadow: 0 0 20px rgba(155, 140, 125, 0.42), 0 0 5px rgba(165, 148, 130, 0.28);
+            line-height: 1.55;
+            background: rgba(10, 9, 16, 0.46);
+            padding: 0.38em 1.2em;
+            border-radius: 2em;
+            backdrop-filter: blur(5px);
+            -webkit-backdrop-filter: blur(5px);
+            border: 1px solid rgba(145, 125, 105, 0.20);
+        }
+        @media (max-width: 600px) {
+            #formula-overlay .formula {
+                padding: 0.26em 0.65em;
+                letter-spacing: 0.02em;
+                font-size: 0.46rem;
+            }
+            #title-overlay .title {
+                letter-spacing: 0.06em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+
+    <div class="overlay" id="title-overlay">
+        <div class="title">圆柱面调和曲线 · 傅里叶之美</div>
+        <div class="subtitle">Fourier Harmonics on the Cylinder</div>
+    </div>
+
+    <div class="overlay" id="formula-overlay">
+        <div class="formula">
+            γ(t) = (R cos t , R sin t , Σ A<sub>k</sub> sin(k t + φ<sub>k</sub>))
+            &emsp;|&emsp; t ∈ [0, 2π]
+        </div>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 时间配置 ====================
+        const DRAW_DURATION = 15.0;
+        const HOLD_DURATION = 1.5;
+        const ERASE_DURATION = 15.0;
+        const CYCLE_DURATION = DRAW_DURATION + HOLD_DURATION + ERASE_DURATION;
+        const DRAW_END = DRAW_DURATION;
+        const ERASE_START = DRAW_END + HOLD_DURATION;
+        const FADE_IN_DURATION = 2.5;
+        const FADE_OUT_START = CYCLE_DURATION - 3.0;
+
+        // 圆柱参数
+        const CYLINDER_R = 1.45;
+        const CYLINDER_H = 2.6;
+        const CURVE_SEGMENTS = 820;
+        const TOTAL_VERTICES = CURVE_SEGMENTS + 1;
+
+        // ==================== 三种颜色 ====================
+        const COLOR_WARM_GOLD = new THREE.Color('#e8b86d');
+        const COLOR_ROSE = new THREE.Color('#e8a0b8');
+        const COLOR_CYAN = new THREE.Color('#7ec8e3');
+        const THREE_COLORS = [COLOR_WARM_GOLD, COLOR_ROSE, COLOR_CYAN];
+
+        // 圆柱面上点计算
+        function cylinderXYZ(theta, zHeight) {
+            const x = CYLINDER_R * Math.cos(theta);
+            const y = zHeight;
+            const z = CYLINDER_R * Math.sin(theta);
+            return [x, y, z];
+        }
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x050513, 0.00008);
+
+        const camera = new THREE.PerspectiveCamera(46, container.clientWidth / container.clientHeight, 0.4, 18);
+        camera.position.set(0.5, 0.6, 3.8);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.18;
+        renderer.outputColorSpace = THREE.SRGBColorSpace;
+        container.appendChild(renderer.domElement);
+
+        // ==================== 主旋转组 ====================
+        const mainGroup = new THREE.Group();
+        scene.add(mainGroup);
+
+        // ==================== 星空背景粒子 ====================
+        const starsGroup = new THREE.Group();
+        mainGroup.add(starsGroup);
+        const starCount = 190;
+        const starPosArr = new Float32Array(starCount * 3);
+        for (let i = 0; i < starCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const r = 3.8 + Math.random() * 4.8;
+            starPosArr[i * 3] = Math.sin(phi) * Math.cos(theta) * r;
+            starPosArr[i * 3 + 1] = Math.sin(phi) * Math.sin(theta) * r;
+            starPosArr[i * 3 + 2] = Math.cos(phi) * r;
+        }
+        const starGeom = new THREE.BufferGeometry();
+        starGeom.setAttribute('position', new THREE.BufferAttribute(starPosArr, 3));
+        const starMat = new THREE.PointsMaterial({
+            color: 0xb5aec5,
+            size: 0.010,
+            transparent: true,
+            opacity: 0.28,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending,
+        });
+        const starPts = new THREE.Points(starGeom, starMat);
+        starsGroup.add(starPts);
+
+        // 圆柱面附近漂浮光点
+        const glowGroup = new THREE.Group();
+        mainGroup.add(glowGroup);
+        const glowCount = 85;
+        const glowArr = new Float32Array(glowCount * 3);
+        for (let i = 0; i < glowCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const y = (Math.random() - 0.5) * CYLINDER_H;
+            const [x, y2, z] = cylinderXYZ(theta, y);
+            glowArr[i * 3] = x + (Math.random() - 0.5) * 0.4;
+            glowArr[i * 3 + 1] = y2 + (Math.random() - 0.5) * 0.4;
+            glowArr[i * 3 + 2] = z + (Math.random() - 0.5) * 0.4;
+        }
+        const glowGeom = new THREE.BufferGeometry();
+        glowGeom.setAttribute('position', new THREE.BufferAttribute(glowArr, 3));
+        const glowMat = new THREE.PointsMaterial({
+            color: 0xf0e4cc,
+            size: 0.022,
+            transparent: true,
+            opacity: 0.42,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending,
+        });
+        const glowPts = new THREE.Points(glowGeom, glowMat);
+        glowGroup.add(glowPts);
+
+        // ==================== 圆柱面参考线框 ====================
+        const cylinderWireGroup = new THREE.Group();
+        mainGroup.add(cylinderWireGroup);
+        const bgWireMats = [];
+
+        // 水平圆（固定高度）
+        function createCircle(yFixed, steps = 300) {
+            const pts = [];
+            for (let i = 0; i <= steps; i++) {
+                const theta = (i / steps) * Math.PI * 2;
+                const [x, , z] = cylinderXYZ(theta, yFixed);
+                pts.push(new THREE.Vector3(x, yFixed, z));
+            }
+            const geom = new THREE.BufferGeometry().setFromPoints(pts);
+            const mat = new THREE.LineBasicMaterial({
+                color: 0x3a3752,
+                transparent: true,
+                opacity: 0.13,
+                depthWrite: false,
+            });
+            bgWireMats.push(mat);
+            return new THREE.Line(geom, mat);
+        }
+
+        // 竖直母线（固定theta）
+        function createVerticalLine(thetaFixed, steps = 200) {
+            const pts = [];
+            for (let i = 0; i <= steps; i++) {
+                const y = -CYLINDER_H / 2 + (i / steps) * CYLINDER_H;
+                const [x, , z] = cylinderXYZ(thetaFixed, y);
+                pts.push(new THREE.Vector3(x, y, z));
+            }
+            const geom = new THREE.BufferGeometry().setFromPoints(pts);
+            const mat = new THREE.LineBasicMaterial({
+                color: 0x3a3752,
+                transparent: true,
+                opacity: 0.13,
+                depthWrite: false,
+            });
+            bgWireMats.push(mat);
+            return new THREE.Line(geom, mat);
+        }
+
+        const Y_STEP = 0.22;
+        const THETA_COUNT = 22;
+        for (let y = -CYLINDER_H / 2; y <= CYLINDER_H / 2 + 0.001; y += Y_STEP) {
+            cylinderWireGroup.add(createCircle(y));
+        }
+        for (let k = 0; k < THETA_COUNT; k++) {
+            const theta = (k / THETA_COUNT) * Math.PI * 2;
+            cylinderWireGroup.add(createVerticalLine(theta));
+        }
+        // 上下边界强调
+        {
+            const top = createCircle(CYLINDER_H / 2);
+            const bot = createCircle(-CYLINDER_H / 2);
+            [top, bot].forEach(line => {
+                line.material.color.setHex(0x58527a);
+                line.material.opacity = 0.18;
+                cylinderWireGroup.add(line);
+            });
+        }
+
+        // ==================== 圆柱面上的闭合曲线（傅里叶级数） ====================
+        const curvesGroup = new THREE.Group();
+        mainGroup.add(curvesGroup);
+        const allCurveData = [];
+
+        /**
+         * 创建闭合的圆柱面调和曲线
+         * @param {number[]} amplitudes - 各频率振幅数组
+         * @param {number[]} phases - 各频率相位数组
+         * @param {THREE.Color} color
+         */
+        function createCylinderCurve(amplitudes, phases, color) {
+            const positions = new Float32Array(TOTAL_VERTICES * 3);
+            const K = amplitudes.length;
+            for (let i = 0; i <= CURVE_SEGMENTS; i++) {
+                const t = (i / CURVE_SEGMENTS) * Math.PI * 2;
+                let zHeight = 0;
+                for (let k = 0; k < K; k++) {
+                    const freq = k + 2; // 频率从2开始避免偏移到直线
+                    zHeight += amplitudes[k] * Math.sin(freq * t + phases[k]);
+                }
+                // 限制高度在圆柱范围内
+                zHeight = Math.max(-CYLINDER_H / 2 + 0.1, Math.min(CYLINDER_H / 2 - 0.1, zHeight));
+                const [x, , z] = cylinderXYZ(t, zHeight);
+                positions[i * 3] = x;
+                positions[i * 3 + 1] = zHeight;
+                positions[i * 3 + 2] = z;
+            }
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            geometry.setDrawRange(0, 0);
+
+            const material = new THREE.LineBasicMaterial({
+                color: color,
+                transparent: true,
+                opacity: 0.86,
+                depthWrite: false,
+            });
+            const line = new THREE.Line(geometry, material);
+            allCurveData.push({ geometry, totalVertices: TOTAL_VERTICES });
+            return line;
+        }
+
+        // 预定义三组参数（振幅和相位），模拟不同的傅里叶级数
+        const goldAmpsPhases = [
+            { amps: [0.35, 0.22, 0.14], phases: [0.3, 1.2, 2.5] },
+            { amps: [0.28, 0.30, 0.16], phases: [1.1, 0.6, 2.1] },
+            { amps: [0.40, 0.18, 0.20], phases: [2.0, 1.5, 0.8] },
+            { amps: [0.32, 0.28, 0.12], phases: [0.7, 1.9, 1.4] },
+            { amps: [0.25, 0.34, 0.18], phases: [1.6, 0.4, 2.8] },
+            { amps: [0.38, 0.20, 0.22], phases: [2.2, 1.1, 0.5] },
+        ];
+        const roseAmpsPhases = [
+            { amps: [0.33, 0.24, 0.16], phases: [0.9, 1.7, 2.3] },
+            { amps: [0.26, 0.32, 0.18], phases: [1.4, 0.2, 2.6] },
+            { amps: [0.42, 0.16, 0.20], phases: [2.5, 1.3, 0.7] },
+            { amps: [0.29, 0.25, 0.14], phases: [0.5, 2.1, 1.8] },
+            { amps: [0.36, 0.21, 0.19], phases: [1.8, 0.9, 2.4] },
+            { amps: [0.31, 0.27, 0.17], phases: [2.1, 1.5, 0.3] },
+        ];
+        const cyanAmpsPhases = [
+            { amps: [0.30, 0.26, 0.15], phases: [1.2, 1.9, 2.7] },
+            { amps: [0.34, 0.19, 0.21], phases: [0.8, 2.3, 1.6] },
+            { amps: [0.27, 0.33, 0.13], phases: [1.5, 0.7, 2.0] },
+            { amps: [0.39, 0.17, 0.23], phases: [2.8, 1.2, 0.4] },
+            { amps: [0.25, 0.31, 0.20], phases: [0.6, 1.8, 2.2] },
+            { amps: [0.37, 0.22, 0.16], phases: [1.7, 0.5, 2.9] },
+        ];
+
+        goldAmpsPhases.forEach(p => curvesGroup.add(createCylinderCurve(p.amps, p.phases, COLOR_WARM_GOLD)));
+        roseAmpsPhases.forEach(p => curvesGroup.add(createCylinderCurve(p.amps, p.phases, COLOR_ROSE)));
+        cyanAmpsPhases.forEach(p => curvesGroup.add(createCylinderCurve(p.amps, p.phases, COLOR_CYAN)));
+
+        const totalCurves = allCurveData.length; // 18条
+
+        // ==================== 动画循环 ====================
+        const clock = new THREE.Clock();
+        let animationStartTime = performance.now() / 1000;
+        clock.getDelta(); // 消耗初始累积
+
+        function getCycleTime() {
+            const now = performance.now() / 1000;
+            return (now - animationStartTime) % CYCLE_DURATION;
+        }
+
+        function easeInOutCubic(t) {
+            return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const cycleTime = getCycleTime();
+            const dt = Math.min(clock.getDelta(), 0.1);
+
+            // 主旋转
+            mainGroup.rotation.y += 0.23 * dt;
+            mainGroup.rotation.x += 0.058 * dt;
+            mainGroup.rotation.z += 0.013 * Math.sin(cycleTime * 0.53) * dt;
+
+            // 相机微动
+            const sway = 0.09 * Math.sin(cycleTime * (Math.PI * 2 / 34));
+            camera.position.y = 0.6 + sway;
+            camera.lookAt(0, 0, 0);
+
+            // 绘制进度
+            let fraction;
+            if (cycleTime < DRAW_END) {
+                fraction = easeInOutCubic(cycleTime / DRAW_DURATION);
+            } else if (cycleTime < ERASE_START) {
+                fraction = 1.0;
+            } else if (cycleTime < CYCLE_DURATION) {
+                const elapsed = cycleTime - ERASE_START;
+                fraction = 1.0 - easeInOutCubic(elapsed / ERASE_DURATION);
+                fraction = Math.max(0, fraction);
+            } else {
+                fraction = 0;
+            }
+
+            // 更新所有曲线绘制范围
+            for (const data of allCurveData) {
+                const count = Math.round(fraction * data.totalVertices);
+                data.geometry.setDrawRange(0, Math.max(0, Math.min(data.totalVertices, count)));
+            }
+
+            // 背景透明度渐变
+            let bgOp;
+            if (cycleTime < FADE_IN_DURATION) {
+                bgOp = cycleTime / FADE_IN_DURATION;
+            } else if (cycleTime < FADE_OUT_START) {
+                bgOp = 1.0;
+            } else if (cycleTime < CYCLE_DURATION) {
+                bgOp = 1.0 - (cycleTime - FADE_OUT_START) / (CYCLE_DURATION - FADE_OUT_START);
+            } else {
+                bgOp = 0;
+            }
+            bgOp = Math.max(0, Math.min(1, bgOp));
+
+            starMat.opacity = 0.28 * bgOp;
+            glowMat.opacity = 0.42 * bgOp;
+            for (const mat of bgWireMats) {
+                mat.opacity = (mat.opacity ?? 0.13) * bgOp;
+            }
+
+            // 粒子微动
+            glowGroup.rotation.y += dt * 0.06;
+            glowGroup.rotation.x += dt * 0.035;
+            starsGroup.rotation.y += dt * 0.020;
+            starsGroup.rotation.x += dt * 0.014;
+
+            renderer.render(scene, camera);
+        }
+
+        // ==================== 响应式处理 ====================
+        window.addEventListener('resize', () => {
+            camera.aspect = container.clientWidth / container.clientHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        });
+
+        // 可选重置键
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'r' || e.key === 'R') {
+                animationStartTime = performance.now() / 1000;
+                for (const data of allCurveData) {
+                    data.geometry.setDrawRange(0, 0);
+                }
+                mainGroup.rotation.set(0, 0, 0);
+            }
+        });
+
+        // 预热渲染，防止第一帧空白
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+
+        console.log('🎵 圆柱面调和曲线动画已启动');
+        console.log(`   - ${totalCurves} 条闭合曲线，3种颜色各${totalCurves / 3}条`);
+        console.log('   - 公式：x=R cos t, y=R sin t, z=Σ Ak sin(k t + φk)');
+        console.log(`   - 采样点：${CURVE_SEGMENTS}，周期：${CYCLE_DURATION.toFixed(1)}秒`);
+        console.log('   - 圆柱线框 + 星空粒子 + 漂浮光点');
+        console.log('   - 按 R 键可重置');
+    </script>
+</body>
+</html>

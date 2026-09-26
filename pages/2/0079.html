@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GLITCH · 故障脉冲</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #0a0a0f;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2;
+            text-align: center;
+            pointer-events: none;
+            opacity: 0.55;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+
+        .overlay:hover {
+            opacity: 0.9;
+        }
+
+        .title {
+            color: rgba(220, 220, 250, 0.7);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 20px rgba(150, 130, 255, 0.4);
+        }
+
+        .hint {
+            color: rgba(170, 170, 210, 0.45);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+
+        @media (max-width: 768px) {
+            .overlay {
+                bottom: 18px;
+            }
+            .title {
+                font-size: 8px;
+                letter-spacing: 0.45em;
+            }
+            .hint {
+                font-size: 6px;
+                letter-spacing: 0.22em;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="canvas"></canvas>
+
+    <div class="overlay">
+        <div class="title">Glitch</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script>
+        (function() {
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            let scanlines = [];
+            let glitchBlocks = [];
+            let mouse = { x: -9999, y: -9999, active: false, distToCenter: 0 };
+            let time = 0;
+            let colorShift = 0;
+            let glitchIntensity = 0;
+            let lastMouseY = -9999;
+
+            // 性能参数
+            const SCANLINE_COUNT = () => Math.floor(H / 3);
+            const BLOCK_COUNT = () => Math.max(20, Math.min(45, Math.floor(W * H / 18000)));
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                ctx.fillStyle = '#0a0a0f';
+                ctx.fillRect(0, 0, W, H);
+            }
+
+            // ─── 初始化扫描线 ───────────────────────────────────────────
+            function initScanlines() {
+                const count = SCANLINE_COUNT();
+                scanlines = [];
+                for (let i = 0; i < count; i++) {
+                    scanlines.push({
+                        y: i * 3,
+                        xOffset: 0,
+                        speed: 0.3 + Math.random() * 1.5,
+                        baseHue: 180 + Math.random() * 120,
+                        alpha: 0.08 + Math.random() * 0.2,
+                    });
+                }
+            }
+
+            // ─── 初始化故障块 ───────────────────────────────────────────
+            function initGlitchBlocks() {
+                const count = BLOCK_COUNT();
+                glitchBlocks = [];
+                for (let i = 0; i < count; i++) {
+                    glitchBlocks.push({
+                        x: Math.random() * W,
+                        y: Math.random() * H,
+                        w: 40 + Math.random() * 100,
+                        h: 2 + Math.random() * 8,
+                        hue: 180 + Math.random() * 150,
+                        alpha: 0.15 + Math.random() * 0.3,
+                        life: 0.5 + Math.random() * 1.5,
+                        maxLife: 1.5 + Math.random() * 2,
+                        vx: (Math.random() - 0.5) * 1.5,
+                        vy: (Math.random() - 0.5) * 0.4,
+                    });
+                }
+            }
+
+            function updateScanlines(dt, mouseActive, mouseX, mouseY) {
+                for (const s of scanlines) {
+                    s.xOffset += s.speed * dt;
+                    if (mouseActive) {
+                        const dy = Math.abs(s.y - mouseY);
+                        if (dy < 60) {
+                            s.xOffset += (Math.random() - 0.5) * 8;
+                        }
+                    }
+                    if (s.xOffset > 400) s.xOffset -= 400;
+                    if (s.xOffset < -400) s.xOffset += 400;
+                }
+            }
+
+            function updateGlitchBlocks(dt, mouseActive) {
+                for (let i = glitchBlocks.length - 1; i >= 0; i--) {
+                    const g = glitchBlocks[i];
+                    g.x += g.vx * dt;
+                    g.y += g.vy * dt;
+                    g.life -= 0.005 * dt;
+                    if (g.life <= 0) {
+                        glitchBlocks.splice(i, 1);
+                    }
+                }
+
+                // 补充新的故障块
+                const targetCount = BLOCK_COUNT() + (mouseActive ? 12 : 0);
+                if (glitchBlocks.length < targetCount) {
+                    const missing = targetCount - glitchBlocks.length;
+                    for (let i = 0; i < missing; i++) {
+                        glitchBlocks.push({
+                            x: Math.random() * W,
+                            y: Math.random() * H,
+                            w: 40 + Math.random() * 100,
+                            h: 2 + Math.random() * 8,
+                            hue: 180 + Math.random() * 150,
+                            alpha: 0.15 + Math.random() * 0.3,
+                            life: 0.5 + Math.random() * 1.5,
+                            maxLife: 1.5 + Math.random() * 2,
+                            vx: (Math.random() - 0.5) * 1.5,
+                            vy: (Math.random() - 0.5) * 0.4,
+                        });
+                    }
+                }
+            }
+
+            // ─── 绘制故障画面 ───────────────────────────────────────────
+            function drawGlitch(ctx) {
+                // 基础扫描线
+                for (const s of scanlines) {
+                    const alpha = s.alpha;
+                    const hue = s.baseHue + colorShift;
+                    ctx.fillStyle = `hsla(${hue}, 70%, 60%, ${alpha})`;
+                    ctx.fillRect(s.xOffset % W, s.y, 1, 1.5);
+                    ctx.fillRect((s.xOffset + W) % W, s.y, 1, 1.5);
+                }
+
+                // 故障块
+                for (const g of glitchBlocks) {
+                    const alpha = g.alpha * Math.min(1, g.life);
+                    const hue = g.hue + colorShift;
+                    ctx.fillStyle = `hsla(${hue}, 85%, 55%, ${alpha})`;
+                    ctx.fillRect(g.x, g.y, g.w, g.h);
+                }
+
+                // RGB分离效果
+                if (mouse.active) {
+                    const influence = Math.min(0.4, glitchIntensity * 0.3);
+                    for (let i = 0; i < 8; i++) {
+                        const offsetX = (Math.random() - 0.5) * 40 * influence;
+                        const offsetY = (Math.random() - 0.5) * 6 * influence;
+                        const w = 60 + Math.random() * 120;
+                        const h = 1 + Math.random() * 5;
+                        const x = mouse.x + offsetX;
+                        const y = mouse.y + offsetY;
+                        const hue = Math.random() < 0.33 ? 0 : (Math.random() < 0.5 ? 120 : 240);
+                        ctx.fillStyle = `hsla(${hue}, 80%, 60%, ${0.2 * influence})`;
+                        ctx.fillRect(x, y, w, h);
+                    }
+                }
+            }
+
+            // ─── 鼠标光晕 ───────────────────────────────────────────────
+            function drawCursorGlow(ctx) {
+                if (!mouse.active) return;
+                const radius = 60;
+                const hue = 200 + colorShift;
+                const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                gradient.addColorStop(0, `hsla(${hue}, 70%, 80%, 0.06)`);
+                gradient.addColorStop(0.7, `hsla(${hue}, 60%, 70%, 0.02)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // ─── 主循环 ─────────────────────────────────────────────────
+            let lastTime = 0;
+            let accumulator = 0;
+            const fixedStep = 1000 / 60;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+
+                accumulator += dt;
+                const steps = Math.min(Math.floor(accumulator / fixedStep), 3);
+                accumulator -= steps * fixedStep;
+
+                for (let s = 0; s < steps; s++) {
+                    time += 0.015;
+                    const dtNorm = fixedStep / 1000 * 60;
+                    updateScanlines(dtNorm, mouse.active, mouse.x, mouse.y);
+                    updateGlitchBlocks(dtNorm, mouse.active);
+                    // 更新故障强度
+                    if (mouse.active) {
+                        glitchIntensity = Math.min(1, glitchIntensity + 0.08);
+                    } else {
+                        glitchIntensity *= 0.95;
+                    }
+                }
+
+                // 清除画布
+                ctx.fillStyle = '#0a0a0f';
+                ctx.fillRect(0, 0, W, H);
+
+                // 绘制故障效果
+                drawGlitch(ctx);
+
+                // 鼠标光晕
+                drawCursorGlow(ctx);
+
+                requestAnimationFrame(animate);
+            }
+
+            // ─── 交互事件 ───────────────────────────────────────────────
+            function onMouseMove(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                lastMouseY = e.clientY;
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+                lastMouseY = -9999;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                colorShift += 40 + Math.random() * 40;
+                if (colorShift > 200) colorShift = -40;
+                // 点击时短暂增加故障块
+                for (let i = 0; i < 10; i++) {
+                    glitchBlocks.push({
+                        x: mouse.x + (Math.random() - 0.5) * 80,
+                        y: mouse.y + (Math.random() - 0.5) * 20,
+                        w: 30 + Math.random() * 80,
+                        h: 2 + Math.random() * 6,
+                        hue: 180 + Math.random() * 150,
+                        alpha: 0.3 + Math.random() * 0.4,
+                        life: 0.8 + Math.random() * 1.2,
+                        maxLife: 1.5 + Math.random() * 1.5,
+                        vx: (Math.random() - 0.5) * 3,
+                        vy: (Math.random() - 0.5) * 1,
+                    });
+                }
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    lastMouseY = touch.clientY;
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    colorShift += 40 + Math.random() * 40;
+                    if (colorShift > 200) colorShift = -40;
+                    for (let i = 0; i < 10; i++) {
+                        glitchBlocks.push({
+                            x: mouse.x + (Math.random() - 0.5) * 80,
+                            y: mouse.y + (Math.random() - 0.5) * 20,
+                            w: 30 + Math.random() * 80,
+                            h: 2 + Math.random() * 6,
+                            hue: 180 + Math.random() * 150,
+                            alpha: 0.3 + Math.random() * 0.4,
+                            life: 0.8 + Math.random() * 1.2,
+                            maxLife: 1.5 + Math.random() * 1.5,
+                            vx: (Math.random() - 0.5) * 3,
+                            vy: (Math.random() - 0.5) * 1,
+                        });
+                    }
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+                lastMouseY = -9999;
+            }
+
+            function onResize() {
+                setupCanvas();
+                initScanlines();
+                initGlitchBlocks();
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+                lastMouseY = -9999;
+                glitchIntensity = 0;
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+                initScanlines();
+                initGlitchBlocks();
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#0a0a0f';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+        })();
+    </script>
+</body>
+</html>

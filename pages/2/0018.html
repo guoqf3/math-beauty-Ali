@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>彩线之舞</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #0a0a1a;
+            font-family: system-ui, sans-serif;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            user-select: none;
+            cursor: default;
+        }
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+        #hint {
+            position: fixed;
+            bottom: 20px;
+            left: 24px;
+            color: rgba(255, 255, 255, 0.35);
+            font-size: 12px;
+            letter-spacing: 0.5px;
+            pointer-events: none;
+            z-index: 10;
+            transition: opacity 1.5s ease;
+            font-weight: 300;
+        }
+        #fps-badge {
+            position: fixed;
+            top: 16px;
+            right: 18px;
+            color: rgba(255, 255, 255, 0.25);
+            font-size: 11px;
+            pointer-events: none;
+            z-index: 10;
+            font-weight: 300;
+            letter-spacing: 0.5px;
+        }
+    </style>
+</head>
+<body>
+    <div id="fps-badge"></div>
+    <div id="hint">移动旋转 · 点击呼吸</div>
+
+    <script src="https://cdn.jsdelivr.net/npm/pixi.js@7.4.2/dist/pixi.min.js">
+    </script>
+    <script>
+        (function() {
+            'use strict';
+
+            // ─── 安全检查 ───
+            if (!window.PIXI) {
+                document.body.innerHTML = '<div style="color:#fff;text-align:center;padding-top:40vh;font-size:16px;">需要WebGL支持</div>';
+                return;
+            }
+
+            // ─── 常量 ───
+            const FOCAL_LENGTH = 1000;
+            const LINE_COUNT = 12;
+            const SAMPLES_PER_LINE = 100;
+            const AUTO_ROTATE_SPEED = 0.28;
+            const BREATH_DECAY = 2.5;
+            const VIEW_SENS_X = 0.65;
+            const VIEW_SENS_Y = 0.5;
+            const GLOW_POINT_COUNT = 24; // 沿线移动亮点数
+
+            // ─── 高对比度色彩方案 ───
+            const LINE_COLORS = [
+                0xFFD447, // 金色
+                0xFF6B9D, // 品红
+                0x4DFFD9, // 青色
+                0x6BFF6B, // 亮绿
+                0xB06BFF, // 紫色
+                0xFF9D4D, // 橙色
+                0x7CD4FF, // 浅蓝
+                0xFF4D6B, // 珊瑚红
+                0xFFE0A0, // 暖白
+                0x4D9FFF, // 天蓝
+                0xE0FF4D, // 柠檬绿
+                0xFFB0D9, // 粉红
+            ];
+
+            // ─── 线条参数 ───
+            // 每条线由3组谐波叠加定义x,y,z坐标
+            const lineParams = [];
+            for (let i = 0; i < LINE_COUNT; i++) {
+                const seed = i * 0.73 + 1.3;
+                lineParams.push({
+                    color: LINE_COLORS[i],
+                    // 振幅
+                    ax: 120 + (i % 4) * 35,
+                    ay: 90 + (i % 5) * 28,
+                    az: 100 + (i % 3) * 40,
+                    // 频率
+                    fx: 1.0 + (i % 5) * 0.35,
+                    fy: 1.2 + (i % 4) * 0.45,
+                    fz: 0.8 + (i % 6) * 0.25,
+                    // 相位偏移
+                    px: seed * 1.7,
+                    py: seed * 2.3,
+                    pz: seed * 3.1,
+                    // 次级谐波
+                    ax2: 35 + (i % 3) * 18,
+                    ay2: 28 + (i % 4) * 15,
+                    az2: 30 + (i % 5) * 12,
+                    fx2: 2.5 + (i % 7) * 0.4,
+                    fy2: 2.0 + (i % 6) * 0.5,
+                    fz2: 3.0 + (i % 5) * 0.3,
+                    // 线宽
+                    lineWidth: 1.0 + (i % 3) * 0.5,
+                    // 透明度
+                    baseAlpha: 0.65 + (i % 4) * 0.08,
+                    // 速度因子
+                    speed: 0.7 + (i % 5) * 0.12,
+                });
+            }
+
+            // ─── DOM ───
+            const fpsBadge = document.getElementById('fps-badge');
+            const hintEl = document.getElementById('hint');
+
+            // ─── PixiJS 初始化 ───
+            let app;
+            try {
+                app = new PIXI.Application({
+                    width: window.innerWidth,
+                    height: window.innerHeight,
+                    backgroundColor: 0x0a0a1a,
+                    antialias: true,
+                    autoDensity: true,
+                    resolution: Math.min(window.devicePixelRatio || 1, 2),
+                    powerPreference: 'high-performance',
+                });
+            } catch (err) {
+                document.body.innerHTML = '<div style="color:#fff;text-align:center;padding-top:40vh;font-size:16px;">初始化失败</div>';
+                return;
+            }
+            document.body.appendChild(app.view);
+
+            // ─── Graphics 用于绘制线条 ───
+            const lineGraphics = new PIXI.Graphics();
+            lineGraphics.blendMode = PIXI.BLEND_MODES.NORMAL;
+            app.stage.addChild(lineGraphics);
+
+            // ─── 发光点纹理与容器 ───
+            function createDotTexture() {
+                const c = document.createElement('canvas');
+                c.width = 32;
+                c.height = 32;
+                const ctx = c.getContext('2d');
+                const grad = ctx.createRadialGradient(16, 16, 0, 16, 16, 16);
+                grad.addColorStop(0, 'rgba(255,255,255,1)');
+                grad.addColorStop(0.2, 'rgba(255,255,255,0.9)');
+                grad.addColorStop(0.5, 'rgba(255,255,255,0.5)');
+                grad.addColorStop(1, 'rgba(255,255,255,0)');
+                ctx.fillStyle = grad;
+                ctx.fillRect(0, 0, 32, 32);
+                const tex = PIXI.Texture.from(c);
+                return tex;
+            }
+
+            const dotTex = createDotTexture();
+            const glowContainer = new PIXI.ParticleContainer(GLOW_POINT_COUNT, {
+                position: true,
+                scale: true,
+                tint: true,
+                alpha: true,
+            }, GLOW_POINT_COUNT, true);
+            glowContainer.blendMode = PIXI.BLEND_MODES.ADD;
+            app.stage.addChild(glowContainer);
+
+            // ─── 发光点数据 ───
+            const glowSprites = [];
+            const glowData = [];
+            for (let i = 0; i < GLOW_POINT_COUNT; i++) {
+                const sprite = new PIXI.Sprite(dotTex);
+                sprite.anchor.set(0.5);
+                sprite.scale.set(0.6 + Math.random() * 0.5);
+                sprite.alpha = 0.7 + Math.random() * 0.25;
+                const lineIdx = i % LINE_COUNT;
+                sprite.tint = LINE_COLORS[lineIdx];
+                glowContainer.addChild(sprite);
+                glowSprites.push(sprite);
+                glowData.push({
+                    lineIdx: lineIdx,
+                    phase: Math.random(),
+                    speed: 0.6 + Math.random() * 0.7,
+                    dir: Math.random() > 0.5 ? 1 : -1,
+                });
+            }
+
+            // ─── 状态变量 ───
+            let mouseX = 0;
+            let mouseY = 0;
+            let smoothMouseX = 0;
+            let smoothMouseY = 0;
+            let autoRotateY = 0;
+            let time = 0;
+            let breathEnergy = 0;
+            let frameCount = 0;
+            let fpsLastTime = 0;
+
+            // ─── 音频 ───
+            let audioCtx = null;
+            function ensureAudio() {
+                if (!audioCtx) {
+                    const AudioContext = window.AudioContext || window.webkitAudioContext;
+                    if (AudioContext) audioCtx = new AudioContext();
+                }
+                if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+            }
+
+            function playBreathSound() {
+                if (!audioCtx) return;
+                const now = audioCtx.currentTime;
+                const dur = 0.55;
+
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(220, now);
+                osc.frequency.exponentialRampToValueAtTime(65, now + dur);
+                gain.gain.setValueAtTime(0.32, now);
+                gain.gain.exponentialRampToValueAtTime(0.001, now + dur);
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+                osc.start(now);
+                osc.stop(now + dur);
+
+                const osc2 = audioCtx.createOscillator();
+                const gain2 = audioCtx.createGain();
+                osc2.type = 'triangle';
+                osc2.frequency.setValueAtTime(140, now);
+                osc2.frequency.exponentialRampToValueAtTime(50, now + dur * 0.75);
+                gain2.gain.setValueAtTime(0.12, now);
+                gain2.gain.exponentialRampToValueAtTime(0.001, now + dur * 0.85);
+                osc2.connect(gain2);
+                gain2.connect(audioCtx.destination);
+                osc2.start(now + 0.03);
+                osc2.stop(now + dur);
+            }
+
+            // ─── 3D 变换 ───
+            function rotatePoint(x, y, z, vx, vy) {
+                const cy = Math.cos(vy);
+                const sy = Math.sin(vy);
+                const x1 = x * cy + z * sy;
+                const z1 = -x * sy + z * cy;
+                const y1 = y;
+                const cx = Math.cos(vx);
+                const sx = Math.sin(vx);
+                const y2 = y1 * cx - z1 * sx;
+                const z2 = y1 * sx + z1 * cx;
+                const x2 = x1;
+                return { x: x2, y: y2, z: z2 };
+            }
+
+            function projectPoint(p, cx, cy) {
+                const s = FOCAL_LENGTH / (FOCAL_LENGTH + p.z);
+                return { sx: p.x * s + cx, sy: p.y * s + cy, scale: s };
+            }
+
+            // ─── 计算线条点 ───
+            function getLinePoint(param, t, time, breathFactor) {
+                const baseAmp = 1 + breathFactor * 0.4;
+                const phaseShift = time * param.speed;
+
+                const x = param.ax * Math.sin(param.fx * t * Math.PI * 2 + param.px + phaseShift) +
+                    param.ax2 * Math.sin(param.fx2 * t * Math.PI * 2 + param.px * 0.7 + phaseShift * 1.4);
+                const y = param.ay * Math.sin(param.fy * t * Math.PI * 2 + param.py + phaseShift * 0.9) +
+                    param.ay2 * Math.sin(param.fy2 * t * Math.PI * 2 + param.py * 0.6 + phaseShift * 1.2);
+                const z = param.az * Math.sin(param.fz * t * Math.PI * 2 + param.pz + phaseShift * 1.1) +
+                    param.az2 * Math.sin(param.fz2 * t * Math.PI * 2 + param.pz * 0.8 + phaseShift * 1.6);
+
+                return {
+                    x: x * baseAmp,
+                    y: y * baseAmp,
+                    z: z * baseAmp,
+                };
+            }
+
+            // ─── 更新并绘制 ───
+            function drawLines(delta, vx, vy, cx, cy) {
+                const breathFactor = breathEnergy;
+
+                // 清除之前绘制
+                lineGraphics.clear();
+
+                // 为每条线绘制
+                for (let li = 0; li < LINE_COUNT; li++) {
+                    const param = lineParams[li];
+                    const colorVal = param.color;
+                    const alphaVal = param.baseAlpha + breathEnergy * 0.2;
+                    const lineWidth = param.lineWidth + breathEnergy * 0.8;
+
+                    // 计算所有采样点
+                    const points2D = [];
+                    for (let si = 0; si <= SAMPLES_PER_LINE; si++) {
+                        const t = si / SAMPLES_PER_LINE;
+                        const pt = getLinePoint(param, t, time, breathFactor);
+                        const rp = rotatePoint(pt.x, pt.y, pt.z, vx, vy);
+                        const proj = projectPoint(rp, cx, cy);
+                        points2D.push(proj);
+                    }
+
+                    // 绘制线条（使用多个小线段）
+                    lineGraphics.lineStyle(lineWidth, colorVal, alphaVal, 0.5);
+                    lineGraphics.moveTo(points2D[0].sx, points2D[0].sy);
+
+                    for (let si = 1; si < points2D.length; si++) {
+                        // 使用quadraticCurveTo进行平滑
+                        if (si < points2D.length - 1) {
+                            const mx = (points2D[si].sx + points2D[si + 1].sx) / 2;
+                            const my = (points2D[si].sy + points2D[si + 1].sy) / 2;
+                            lineGraphics.quadraticCurveTo(points2D[si].sx, points2D[si].sy, mx, my);
+                        } else {
+                            lineGraphics.lineTo(points2D[si].sx, points2D[si].sy);
+                        }
+                    }
+                }
+
+                // 更新发光点位置
+                for (let gi = 0; gi < glowSprites.length; gi++) {
+                    const gd = glowData[gi];
+                    const param = lineParams[gd.lineIdx];
+                    gd.phase += gd.speed * gd.dir * delta * 0.6;
+                    if (gd.phase > 1) gd.phase -= 1;
+                    if (gd.phase < 0) gd.phase += 1;
+
+                    const pt = getLinePoint(param, gd.phase, time, breathFactor);
+                    const rp = rotatePoint(pt.x, pt.y, pt.z, vx, vy);
+                    const proj = projectPoint(rp, cx, cy);
+
+                    glowSprites[gi].position.set(proj.sx, proj.sy);
+                    const s = proj.scale * (0.5 + 0.3 * Math.sin(time * 2 + gi));
+                    glowSprites[gi].scale.set(s);
+                    glowSprites[gi].alpha = 0.6 + 0.3 * Math.sin(time * 1.5 + gi * 0.7) + breathEnergy * 0.2;
+                }
+            }
+
+            // ─── 主循环 ───
+            app.ticker.add((delta) => {
+                const dt = Math.min(delta / 60, 0.05);
+                time += dt;
+                frameCount++;
+
+                const w = window.innerWidth;
+                const h = window.innerHeight;
+                const cx = w / 2;
+                const cy = h / 2;
+
+                // 呼吸衰减
+                if (breathEnergy > 0) {
+                    breathEnergy = Math.max(0, breathEnergy - dt * BREATH_DECAY);
+                }
+
+                // 平滑鼠标
+                smoothMouseX += (mouseX - smoothMouseX) * 0.07;
+                smoothMouseY += (mouseY - smoothMouseY) * 0.07;
+
+                // 自动旋转
+                autoRotateY += AUTO_ROTATE_SPEED * dt;
+
+                const normX = (smoothMouseX / w) * 2 - 1;
+                const normY = (smoothMouseY / h) * 2 - 1;
+                const viewY = autoRotateY + normX * VIEW_SENS_X;
+                const viewX = normY * VIEW_SENS_Y;
+
+                // 绘制
+                drawLines(dt, viewX, viewY, cx, cy);
+
+                // FPS
+                if (time - fpsLastTime > 0.5) {
+                    const fps = Math.round(frameCount / (time - fpsLastTime));
+                    fpsBadge.textContent = fps + ' fps';
+                    frameCount = 0;
+                    fpsLastTime = time;
+                }
+            });
+
+            // ─── 交互 ───
+            function getCoords(e) {
+                const rect = app.view.getBoundingClientRect();
+                let cx, cy;
+                if (e.touches && e.touches.length > 0) {
+                    cx = e.touches[0].clientX;
+                    cy = e.touches[0].clientY;
+                } else {
+                    cx = e.clientX;
+                    cy = e.clientY;
+                }
+                return { x: cx - rect.left, y: cy - rect.top };
+            }
+
+            function onMove(e) {
+                const c = getCoords(e);
+                mouseX = c.x;
+                mouseY = c.y;
+            }
+
+            function onDown(e) {
+                e.preventDefault();
+                ensureAudio();
+                const c = getCoords(e);
+                mouseX = c.x;
+                mouseY = c.y;
+                breathEnergy = 1.0;
+                playBreathSound();
+            }
+
+            function onLeave() {
+                mouseX = window.innerWidth / 2;
+                mouseY = window.innerHeight / 2;
+            }
+
+            app.view.addEventListener('mousemove', onMove);
+            app.view.addEventListener('mousedown', onDown);
+            document.addEventListener('mouseleave', onLeave);
+            app.view.addEventListener('touchmove', onMove, { passive: true });
+            app.view.addEventListener('touchstart', onDown, { passive: false });
+
+            // ─── 键盘 ───
+            window.addEventListener('keydown', (e) => {
+                if (e.key === ' ' || e.key === 'Space') {
+                    e.preventDefault();
+                    ensureAudio();
+                    breathEnergy = 1.0;
+                    playBreathSound();
+                }
+            });
+
+            // ─── 窗口调整 ───
+            function resize() {
+                app.renderer.resize(window.innerWidth, window.innerHeight);
+            }
+            window.addEventListener('resize', resize);
+            window.addEventListener('orientationchange', () => setTimeout(resize, 300));
+
+            // ─── 启动 ───
+            mouseX = window.innerWidth / 2;
+            mouseY = window.innerHeight / 2;
+            smoothMouseX = mouseX;
+            smoothMouseY = mouseY;
+
+            setTimeout(() => {
+                if (hintEl) {
+                    hintEl.style.opacity = '0';
+                    setTimeout(() => {
+                        if (hintEl) hintEl.style.display = 'none';
+                    }, 1600);
+                }
+            }, 3000);
+
+            resize();
+            console.log('✨ 彩线之舞已启动');
+        })();
+    </script>
+</body>
+</html>

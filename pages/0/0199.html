@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>五维投影准晶网络 · 非周期三维线网</title>
+    <style>
+        :root { --bg: #02040a; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'STSong', 'Songti SC', 'Noto Serif SC', 'SimSun', 'Times New Roman', serif;
+            -webkit-font-smoothing: antialiased;
+            height: 100vh; width: 100vw;
+            user-select: none; -webkit-user-select: none; cursor: default;
+        }
+        #canvas-container { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+        canvas { display: block; }
+        #title-overlay {
+            position: fixed; top: 24px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+        }
+        #title-overlay .title {
+            font-size: clamp(1.0rem, 2.2vw, 1.5rem); font-weight: 400; letter-spacing: 0.08em;
+            color: #cfc7b5; text-shadow: 0 0 42px rgba(200,180,150,0.5), 0 0 72px rgba(170,150,130,0.22);
+            line-height: 1.4; white-space: nowrap;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.48rem, 0.85vw, 0.64rem); font-weight: 300; letter-spacing: 0.12em;
+            color: #a09888; text-shadow: 0 0 16px rgba(155,145,125,0.32);
+            margin-top: 2px; white-space: nowrap;
+        }
+        #formula-overlay {
+            position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+            background: rgba(2,4,10,0.7); padding: 10px 22px; border-radius: 32px;
+            border: 1px solid rgba(175,155,135,0.16);
+            backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); max-width: 95vw;
+        }
+        #formula-overlay .formula {
+            font-size: clamp(0.38rem, 0.7vw, 0.56rem); font-weight: 300; letter-spacing: 0.04em;
+            color: #c5bdaa; text-shadow: 0 0 13px rgba(185,170,145,0.25);
+            line-height: 1.55; white-space: nowrap;
+        }
+        #formula-overlay .formula .c1 { color: #d4885c; }
+        #formula-overlay .formula .c2 { color: #5d9ec6; }
+        #formula-overlay .formula .c3 { color: #c77d9f; }
+        @media (max-width: 600px) {
+            #title-overlay { top: 14px; }
+            #formula-overlay { bottom: 10px; padding: 7px 12px; border-radius: 24px; }
+            #formula-overlay .formula { font-size: 0.32rem; white-space: normal; line-height: 1.3; }
+            #title-overlay .title { font-size: 0.68rem; }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="title-overlay">
+        <div class="title">五维投影准晶网络 · 非周期三维线网</div>
+        <div class="subtitle">5D PROJECTION QUASICRYSTAL &nbsp;·&nbsp; APERIODIC 3D NETWORK</div>
+    </div>
+    <div id="formula-overlay">
+        <div class="formula">
+            <span class="c1">I:</span> Σxᵢ=0(mod5) &nbsp;
+            <span class="c2">II:</span> Σxᵢ=±1(mod5) &nbsp;
+            <span class="c3">III:</span> Σxᵢ=±2(mod5)
+            <br>
+            <span style="color:#9aa8b8;">ℤ⁵ ⊂ ℝ⁵ → ℝ³ &nbsp;|&nbsp; 投影窗δ=1.2 &nbsp;|&nbsp; 近邻距离阈值0.85</span>
+        </div>
+    </div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#02040a');
+        scene.fog = new THREE.Fog('#02040a', 8, 18);
+
+        const camera = new THREE.PerspectiveCamera(
+            50,
+            container.clientWidth / Math.max(container.clientHeight, 1),
+            0.3,
+            24
+        );
+        camera.position.set(0.5, 0.3, 7.2);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = false;
+        container.appendChild(renderer.domElement);
+
+        // ==================== 颜色 ====================
+        const C1 = '#d4885c'; // 暖金
+        const C2 = '#5d9ec6'; // 冰蓝
+        const C3 = '#c77d9f'; // 玫瑰粉
+        const C_SPHERE = '#3a4a5c';
+        const C_GLINT = '#8898aa';
+
+        const SPHERE_R = 2.6;
+        const VIEW_SCALE = 0.62;
+
+        // ==================== 五维投影法生成准晶顶点 ====================
+        function generateQuasicrystalPoints() {
+            // 5D超立方格点范围
+            const range = 3;
+            const points = []; // 三维点
+            const types = []; // 类型0,1,2
+
+            // 投影矩阵：从ℝ⁵到ℝ³（使用正交投影，三个相互正交的行向量）
+            // 构造具有五重对称性的矩阵，基于黄金比例φ= (1+√5)/2
+            const phi = (1 + Math.sqrt(5)) / 2;
+            const invPhi = 1 / phi;
+            const norm1 = Math.sqrt(1 + phi*phi);
+            // 行向量1: (0, 1, φ, 0, -1) 归一化
+            const r1 = [0, 1/norm1, phi/norm1, 0, -1/norm1];
+            // 行向量2: 与r1正交的向量，选取 (1, 0, 0, φ, -invPhi) 然后正交化
+            let r2_raw = [1, 0, 0, phi, -invPhi];
+            // 与r1内积
+            const dot = r1[0]*r2_raw[0] + r1[1]*r2_raw[1] + r1[2]*r2_raw[2] + r1[3]*r2_raw[3] + r1[4]*r2_raw[4];
+            const r2_orth = r2_raw.map((v,i) => v - dot * r1[i]);
+            const norm2 = Math.sqrt(r2_orth.reduce((s,v)=>s+v*v,0));
+            const r2 = r2_orth.map(v => v/norm2);
+            // 行向量3：与r1,r2正交，用叉积推广，挑一个与它们正交的向量
+            // 简便方式：标准基向量(0,0,0,0,1)的正交化
+            let r3_raw = [0,0,0,0,1];
+            const dot1 = r3_raw.reduce((s,v,i)=>s+v*r1[i],0);
+            const dot2 = r3_raw.reduce((s,v,i)=>s+v*r2[i],0);
+            let r3_orth = r3_raw.map((v,i) => v - dot1*r1[i] - dot2*r2[i]);
+            const norm3 = Math.sqrt(r3_orth.reduce((s,v)=>s+v*v,0));
+            const r3 = r3_orth.map(v => v/norm3);
+
+            const matrix = [r1, r2, r3];
+
+            // 投影窗：在正交补二维空间中的距离阈值
+            const delta = 1.2;
+
+            for (let a = -range; a <= range; a++) {
+                for (let b = -range; b <= range; b++) {
+                    for (let c = -range; c <= range; c++) {
+                        for (let d = -range; d <= range; d++) {
+                            for (let e = -range; e <= range; e++) {
+                                const v5 = [a, b, c, d, e];
+                                // 计算投影到ℝ³的坐标
+                                const x = r1[0]*a+r1[1]*b+r1[2]*c+r1[3]*d+r1[4]*e;
+                                const y = r2[0]*a+r2[1]*b+r2[2]*c+r2[3]*d+r2[4]*e;
+                                const z = r3[0]*a+r3[1]*b+r3[2]*c+r3[3]*d+r3[4]*e;
+                                // 计算正交补空间投影
+                                // 取标准基的两个正交向量
+                                const perp1 = 0.5 * (a + b + c + d + e); // 简化窗判断
+                                const perp2 = 0.5 * (a - b + c - d);
+                                if (Math.sqrt(perp1*perp1 + perp2*perp2) < delta) {
+                                    const pt = new THREE.Vector3(x * VIEW_SCALE, y * VIEW_SCALE, z * VIEW_SCALE);
+                                    if (pt.length() <= SPHERE_R * 1.25) {
+                                        points.push(pt);
+                                        const sum = (a+b+c+d+e) % 5;
+                                        if (sum === 0) types.push(0);
+                                        else if (sum === 1 || sum === 4) types.push(1);
+                                        else types.push(2);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return { points, types };
+        }
+
+        const { points, types } = generateQuasicrystalPoints();
+        console.log('准晶顶点数:', points.length);
+
+        // ==================== 生成边 ====================
+        function buildEdges(points, distThreshold) {
+            const edges = [];
+            const n = points.length;
+            for (let i = 0; i < n; i++) {
+                for (let j = i + 1; j < n; j++) {
+                    const d = points[i].distanceTo(points[j]);
+                    if (d <= distThreshold) {
+                        edges.push([i, j]);
+                    }
+                }
+            }
+            return edges;
+        }
+
+        const edges = buildEdges(points, 0.85);
+        console.log('边数:', edges.length);
+
+        // 边分类：按两个端点的类型组合
+        const edgesC1 = [], edgesC2 = [], edgesC3 = [];
+        for (const [i, j] of edges) {
+            const t1 = types[i], t2 = types[j];
+            if ((t1 === 0 && t2 === 0) || (t1 === 2 && t2 === 2)) edgesC1.push([i,j]);
+            else if ((t1 === 1 && t2 === 1) || (t1 === 0 && t2 === 1) || (t1 === 1 && t2 === 0)) edgesC2.push([i,j]);
+            else edgesC3.push([i,j]);
+        }
+        console.log('暖金边:', edgesC1.length, '冰蓝边:', edgesC2.length, '玫瑰粉边:', edgesC3.length);
+
+        // ==================== 创建线段 ====================
+        function createLineSegments(edgesList, pts, colorHex, opacity) {
+            if (edgesList.length === 0) return new THREE.Group();
+            const verts = [];
+            for (const [i, j] of edgesList) {
+                const a = pts[i], b = pts[j];
+                verts.push(a.x, a.y, a.z, b.x, b.y, b.z);
+            }
+            const geom = new THREE.BufferGeometry();
+            geom.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+            const mat = new THREE.LineBasicMaterial({
+                color: new THREE.Color(colorHex),
+                transparent: true,
+                opacity: opacity,
+                depthWrite: true,
+            });
+            return new THREE.LineSegments(geom, mat);
+        }
+
+        const lines1 = createLineSegments(edgesC1, points, C1, 0.7);
+        const lines2 = createLineSegments(edgesC2, points, C2, 0.66);
+        const lines3 = createLineSegments(edgesC3, points, C3, 0.68);
+
+        const mainGroup = new THREE.Group();
+        mainGroup.add(lines1);
+        mainGroup.add(lines2);
+        mainGroup.add(lines3);
+        scene.add(mainGroup);
+
+        // ==================== 参考球面线框 ====================
+        function createSphereWireframe(radius, colorHex, opacity) {
+            const group = new THREE.Group();
+            const segs = 180;
+            const circles = [
+                (a) => new THREE.Vector3(Math.cos(a)*radius, Math.sin(a)*radius, 0),
+                (a) => new THREE.Vector3(Math.cos(a)*radius, 0, Math.sin(a)*radius),
+                (a) => new THREE.Vector3(0, Math.cos(a)*radius, Math.sin(a)*radius),
+            ];
+            for (const gen of circles) {
+                const pts = [];
+                for (let i=0; i<=segs; i++) pts.push(gen((i/segs)*Math.PI*2));
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(colorHex),
+                    transparent: true, opacity: opacity, depthWrite: true,
+                });
+                group.add(new THREE.Line(geom, mat));
+            }
+            return group;
+        }
+        const sphereRef = createSphereWireframe(SPHERE_R, C_SPHERE, 0.2);
+        scene.add(sphereRef);
+
+        // ==================== 原点光点 ====================
+        function originGlint() {
+            const group = new THREE.Group();
+            const sz = 0.08;
+            const pairs = [
+                [new THREE.Vector3(-sz,0,0), new THREE.Vector3(sz,0,0)],
+                [new THREE.Vector3(0,-sz,0), new THREE.Vector3(0,sz,0)],
+                [new THREE.Vector3(0,0,-sz), new THREE.Vector3(0,0,sz)],
+            ];
+            for (const [a,b] of pairs) {
+                const g = new THREE.BufferGeometry().setFromPoints([a,b]);
+                const m = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(C_GLINT),
+                    transparent: true, opacity: 0.7, depthWrite: true,
+                });
+                group.add(new THREE.Line(g, m));
+            }
+            return group;
+        }
+        scene.add(originGlint());
+
+        // ==================== 动画循环（绝对时间） ====================
+        let time = 0;
+        let lastTime = performance.now();
+        let frameCount = 0;
+        let logTime = 0;
+
+        function animate(now) {
+            requestAnimationFrame(animate);
+            let delta = (now - lastTime) / 1000;
+            if (delta <= 0 || delta > 0.5) delta = 0.016;
+            lastTime = now;
+            time += delta;
+            frameCount++;
+            if (now - logTime > 4000) {
+                console.log(`[动画运行中] 帧:${frameCount} 时间:${time.toFixed(2)}s`);
+                logTime = now;
+            }
+
+            mainGroup.rotation.y = time * 0.32;
+            mainGroup.rotation.x = time * 0.18 + Math.sin(time * 0.26) * 0.22;
+            mainGroup.rotation.z = Math.cos(time * 0.22) * 0.16;
+            sphereRef.rotation.copy(mainGroup.rotation);
+
+            const camX = 0.5 + Math.sin(time * 0.15) * 0.55;
+            const camY = 0.3 + Math.cos(time * 0.18) * 0.48;
+            const camZ = 7.2 + Math.sin(time * 0.12) * 0.5;
+            camera.position.set(camX, camY, camZ);
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth;
+            const h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth;
+            const h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 100));
+
+        console.log('=== 五维投影准晶网络 · 非周期三维线网 ===');
+        console.log('总点数:', points.length, '总边数:', edges.length);
+        console.log('暖金:', edgesC1.length, '冰蓝:', edgesC2.length, '玫瑰粉:', edgesC3.length);
+        console.log('✅ 初始化完成，启动动画循环');
+
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

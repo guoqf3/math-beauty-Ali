@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>双曲镶嵌 · 庞加莱球投影</title>
+    <style>
+        :root {
+            --bg: #030608;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'STSong', 'Songti SC', 'Noto Serif SC', 'SimSun', 'Times New Roman', serif;
+            -webkit-font-smoothing: antialiased;
+            height: 100vh;
+            width: 100vw;
+            user-select: none;
+            -webkit-user-select: none;
+            cursor: default;
+        }
+
+        #canvas-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        canvas {
+            display: block;
+        }
+
+        #title-overlay {
+            position: fixed;
+            top: 26px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+        }
+
+        #title-overlay .title {
+            font-size: clamp(1.0rem, 2.2vw, 1.6rem);
+            font-weight: 400;
+            letter-spacing: 0.09em;
+            color: #cfc7b5;
+            text-shadow: 0 0 40px rgba(200, 180, 150, 0.5),
+                0 0 72px rgba(170, 150, 130, 0.22);
+            line-height: 1.4;
+            white-space: nowrap;
+        }
+
+        #title-overlay .subtitle {
+            font-size: clamp(0.55rem, 1.0vw, 0.72rem);
+            font-weight: 300;
+            letter-spacing: 0.13em;
+            color: #a09888;
+            text-shadow: 0 0 16px rgba(155, 145, 125, 0.32);
+            margin-top: 2px;
+            white-space: nowrap;
+        }
+
+        #formula-overlay {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+            background: rgba(3, 6, 8, 0.72);
+            padding: 12px 24px;
+            border-radius: 36px;
+            border: 1px solid rgba(175, 155, 135, 0.18);
+            backdrop-filter: blur(7px);
+            -webkit-backdrop-filter: blur(7px);
+            max-width: 95vw;
+        }
+
+        #formula-overlay .formula {
+            font-size: clamp(0.5rem, 0.9vw, 0.7rem);
+            font-weight: 300;
+            letter-spacing: 0.04em;
+            color: #c5bdaa;
+            text-shadow: 0 0 14px rgba(185, 170, 145, 0.28);
+            line-height: 1.6;
+            white-space: nowrap;
+        }
+
+        #formula-overlay .formula .c1 {
+            color: #d4885c;
+        }
+        #formula-overlay .formula .c2 {
+            color: #5d9ec6;
+        }
+        #formula-overlay .formula .c3 {
+            color: #c77d9f;
+        }
+
+        @media (max-width: 600px) {
+            #title-overlay {
+                top: 14px;
+            }
+            #formula-overlay {
+                bottom: 12px;
+                padding: 8px 14px;
+                border-radius: 26px;
+            }
+            #formula-overlay .formula {
+                font-size: 0.44rem;
+                white-space: normal;
+                line-height: 1.4;
+            }
+            #title-overlay .title {
+                font-size: 0.78rem;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <div id="canvas-container"></div>
+
+    <div id="title-overlay">
+        <div class="title">双曲镶嵌 · 庞加莱球投影</div>
+        <div class="subtitle">HYPERBOLIC TESSELLATION &nbsp;·&nbsp; POINCARÉ BALL</div>
+    </div>
+
+    <div id="formula-overlay">
+        <div class="formula">
+            <span class="c1">{5,4}</span> pos(t)=<span style="color:#b0bcc8;">tanh(d/2)</span>·e^{iφ}&nbsp;
+            <span class="c2">反射: z↦(āz−1)/(z−a)</span>&nbsp;
+            <span class="c3">测地线圆弧·与∂𝔹正交</span>
+            <br>
+            <span style="color:#9aa8b8;">Coxeter ⟨a,b|a⁵=b⁴=(ab)²=1⟩&nbsp;|&nbsp;𝔹³嵌入</span>
+        </div>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#030608');
+        scene.fog = new THREE.Fog('#030608', 4, 14);
+
+        const camera = new THREE.PerspectiveCamera(
+            50,
+            container.clientWidth / Math.max(container.clientHeight, 1),
+            0.3,
+            20
+        );
+        camera.position.set(1.3, 0.9, 3.8);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = false;
+        container.appendChild(renderer.domElement);
+
+        // ==================== 颜色定义 ====================
+        const COLOR_WARM_GOLD = '#d4885c';
+        const COLOR_ICE_BLUE = '#5d9ec6';
+        const COLOR_ROSE = '#c77d9f';
+        const COLOR_SPHERE = '#3a4858';
+
+        // ==================== 庞加莱球模型中的{5,4}双曲镶嵌生成 ====================
+        /**
+         * 双曲平面映射到单位圆盘（z=0平面），单位球边界为|x|=1。
+         * 使用反射群方法生成镶嵌。
+         */
+
+        // 复数运算辅助
+        class Complex {
+            constructor(re, im) { this.re = re;
+                this.im = im; }
+            add(b) { return new Complex(this.re + b.re, this.im + b.im); }
+            sub(b) { return new Complex(this.re - b.re, this.im - b.im); }
+            mul(b) { return new Complex(this.re * b.re - this.im * b.im, this.re * b.im + this.im * b.re); }
+            conj() { return new Complex(this.re, -this.im); }
+            modulus() { return Math.sqrt(this.re * this.re + this.im * this.im); }
+            scale(s) { return new Complex(this.re * s, this.im * s); }
+            normalize() { const m = this.modulus(); return m > 1e-9 ? this.scale(1 / m) : new Complex(0, 0); }
+        }
+
+        function complexFromAngle(angle) { return new Complex(Math.cos(angle), Math.sin(angle)); }
+
+        // 数值求解初始五边形顶点半径
+        function findPolygonRadius(p, q) {
+            // 二分法搜索R，使得顶点处内角等于2π/q
+            const targetAngle = (2 * Math.PI) / q;
+            let low = 0.001,
+                high = 0.999;
+            for (let iter = 0; iter < 60; iter++) {
+                const r = (low + high) / 2;
+                // 计算顶点处内角
+                // 顶点位于 (r,0)，相邻两顶点：一个旋转2π/p，另一个 -2π/p
+                const v0 = new Complex(r, 0);
+                const angleStep = (2 * Math.PI) / p;
+                const v1 = complexFromAngle(angleStep).scale(r);
+                const v2 = complexFromAngle(-angleStep).scale(r);
+                // 计算边v0-v1和v0-v2之间的夹角（双曲角度等于欧氏切线夹角）
+                // 由于边是圆弧，切线方向可以通过导数计算，但庞加莱圆盘中可直接用复数交比？
+                // 简化：用向量近似？实际上双曲角度公式需要圆弧的切线。我们可以使用双曲余弦定理来避免复杂计算。
+                // 双曲三角形O(原点) , v0, v1 其中 |v0|=|v1|=r, 中心角=2π/p.
+                // 边长 d = dist(v0,v1) ； 用反双曲余弦：cosh(d) = 1 + 2|v0-v1|^2/((1-|v0|^2)(1-|v1|^2)) 
+                const diff01 = v0.sub(v1).modulus();
+                const denom = (1 - r * r);
+                const coshD = 1 + 2 * diff01 * diff01 / (denom * denom);
+                const d = Math.acosh(coshD);
+                // 顶点处内角：顶点v0处由两边v0-v1和v0-v2构成的角，可以用双曲余弦定理：
+                // cos(angle) = (cosh(d_opposite) - cosh(d1)*cosh(d2)) / (sinh(d1)*sinh(d2))
+                // 其中d_opposite是v1-v2的距离，d1=d2=d。
+                const diff12 = v1.sub(v2).modulus();
+                const coshOpp = 1 + 2 * diff12 * diff12 / (denom * denom);
+                const sinhD = Math.sinh(d);
+                const cosAngle = (coshOpp - coshD * coshD) / (sinhD * sinhD);
+                const angle = Math.acos(Math.max(-1, Math.min(1, cosAngle)));
+                if (angle < targetAngle) {
+                    low = r; // 半径太小，内角小
+                } else {
+                    high = r;
+                }
+            }
+            return (low + high) / 2;
+        }
+
+        const p = 5,
+            q = 4;
+        const R0 = findPolygonRadius(p, q);
+        console.log('初始五边形顶点半径:', R0);
+
+        // 生成初始中心五边形的5个顶点（复数）
+        function initialPolygonVertices() {
+            const verts = [];
+            for (let k = 0; k < p; k++) {
+                const angle = (2 * Math.PI * k) / p;
+                verts.push(complexFromAngle(angle).scale(R0));
+            }
+            return verts;
+        }
+
+        // 在庞加莱圆盘中，关于圆弧的反射（反演）
+        function reflectPointAcrossArc(z, arcCenter, arcRadius) {
+            // 圆弧是圆的一部分，反演公式：z' = center + radius^2 / conj(z - center)
+            const diff = z.sub(arcCenter);
+            const denom = diff.conj();
+            const scale = arcRadius * arcRadius / (denom.re * denom.re + denom.im * denom.im);
+            const reflected = new Complex(diff.re * scale, -diff.im * scale).add(arcCenter);
+            return reflected;
+        }
+
+        // 计算两点在庞加莱圆盘中的测地线对应的欧氏圆弧的圆心和半径
+        function geodesicArc(z1, z2) {
+            // 在庞加莱圆盘中，过两点的双曲直线为与单位圆正交的圆弧。
+            // 若两点位于过原点的直线上，则圆弧退化为直线（半径为无穷），此处作为特殊情况处理。
+            const cross = z1.re * z2.im - z1.im * z2.re;
+            if (Math.abs(cross) < 1e-9) {
+                // 共线，直线段
+                return { isLine: true, center: null, radius: null };
+            }
+            // 否则，求解圆方程：圆心在(z1,z2的垂直平分线与原点出发的射线上？) 更通用：圆经过z1,z2且与单位圆正交。
+            // 条件：对于圆上任意点z，有 |z|^2 - 2Re(conj(c)*z) + |c|^2 - r^2 =0 ，正交于单位圆 |z|=1 要求 |c|^2 = 1 + r^2
+            // 且z1,z2在圆上，解线性方程组求c。
+            const A = [
+                [z1.re, z1.im, -0.5],
+                [z2.re, z2.im, -0.5]
+            ];
+            const b1 = (z1.re * z1.re + z1.im * z1.im) / 2;
+            const b2 = (z2.re * z2.re + z2.im * z2.im) / 2;
+            // 解2x3超定方程，利用第三变量自由？实际上未知数有 cx, cy, r^2？但通过正交条件消去r^2。
+            // 两方程相减可消去r^2项。
+            // 更直接：圆心C满足 |C|^2 = 1 + r^2 ，且 |z1-C|=r, z2同样。即 |z1-C|^2 = |C|^2 -1 => |z1|^2 - 2Re(conj(C)*z1) +1 =0
+            // 因此 Re(conj(C)*z1) = (|z1|^2 +1)/2 。类似对于z2。设C = cx + i*cy，可得两个实线性方程。
+            const mat = [
+                [z1.re, z1.im],
+                [z2.re, z2.im]
+            ];
+            const rhs = [(z1.re * z1.re + z1.im * z1.im + 1) / 2, (z2.re * z2.re + z2.im * z2.im + 1) / 2];
+            const det = mat[0][0] * mat[1][1] - mat[0][1] * mat[1][0];
+            if (Math.abs(det) < 1e-9) return { isLine: true, center: null, radius: null };
+            const cx = (rhs[0] * mat[1][1] - rhs[1] * mat[0][1]) / det;
+            const cy = (mat[0][0] * rhs[1] - mat[1][0] * rhs[0]) / det;
+            const center = new Complex(cx, cy);
+            const r = Math.sqrt(Math.max(0, center.modulus() * center.modulus() - 1));
+            return { isLine: false, center, radius: r };
+        }
+
+        // 生成圆弧的采样点（三维，z=0平面）
+        function sampleArc(z1, z2, arcInfo, numSamples) {
+            const pts = [];
+            if (arcInfo.isLine) {
+                for (let i = 0; i <= numSamples; i++) {
+                    const t = i / numSamples;
+                    const z = new Complex(z1.re + (z2.re - z1.re) * t, z1.im + (z2.im - z1.im) * t);
+                    pts.push(new THREE.Vector3(z.re, z.im, 0));
+                }
+                return pts;
+            }
+            const c = arcInfo.center;
+            const r = arcInfo.radius;
+            const angle1 = Math.atan2(z1.im - c.im, z1.re - c.re);
+            const angle2 = Math.atan2(z2.im - c.im, z2.re - c.re);
+            let delta = angle2 - angle1;
+            if (delta > Math.PI) delta -= 2 * Math.PI;
+            if (delta < -Math.PI) delta += 2 * Math.PI;
+            for (let i = 0; i <= numSamples; i++) {
+                const a = angle1 + delta * (i / numSamples);
+                const x = c.re + r * Math.cos(a);
+                const y = c.im + r * Math.sin(a);
+                pts.push(new THREE.Vector3(x, y, 0));
+            }
+            return pts;
+        }
+
+        // 生成镶嵌（深度限制）
+        function generateTessellation(maxDepth) {
+            const vertices = []; // {complex, index}
+            const edges = []; // [i,j]
+            const mapKey = (z) => `${z.re.toFixed(8)},${z.im.toFixed(8)}`;
+            const vertexMap = new Map();
+
+            function addVertex(z) {
+                const key = mapKey(z);
+                if (vertexMap.has(key)) return vertexMap.get(key);
+                const idx = vertices.length;
+                vertices.push(z);
+                vertexMap.set(key, idx);
+                return idx;
+            }
+
+            // 初始五边形
+            const initialVerts = initialPolygonVertices();
+            const initialIndices = initialVerts.map(z => addVertex(z));
+            for (let i = 0; i < p; i++) {
+                const j = (i + 1) % p;
+                edges.push([initialIndices[i], initialIndices[j]]);
+            }
+
+            // BFS队列：面（五边形）的顶点索引列表（按顺序）
+            const queue = [{ face: initialIndices, depth: 0 }];
+            const visitedFaces = new Set();
+            visitedFaces.add(initialIndices.join(','));
+
+            while (queue.length > 0) {
+                const { face, depth } = queue.shift();
+                if (depth >= maxDepth) continue;
+                // 对每条边反射生成相邻五边形
+                for (let e = 0; e < p; e++) {
+                    const iA = face[e];
+                    const iB = face[(e + 1) % p];
+                    const zA = vertices[iA];
+                    const zB = vertices[iB];
+                    const arcInfo = geodesicArc(zA, zB);
+                    // 反射面中除这两个顶点外的其他顶点，然后构成新面
+                    const reflectedVerts = [];
+                    for (let k = 0; k < p; k++) {
+                        const idx = face[k];
+                        if (idx === iA || idx === iB) continue;
+                        const z = vertices[idx];
+                        let reflected;
+                        if (arcInfo.isLine) {
+                            // 关于直线的反射：直线通过zA,zB，反射公式
+                            const dir = zB.sub(zA);
+                            const d = dir.normalize();
+                            const p = z.sub(zA);
+                            const proj = d.scale(p.re * d.re + p.im * d.im);
+                            reflected = zA.add(proj.scale(2)).sub(z);
+                        } else {
+                            reflected = reflectPointAcrossArc(z, arcInfo.center, arcInfo.radius);
+                        }
+                        reflectedVerts.push(reflected);
+                    }
+                    // 新面由边AB加上反射的三个顶点组成，但顺序需正确。
+                    // 新面顶点顺序应为：A, B, 然后是反射的其余顶点（保持与原始面相同的环绕方向？需确保凸性）
+                    const newFaceIndices = [iA, iB];
+                    for (const rv of reflectedVerts) {
+                        newFaceIndices.push(addVertex(rv));
+                    }
+                    // 检查是否超圆？略。
+                    const key = newFaceIndices.join(',');
+                    if (!visitedFaces.has(key)) {
+                        visitedFaces.add(key);
+                        // 添加新边：除了AB边已存在，还有其他边（B到下一个顶点等）
+                        for (let i = 0; i < p; i++) {
+                            const u = newFaceIndices[i];
+                            const v = newFaceIndices[(i + 1) % p];
+                            if (!(u === iA && v === iB) && !(u === iB && v === iA)) {
+                                edges.push([u, v]);
+                            }
+                        }
+                        queue.push({ face: newFaceIndices, depth: depth + 1 });
+                    }
+                }
+            }
+
+            // 去重边
+            const edgeSet = new Set();
+            const uniqueEdges = [];
+            for (const [i, j] of edges) {
+                const key = i < j ? `${i},${j}` : `${j},${i}`;
+                if (!edgeSet.has(key)) {
+                    edgeSet.add(key);
+                    uniqueEdges.push([i, j]);
+                }
+            }
+
+            return { vertices, edges: uniqueEdges };
+        }
+
+        console.log('正在生成{5,4}镶嵌...');
+        const maxDepth = 3;
+        const tess = generateTessellation(maxDepth);
+        console.log('顶点数:', tess.vertices.length, '边数:', tess.edges.length);
+
+        // 创建线条组，按顶点到原点距离分三色
+        function createTessellationLines(tess, numArcSamples) {
+            const group1 = new THREE.Group(); // 暖金
+            const group2 = new THREE.Group(); // 冰蓝
+            const group3 = new THREE.Group(); // 玫瑰粉
+
+            const distThreshold1 = 0.45;
+            const distThreshold2 = 0.75;
+
+            for (const [i, j] of tess.edges) {
+                const zA = tess.vertices[i];
+                const zB = tess.vertices[j];
+                const distA = zA.modulus();
+                const distB = zB.modulus();
+                const avgDist = (distA + distB) / 2;
+                let colorGroup;
+                if (avgDist < distThreshold1) colorGroup = group1;
+                else if (avgDist < distThreshold2) colorGroup = group2;
+                else colorGroup = group3;
+
+                const arcInfo = geodesicArc(zA, zB);
+                const pts = sampleArc(zA, zB, arcInfo, numArcSamples);
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color: colorGroup === group1 ? new THREE.Color(COLOR_WARM_GOLD) :
+                        colorGroup === group2 ? new THREE.Color(COLOR_ICE_BLUE) :
+                        new THREE.Color(COLOR_ROSE),
+                    transparent: true,
+                    opacity: 0.65,
+                    depthWrite: true,
+                });
+                const line = new THREE.Line(geom, mat);
+                colorGroup.add(line);
+            }
+            return [group1, group2, group3];
+        }
+
+        const [lineGroup1, lineGroup2, lineGroup3] = createTessellationLines(tess, 48);
+        const tessGroup = new THREE.Group();
+        tessGroup.add(lineGroup1);
+        tessGroup.add(lineGroup2);
+        tessGroup.add(lineGroup3);
+        scene.add(tessGroup);
+
+        // 参考球面（单位球线框）
+        function createUnitSphereWireframe(color, opacity) {
+            const group = new THREE.Group();
+            const segments = 120;
+            // 三个正交大圆
+            const circles = [
+                (() => { const pts = []; for (let i = 0; i <= segments; i++) { const a = (i / segments) * Math.PI * 2;
+                        pts.push(new THREE.Vector3(Math.cos(a), Math.sin(a), 0)); } return pts; })(),
+                (() => { const pts = []; for (let i = 0; i <= segments; i++) { const a = (i / segments) * Math.PI * 2;
+                        pts.push(new THREE.Vector3(Math.cos(a), 0, Math.sin(a))); } return pts; })(),
+                (() => { const pts = []; for (let i = 0; i <= segments; i++) { const a = (i / segments) * Math.PI * 2;
+                        pts.push(new THREE.Vector3(0, Math.cos(a), Math.sin(a))); } return pts; })(),
+            ];
+            for (const pts of circles) {
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({ color: new THREE.Color(color), transparent: true,
+                    opacity: opacity, depthWrite: true });
+                group.add(new THREE.Line(geom, mat));
+            }
+            // 两条纬线
+            for (const z of [-0.5, 0.5]) {
+                const r = Math.sqrt(1 - z * z);
+                const pts = [];
+                for (let i = 0; i <= segments; i++) {
+                    const a = (i / segments) * Math.PI * 2;
+                    pts.push(new THREE.Vector3(Math.cos(a) * r, z, Math.sin(a) * r));
+                }
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({ color: new THREE.Color(color), transparent: true,
+                    opacity: opacity * 0.8, depthWrite: true });
+                group.add(new THREE.Line(geom, mat));
+            }
+            return group;
+        }
+        const sphereWire = createUnitSphereWireframe(COLOR_SPHERE, 0.25);
+        scene.add(sphereWire);
+
+        // ==================== 动画循环（绝对时间） ====================
+        const startTime = performance.now();
+        let frameCount = 0;
+        let lastLogTime = 0;
+        let currentTime = 0;
+
+        function animate(timestamp) {
+            requestAnimationFrame(animate);
+
+            const elapsed = (timestamp - startTime) / 1000;
+            if (elapsed <= 0) {
+                renderer.render(scene, camera);
+                return;
+            }
+            currentTime = elapsed;
+            frameCount++;
+
+            if (timestamp - lastLogTime > 4000) {
+                console.log(`[动画运行中] 帧:${frameCount} 时间:${currentTime.toFixed(2)}s`);
+                lastLogTime = timestamp;
+            }
+
+            // 镶嵌整体绕Y轴旋转，模拟庞加莱球旋转
+            tessGroup.rotation.y += 0.004;
+            tessGroup.rotation.x += 0.0015;
+            tessGroup.rotation.z += 0.001;
+            sphereWire.rotation.y += 0.0018;
+
+            // 相机缓慢游走
+            const camX = 1.3 + Math.sin(currentTime * 0.18) * 0.4;
+            const camY = 0.9 + Math.cos(currentTime * 0.22) * 0.35;
+            const camZ = 3.8 + Math.sin(currentTime * 0.13) * 0.5;
+            camera.position.set(camX, camY, camZ);
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        // ==================== 窗口调整 ====================
+        function onResize() {
+            const w = container.clientWidth;
+            const h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }
+        window.addEventListener('resize', onResize);
+        window.addEventListener('orientationchange', () => setTimeout(onResize, 100));
+
+        // ==================== 启动 ====================
+        console.log('=== 双曲镶嵌 · 庞加莱球投影 ===');
+        console.log('总弧线数:', tess.edges.length);
+        console.log('暖金弧线:', lineGroup1.children.length);
+        console.log('冰蓝弧线:', lineGroup2.children.length);
+        console.log('玫瑰粉弧线:', lineGroup3.children.length);
+        console.log('✅ 初始帧已准备，启动绝对时间动画循环...');
+
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

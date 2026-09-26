@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IRIDESCENT · 彩虹油膜</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #080810;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2;
+            text-align: center;
+            pointer-events: none;
+            opacity: 0.55;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+
+        .overlay:hover {
+            opacity: 0.9;
+        }
+
+        .title {
+            color: rgba(235, 225, 255, 0.8);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 20px rgba(150, 120, 240, 0.4);
+        }
+
+        .hint {
+            color: rgba(190, 180, 220, 0.5);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+
+        @media (max-width: 768px) {
+            .overlay {
+                bottom: 18px;
+            }
+            .title {
+                font-size: 8px;
+                letter-spacing: 0.45em;
+            }
+            .hint {
+                font-size: 6px;
+                letter-spacing: 0.22em;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="canvas"></canvas>
+
+    <div class="overlay">
+        <div class="title">Iridescent</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script>
+        (function() {
+            // ─── 画布初始化 ───────────────────────────────────────────────
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            let blobs = [];           // 油膜光团
+            let mouse = { x: -9999, y: -9999, active: false };
+            let time = 0;
+            let colorShift = 0;       // 色彩整体偏移
+            let clickBursts = [];     // 点击迸发的小光团
+
+            // ─── 性能参数 ───────────────────────────────────────────────
+            const BLOB_COUNT = () => Math.max(30, Math.min(70, Math.floor(W * H / 25000)));
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                // 深色背景，杜绝白屏
+                ctx.fillStyle = '#080810';
+                ctx.fillRect(0, 0, W, H);
+            }
+
+            // ─── 油膜光团类 ─────────────────────────────────────────────
+            class Blob {
+                constructor() {
+                    this.x = Math.random() * W;
+                    this.y = Math.random() * H;
+                    this.radius = 60 + Math.random() * 120;  // 基础半径
+                    this.vx = (Math.random() - 0.5) * 0.5;
+                    this.vy = (Math.random() - 0.5) * 0.5;
+                    this.hue = Math.random() * 360;
+                    this.saturation = 60 + Math.random() * 30;
+                    this.lightness = 50 + Math.random() * 25;
+                    this.alpha = 0.15 + Math.random() * 0.15;
+                    this.phase = Math.random() * Math.PI * 2;
+                    this.floatSpeed = 0.2 + Math.random() * 0.3;
+                    this.mass = 1 + Math.random() * 0.8;
+                }
+
+                update(dt, mouse) {
+                    // 浮动运动
+                    this.x += Math.sin(time * this.floatSpeed + this.phase) * 0.3;
+                    this.y += Math.cos(time * this.floatSpeed * 0.8 + this.phase) * 0.3;
+                    this.x += this.vx * dt;
+                    this.y += this.vy * dt;
+
+                    // 鼠标扰动：吸引/排斥（根据距离）
+                    if (mouse.active) {
+                        const dx = mouse.x - this.x;
+                        const dy = mouse.y - this.y;
+                        const distSq = dx * dx + dy * dy;
+                        const infRadius = 200;
+                        const infSq = infRadius * infRadius;
+                        if (distSq < infSq) {
+                            const dist = Math.sqrt(distSq);
+                            const force = (1 - dist / infRadius) * 1.2 / this.mass;
+                            this.vx += (dx / dist) * force * 0.2;
+                            this.vy += (dy / dist) * force * 0.2;
+                        }
+                    }
+
+                    // 阻尼
+                    this.vx *= 0.99;
+                    this.vy *= 0.99;
+
+                    // 边界回弹
+                    if (this.x < 0) { this.x = 0; this.vx *= -0.5; }
+                    if (this.x > W) { this.x = W; this.vx *= -0.5; }
+                    if (this.y < 0) { this.y = 0; this.vy *= -0.5; }
+                    if (this.y > H) { this.y = H; this.vy *= -0.5; }
+                }
+
+                draw(ctx) {
+                    const r = this.radius * (0.8 + 0.3 * Math.sin(time * 1.5 + this.phase));
+                    const hue = (this.hue + colorShift) % 360;
+                    const gradient = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, r);
+
+                    // 彩虹渐变：内圈暖色、外圈冷色
+                    const innerLight = this.lightness + 20;
+                    const outerLight = this.lightness - 10;
+                    gradient.addColorStop(0, `hsla(${hue}, ${this.saturation}%, ${innerLight}%, ${this.alpha * 1.2})`);
+                    gradient.addColorStop(0.4, `hsla(${hue + 40}, ${this.saturation - 10}%, ${this.lightness}%, ${this.alpha})`);
+                    gradient.addColorStop(0.8, `hsla(${hue + 80}, ${this.saturation - 20}%, ${outerLight}%, ${this.alpha * 0.7})`);
+                    gradient.addColorStop(1, 'transparent');
+
+                    ctx.fillStyle = gradient;
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, r, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            // ─── 初始化油膜 ─────────────────────────────────────────────
+            function initBlobs() {
+                const count = BLOB_COUNT();
+                blobs = [];
+                for (let i = 0; i < count; i++) {
+                    blobs.push(new Blob());
+                }
+            }
+
+            // ─── 点击迸发的小光团 ───────────────────────────────────────
+            function createBurst(x, y) {
+                const count = 15 + Math.floor(Math.random() * 15);
+                for (let i = 0; i < count; i++) {
+                    const angle = Math.random() * Math.PI * 2;
+                    const speed = 1 + Math.random() * 3;
+                    clickBursts.push({
+                        x, y,
+                        vx: Math.cos(angle) * speed,
+                        vy: Math.sin(angle) * speed,
+                        radius: 10 + Math.random() * 30,
+                        life: 0.8 + Math.random() * 0.6,
+                        maxLife: 1.2,
+                        hue: (Math.random() * 360 + colorShift) % 360,
+                        alpha: 0.25 + Math.random() * 0.2,
+                    });
+                }
+                if (clickBursts.length > 80) clickBursts.splice(0, clickBursts.length - 80);
+            }
+
+            function updateBursts(dt) {
+                for (let i = clickBursts.length - 1; i >= 0; i--) {
+                    const b = clickBursts[i];
+                    b.x += b.vx * dt;
+                    b.y += b.vy * dt;
+                    b.vx *= 0.96;
+                    b.vy *= 0.96;
+                    b.life -= 0.015 * dt;
+                    b.radius *= 1.02; // 缓慢膨胀
+                    if (b.life <= 0) {
+                        clickBursts.splice(i, 1);
+                    }
+                }
+            }
+
+            function drawBursts(ctx) {
+                for (const b of clickBursts) {
+                    const alpha = b.life * b.alpha;
+                    const hue = b.hue;
+                    const gradient = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, b.radius);
+                    gradient.addColorStop(0, `hsla(${hue}, 80%, 75%, ${alpha})`);
+                    gradient.addColorStop(0.5, `hsla(${hue + 50}, 70%, 65%, ${alpha * 0.6})`);
+                    gradient.addColorStop(1, 'transparent');
+                    ctx.fillStyle = gradient;
+                    ctx.beginPath();
+                    ctx.arc(b.x, b.y, b.radius, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            // ─── 鼠标光晕 ───────────────────────────────────────────────
+            function drawCursorGlow(ctx) {
+                if (!mouse.active) return;
+                const radius = 70;
+                const hue = (220 + colorShift) % 360;
+                const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                gradient.addColorStop(0, `hsla(${hue}, 70%, 80%, 0.06)`);
+                gradient.addColorStop(0.7, `hsla(${hue}, 60%, 75%, 0.02)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // ─── 主循环 ─────────────────────────────────────────────────
+            let lastTime = 0;
+            let accumulator = 0;
+            const fixedStep = 1000 / 60;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+
+                accumulator += dt;
+                const steps = Math.min(Math.floor(accumulator / fixedStep), 3);
+                accumulator -= steps * fixedStep;
+
+                for (let s = 0; s < steps; s++) {
+                    time += 0.016;
+                    const dtNorm = fixedStep / 1000 * 60;
+                    for (const blob of blobs) {
+                        blob.update(dtNorm, mouse);
+                    }
+                    updateBursts(dtNorm);
+                }
+
+                // 半透明覆盖，产生柔和的拖尾融合效果
+                ctx.fillStyle = 'rgba(8, 8, 16, 0.2)';
+                ctx.fillRect(0, 0, W, H);
+
+                // 使用屏幕混合模式增强色彩叠加
+                ctx.globalCompositeOperation = 'lighter';
+
+                // 绘制油膜
+                for (const blob of blobs) {
+                    blob.draw(ctx);
+                }
+
+                // 绘制点击迸发
+                drawBursts(ctx);
+
+                // 绘制鼠标光晕
+                drawCursorGlow(ctx);
+
+                // 恢复正常混合模式
+                ctx.globalCompositeOperation = 'source-over';
+
+                requestAnimationFrame(animate);
+            }
+
+            // ─── 交互事件 ───────────────────────────────────────────────
+            function onMouseMove(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                createBurst(mouse.x, mouse.y);
+                // 切换色彩偏移
+                colorShift = (colorShift + 40 + Math.random() * 30) % 360;
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    createBurst(mouse.x, mouse.y);
+                    colorShift = (colorShift + 40 + Math.random() * 30) % 360;
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onResize() {
+                setupCanvas();
+                // 调整油膜数量
+                const targetCount = BLOB_COUNT();
+                if (targetCount !== blobs.length) {
+                    while (blobs.length < targetCount) {
+                        blobs.push(new Blob());
+                    }
+                    if (blobs.length > targetCount) {
+                        blobs.length = targetCount;
+                    }
+                }
+                clickBursts = [];
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+                initBlobs();
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            // 确保初始背景填充
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#080810';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+
+        })();
+    </script>
+</body>
+</html>

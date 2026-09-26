@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CRYSTAL · 晶簇生长</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #0a0a18;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            right: 32px;
+            z-index: 2;
+            text-align: right;
+            pointer-events: none;
+            opacity: 0.5;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+        .overlay:hover {
+            opacity: 0.85;
+        }
+        .title {
+            color: rgba(220, 235, 250, 0.75);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 20px rgba(140, 180, 240, 0.4);
+        }
+        .hint {
+            color: rgba(170, 190, 220, 0.45);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+        @media (max-width: 768px) {
+            .overlay { bottom: 18px; right: 20px; }
+            .title { font-size: 8px; letter-spacing: 0.45em; }
+            .hint { font-size: 6px; letter-spacing: 0.22em; }
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <div class="overlay">
+        <div class="title">Crystal</div>
+        <div class="hint">move · click</div>
+    </div>
+    <script>
+        (function() {
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            let tips = [];
+            let segments = [];
+            let mouse = { x: -9999, y: -9999, active: false };
+            let time = 0;
+            let colorShift = 0;
+            let maxTips = 70;
+            let maxSegments = 1200;
+            let seedCooldown = 0;
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                ctx.fillStyle = '#0a0a18';
+                ctx.fillRect(0, 0, W, H);
+            }
+
+            // ─── 晶簇尖端（生长点） ────────────────────────────────────
+            class Tip {
+                constructor(x, y, angle, depth, hue, parentId) {
+                    this.x = x;
+                    this.y = y;
+                    this.angle = angle;
+                    this.depth = depth;
+                    this.hue = hue;
+                    this.parentId = parentId;
+                    this.speed = 1.2 + Math.random() * 0.8;
+                    this.life = 120 + Math.random() * 60;
+                    this.branchCooldown = 25 + Math.random() * 35;
+                    this.thickness = Math.max(0.5, 2.2 - depth * 0.25);
+                    this.stepSize = 4 + Math.random() * 3;
+                }
+
+                update(mouse, t) {
+                    this.life--;
+                    this.branchCooldown--;
+
+                    // 随机方向抖动（棱角感）
+                    this.angle += (Math.random() - 0.5) * 0.25;
+
+                    // 鼠标吸引
+                    if (mouse.active) {
+                        const dx = mouse.x - this.x;
+                        const dy = mouse.y - this.y;
+                        const distSq = dx * dx + dy * dy;
+                        const radius = 250;
+                        const radiusSq = radius * radius;
+                        if (distSq < radiusSq && distSq > 0.01) {
+                            const dist = Math.sqrt(distSq);
+                            const attract = Math.atan2(dy, dx);
+                            const angleDiff = ((attract - this.angle + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+                            this.angle += angleDiff * 0.1 * (1 - dist / radius);
+                        }
+                    }
+
+                    // 记录旧位置
+                    const oldX = this.x;
+                    const oldY = this.y;
+
+                    // 移动
+                    this.x += Math.cos(this.angle) * this.stepSize;
+                    this.y += Math.sin(this.angle) * this.stepSize;
+
+                    // 添加线段
+                    if (segments.length < maxSegments) {
+                        segments.push({
+                            x1: oldX, y1: oldY,
+                            x2: this.x, y2: this.y,
+                            depth: this.depth,
+                            hue: this.hue,
+                            alpha: 0.7 - this.depth * 0.08,
+                            thickness: this.thickness,
+                            created: time,
+                        });
+                    }
+
+                    // 边界检查
+                    if (this.x < -20 || this.x > W + 20 || this.y < -20 || this.y > H + 20) {
+                        this.life = 0;
+                    }
+                }
+
+                shouldBranch() {
+                    return this.branchCooldown <= 0 && this.life > 20 && tips.length < maxTips && this.depth < 7;
+                }
+
+                isDead() {
+                    return this.life <= 0;
+                }
+            }
+
+            // ─── 创建新种子 ─────────────────────────────────────────────
+            function createSeed(x, y, hue) {
+                const count = 3 + Math.floor(Math.random() * 3);
+                for (let i = 0; i < count; i++) {
+                    const angle = (Math.PI * 2 / count) * i + Math.random() * 0.8;
+                    const depth = 0;
+                    tips.push(new Tip(x, y, angle, depth, hue, -1));
+                }
+            }
+
+            // ─── 生长晶簇 ───────────────────────────────────────────────
+            function growCrystals() {
+                const newTips = [];
+                for (const tip of tips) {
+                    if (tip.isDead()) continue;
+                    tip.update(mouse, time);
+
+                    if (tip.shouldBranch()) {
+                        // 分叉：两个新尖端，以锐角分叉
+                        const branchAngle1 = tip.angle + (0.35 + Math.random() * 0.4);
+                        const branchAngle2 = tip.angle - (0.35 + Math.random() * 0.4);
+                        const newDepth = tip.depth + 1;
+                        const childHue1 = tip.hue + (Math.random() - 0.5) * 25;
+                        const childHue2 = tip.hue + (Math.random() - 0.5) * 25;
+
+                        newTips.push(new Tip(tip.x, tip.y, branchAngle1, newDepth, childHue1, tip.depth));
+                        newTips.push(new Tip(tip.x, tip.y, branchAngle2, newDepth, childHue2, tip.depth));
+                        tip.branchCooldown = 40 + Math.random() * 40;
+
+                        // 限制分支数量
+                        if (newTips.length + tips.length > maxTips) break;
+                    }
+                    newTips.push(tip);
+                }
+                tips = newTips;
+
+                // 清理过旧的线段
+                if (segments.length > maxSegments * 0.9) {
+                    const excess = segments.length - maxSegments * 0.8;
+                    segments.splice(0, Math.floor(excess));
+                }
+            }
+
+            // ─── 绘制晶簇 ───────────────────────────────────────────────
+            function drawCrystals(ctx, t) {
+                // 按深度排序绘制（先深后浅，产生层次）
+                const sortedSegments = segments.slice().sort((a, b) => a.depth - b.depth);
+
+                for (const seg of sortedSegments) {
+                    const age = t - seg.created;
+                    const fadeAlpha = Math.max(0, seg.alpha - age * 0.008);
+                    if (fadeAlpha <= 0.02) continue;
+
+                    const hue = seg.hue + colorShift;
+                    const sat = 55 + seg.depth * 5;
+                    const light = 50 + seg.depth * 3;
+                    const alpha = fadeAlpha;
+
+                    ctx.strokeStyle = `hsla(${hue}, ${sat}%, ${light}%, ${alpha})`;
+                    ctx.lineWidth = seg.thickness;
+                    ctx.lineCap = 'round';
+                    ctx.lineJoin = 'round';
+                    ctx.beginPath();
+                    ctx.moveTo(seg.x1, seg.y1);
+                    ctx.lineTo(seg.x2, seg.y2);
+                    ctx.stroke();
+                }
+
+                // 绘制生长尖端
+                for (const tip of tips) {
+                    if (tip.life <= 0) continue;
+                    const alpha = 0.8;
+                    const size = tip.thickness * 2.5;
+                    const hue = tip.hue + colorShift;
+                    const sat = 60;
+                    const light = 65;
+                    const gradient = ctx.createRadialGradient(tip.x, tip.y, 0, tip.x, tip.y, size);
+                    gradient.addColorStop(0, `hsla(${hue}, ${sat}%, ${light + 20}%, ${alpha})`);
+                    gradient.addColorStop(1, 'transparent');
+                    ctx.fillStyle = gradient;
+                    ctx.beginPath();
+                    ctx.arc(tip.x, tip.y, size, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    ctx.fillStyle = `hsla(${hue}, ${sat}%, ${light + 30}%, ${alpha})`;
+                    ctx.beginPath();
+                    ctx.arc(tip.x, tip.y, tip.thickness * 1.2, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            // ─── 鼠标光晕 ───────────────────────────────────────────────
+            function drawCursorGlow(ctx) {
+                if (!mouse.active) return;
+                const radius = 60;
+                const hue = 200 + colorShift;
+                const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                gradient.addColorStop(0, `hsla(${hue}, 55%, 75%, 0.06)`);
+                gradient.addColorStop(0.7, `hsla(${hue}, 45%, 70%, 0.02)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // ─── 主循环 ─────────────────────────────────────────────────
+            let lastTime = 0;
+            let accumulator = 0;
+            const fixedStep = 1000 / 60;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+
+                accumulator += dt;
+                const steps = Math.min(Math.floor(accumulator / fixedStep), 3);
+                accumulator -= steps * fixedStep;
+
+                for (let s = 0; s < steps; s++) {
+                    time += 0.016;
+                    const dtNorm = fixedStep / 1000 * 60;
+                    if (seedCooldown > 0) seedCooldown -= dtNorm;
+                    growCrystals();
+                }
+
+                // 半透明清除，形成拖尾
+                ctx.fillStyle = 'rgba(10, 10, 24, 0.22)';
+                ctx.fillRect(0, 0, W, H);
+
+                // 绘制晶簇
+                drawCrystals(ctx, time);
+
+                // 鼠标光晕
+                drawCursorGlow(ctx);
+
+                requestAnimationFrame(animate);
+            }
+
+            // ─── 交互事件 ───────────────────────────────────────────────
+            function onMouseMove(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                if (seedCooldown <= 0) {
+                    const hue = 190 + Math.random() * 60;
+                    createSeed(mouse.x, mouse.y, hue);
+                    seedCooldown = 15;
+                    colorShift += 20 + Math.random() * 30;
+                    if (colorShift > 120) colorShift = -20;
+                }
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    if (seedCooldown <= 0) {
+                        const hue = 190 + Math.random() * 60;
+                        createSeed(mouse.x, mouse.y, hue);
+                        seedCooldown = 15;
+                        colorShift += 20 + Math.random() * 30;
+                        if (colorShift > 120) colorShift = -20;
+                    }
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onResize() {
+                setupCanvas();
+                // 调整现有尖端位置
+                for (const tip of tips) {
+                    tip.x = Math.min(tip.x, W + 20);
+                    tip.y = Math.min(tip.y, H + 20);
+                }
+                // 清理线段
+                segments = [];
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+                // 重新播种
+                for (let i = 0; i < 4; i++) {
+                    const x = W * (0.15 + Math.random() * 0.7);
+                    const y = H * (0.15 + Math.random() * 0.7);
+                    const hue = 190 + Math.random() * 60;
+                    createSeed(x, y, hue);
+                }
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+
+                // 初始晶簇种子
+                for (let i = 0; i < 5; i++) {
+                    const x = W * (0.1 + Math.random() * 0.8);
+                    const y = H * (0.1 + Math.random() * 0.8);
+                    const hue = 190 + Math.random() * 60;
+                    createSeed(x, y, hue);
+                }
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            // 确保背景填充，避免白屏
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#0a0a18';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+        })();
+    </script>
+</body>
+</html>

@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fibonacci准晶网络 · 无理频率球面交织</title>
+    <style>
+        :root { --bg: #02040a; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'STSong', 'Songti SC', 'Noto Serif SC', 'SimSun', 'Times New Roman', serif;
+            -webkit-font-smoothing: antialiased;
+            height: 100vh; width: 100vw;
+            user-select: none; -webkit-user-select: none; cursor: default;
+        }
+        #canvas-container { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+        canvas { display: block; }
+        #title-overlay {
+            position: fixed; top: 24px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+        }
+        #title-overlay .title {
+            font-size: clamp(1.0rem, 2.2vw, 1.5rem); font-weight: 400; letter-spacing: 0.08em;
+            color: #cfc7b5; text-shadow: 0 0 42px rgba(200,180,150,0.5), 0 0 72px rgba(170,150,130,0.22);
+            line-height: 1.4; white-space: nowrap;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.48rem, 0.85vw, 0.64rem); font-weight: 300; letter-spacing: 0.12em;
+            color: #a09888; text-shadow: 0 0 16px rgba(155,145,125,0.32);
+            margin-top: 2px; white-space: nowrap;
+        }
+        #formula-overlay {
+            position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+            background: rgba(2,4,10,0.68); padding: 10px 20px; border-radius: 32px;
+            border: 1px solid rgba(175,155,135,0.16);
+            backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); max-width: 95vw;
+        }
+        #formula-overlay .formula {
+            font-size: clamp(0.4rem, 0.7vw, 0.56rem); font-weight: 300; letter-spacing: 0.04em;
+            color: #c5bdaa; text-shadow: 0 0 13px rgba(185,170,145,0.25);
+            line-height: 1.55; white-space: nowrap;
+        }
+        #formula-overlay .formula .c1 { color: #d4885c; }
+        #formula-overlay .formula .c2 { color: #5d9ec6; }
+        #formula-overlay .formula .c3 { color: #c77d9f; }
+        @media (max-width: 600px) {
+            #title-overlay { top: 14px; }
+            #formula-overlay { bottom: 10px; padding: 7px 12px; border-radius: 24px; }
+            #formula-overlay .formula { font-size: 0.32rem; white-space: normal; line-height: 1.3; }
+            #title-overlay .title { font-size: 0.68rem; }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="title-overlay">
+        <div class="title">Fibonacci准晶网络 · 无理频率球面交织</div>
+        <div class="subtitle">FIBONACCI QUASICRYSTAL &nbsp;·&nbsp; φ‑RATIO SPHERICAL WEAVE</div>
+    </div>
+    <div id="formula-overlay">
+        <div class="formula">
+            <span class="c1">𝒞φ:</span> θ=½π+A₁sin(φ·t+δ) φ̇=√5·t &nbsp;
+            <span class="c2">𝒞φ²:</span> θ=½π+A₂sin(φ²·t+ε) φ̇=√5·φ·t &nbsp;
+            <span class="c3">𝒞φ³:</span> θ=½π+A₃sin(φ³·t+ζ) φ̇=√5·φ²·t
+            <br>
+            <span style="color:#9aa8b8;">φ=(1+√5)/2 &nbsp;|&nbsp; 3族×11曲线 &nbsp;|&nbsp; R=2.7 &nbsp;|&nbsp; 无理频率比⇒准晶</span>
+        </div>
+    </div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#02040a');
+        scene.fog = new THREE.Fog('#02040a', 8, 24);
+
+        const camera = new THREE.PerspectiveCamera(
+            50,
+            container.clientWidth / Math.max(container.clientHeight, 1),
+            0.3,
+            27
+        );
+        camera.position.set(1.0, 0.55, 7.0);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = false;
+        container.appendChild(renderer.domElement);
+
+        // ==================== 常数 ====================
+        const phi = (1 + Math.sqrt(5)) / 2; // 黄金比例 ≈1.618
+        const phi2 = phi * phi; // ≈2.618
+        const phi3 = phi * phi * phi; // ≈4.236
+        const R = 2.7;
+        const NUM_CURVES_PER_FAMILY = 11;
+        const NUM_SAMPLES = 420;
+        const T_MAX = Math.PI * 2 * 8; // 足够长的参数范围以展现准周期特性
+
+        // ==================== 颜色 ====================
+        const C1 = '#d4885c'; // 暖金 – 频率φ族
+        const C2 = '#5d9ec6'; // 冰蓝 – 频率φ²族
+        const C3 = '#c77d9f'; // 玫瑰粉 – 频率φ³族
+        const C_SPHERE = '#3a4a5c';
+        const C_GLINT = '#8898aa';
+        const C_POLE = '#6a7a8a';
+
+        // ==================== 生成准晶曲线 ====================
+        /**
+         * 生成一族球面准晶曲线
+         * @param {number} freqTheta - θ调制频率
+         * @param {number} freqPhi - φ的基础频率
+         * @param {number} amp - θ调制振幅
+         * @param {number} numCurves - 曲线数量
+         * @param {number} numSamples - 每条曲线采样点数
+         * @returns {THREE.Vector3[][]}
+         */
+        function generateQuasicrystalCurves(freqTheta, freqPhi, amp, numCurves, numSamples) {
+            const allCurves = [];
+            for (let k = 0; k < numCurves; k++) {
+                const delta = (k / numCurves) * Math.PI * 2;
+                const pts = [];
+                const dt = T_MAX / numSamples;
+                for (let i = 0; i <= numSamples; i++) {
+                    const t = i * dt;
+                    // θ围绕π/2振荡（赤道附近），φ线性增长
+                    const theta = Math.PI / 2 + amp * Math.sin(freqTheta * t + delta);
+                    const thetaClamped = Math.max(0.05, Math.min(Math.PI - 0.05, theta));
+                    const phiVal = freqPhi * t;
+                    const sinTheta = Math.sin(thetaClamped);
+                    const x = R * sinTheta * Math.cos(phiVal);
+                    const y = R * sinTheta * Math.sin(phiVal);
+                    const z = R * Math.cos(thetaClamped);
+                    pts.push(new THREE.Vector3(x, y, z));
+                }
+                allCurves.push(pts);
+            }
+            return allCurves;
+        }
+
+        // 族1: 频率比φ (暖金)
+        const curves1 = generateQuasicrystalCurves(phi, Math.sqrt(5), 0.52, NUM_CURVES_PER_FAMILY, NUM_SAMPLES);
+        // 族2: 频率比φ² (冰蓝)
+        const curves2 = generateQuasicrystalCurves(phi2, Math.sqrt(5) * phi, 0.46, NUM_CURVES_PER_FAMILY, NUM_SAMPLES);
+        // 族3: 频率比φ³ (玫瑰粉)
+        const curves3 = generateQuasicrystalCurves(phi3, Math.sqrt(5) * phi2, 0.50, NUM_CURVES_PER_FAMILY, NUM_SAMPLES);
+
+        console.log('曲线族1 (暖金 φ):', curves1.length, '条');
+        console.log('曲线族2 (冰蓝 φ²):', curves2.length, '条');
+        console.log('曲线族3 (玫瑰粉 φ³):', curves3.length, '条');
+        console.log('总曲线数:', curves1.length + curves2.length + curves3.length);
+
+        function createCurveGroup(curvesData, colorHex, opacity) {
+            const group = new THREE.Group();
+            for (const pts of curvesData) {
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(colorHex),
+                    transparent: true,
+                    opacity: opacity,
+                    depthWrite: true,
+                });
+                group.add(new THREE.Line(geom, mat));
+            }
+            return group;
+        }
+
+        const group1 = createCurveGroup(curves1, C1, 0.6);
+        const group2 = createCurveGroup(curves2, C2, 0.56);
+        const group3 = createCurveGroup(curves3, C3, 0.58);
+
+        const mainGroup = new THREE.Group();
+        mainGroup.add(group1);
+        mainGroup.add(group2);
+        mainGroup.add(group3);
+        scene.add(mainGroup);
+
+        // ==================== 参考球面线框 ====================
+        function createSphereWireframe(radius, colorHex, opacity) {
+            const group = new THREE.Group();
+            const segs = 170;
+            const circleDefs = [
+                (a) => new THREE.Vector3(Math.cos(a) * radius, Math.sin(a) * radius, 0),
+                (a) => new THREE.Vector3(Math.cos(a) * radius, 0, Math.sin(a) * radius),
+                (a) => new THREE.Vector3(0, Math.cos(a) * radius, Math.sin(a) * radius),
+            ];
+            for (const gen of circleDefs) {
+                const pts = [];
+                for (let i = 0; i <= segs; i++) pts.push(gen((i / segs) * Math.PI * 2));
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(colorHex),
+                    transparent: true,
+                    opacity: opacity,
+                    depthWrite: true,
+                });
+                group.add(new THREE.Line(geom, mat));
+            }
+            // 纬线
+            for (const z of [-radius * 0.5, radius * 0.5]) {
+                const r = Math.sqrt(Math.max(0, radius * radius - z * z));
+                if (r > 0.02) {
+                    const pts = [];
+                    for (let i = 0; i <= segs; i++) {
+                        const a = (i / segs) * Math.PI * 2;
+                        pts.push(new THREE.Vector3(Math.cos(a) * r, z, Math.sin(a) * r));
+                    }
+                    const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                    const mat = new THREE.LineBasicMaterial({
+                        color: new THREE.Color(colorHex),
+                        transparent: true,
+                        opacity: opacity * 0.6,
+                        depthWrite: true,
+                    });
+                    group.add(new THREE.Line(geom, mat));
+                }
+            }
+            return group;
+        }
+        const sphereRef = createSphereWireframe(R, C_SPHERE, 0.22);
+        scene.add(sphereRef);
+
+        // ==================== 原点光点 ====================
+        function createOriginGlint() {
+            const group = new THREE.Group();
+            const sz = 0.1;
+            const pairs = [
+                [new THREE.Vector3(-sz, 0, 0), new THREE.Vector3(sz, 0, 0)],
+                [new THREE.Vector3(0, -sz, 0), new THREE.Vector3(0, sz, 0)],
+                [new THREE.Vector3(0, 0, -sz), new THREE.Vector3(0, 0, sz)],
+            ];
+            for (const [a, b] of pairs) {
+                const g = new THREE.BufferGeometry().setFromPoints([a, b]);
+                const m = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(C_GLINT),
+                    transparent: true,
+                    opacity: 0.7,
+                    depthWrite: true,
+                });
+                group.add(new THREE.Line(g, m));
+            }
+            return group;
+        }
+        scene.add(createOriginGlint());
+
+        // ==================== 极点标记 ====================
+        function createPoleGlints(radius, colorHex, sz) {
+            const group = new THREE.Group();
+            for (const sign of [-1, 1]) {
+                const pt = new THREE.Vector3(0, sign * radius, 0);
+                const pairs = [
+                    [pt.clone().add(new THREE.Vector3(-sz, 0, 0)), pt.clone().add(new THREE.Vector3(sz, 0, 0))],
+                    [pt.clone().add(new THREE.Vector3(0, 0, -sz)), pt.clone().add(new THREE.Vector3(0, 0, sz))],
+                ];
+                for (const [a, b] of pairs) {
+                    const g = new THREE.BufferGeometry().setFromPoints([a, b]);
+                    const m = new THREE.LineBasicMaterial({
+                        color: new THREE.Color(colorHex),
+                        transparent: true,
+                        opacity: 0.5,
+                        depthWrite: true,
+                    });
+                    group.add(new THREE.Line(g, m));
+                }
+            }
+            return group;
+        }
+        scene.add(createPoleGlints(R, C_POLE, 0.07));
+
+        // ==================== 20个对称参考点（正十二面体顶点方向） ====================
+        function createReferenceDots(radius, colorHex, sz) {
+            const group = new THREE.Group();
+            const invPhi = 1 / phi;
+            const directions = [];
+            // (±1,±1,±1)
+            for (let sx = -1; sx <= 1; sx += 2)
+                for (let sy = -1; sy <= 1; sy += 2)
+                    for (let sz2 = -1; sz2 <= 1; sz2 += 2)
+                        directions.push(new THREE.Vector3(sx, sy, sz2).normalize());
+            // (0, ±1/φ, ±φ) 排列
+            const perms = [[0, 1, 2], [2, 0, 1], [1, 2, 0]];
+            for (const [i, j, k] of perms) {
+                for (let sj = -1; sj <= 1; sj += 2) {
+                    for (let sk = -1; sk <= 1; sk += 2) {
+                        const v = [0, 0, 0];
+                        v[i] = 0;
+                        v[j] = sj * invPhi;
+                        v[k] = sk * phi;
+                        directions.push(new THREE.Vector3(v[0], v[1], v[2]).normalize());
+                    }
+                }
+            }
+            const unique = [];
+            for (const d of directions) {
+                if (!unique.some(u => u.distanceTo(d) < 0.02)) unique.push(d);
+            }
+            for (const dir of unique) {
+                const pt = dir.clone().multiplyScalar(radius);
+                const pairs = [
+                    [pt.clone().add(new THREE.Vector3(-sz, 0, 0)), pt.clone().add(new THREE.Vector3(sz, 0, 0))],
+                    [pt.clone().add(new THREE.Vector3(0, -sz, 0)), pt.clone().add(new THREE.Vector3(0, sz, 0))],
+                ];
+                for (const [a, b] of pairs) {
+                    const g = new THREE.BufferGeometry().setFromPoints([a, b]);
+                    const m = new THREE.LineBasicMaterial({
+                        color: new THREE.Color(colorHex),
+                        transparent: true,
+                        opacity: 0.4,
+                        depthWrite: true,
+                    });
+                    group.add(new THREE.Line(g, m));
+                }
+            }
+            return group;
+        }
+        const refDots = createReferenceDots(R, C_POLE, 0.04);
+        mainGroup.add(refDots);
+
+        // ==================== 动画循环（绝对时间） ====================
+        let time = 0;
+        let lastTime = performance.now();
+        let frameCount = 0;
+        let logTime = 0;
+
+        function animate(now) {
+            requestAnimationFrame(animate);
+            let delta = (now - lastTime) / 1000;
+            if (delta <= 0 || delta > 0.5) delta = 0.016;
+            lastTime = now;
+            time += delta;
+            frameCount++;
+            if (now - logTime > 4000) {
+                console.log(`[动画运行中] 帧:${frameCount} 时间:${time.toFixed(2)}s 曲线:${NUM_CURVES_PER_FAMILY*3}`);
+                logTime = now;
+            }
+
+            // 主球体绕对角线旋转
+            mainGroup.rotation.y = time * 0.28;
+            mainGroup.rotation.x = time * 0.16 + Math.sin(time * 0.25) * 0.2;
+            mainGroup.rotation.z = Math.cos(time * 0.2) * 0.13;
+
+            // 参考球面同步
+            sphereRef.rotation.copy(mainGroup.rotation);
+
+            // 相机游走
+            const camX = 1.0 + Math.sin(time * 0.15) * 0.55;
+            const camY = 0.55 + Math.cos(time * 0.19) * 0.5;
+            const camZ = 7.0 + Math.sin(time * 0.12) * 0.5;
+            camera.position.set(camX, camY, camZ);
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        // ==================== 窗口调整 ====================
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth;
+            const h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth;
+            const h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 100));
+
+        console.log('=== Fibonacci准晶网络 · 无理频率球面交织 ===');
+        console.log('φ =', phi.toFixed(6), 'φ² =', phi2.toFixed(6), 'φ³ =', phi3.toFixed(6));
+        console.log('总曲线数:', NUM_CURVES_PER_FAMILY * 3);
+        console.log('每条曲线采样点:', NUM_SAMPLES + 1);
+        console.log('✅ 初始帧渲染完成，启动绝对时间动画循环...');
+
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>光丝蒲公英</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #060612;
+            font-family: sans-serif;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="dandelionCanvas"></canvas>
+    <script>
+        (function() {
+            'use strict';
+
+            const canvas = document.getElementById('dandelionCanvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            // ---------- 配置参数 ----------
+            const CONFIG = {
+                stemCount: 72,               // 光丝数量
+                pointsPerStem: 46,           // 每根光丝的采样点数
+                stemLength: 0.35,            // 光丝长度（占屏幕比例）
+                baseSpread: 0.6,             // 基部发散角度
+                waveAmplitude: 18,           // 波浪振幅
+                waveFrequency: 0.025,        // 波浪频率
+                waveSpeed: 0.0012,           // 波浪速度
+                mouseAttractRadius: 230,     // 鼠标吸引半径
+                mouseAttractStrength: 28,    // 吸引位移强度
+                clickRepelRadius: 280,       // 点击散开半径
+                clickRepelStrength: 45,      // 散开强度
+                returnForce: 0.045,          // 回弹力
+                damping: 0.92,               // 阻尼
+                baseX: 0.5,                  // 基部X位置（比例）
+                baseY: 0.92,                 // 基部Y位置（比例）
+                hueBase: 50,                 // 基础色相（暖黄）
+                hueVariation: 30,            // 色相变化
+                saturation: 85,
+                lightnessMin: 50,
+                lightnessMax: 82,
+                backgroundFade: 0.16,        // 拖尾强度
+                lineWidth: 1.8,              // 线条宽度
+            };
+
+            let width = 0;
+            let height = 0;
+            let dpr = 1;
+            let stems = [];
+            let mouseX = -9999;
+            let mouseY = -9999;
+            let mouseActive = false;
+            let targetMouseX = -9999;
+            let targetMouseY = -9999;
+            let smoothMouseX = -9999;
+            let smoothMouseY = -9999;
+            let animationId = null;
+            let lastTime = 0;
+            let time = 0;
+
+            // ---------- 光丝类 ----------
+            class Stem {
+                constructor(baseX, baseY, angle, index) {
+                    this.baseX = baseX;
+                    this.baseY = baseY;
+                    this.angle = angle;
+                    this.index = index;
+                    this.points = [];
+                    const length = CONFIG.stemLength * Math.min(width, height);
+                    const count = CONFIG.pointsPerStem;
+
+                    for (let i = 0; i < count; i++) {
+                        const t = i / (count - 1);
+                        // 基础位置：从基部向外延伸
+                        const px = baseX + Math.cos(angle) * length * t;
+                        const py = baseY + Math.sin(angle) * length * t;
+                        this.points.push({
+                            x: px,
+                            y: py,
+                            baseX: px,
+                            baseY: py,
+                            offsetX: 0,
+                            offsetY: 0,
+                            vx: 0,
+                            vy: 0,
+                            t: t,
+                        });
+                    }
+                    // 颜色（暖色系）
+                    this.hue = (CONFIG.hueBase + Math.random() * CONFIG.hueVariation) % 360;
+                    this.saturation = CONFIG.saturation + Math.random() * 10;
+                    this.lightness = CONFIG.lightnessMin + Math.random() * (CONFIG.lightnessMax - CONFIG.lightnessMin);
+                }
+
+                // 更新光丝点的位置
+                update(dt, now, time) {
+                    const length = CONFIG.stemLength * Math.min(width, height);
+                    const count = this.points.length;
+
+                    for (let i = 0; i < count; i++) {
+                        const pt = this.points[i];
+                        const t = pt.t;
+
+                        // 基础波浪：光丝自然摇曳
+                        const wavePhase = time * CONFIG.waveSpeed * 1000;
+                        const wave1 = Math.sin(t * 14 + wavePhase + this.index * 0.5) * CONFIG.waveAmplitude * t;
+                        const wave2 = Math.sin(t * 8 + wavePhase * 1.7 + this.index * 0.3) * CONFIG.waveAmplitude * 0.4 * t;
+
+                        // 目标偏移
+                        let targetOffX = wave1 + wave2;
+                        let targetOffY = wave2 - wave1 * 0.5;
+
+                        // 鼠标吸引：光丝向鼠标弯曲
+                        if (mouseActive && smoothMouseX > -1000) {
+                            const dx = smoothMouseX - pt.x;
+                            const dy = smoothMouseY - pt.y;
+                            const dist = Math.sqrt(dx * dx + dy * dy);
+                            if (dist < CONFIG.mouseAttractRadius && dist > 0.1) {
+                                const influence = (1 - dist / CONFIG.mouseAttractRadius);
+                                const strength = influence * influence * CONFIG.mouseAttractStrength;
+                                targetOffX += (dx / dist) * strength * t;
+                                targetOffY += (dy / dist) * strength * t;
+                            }
+                        }
+
+                        // 回弹力（向目标偏移靠拢）
+                        const returnX = (targetOffX - pt.offsetX) * CONFIG.returnForce;
+                        const returnY = (targetOffY - pt.offsetY) * CONFIG.returnForce;
+
+                        pt.vx += returnX * dt;
+                        pt.vy += returnY * dt;
+                        pt.vx *= CONFIG.damping;
+                        pt.vy *= CONFIG.damping;
+
+                        pt.offsetX += pt.vx * dt;
+                        pt.offsetY += pt.vy * dt;
+
+                        // 限制偏移
+                        const maxOffset = 130;
+                        if (pt.offsetX > maxOffset) pt.offsetX = maxOffset;
+                        if (pt.offsetX < -maxOffset) pt.offsetX = -maxOffset;
+                        if (pt.offsetY > maxOffset) pt.offsetY = maxOffset;
+                        if (pt.offsetY < -maxOffset) pt.offsetY = -maxOffset;
+
+                        pt.x = pt.baseX + pt.offsetX;
+                        pt.y = pt.baseY + pt.offsetY;
+                    }
+                }
+
+                // 绘制光丝
+                draw() {
+                    const pts = this.points;
+                    if (pts.length < 2) return;
+
+                    // 创建渐变（从基部到顶端）
+                    const gradient = ctx.createLinearGradient(pts[0].x, pts[0].y, pts[pts.length - 1].x, pts[pts.length -
+                        1].y);
+                    gradient.addColorStop(0, `hsla(${this.hue}, ${this.saturation}%, ${this.lightness - 5}%, 0.35)`);
+                    gradient.addColorStop(0.4, `hsla(${this.hue}, ${this.saturation}%, ${this.lightness}%, 0.55)`);
+                    gradient.addColorStop(1, `hsla(${this.hue}, ${this.saturation}%, ${this.lightness + 10}%, 0.8)`);
+
+                    ctx.beginPath();
+                    ctx.moveTo(pts[0].x, pts[0].y);
+                    for (let i = 1; i < pts.length; i++) {
+                        const prev = pts[i - 1];
+                        const curr = pts[i];
+                        const midX = (prev.x + curr.x) / 2;
+                        const midY = (prev.y + curr.y) / 2;
+                        ctx.quadraticCurveTo(prev.x, prev.y, midX, midY);
+                    }
+                    ctx.lineTo(pts[pts.length - 1].x, pts[pts.length - 1].y);
+
+                    ctx.strokeStyle = gradient;
+                    ctx.lineWidth = CONFIG.lineWidth;
+                    ctx.lineCap = 'round';
+                    ctx.stroke();
+
+                    // 绘制顶端光点
+                    const tip = pts[pts.length - 1];
+                    const tipGlow = ctx.createRadialGradient(tip.x, tip.y, 0, tip.x, tip.y, 6);
+                    tipGlow.addColorStop(0, `hsla(${this.hue}, 100%, 95%, 0.85)`);
+                    tipGlow.addColorStop(1, `hsla(${this.hue}, 100%, 90%, 0)`);
+                    ctx.fillStyle = tipGlow;
+                    ctx.beginPath();
+                    ctx.arc(tip.x, tip.y, 6, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            // ---------- 初始化光丝 ----------
+            function initStems() {
+                stems = [];
+                const baseX = width * CONFIG.baseX;
+                const baseY = height * CONFIG.baseY;
+                const totalAngle = Math.PI * CONFIG.baseSpread;
+                const startAngle = -Math.PI / 2 - totalAngle / 2;
+
+                for (let i = 0; i < CONFIG.stemCount; i++) {
+                    const t = CONFIG.stemCount === 1 ? 0.5 : i / (CONFIG.stemCount - 1);
+                    const angle = startAngle + t * totalAngle;
+                    stems.push(new Stem(baseX, baseY, angle, i));
+                }
+            }
+
+            // ---------- 调整画布尺寸 ----------
+            function resizeCanvas() {
+                dpr = Math.min(window.devicePixelRatio || 1, 2);
+                width = window.innerWidth;
+                height = window.innerHeight;
+                canvas.width = Math.floor(width * dpr);
+                canvas.height = Math.floor(height * dpr);
+                canvas.style.width = width + 'px';
+                canvas.style.height = height + 'px';
+                ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                ctx.fillStyle = '#060612';
+                ctx.fillRect(0, 0, width, height);
+                initStems();
+                drawScene(performance.now());
+            }
+
+            // ---------- 绘制场景 ----------
+            function drawScene(now) {
+                // 半透明背景拖尾
+                ctx.fillStyle = 'rgba(6, 6, 18, ' + CONFIG.backgroundFade + ')';
+                ctx.fillRect(0, 0, width, height);
+
+                // 开启混合模式
+                ctx.globalCompositeOperation = 'lighter';
+
+                // 平滑鼠标位置
+                if (mouseActive) {
+                    smoothMouseX += (targetMouseX - smoothMouseX) * 0.18;
+                    smoothMouseY += (targetMouseY - smoothMouseY) * 0.18;
+                }
+
+                // 绘制鼠标光晕
+                if (mouseActive && smoothMouseX > -1000) {
+                    const glowRadius = 110;
+                    const grad = ctx.createRadialGradient(smoothMouseX, smoothMouseY, 0, smoothMouseX, smoothMouseY,
+                        glowRadius);
+                    grad.addColorStop(0, 'rgba(180, 160, 80, 0.12)');
+                    grad.addColorStop(1, 'rgba(0,0,0,0)');
+                    ctx.fillStyle = grad;
+                    ctx.beginPath();
+                    ctx.arc(smoothMouseX, smoothMouseY, glowRadius, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+
+                // 绘制所有光丝
+                for (const stem of stems) {
+                    stem.draw();
+                }
+
+                // 绘制基部发光点
+                const baseX = width * CONFIG.baseX;
+                const baseY = height * CONFIG.baseY;
+                const baseGlow = ctx.createRadialGradient(baseX, baseY, 0, baseX, baseY, 15);
+                baseGlow.addColorStop(0, 'rgba(200, 180, 100, 0.5)');
+                baseGlow.addColorStop(1, 'rgba(0,0,0,0)');
+                ctx.fillStyle = baseGlow;
+                ctx.beginPath();
+                ctx.arc(baseX, baseY, 15, 0, Math.PI * 2);
+                ctx.fill();
+
+                // 恢复混合模式
+                ctx.globalCompositeOperation = 'source-over';
+            }
+
+            // ---------- 更新光丝 ----------
+            function updateStems(now) {
+                const dt = Math.min(2, (now - lastTime) / 16.67) || 1;
+                time = now * 0.001;
+
+                for (const stem of stems) {
+                    stem.update(dt, now, time);
+                }
+            }
+
+            // ---------- 动画循环 ----------
+            function animate(timestamp) {
+                const now = performance.now();
+                if (lastTime === 0) lastTime = now;
+                const dt = now - lastTime;
+                if (dt > 100) {
+                    lastTime = now - 16;
+                } else {
+                    lastTime = now;
+                }
+
+                updateStems(now);
+                drawScene(now);
+
+                animationId = requestAnimationFrame(animate);
+            }
+
+            // ---------- 交互事件 ----------
+            function updateMousePosition(clientX, clientY) {
+                targetMouseX = clientX;
+                targetMouseY = clientY;
+                if (!mouseActive) {
+                    mouseActive = true;
+                    smoothMouseX = targetMouseX;
+                    smoothMouseY = targetMouseY;
+                }
+            }
+
+            function handleClick(clientX, clientY) {
+                // 对每个光丝的点施加排斥力
+                for (const stem of stems) {
+                    for (const pt of stem.points) {
+                        const dx = pt.x - clientX;
+                        const dy = pt.y - clientY;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        if (dist < CONFIG.clickRepelRadius && dist > 0.01) {
+                            const force = (1 - dist / CONFIG.clickRepelRadius) * CONFIG.clickRepelStrength;
+                            pt.vx += (dx / dist) * force;
+                            pt.vy += (dy / dist) * force;
+                        }
+                    }
+                }
+            }
+
+            function setupEvents() {
+                window.addEventListener('mousemove', (e) => {
+                    updateMousePosition(e.clientX, e.clientY);
+                }, { passive: true });
+
+                window.addEventListener('mouseleave', () => {
+                    mouseActive = false;
+                    smoothMouseX = -9999;
+                    smoothMouseY = -9999;
+                });
+
+                window.addEventListener('mousedown', (e) => {
+                    handleClick(e.clientX, e.clientY);
+                });
+
+                window.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        updateMousePosition(touch.clientX, touch.clientY);
+                        handleClick(touch.clientX, touch.clientY);
+                    }
+                }, { passive: false });
+
+                window.addEventListener('touchmove', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        updateMousePosition(touch.clientX, touch.clientY);
+                    }
+                }, { passive: false });
+
+                window.addEventListener('touchend', () => {
+                    mouseActive = false;
+                    smoothMouseX = -9999;
+                    smoothMouseY = -9999;
+                });
+
+                window.addEventListener('resize', () => {
+                    resizeCanvas();
+                });
+
+                document.addEventListener('visibilitychange', () => {
+                    if (document.hidden) {
+                        if (animationId) {
+                            cancelAnimationFrame(animationId);
+                            animationId = null;
+                        }
+                        lastTime = 0;
+                    } else {
+                        if (!animationId) {
+                            lastTime = 0;
+                            animationId = requestAnimationFrame(animate);
+                        }
+                    }
+                });
+            }
+
+            // ---------- 启动 ----------
+            function init() {
+                resizeCanvas();
+                setupEvents();
+                lastTime = 0;
+                animationId = requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.__dandelionGlow = {
+                config: CONFIG,
+                stems: stems,
+            };
+        })();
+    </script>
+</body>
+</html>

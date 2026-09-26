@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SU(2)单参数子群 · 四元数李代数曲线</title>
+    <style>
+        :root { --bg: #02040a; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'STSong', 'Songti SC', 'Noto Serif SC', 'SimSun', 'Times New Roman', serif;
+            -webkit-font-smoothing: antialiased;
+            height: 100vh; width: 100vw;
+            user-select: none; -webkit-user-select: none; cursor: default;
+        }
+        #canvas-container { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+        canvas { display: block; }
+        #title-overlay {
+            position: fixed; top: 22px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+        }
+        #title-overlay .title {
+            font-size: clamp(1.0rem, 2.2vw, 1.5rem); font-weight: 400; letter-spacing: 0.08em;
+            color: #cfc7b5; text-shadow: 0 0 42px rgba(200,180,150,0.5), 0 0 72px rgba(170,150,130,0.22);
+            line-height: 1.4; white-space: nowrap;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.48rem, 0.85vw, 0.64rem); font-weight: 300; letter-spacing: 0.12em;
+            color: #a09888; text-shadow: 0 0 16px rgba(155,145,125,0.32);
+            margin-top: 2px; white-space: nowrap;
+        }
+        #formula-overlay {
+            position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+            background: rgba(2,4,10,0.7); padding: 10px 20px; border-radius: 32px;
+            border: 1px solid rgba(175,155,135,0.16);
+            backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); max-width: 95vw;
+        }
+        #formula-overlay .formula {
+            font-size: clamp(0.36rem, 0.68vw, 0.54rem); font-weight: 300; letter-spacing: 0.04em;
+            color: #c5bdaa; text-shadow: 0 0 13px rgba(185,170,145,0.25);
+            line-height: 1.5; white-space: nowrap;
+        }
+        #formula-overlay .formula .c1 { color: #d4885c; }
+        #formula-overlay .formula .c2 { color: #5d9ec6; }
+        #formula-overlay .formula .c3 { color: #c77d9f; }
+        @media (max-width: 600px) {
+            #title-overlay { top: 14px; }
+            #formula-overlay { bottom: 10px; padding: 7px 12px; border-radius: 24px; }
+            #formula-overlay .formula { font-size: 0.32rem; white-space: normal; line-height: 1.3; }
+            #title-overlay .title { font-size: 0.68rem; }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="title-overlay">
+        <div class="title">SU(2)单参数子群 · 四元数李代数曲线</div>
+        <div class="subtitle">ONE‑PARAMETER SUBGROUPS &nbsp;·&nbsp; QUATERNION LIE ALGEBRA</div>
+    </div>
+    <div id="formula-overlay">
+        <div class="formula">
+            <span class="c1">𝒞ᵢ:</span> q(θ)=e^{iθ}·q₀ &nbsp;
+            <span class="c2">𝒞ⱼ:</span> q(θ)=e^{jθ}·q₀ &nbsp;
+            <span class="c3">𝒞ₖ:</span> q(θ)=e^{kθ}·q₀
+            <br>
+            <span style="color:#9aa8b8;">q₀∈S³ Clifford环面族 &nbsp;|&nbsp; 14初始点 &nbsp;|&nbsp; 42大圆 &nbsp;|&nbsp; 立体投影→ℝ³</span>
+        </div>
+    </div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#02040a');
+        scene.fog = new THREE.Fog('#02040a', 8, 19);
+
+        const camera = new THREE.PerspectiveCamera(
+            50, container.clientWidth / Math.max(container.clientHeight, 1), 0.3, 23
+        );
+        camera.position.set(0.55, 0.3, 7.2);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = false;
+        container.appendChild(renderer.domElement);
+
+        const C1 = '#d4885c', C2 = '#5d9ec6', C3 = '#c77d9f';
+        const C_SPHERE = '#3a4a5c', C_GLINT = '#8898aa';
+        const SPHERE_R = 2.55;
+        const NUM_SAMPLES = 300;
+        const MAX_DIST = SPHERE_R * 1.3;
+
+        // ==================== 四元数工具 ====================
+        class Quat {
+            constructor(w, x, y, z) { this.w = w; this.x = x; this.y = y; this.z = z; }
+            static expI(theta) { return new Quat(Math.cos(theta), Math.sin(theta), 0, 0); }
+            static expJ(theta) { return new Quat(Math.cos(theta), 0, Math.sin(theta), 0); }
+            static expK(theta) { return new Quat(Math.cos(theta), 0, 0, Math.sin(theta)); }
+            mul(b) {
+                const aw=this.w, ax=this.x, ay=this.y, az=this.z;
+                const bw=b.w, bx=b.x, by=b.y, bz=b.z;
+                return new Quat(
+                    aw*bw - ax*bx - ay*by - az*bz,
+                    aw*bx + ax*bw + ay*bz - az*by,
+                    aw*by - ax*bz + ay*bw + az*bx,
+                    aw*bz + ax*by - ay*bx + az*bw
+                );
+            }
+        }
+
+        function stereographic(q) {
+            const denom = 1 - q.w;
+            if (Math.abs(denom) < 0.0008) {
+                const s = denom >= 0 ? 1 : -1;
+                return new THREE.Vector3(s*q.x*60, s*q.y*60, s*q.z*60);
+            }
+            const scale = 3.0;
+            return new THREE.Vector3(q.x/denom*scale, q.y/denom*scale, q.z/denom*scale);
+        }
+
+        function softClamp(vec) {
+            const len = vec.length();
+            if (len > MAX_DIST && len > 0.001) {
+                const excess = len - MAX_DIST;
+                const clamped = MAX_DIST + Math.log(1+excess)*1.15;
+                vec.normalize().multiplyScalar(Math.min(clamped, MAX_DIST*1.28));
+            }
+            return vec;
+        }
+
+        // ==================== 生成初始点 ====================
+        function generateInitialPoints() {
+            const points = [];
+            // θ₁取多个值（Clifford环面大小参数），每个θ₁取1-2个初始相位
+            const theta1Values = [0.18, 0.35, 0.52, 0.68, 0.82, 0.95, 1.08, 1.22, 1.38];
+            // 对每个θ₁，取两个不同β值
+            for (const th1 of theta1Values) {
+                for (let beta = 0; beta < 2; beta++) {
+                    const b = beta * Math.PI;
+                    // Hopf坐标: q = (cos θ₁, sin θ₁ cos β, sin θ₁ sin β cos γ, sin θ₁ sin β sin γ)
+                    // 简化：γ=0
+                    const cosT = Math.cos(th1), sinT = Math.sin(th1);
+                    const cosB = Math.cos(b), sinB = Math.sin(b);
+                    const q = new Quat(cosT, sinT*cosB, sinT*sinB, 0);
+                    // 确保不在奇点附近
+                    if (q.w < 0.94) {
+                        points.push(q);
+                    }
+                }
+            }
+            // 额外加几个点
+            for (const th1 of [0.28, 0.58, 0.78, 1.05, 1.18]) {
+                const cosT = Math.cos(th1), sinT = Math.sin(th1);
+                const b = Math.PI * 0.5;
+                const q = new Quat(cosT, sinT*Math.cos(b), 0, sinT*Math.sin(b));
+                if (q.w < 0.94) points.push(q);
+            }
+            return points;
+        }
+
+        const initialPoints = generateInitialPoints();
+        console.log('初始点数量:', initialPoints.length);
+
+        // ==================== 生成三族曲线 ====================
+        function generateCurveGroup(initialPts, expFunc, numSamples) {
+            const allCurves = [];
+            for (const q0 of initialPts) {
+                const pts = [];
+                const dt = (Math.PI * 2) / numSamples;
+                for (let i = 0; i <= numSamples; i++) {
+                    const theta = i * dt;
+                    const rot = expFunc(theta);
+                    const qt = rot.mul(q0);
+                    let proj = stereographic(qt);
+                    proj = softClamp(proj);
+                    pts.push(proj);
+                }
+                allCurves.push(pts);
+            }
+            return allCurves;
+        }
+
+        const curvesI = generateCurveGroup(initialPoints, Quat.expI, NUM_SAMPLES);
+        const curvesJ = generateCurveGroup(initialPoints, Quat.expJ, NUM_SAMPLES);
+        const curvesK = generateCurveGroup(initialPoints, Quat.expK, NUM_SAMPLES);
+
+        console.log('i族曲线:', curvesI.length, 'j族:', curvesJ.length, 'k族:', curvesK.length);
+
+        function createLineGroup(curves, colorHex, opacity) {
+            const group = new THREE.Group();
+            for (const pts of curves) {
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(colorHex),
+                    transparent: true, opacity: opacity, depthWrite: true,
+                });
+                group.add(new THREE.Line(geom, mat));
+            }
+            return group;
+        }
+
+        const groupI = createLineGroup(curvesI, C1, 0.62);
+        const groupJ = createLineGroup(curvesJ, C2, 0.6);
+        const groupK = createLineGroup(curvesK, C3, 0.61);
+
+        const mainGroup = new THREE.Group();
+        mainGroup.add(groupI);
+        mainGroup.add(groupJ);
+        mainGroup.add(groupK);
+        scene.add(mainGroup);
+
+        // ==================== 初始点光点 ====================
+        function createGlints(points4D, colorHex, sz) {
+            const group = new THREE.Group();
+            for (const q of points4D) {
+                const pt = stereographic(q);
+                if (pt.length() > MAX_DIST*1.1) continue;
+                const pairs = [
+                    [pt.clone().add(new THREE.Vector3(-sz,0,0)), pt.clone().add(new THREE.Vector3(sz,0,0))],
+                    [pt.clone().add(new THREE.Vector3(0,-sz,0)), pt.clone().add(new THREE.Vector3(0,sz,0))],
+                    [pt.clone().add(new THREE.Vector3(0,0,-sz)), pt.clone().add(new THREE.Vector3(0,0,sz))],
+                ];
+                for (const [a,b] of pairs) {
+                    const g = new THREE.BufferGeometry().setFromPoints([a,b]);
+                    const m = new THREE.LineBasicMaterial({
+                        color: new THREE.Color(colorHex),
+                        transparent: true, opacity: 0.55, depthWrite: true,
+                    });
+                    group.add(new THREE.Line(g, m));
+                }
+            }
+            return group;
+        }
+        mainGroup.add(createGlints(initialPoints, C_GLINT, 0.06));
+
+        // ==================== 参考球面线框 ====================
+        function createSphereWireframe(radius, colorHex, opacity) {
+            const group = new THREE.Group();
+            const segs = 170;
+            const circles = [
+                (a) => new THREE.Vector3(Math.cos(a)*radius, Math.sin(a)*radius, 0),
+                (a) => new THREE.Vector3(Math.cos(a)*radius, 0, Math.sin(a)*radius),
+                (a) => new THREE.Vector3(0, Math.cos(a)*radius, Math.sin(a)*radius),
+            ];
+            for (const gen of circles) {
+                const pts = [];
+                for (let i=0; i<=segs; i++) pts.push(gen((i/segs)*Math.PI*2));
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(colorHex),
+                    transparent: true, opacity: opacity, depthWrite: true,
+                });
+                group.add(new THREE.Line(geom, mat));
+            }
+            return group;
+        }
+        const sphereRef = createSphereWireframe(SPHERE_R, C_SPHERE, 0.2);
+        scene.add(sphereRef);
+
+        function originGlint() {
+            const group = new THREE.Group();
+            const sz = 0.07;
+            const pairs = [
+                [new THREE.Vector3(-sz,0,0), new THREE.Vector3(sz,0,0)],
+                [new THREE.Vector3(0,-sz,0), new THREE.Vector3(0,sz,0)],
+                [new THREE.Vector3(0,0,-sz), new THREE.Vector3(0,0,sz)],
+            ];
+            for (const [a,b] of pairs) {
+                const g = new THREE.BufferGeometry().setFromPoints([a,b]);
+                const m = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(C_GLINT),
+                    transparent: true, opacity: 0.7, depthWrite: true,
+                });
+                group.add(new THREE.Line(g, m));
+            }
+            return group;
+        }
+        scene.add(originGlint());
+
+        // ==================== 动画循环 ====================
+        let time = 0, lastTime = performance.now(), frameCount = 0, logTime = 0;
+
+        function animate(now) {
+            requestAnimationFrame(animate);
+            let delta = (now - lastTime) / 1000;
+            if (delta <= 0 || delta > 0.5) delta = 0.016;
+            lastTime = now;
+            time += delta;
+            frameCount++;
+            if (now - logTime > 4000) {
+                console.log(`[动画运行中] 帧:${frameCount} 时间:${time.toFixed(2)}s`);
+                logTime = now;
+            }
+
+            mainGroup.rotation.y = time * 0.28;
+            mainGroup.rotation.x = time * 0.15 + Math.sin(time * 0.23) * 0.2;
+            mainGroup.rotation.z = Math.cos(time * 0.19) * 0.14;
+            sphereRef.rotation.copy(mainGroup.rotation);
+
+            const camX = 0.55 + Math.sin(time * 0.15) * 0.5;
+            const camY = 0.3 + Math.cos(time * 0.18) * 0.45;
+            const camZ = 7.2 + Math.sin(time * 0.12) * 0.45;
+            camera.position.set(camX, camY, camZ);
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth, h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth, h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 100));
+
+        console.log('=== SU(2)单参数子群 · 四元数李代数曲线 ===');
+        console.log('总曲线数:', curvesI.length+curvesJ.length+curvesK.length);
+        console.log('✅ 初始帧渲染完成，启动绝对时间动画循环...');
+
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

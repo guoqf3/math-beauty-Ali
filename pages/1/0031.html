@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>球面大圆交织 · 数学之美</title>
+    <style>
+        :root {
+            --bg: #050510;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'Noto Serif SC', 'STSong', 'KaiTi', '楷体', '华文楷体', '宋体', serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            height: 100vh;
+            width: 100vw;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+        #canvas-container {
+            position: fixed;
+            inset: 0;
+            z-index: 1;
+        }
+        canvas {
+            display: block;
+        }
+        .overlay {
+            position: fixed;
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+        #title-overlay {
+            top: clamp(16px, 4vh, 40px);
+        }
+        #title-overlay .title {
+            font-size: clamp(1.1rem, 2.2vw, 1.6rem);
+            font-weight: 400;
+            letter-spacing: 0.14em;
+            color: rgba(235, 225, 215, 0.92);
+            text-shadow: 0 0 28px rgba(210, 190, 160, 0.5), 0 0 6px rgba(200, 180, 150, 0.35);
+            line-height: 1.4;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.7rem, 1.3vw, 0.85rem);
+            font-weight: 300;
+            letter-spacing: 0.09em;
+            color: rgba(200, 190, 170, 0.7);
+            margin-top: 0.3em;
+            text-shadow: 0 0 15px rgba(180, 160, 140, 0.3);
+        }
+        #formula-overlay {
+            bottom: clamp(20px, 5vh, 48px);
+        }
+        #formula-overlay .formula {
+            font-size: clamp(0.8rem, 1.5vw, 1.1rem);
+            font-style: italic;
+            letter-spacing: 0.06em;
+            color: rgba(220, 210, 195, 0.85);
+            text-shadow: 0 0 25px rgba(180, 160, 140, 0.45), 0 0 6px rgba(190, 170, 150, 0.3);
+            line-height: 1.6;
+            background: rgba(14, 12, 11, 0.5);
+            padding: 0.5em 1.5em;
+            border-radius: 2em;
+            backdrop-filter: blur(5px);
+            -webkit-backdrop-filter: blur(5px);
+            border: 1px solid rgba(150, 130, 110, 0.25);
+        }
+        @media (max-width: 600px) {
+            #formula-overlay .formula {
+                padding: 0.4em 1.1em;
+                letter-spacing: 0.04em;
+                font-size: 0.72rem;
+            }
+            #title-overlay .title {
+                letter-spacing: 0.09em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+
+    <div class="overlay" id="title-overlay">
+        <div class="title">大圆交织 · 球面几何</div>
+        <div class="subtitle">Interlacing Great Circles</div>
+    </div>
+
+    <div class="overlay" id="formula-overlay">
+        <div class="formula">
+            C<sub>i</sub>(θ) = R · (cosθ · u<sub>i</sub> + sinθ · v<sub>i</sub>)
+            &emsp;|&emsp; n<sub>i</sub> · u<sub>i</sub> = n<sub>i</sub> · v<sub>i</sub> = 0
+            &emsp;|&emsp; θ ∈ [0, 2π]
+        </div>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 时间配置 ====================
+        const DRAW_DURATION = 15.0;      // 绘制阶段：无 → 有
+        const HOLD_DURATION = 1.5;       // 停顿
+        const ERASE_DURATION = 15.0;     // 擦除阶段：有 → 无
+        const CYCLE_DURATION = DRAW_DURATION + HOLD_DURATION + ERASE_DURATION;
+        const DRAW_END = DRAW_DURATION;
+        const ERASE_START = DRAW_END + HOLD_DURATION;
+        const FADE_IN_DURATION = 2.8;
+        const FADE_OUT_START = CYCLE_DURATION - 3.0;
+
+        const SPHERE_RADIUS = 1.4;
+        const CIRCLE_SEGMENTS = 280;     // 每条大圆的顶点数(含首尾重合点)
+        const NUM_CIRCLES = 110;         // 大圆总数量
+        const ROTATION_SPEED_Y = 0.22;   // 绕Y轴旋转速度 (rad/s)
+        const ROTATION_SPEED_X = 0.06;   // 绕X轴微旋转
+        const CAMERA_SWAY = 0.14;
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x050510, 0.00012);
+
+        const camera = new THREE.PerspectiveCamera(44, container.clientWidth / container.clientHeight, 0.4, 14);
+        camera.position.set(0.45, 0.55, 3.5);
+        camera.lookAt(0, 0.02, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.15;
+        renderer.outputColorSpace = THREE.SRGBColorSpace;
+        container.appendChild(renderer.domElement);
+
+        // ==================== 旋转主组 ====================
+        const mainGroup = new THREE.Group();
+        scene.add(mainGroup);
+
+        // ==================== 背景星空粒子 ====================
+        const starGroup = new THREE.Group();
+        mainGroup.add(starGroup);
+        const starCount = 160;
+        const starPositions = new Float32Array(starCount * 3);
+        for (let i = 0; i < starCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const r = SPHERE_RADIUS + 0.7 + Math.random() * 1.6;
+            starPositions[i * 3] = Math.sin(phi) * Math.cos(theta) * r;
+            starPositions[i * 3 + 1] = Math.sin(phi) * Math.sin(theta) * r;
+            starPositions[i * 3 + 2] = Math.cos(phi) * r;
+        }
+        const starGeom = new THREE.BufferGeometry();
+        starGeom.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
+        const starMat = new THREE.PointsMaterial({
+            color: 0xd5cec0,
+            size: 0.014,
+            transparent: true,
+            opacity: 0.45,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending,
+        });
+        const stars = new THREE.Points(starGeom, starMat);
+        starGroup.add(stars);
+
+        // 额外小粒子围绕球面
+        const glowParticlesGroup = new THREE.Group();
+        mainGroup.add(glowParticlesGroup);
+        const gpCount = 100;
+        const gpPositions = new Float32Array(gpCount * 3);
+        const phiGolden = Math.PI * (3 - Math.sqrt(5));
+        for (let i = 0; i < gpCount; i++) {
+            const y = 1 - (i / (gpCount - 1)) * 2;
+            const radiusAtY = Math.sqrt(1 - y * y);
+            const theta = phiGolden * i;
+            gpPositions[i * 3] = Math.cos(theta) * radiusAtY * SPHERE_RADIUS;
+            gpPositions[i * 3 + 1] = y * SPHERE_RADIUS;
+            gpPositions[i * 3 + 2] = Math.sin(theta) * radiusAtY * SPHERE_RADIUS;
+        }
+        const gpGeom = new THREE.BufferGeometry();
+        gpGeom.setAttribute('position', new THREE.BufferAttribute(gpPositions, 3));
+        const gpMat = new THREE.PointsMaterial({
+            color: 0xf5e9d8,
+            size: 0.018,
+            transparent: true,
+            opacity: 0.6,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending,
+        });
+        const glowPoints = new THREE.Points(gpGeom, gpMat);
+        glowParticlesGroup.add(glowPoints);
+
+        // ==================== 大圆生成 ====================
+        const curvesGroup = new THREE.Group();
+        mainGroup.add(curvesGroup);
+
+        /** 所有曲线数据: { geometry, totalVertices } */
+        const allCurveData = [];
+
+        /**
+         * 根据法向量生成大圆几何体
+         * @param {THREE.Vector3} normal - 单位法向量
+         * @param {THREE.Color} color - 线条颜色
+         * @returns {THREE.Line}
+         */
+        function createGreatCircle(normal, color) {
+            // 构造平面内的两个正交基向量 u, v
+            const u = new THREE.Vector3();
+            const v = new THREE.Vector3();
+            const worldUp = new THREE.Vector3(0, 1, 0);
+            const worldRight = new THREE.Vector3(1, 0, 0);
+
+            if (Math.abs(normal.dot(worldUp)) > 0.999) {
+                // 法向量接近Y轴，改用X轴作为参考
+                u.crossVectors(normal, worldRight).normalize();
+            } else {
+                u.crossVectors(normal, worldUp).normalize();
+            }
+            v.crossVectors(normal, u).normalize();
+
+            // 生成圆的点：θ 从 0 到 2π，总共 CIRCLE_SEGMENTS+1 个点，首尾点相同以保证闭合
+            const points = [];
+            for (let i = 0; i <= CIRCLE_SEGMENTS; i++) {
+                const theta = (i / CIRCLE_SEGMENTS) * Math.PI * 2;
+                const px = (Math.cos(theta) * u.x + Math.sin(theta) * v.x) * SPHERE_RADIUS;
+                const py = (Math.cos(theta) * u.y + Math.sin(theta) * v.y) * SPHERE_RADIUS;
+                const pz = (Math.cos(theta) * u.z + Math.sin(theta) * v.z) * SPHERE_RADIUS;
+                points.push(px, py, pz);
+            }
+
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.Float32BufferAttribute(points, 3));
+            geometry.setDrawRange(0, 0); // 初始不可见
+
+            const material = new THREE.LineBasicMaterial({
+                color: color,
+                transparent: true,
+                opacity: 0.78,
+                depthWrite: false,
+            });
+
+            const line = new THREE.Line(geometry, material);
+            const totalVertices = CIRCLE_SEGMENTS + 1;
+            allCurveData.push({ geometry, totalVertices });
+            return line;
+        }
+
+        // 生成均匀分布的球面法向 (Fibonacci 球面分布)
+        const normals = [];
+        const phiGoldenConst = Math.PI * (3 - Math.sqrt(5));
+        for (let i = 0; i < NUM_CIRCLES; i++) {
+            const y = 1 - (i / (NUM_CIRCLES - 1)) * 2;
+            const radiusAtY = Math.sqrt(1 - y * y);
+            const theta = phiGoldenConst * i;
+            const nx = Math.cos(theta) * radiusAtY;
+            const ny = y;
+            const nz = Math.sin(theta) * radiusAtY;
+            normals.push(new THREE.Vector3(nx, ny, nz));
+        }
+
+        // 颜色映射：根据法向量的方位和仰角生成细腻的渐变颜色
+        function getColorFromNormal(normal) {
+            // 使用极角 phi (与Y轴夹角) 和方位角 theta 映射颜色
+            const phi = Math.acos(normal.y); // 0 到 PI
+            const theta = Math.atan2(normal.z, normal.x); // -PI 到 PI
+            // 色相：主要由 theta 决定，覆盖 0 到 360 度
+            let hue = ((theta + Math.PI) / (Math.PI * 2)) * 360;
+            // 饱和度：由 phi 决定，两极附近稍微低一些，丰富层次
+            const saturation = 0.55 + 0.35 * Math.sin(phi);
+            // 明度：65% ~ 85%
+            const lightness = 0.65 + 0.15 * Math.sin(phi * 1.8 + 0.5);
+            const color = new THREE.Color();
+            color.setHSL((hue % 360) / 360, saturation, lightness);
+            return color;
+        }
+
+        // 创建所有大圆
+        for (let i = 0; i < NUM_CIRCLES; i++) {
+            const normal = normals[i];
+            const color = getColorFromNormal(normal);
+            const circleLine = createGreatCircle(normal, color);
+            curvesGroup.add(circleLine);
+        }
+
+        // ==================== 辅助细线环 (平行于坐标面的参考圆) ====================
+        // 添加三个半透明的坐标面参考圆，增强立体感
+        function createAuxCircle(axis, color, opacity) {
+            const points = [];
+            const u = new THREE.Vector3();
+            const v = new THREE.Vector3();
+            if (axis === 'x') {
+                u.set(0, 1, 0);
+                v.set(0, 0, 1);
+            } else if (axis === 'y') {
+                u.set(1, 0, 0);
+                v.set(0, 0, 1);
+            } else {
+                u.set(1, 0, 0);
+                v.set(0, 1, 0);
+            }
+            for (let i = 0; i <= 300; i++) {
+                const theta = (i / 300) * Math.PI * 2;
+                points.push(
+                    (Math.cos(theta) * u.x + Math.sin(theta) * v.x) * SPHERE_RADIUS,
+                    (Math.cos(theta) * u.y + Math.sin(theta) * v.y) * SPHERE_RADIUS,
+                    (Math.cos(theta) * u.z + Math.sin(theta) * v.z) * SPHERE_RADIUS
+                );
+            }
+            const geom = new THREE.BufferGeometry();
+            geom.setAttribute('position', new THREE.Float32BufferAttribute(points, 3));
+            geom.setDrawRange(0, 0);
+            const mat = new THREE.LineBasicMaterial({
+                color: color,
+                transparent: true,
+                opacity: opacity,
+                depthWrite: false,
+            });
+            const line = new THREE.Line(geom, mat);
+            const totalVertices = 301;
+            allCurveData.push({ geometry: geom, totalVertices });
+            return line;
+        }
+
+        const auxGroup = new THREE.Group();
+        mainGroup.add(auxGroup);
+        auxGroup.add(createAuxCircle('x', 0x8c7a6b, 0.28));
+        auxGroup.add(createAuxCircle('y', 0x8c7a6b, 0.28));
+        auxGroup.add(createAuxCircle('z', 0x8c7a6b, 0.28));
+
+        // ==================== 动画循环 ====================
+        const clock = new THREE.Clock();
+        let animationStartTime = performance.now() / 1000;
+
+        function getCycleTime() {
+            const now = performance.now() / 1000;
+            return (now - animationStartTime) % CYCLE_DURATION;
+        }
+
+        function easeInOutCubic(t) {
+            return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const cycleTime = getCycleTime();
+            const dt = Math.min(clock.getDelta(), 0.1);
+
+            // 主旋转变换
+            mainGroup.rotation.y += ROTATION_SPEED_Y * dt;
+            mainGroup.rotation.x += ROTATION_SPEED_X * dt;
+            // 微小的Z轴摆动
+            mainGroup.rotation.z += 0.03 * Math.sin(cycleTime * 0.7) * dt;
+
+            // 相机柔缓浮动
+            const swayOffset = CAMERA_SWAY * Math.sin(cycleTime * (Math.PI * 2 / 32.0));
+            camera.position.y = 0.55 + swayOffset;
+            camera.lookAt(0, 0.02, 0);
+
+            // ---- 计算绘制进度 ----
+            let drawFraction;
+            if (cycleTime < DRAW_END) {
+                drawFraction = easeInOutCubic(cycleTime / DRAW_DURATION);
+            } else if (cycleTime < ERASE_START) {
+                drawFraction = 1.0;
+            } else if (cycleTime < CYCLE_DURATION) {
+                const eraseElapsed = cycleTime - ERASE_START;
+                drawFraction = 1.0 - easeInOutCubic(eraseElapsed / ERASE_DURATION);
+                drawFraction = Math.max(0, drawFraction);
+            } else {
+                drawFraction = 0;
+            }
+
+            // 应用到所有曲线几何体
+            for (const data of allCurveData) {
+                const count = Math.round(drawFraction * data.totalVertices);
+                data.geometry.setDrawRange(0, Math.max(0, Math.min(data.totalVertices, count)));
+            }
+
+            // ---- 粒子及星光透明度渐变 ----
+            let bgOpacity;
+            if (cycleTime < FADE_IN_DURATION) {
+                bgOpacity = cycleTime / FADE_IN_DURATION;
+            } else if (cycleTime < FADE_OUT_START) {
+                bgOpacity = 1.0;
+            } else if (cycleTime < CYCLE_DURATION) {
+                bgOpacity = 1.0 - (cycleTime - FADE_OUT_START) / (CYCLE_DURATION - FADE_OUT_START);
+            } else {
+                bgOpacity = 0;
+            }
+            bgOpacity = Math.max(0, Math.min(1, bgOpacity));
+
+            starMat.opacity = 0.45 * bgOpacity;
+            gpMat.opacity = 0.6 * bgOpacity;
+            // 辅助圆透明度也渐变
+            for (let i = allCurveData.length - 3; i < allCurveData.length; i++) {
+                // 最后三个是辅助圆，调整其material透明度
+                const auxLine = auxGroup.children[i - (allCurveData.length - 3)];
+                if (auxLine && auxLine.material) {
+                    auxLine.material.opacity = 0.28 * bgOpacity;
+                }
+            }
+
+            // 粒子微动
+            glowParticlesGroup.position.y = Math.sin(cycleTime * 1.2) * 0.02;
+            starGroup.rotation.y += dt * 0.08;
+            starGroup.rotation.x += dt * 0.04;
+
+            // 渲染
+            renderer.render(scene, camera);
+        }
+
+        // ==================== 响应式处理 ====================
+        window.addEventListener('resize', () => {
+            camera.aspect = container.clientWidth / container.clientHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        });
+
+        // 预热一帧，确保第一帧就有内容
+        renderer.render(scene, camera);
+        // 启动循环
+        requestAnimationFrame(animate);
+
+        // 可选：按R键重置动画
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'r' || e.key === 'R') {
+                animationStartTime = performance.now() / 1000;
+                // 重置所有曲线的 drawRange 为 0
+                for (const data of allCurveData) {
+                    data.geometry.setDrawRange(0, 0);
+                }
+                mainGroup.rotation.set(0, 0, 0);
+            }
+        });
+
+        console.log('🌐 球面大圆交织动画已启动');
+        console.log(`   - ${NUM_CIRCLES} 条斐波那契分布大圆 + 3条坐标参考圆`);
+        console.log(`   - 完整周期：${CYCLE_DURATION.toFixed(1)}秒`);
+        console.log('   - 按 R 键可重置动画');
+    </script>
+</body>
+</html>

@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>拼贴抽象流体</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            /* 兜底背景色，与原图的白色一致，防黑屏 */
+            background-color: #f8f8f8; 
+        }
+        #container {
+            width: 100vw;
+            height: 100vh;
+            display: block;
+        }
+        #hint {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: rgba(0, 0, 0, 0.3);
+            font-family: sans-serif;
+            font-size: 13px;
+            pointer-events: none;
+            user-select: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="container"></div>
+    <div id="hint">移动鼠标引动流线 · 点击产生爆发</div>
+
+    <!-- 引入 PixiJS 7 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.4.2/pixi.min.js"></script>
+    
+    <script>
+        // 1. 初始化 PixiJS (背景为原图的白/米色)
+        const app = new PIXI.Application({
+            resizeTo: window,
+            backgroundColor: 0xF8F8F8, 
+            antialias: true,
+            autoDensity: true,
+            resolution: window.devicePixelRatio || 1
+        });
+        document.getElementById('container').appendChild(app.view);
+
+        // 2. 纹理烘焙（突破性能瓶颈的核心：一次性生成，多次使用）
+        function createTextures() {
+            const g = new PIXI.Graphics();
+            const texs = [];
+
+            // 纹理1：黄色半圆山脉
+            g.beginFill(0xF2D675);
+            g.drawCircle(0, 0, 100);
+            g.endFill();
+            texs.push(app.renderer.generateTexture(g)); g.clear();
+
+            // 纹理2：蓝色水波纹
+            g.lineStyle(8, 0x2B7BC2, 1);
+            g.beginFill(0x2B7BC2, 1);
+            g.moveTo(-80, 0);
+            g.bezierCurveTo(-40, 50, 40, -50, 80, 0);
+            g.bezierCurveTo(40, 50, -40, -50, -80, 0);
+            g.endFill();
+            texs.push(app.renderer.generateTexture(g)); g.clear();
+
+            // 纹理3：橙色碎片
+            g.beginFill(0xD36D1E, 1);
+            g.moveTo(0, -50);
+            g.lineTo(40, -10);
+            g.lineTo(30, 50);
+            g.lineTo(-30, 40);
+            g.lineTo(-40, -20);
+            g.endFill();
+            texs.push(app.renderer.generateTexture(g)); g.clear();
+
+            // 纹理4：灰色透明菱形/六边形带指纹
+            g.beginFill(0xAAAAAA, 0.7);
+            g.lineStyle(4, 0x333333, 1);
+            g.moveTo(0, -60);
+            g.lineTo(40, -30);
+            g.lineTo(40, 30);
+            g.lineTo(0, 60);
+            g.lineTo(-40, 30);
+            g.lineTo(-40, -30);
+            g.closePath();
+            g.endFill();
+            // 画指纹圈
+            g.lineStyle(2, 0xFFFFFF, 0.8);
+            g.drawCircle(0, 0, 25);
+            g.drawCircle(0, 0, 10);
+            texs.push(app.renderer.generateTexture(g)); g.clear();
+
+            // 纹理5：小房子
+            g.beginFill(0xFFFFFF, 1);
+            g.lineStyle(3, 0x000000, 1);
+            g.drawRect(-20, 0, 40, 30);
+            g.moveTo(-30, 0);
+            g.lineTo(0, -25);
+            g.lineTo(30, 0);
+            g.endFill();
+            g.beginFill(0x000000, 1);
+            g.drawRect(-5, 15, 10, 15);
+            g.endFill();
+            texs.push(app.renderer.generateTexture(g)); g.clear();
+
+            // 纹理6：蓝色小线段
+            g.lineStyle(6, 0x2B7BC2, 1);
+            g.moveTo(0, 0);
+            g.bezierCurveTo(10, -20, 30, 20, 40, 0);
+            g.endFill();
+            texs.push(app.renderer.generateTexture(g)); g.clear();
+
+            // 纹理7：黑色小人
+            g.beginFill(0x000000, 1);
+            g.drawCircle(0, -10, 5); // 头
+            g.drawRect(-2, -5, 4, 15); // 身子
+            g.endFill();
+            texs.push(app.renderer.generateTexture(g)); g.clear();
+
+            g.destroy();
+            return texs;
+        }
+
+        const textures = createTextures();
+
+        // 3. 创建漂浮粒子群
+        const particles = [];
+        const totalParticles = 25; 
+        
+        const initParticle = (x, y) => {
+            const tex = textures[Math.floor(Math.random() * textures.length)];
+            const sp = new PIXI.Sprite(tex);
+            sp.anchor.set(0.5);
+            sp.x = x || Math.random() * app.screen.width;
+            sp.y = y || Math.random() * app.screen.height;
+            sp.vx = (Math.random() - 0.5) * 6; // 速度明快
+            sp.vy = (Math.random() - 0.5) * 6;
+            sp.rotSpeed = (Math.random() - 0.5) * 0.1;
+            sp.scale.set(0.7 + Math.random() * 0.8);
+            
+            // 随机透明度，模拟拼贴画的层次感
+            sp.alpha = 0.8 + Math.random() * 0.2;
+
+            app.stage.addChild(sp);
+            particles.push(sp);
+        };
+
+        // 初始填满画面
+        for (let i = 0; i < totalParticles; i++) {
+            initParticle();
+        }
+
+        // 4. 交互逻辑
+        const mouse = { x: app.screen.width / 2, y: app.screen.height / 2 };
+
+        window.addEventListener('mousemove', (e) => {
+            mouse.x = e.clientX;
+            mouse.y = e.clientY;
+        });
+
+        // 点击引发“群星爆发”
+        window.addEventListener('click', (e) => {
+            particles.forEach(p => {
+                const dx = p.x - e.clientX;
+                const dy = p.y - e.clientY;
+                const dist = Math.sqrt(dx * dx + dy * dy) + 0.01;
+                // 施加一个向外扩散的力
+                const force = 300 / dist;
+                p.vx += (dx / dist) * force;
+                p.vy += (dy / dist) * force;
+            });
+        });
+
+        // 5. 动画循环
+        app.ticker.add((delta) => {
+            const dt = delta / 60;
+
+            particles.forEach(p => {
+                // 惯性移动
+                p.x += p.vx * dt * 2;
+                p.y += p.vy * dt * 2;
+                p.rotation += p.rotSpeed * dt;
+
+                // 鼠标引力/排斥效果
+                const dx = mouse.x - p.x;
+                const dy = mouse.y - p.y;
+                const dist = Math.sqrt(dx * dx + dy * dy) + 0.001;
+
+                if (dist < 250) {
+                    const force = (250 - dist) / 250;
+                    // 鼠标周围的“流体扭曲感”
+                    p.vx += (dx / dist) * force * 0.5;
+                    p.vy += (dy / dist) * force * 0.5;
+                    // 增加切向力，产生旋转流场
+                    p.vx -= (dy / dist) * force * 0.8;
+                    p.vy += (dx / dist) * force * 0.8;
+                }
+
+                // 阻尼（防止无限加速飞出）
+                p.vx *= 0.97;
+                p.vy *= 0.97;
+
+                // 边界反弹（无限循环，绝不报错跑丢）
+                if (p.x < 0 || p.x > app.screen.width) p.vx *= -1;
+                if (p.y < 0 || p.y > app.screen.height) p.vy *= -1;
+                
+                // 防止卡在边界
+                p.x = Math.max(p.width/2, Math.min(app.screen.width - p.width/2, p.x));
+                p.y = Math.max(p.height/2, Math.min(app.screen.height - p.height/2, p.y));
+            });
+        });
+
+        // 窗口缩放适配
+        window.addEventListener('resize', () => {
+            app.renderer.resize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>

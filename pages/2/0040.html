@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WAVE · 全息点阵波浪</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #080810;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+        #render-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2;
+            text-align: center;
+            pointer-events: none;
+            opacity: 0.55;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+        .overlay:hover {
+            opacity: 0.9;
+        }
+        .title {
+            color: rgba(210, 230, 255, 0.75);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 25px rgba(100, 180, 240, 0.5);
+        }
+        .hint {
+            color: rgba(150, 190, 220, 0.45);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+        #loading-status {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: rgba(200, 220, 255, 0.7);
+            font-size: 12px;
+            letter-spacing: 0.3em;
+            z-index: 3;
+            pointer-events: none;
+            transition: opacity 0.5s ease;
+        }
+        @media (max-width: 768px) {
+            .overlay { bottom: 18px; }
+            .title { font-size: 8px; letter-spacing: 0.45em; }
+            .hint { font-size: 6px; letter-spacing: 0.22em; }
+        }
+    </style>
+</head>
+<body>
+    <div id="render-container"></div>
+    <div id="loading-status">加载中...</div>
+    <div class="overlay">
+        <div class="title">Wave</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script>
+        (function() {
+            const container = document.getElementById('render-container');
+            const loadingStatus = document.getElementById('loading-status');
+            let renderEngine = null;
+            let usePixi = false;
+
+            // ─── 隐藏加载提示 ──────────────────────────────────────────
+            function hideLoading() {
+                if (loadingStatus) {
+                    loadingStatus.style.opacity = '0';
+                    setTimeout(() => {
+                        if (loadingStatus && loadingStatus.parentNode) {
+                            loadingStatus.parentNode.removeChild(loadingStatus);
+                        }
+                    }, 500);
+                }
+            }
+
+            // ─── 通用鼠标状态 ──────────────────────────────────────────
+            const mouse = { x: -9999, y: -9999, active: false, vx: 0, vy: 0, lastX: -9999, lastY: -9999 };
+            let colorShift = 0;
+            let time = 0;
+
+            function updateMouseVelocity() {
+                if (mouse.active && mouse.lastX > -9000) {
+                    mouse.vx = (mouse.x - mouse.lastX) * 0.06;
+                    mouse.vy = (mouse.y - mouse.lastY) * 0.06;
+                } else {
+                    mouse.vx *= 0.92;
+                    mouse.vy *= 0.92;
+                }
+                mouse.lastX = mouse.x;
+                mouse.lastY = mouse.y;
+            }
+
+            function bindMouseEvents(target) {
+                target.addEventListener('mousemove', (e) => {
+                    mouse.x = e.clientX;
+                    mouse.y = e.clientY;
+                    mouse.active = true;
+                });
+                target.addEventListener('mouseleave', () => {
+                    mouse.active = false;
+                    mouse.x = -9999;
+                    mouse.y = -9999;
+                    mouse.lastX = -9999;
+                    mouse.lastY = -9999;
+                    mouse.vx = 0;
+                    mouse.vy = 0;
+                });
+                target.addEventListener('mousedown', (e) => {
+                    mouse.x = e.clientX;
+                    mouse.y = e.clientY;
+                    mouse.active = true;
+                    handleClick(mouse.x, mouse.y);
+                });
+                target.addEventListener('touchmove', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        mouse.x = touch.clientX;
+                        mouse.y = touch.clientY;
+                        mouse.active = true;
+                    }
+                }, { passive: false });
+                target.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        mouse.x = touch.clientX;
+                        mouse.y = touch.clientY;
+                        mouse.active = true;
+                        handleClick(mouse.x, mouse.y);
+                    }
+                }, { passive: false });
+                target.addEventListener('touchend', () => {
+                    mouse.active = false;
+                    mouse.x = -9999;
+                    mouse.y = -9999;
+                    mouse.lastX = -9999;
+                    mouse.lastY = -9999;
+                    mouse.vx = 0;
+                    mouse.vy = 0;
+                });
+                target.addEventListener('touchcancel', () => {
+                    mouse.active = false;
+                    mouse.x = -9999;
+                    mouse.y = -9999;
+                    mouse.lastX = -9999;
+                    mouse.lastY = -9999;
+                });
+            }
+
+            function handleClick(x, y) {
+                colorShift += 35 + Math.random() * 35;
+                if (colorShift > 150) colorShift = -35;
+                if (renderEngine && renderEngine.onClick) {
+                    renderEngine.onClick(x, y);
+                }
+            }
+
+            // ─── 原生Canvas引擎（备用） ───────────────────────────────
+            function initCanvasEngine() {
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d', { alpha: false });
+                container.appendChild(canvas);
+
+                const W = () => window.innerWidth;
+                const H = () => window.innerHeight;
+                const DPR = Math.min(window.devicePixelRatio || 1, 2);
+
+                function resize() {
+                    canvas.width = Math.floor(W() * DPR);
+                    canvas.height = Math.floor(H() * DPR);
+                    canvas.style.width = W() + 'px';
+                    canvas.style.height = H() + 'px';
+                    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                }
+                resize();
+
+                const gridCols = 80;
+                const gridRows = 50;
+                let dots = [];
+
+                function createDots() {
+                    dots = [];
+                    const spacingX = (W() * 1.1) / gridCols;
+                    const spacingY = (H() * 1.15) / gridRows;
+                    for (let r = 0; r < gridRows; r++) {
+                        for (let c = 0; c < gridCols; c++) {
+                            dots.push({
+                                x: -W() * 0.05 + c * spacingX,
+                                y: -H() * 0.075 + r * spacingY,
+                                baseSize: 1.5 + Math.random() * 1.5,
+                                alpha: 0.35 + Math.random() * 0.3,
+                                hueOffset: Math.random() * 40 - 20,
+                            });
+                        }
+                    }
+                }
+                createDots();
+
+                let burstWaves = [];
+
+                function createBurst(x, y) {
+                    burstWaves.push({
+                        x, y,
+                        radius: 5,
+                        maxRadius: Math.max(W(), H()) * 0.55,
+                        strength: 1.0,
+                        decay: 0.008,
+                        growth: 4.5,
+                    });
+                    if (burstWaves.length > 8) burstWaves.shift();
+                }
+
+                function hslToHex(h, s, l) {
+                    h = ((h % 360) + 360) % 360;
+                    s = Math.max(0, Math.min(100, s)) / 100;
+                    l = Math.max(0, Math.min(100, l)) / 100;
+                    const c = (1 - Math.abs(2 * l - 1)) * s;
+                    const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+                    const m = l - c / 2;
+                    let r, g, b;
+                    if (h < 60) { r = c; g = x; b = 0; }
+                    else if (h < 120) { r = x; g = c; b = 0; }
+                    else if (h < 180) { r = 0; g = c; b = x; }
+                    else if (h < 240) { r = 0; g = x; b = c; }
+                    else if (h < 300) { r = x; g = 0; b = c; }
+                    else { r = c; g = 0; b = x; }
+                    return `rgb(${Math.round((r + m) * 255)},${Math.round((g + m) * 255)},${Math.round((b + m) * 255)})`;
+                }
+
+                function animate() {
+                    time += 0.016;
+                    // 更新波纹
+                    for (let i = burstWaves.length - 1; i >= 0; i--) {
+                        const bw = burstWaves[i];
+                        bw.radius += bw.growth;
+                        bw.strength -= bw.decay;
+                        if (bw.strength <= 0.01 || bw.radius > bw.maxRadius) {
+                            burstWaves.splice(i, 1);
+                        }
+                    }
+                    updateMouseVelocity();
+
+                    ctx.fillStyle = '#080810';
+                    ctx.fillRect(0, 0, W(), H());
+
+                    const amplitude = 50;
+                    for (const d of dots) {
+                        let waveHeight = 0;
+                        waveHeight += Math.sin(d.x * 0.012 + time * 1.2) * amplitude * 0.5;
+                        waveHeight += Math.cos(d.y * 0.015 + time * 0.9) * amplitude * 0.5;
+                        waveHeight += Math.sin((d.x + d.y) * 0.008 + time * 0.7) * amplitude * 0.35;
+
+                        if (mouse.active && mouse.x > 0) {
+                            const dx = mouse.x - d.x;
+                            const dy = mouse.y - d.y;
+                            const dist = Math.sqrt(dx * dx + dy * dy);
+                            if (dist < 170) {
+                                const falloff = 1 - dist / 170;
+                                waveHeight += Math.sin(dist * 0.06 - time * 3.5) * falloff * amplitude * 0.5;
+                            }
+                        }
+                        for (const bw of burstWaves) {
+                            const dx = d.x - bw.x;
+                            const dy = d.y - bw.y;
+                            const dist = Math.sqrt(dx * dx + dy * dy);
+                            const band = 25 + bw.radius * 0.08;
+                            if (Math.abs(dist - bw.radius) < band) {
+                                waveHeight += (1 - Math.abs(dist - bw.radius) / band) * bw.strength * amplitude * 0.7;
+                            }
+                        }
+
+                        const norm = Math.max(0, Math.min(1, (waveHeight + amplitude) / (amplitude * 2)));
+                        const yPos = d.y + waveHeight * 0.65;
+                        const hue = 195 + colorShift + norm * 70 + d.hueOffset;
+                        const size = d.baseSize * (0.7 + norm * 1.3);
+                        const alpha = d.alpha * (0.5 + norm * 0.6);
+
+                        ctx.fillStyle = hslToHex(hue, 55 + norm * 35, 40 + norm * 45);
+                        ctx.globalAlpha = alpha;
+                        ctx.beginPath();
+                        ctx.arc(d.x, yPos, size, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+                    ctx.globalAlpha = 1;
+                    requestAnimationFrame(animate);
+                }
+
+                // 绑定事件
+                bindMouseEvents(canvas);
+                window.addEventListener('resize', () => {
+                    resize();
+                    createDots();
+                    burstWaves = [];
+                });
+
+                // 启动
+                animate();
+                hideLoading();
+
+                return {
+                    onClick: (x, y) => createBurst(x, y),
+                };
+            }
+
+            // ─── PixiJS引擎 ────────────────────────────────────────────
+            function initPixiEngine() {
+                const resolution = Math.min(window.devicePixelRatio || 1, 2);
+                const app = new PIXI.Application({
+                    width: window.innerWidth,
+                    height: window.innerHeight,
+                    resolution: resolution,
+                    backgroundColor: 0x080810,
+                    antialias: true,
+                    autoDensity: true,
+                    powerPreference: 'high-performance',
+                });
+                container.appendChild(app.view);
+
+                const mainContainer = new PIXI.Container();
+                app.stage.addChild(mainContainer);
+
+                // 创建点纹理
+                const dotSize = 16;
+                const dotCanvas = document.createElement('canvas');
+                dotCanvas.width = dotSize;
+                dotCanvas.height = dotSize;
+                const dCtx = dotCanvas.getContext('2d');
+                const dGrad = dCtx.createRadialGradient(dotSize/2, dotSize/2, 0, dotSize/2, dotSize/2, dotSize/2);
+                dGrad.addColorStop(0, 'rgba(255,255,255,1)');
+                dGrad.addColorStop(0.25, 'rgba(255,255,255,0.7)');
+                dGrad.addColorStop(0.5, 'rgba(255,255,255,0.3)');
+                dGrad.addColorStop(1, 'rgba(255,255,255,0)');
+                dCtx.fillStyle = dGrad;
+                dCtx.fillRect(0, 0, dotSize, dotSize);
+                const dotTexture = PIXI.Texture.from(dotCanvas);
+
+                const gridCols = 90;
+                const gridRows = 55;
+                const sprites = [];
+                const spriteData = [];
+
+                function createDots() {
+                    sprites.forEach(s => s.destroy({ texture: false, children: true }));
+                    sprites.length = 0;
+                    spriteData.length = 0;
+                    const spacingX = (app.screen.width * 1.1) / gridCols;
+                    const spacingY = (app.screen.height * 1.15) / gridRows;
+                    for (let r = 0; r < gridRows; r++) {
+                        for (let c = 0; c < gridCols; c++) {
+                            const sprite = new PIXI.Sprite(dotTexture);
+                            sprite.anchor.set(0.5, 0.5);
+                            const x = -app.screen.width * 0.05 + c * spacingX;
+                            const y = -app.screen.height * 0.075 + r * spacingY;
+                            sprite.x = x;
+                            sprite.y = y;
+                            const baseSize = 1.5 + Math.random() * 1.5;
+                            sprite.scale.set(baseSize / 8, baseSize / 8);
+                            sprite.alpha = 0.35 + Math.random() * 0.3;
+                            sprite.blendMode = PIXI.BLEND_MODES.ADD;
+                            mainContainer.addChild(sprite);
+                            sprites.push(sprite);
+                            spriteData.push({ x, y, baseSize, alpha: 0.35 + Math.random() * 0.3, hueOffset: Math.random() * 40 - 20 });
+                        }
+                    }
+                }
+                createDots();
+
+                let burstWaves = [];
+                function createBurst(x, y) {
+                    burstWaves.push({ x, y, radius: 5, maxRadius: Math.max(app.screen.width, app.screen.height) * 0.55, strength: 1.0, decay: 0.008, growth: 4.5 });
+                    if (burstWaves.length > 8) burstWaves.shift();
+                }
+
+                function hslToHexPixi(h, s, l) {
+                    h = ((h % 360) + 360) % 360;
+                    s = Math.max(0, Math.min(100, s)) / 100;
+                    l = Math.max(0, Math.min(100, l)) / 100;
+                    const c = (1 - Math.abs(2 * l - 1)) * s;
+                    const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+                    const m = l - c / 2;
+                    let r, g, b;
+                    if (h < 60) { r = c; g = x; b = 0; }
+                    else if (h < 120) { r = x; g = c; b = 0; }
+                    else if (h < 180) { r = 0; g = c; b = x; }
+                    else if (h < 240) { r = 0; g = x; b = c; }
+                    else if (h < 300) { r = x; g = 0; b = c; }
+                    else { r = c; g = 0; b = x; }
+                    const toHex = (v) => Math.round((v + m) * 255).toString(16).padStart(2, '0');
+                    return parseInt(`${toHex(r)}${toHex(g)}${toHex(b)}`, 16);
+                }
+
+                app.ticker.add(() => {
+                    time += 0.016;
+                    for (let i = burstWaves.length - 1; i >= 0; i--) {
+                        const bw = burstWaves[i];
+                        bw.radius += bw.growth;
+                        bw.strength -= bw.decay;
+                        if (bw.strength <= 0.01 || bw.radius > bw.maxRadius) burstWaves.splice(i, 1);
+                    }
+                    updateMouseVelocity();
+
+                    const amplitude = 50;
+                    for (let i = 0; i < spriteData.length; i++) {
+                        const d = spriteData[i];
+                        const sprite = sprites[i];
+                        let waveHeight = 0;
+                        waveHeight += Math.sin(d.x * 0.012 + time * 1.2) * amplitude * 0.5;
+                        waveHeight += Math.cos(d.y * 0.015 + time * 0.9) * amplitude * 0.5;
+                        waveHeight += Math.sin((d.x + d.y) * 0.008 + time * 0.7) * amplitude * 0.35;
+                        if (mouse.active && mouse.x > 0) {
+                            const dx = mouse.x - d.x;
+                            const dy = mouse.y - d.y;
+                            const dist = Math.sqrt(dx * dx + dy * dy);
+                            if (dist < 170) {
+                                const falloff = 1 - dist / 170;
+                                waveHeight += Math.sin(dist * 0.06 - time * 3.5) * falloff * amplitude * 0.5;
+                            }
+                        }
+                        for (const bw of burstWaves) {
+                            const dx = d.x - bw.x;
+                            const dy = d.y - bw.y;
+                            const dist = Math.sqrt(dx * dx + dy * dy);
+                            const band = 25 + bw.radius * 0.08;
+                            if (Math.abs(dist - bw.radius) < band) {
+                                waveHeight += (1 - Math.abs(dist - bw.radius) / band) * bw.strength * amplitude * 0.7;
+                            }
+                        }
+                        const norm = Math.max(0, Math.min(1, (waveHeight + amplitude) / (amplitude * 2)));
+                        sprite.x = d.x;
+                        sprite.y = d.y + waveHeight * 0.65;
+                        const scale = d.baseSize * (0.7 + norm * 1.3) / 8;
+                        sprite.scale.set(scale, scale);
+                        sprite.alpha = d.alpha * (0.5 + norm * 0.6);
+                        sprite.tint = hslToHexPixi(195 + colorShift + norm * 70 + d.hueOffset, 55 + norm * 35, 40 + norm * 45);
+                    }
+                });
+
+                bindMouseEvents(app.view);
+                window.addEventListener('resize', () => {
+                    app.renderer.resize(window.innerWidth, window.innerHeight);
+                    createDots();
+                    burstWaves = [];
+                });
+
+                hideLoading();
+                return { onClick: (x, y) => createBurst(x, y) };
+            }
+
+            // ─── 动态加载PixiJS ───────────────────────────────────────
+            function loadPixiJS(callback) {
+                const cdnUrls = [
+                    'https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js',
+                    'https://unpkg.com/pixi.js@7.3.2/dist/pixi.min.js',
+                    'https://cdn.jsdelivr.net/npm/pixi.js@7.3.2/dist/pixi.min.js',
+                ];
+                let attemptIndex = 0;
+
+                function tryLoad() {
+                    if (attemptIndex >= cdnUrls.length) {
+                        callback(false);
+                        return;
+                    }
+                    const script = document.createElement('script');
+                    script.src = cdnUrls[attemptIndex];
+                    script.onload = () => callback(true);
+                    script.onerror = () => {
+                        attemptIndex++;
+                        tryLoad();
+                    };
+                    script.crossOrigin = 'anonymous';
+                    document.head.appendChild(script);
+                }
+                tryLoad();
+            }
+
+            // ─── 启动流程 ──────────────────────────────────────────────
+            function init() {
+                // 先设置兜底背景
+                container.style.background = '#080810';
+
+                loadPixiJS((success) => {
+                    if (success && typeof PIXI !== 'undefined') {
+                        try {
+                            renderEngine = initPixiEngine();
+                            usePixi = true;
+                            console.log('使用PixiJS引擎渲染');
+                        } catch (err) {
+                            console.warn('PixiJS初始化失败，回退到Canvas:', err);
+                            renderEngine = initCanvasEngine();
+                        }
+                    } else {
+                        console.warn('PixiJS加载失败，使用Canvas引擎');
+                        renderEngine = initCanvasEngine();
+                    }
+                });
+
+                // 超时保护：10秒后如果还没有引擎则强制使用Canvas
+                setTimeout(() => {
+                    if (!renderEngine) {
+                        console.warn('PixiJS加载超时，强制使用Canvas引擎');
+                        try {
+                            container.innerHTML = '';
+                            renderEngine = initCanvasEngine();
+                        } catch (err) {
+                            console.error('Canvas引擎也初始化失败:', err);
+                            hideLoading();
+                        }
+                    }
+                }, 8000);
+            }
+
+            // 页面加载后启动
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.addEventListener('load', () => {
+                container.style.background = '#080810';
+            });
+        })();
+    </script>
+</body>
+</html>

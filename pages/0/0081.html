@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>球面调和零点网 · 谱编织</title>
+    <style>
+        :root {
+            --bg: #06060c;
+            --gold: #d4a843;
+            --cyan: #45b7aa;
+            --magenta: #d4708a;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'SimSun', serif;
+            -webkit-font-smoothing: antialiased;
+            user-select: none;
+        }
+        #canvas-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+        }
+        canvas { display: block; }
+        .overlay-title {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 22px 20px 8px;
+            text-align: center;
+            background: linear-gradient(180deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.8) 55%, rgba(6,6,12,0) 100%);
+        }
+        .overlay-title h2 {
+            font-size: clamp(1.1rem, 2.2vw, 1.8rem);
+            font-weight: 400;
+            letter-spacing: 0.13em;
+            color: #e8d5b0;
+            text-shadow: 0 0 30px rgba(212,168,67,0.45), 0 0 60px rgba(212,168,67,0.18);
+            margin: 0 0 2px;
+            line-height: 1.3;
+        }
+        .overlay-title .sub {
+            font-size: clamp(0.65rem, 1.1vw, 0.85rem);
+            letter-spacing: 0.22em;
+            color: rgba(200,180,150,0.65);
+        }
+        .overlay-formula {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 8px 20px 18px;
+            text-align: center;
+            background: linear-gradient(0deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.82) 55%, rgba(6,6,12,0) 100%);
+        }
+        .formula-text {
+            font-size: clamp(0.6rem, 1.0vw, 0.8rem);
+            color: rgba(210,200,185,0.8);
+            letter-spacing: 0.03em;
+            line-height: 1.7;
+        }
+        .clr-gold { color: #d4a843; font-weight: bold; }
+        .clr-cyan { color: #45b7aa; font-weight: bold; }
+        .clr-magenta { color: #d4708a; font-weight: bold; }
+        .formula-sep {
+            display: inline-block;
+            margin: 0 14px;
+            color: rgba(150,140,130,0.35);
+        }
+    </style>
+</head>
+<body>
+    <div class="overlay-title">
+        <h2>球面调和零点网 · 谱编织</h2>
+        <div class="sub">Spherical harmonics nodal sets · Spectral weaving</div>
+    </div>
+    <div class="overlay-formula">
+        <div class="formula-text">
+            <span class="clr-gold">Y₅³: P₅³(cosθ)cos3φ</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-cyan">Y₆³: P₆³(cosθ)cos3φ</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-magenta">Y₇⁴: P₇⁴(cosθ)cos4φ</span>
+        </div>
+    </div>
+    <div id="canvas-container"></div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ---------- 场景 ----------
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(48, container.clientWidth / container.clientHeight, 0.5, 18);
+        camera.position.set(3.2, 2.2, 6.8);
+        camera.lookAt(0, 0, 0);
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x06060c, 1);
+        container.appendChild(renderer.domElement);
+
+        // 手动时钟
+        let startTime = performance.now();
+        const getElapsed = () => (performance.now() - startTime) * 0.001;
+
+        const COLOR_GOLD = 0xd4a843;
+        const COLOR_CYAN = 0x45b7aa;
+        const COLOR_MAGENTA = 0xd4708a;
+        const RADIUS = 2.65;
+
+        // ---- 关联勒让德函数 P_l^m(x) 计算 ----
+        function legendreP(l, m, x) {
+            // 使用递推公式
+            if (m < 0 || m > l) return 0;
+            let pmm = 1.0;
+            if (m > 0) {
+                let fact = 1.0;
+                for (let i = 1; i <= 2 * m; i += 2) fact *= i;
+                pmm = fact * Math.pow(1 - x * x, m / 2);
+                if (m % 2 === 1) pmm = -pmm; // 修正符号
+            }
+            if (l === m) return pmm;
+            let pmm1 = x * (2 * m + 1) * pmm;
+            if (l === m + 1) return pmm1;
+            let pll = 0;
+            for (let ll = m + 2; ll <= l; ll++) {
+                pll = ((2 * ll - 1) * x * pmm1 - (ll + m - 1) * pmm) / (ll - m);
+                pmm = pmm1;
+                pmm1 = pll;
+            }
+            return pll;
+        }
+
+        // 求 P_l^m(x) 在 (-1,1) 内的所有零点 (牛顿法)
+        function findZeros(l, m) {
+            const zeros = [];
+            const nZeros = l - m; // 零点个数
+            if (nZeros <= 0) return zeros;
+            const step = 2.0 / (nZeros + 1);
+            for (let i = 0; i < nZeros; i++) {
+                let x = -1 + step * (i + 1); // 初始猜测
+                for (let iter = 0; iter < 30; iter++) {
+                    const f = legendreP(l, m, x);
+                    const df = (legendreP(l, m, x + 1e-8) - legendreP(l, m, x - 1e-8)) / 2e-8;
+                    if (Math.abs(df) < 1e-14) break;
+                    const dx = -f / df;
+                    x += dx;
+                    if (Math.abs(dx) < 1e-12) break;
+                }
+                if (x > -1 && x < 1) zeros.push(x);
+            }
+            return zeros;
+        }
+
+        // 球面点 from θ, φ
+        function spherePoint(theta, phi) {
+            const st = Math.sin(theta);
+            return new THREE.Vector3(
+                RADIUS * st * Math.cos(phi),
+                RADIUS * Math.cos(theta),
+                RADIUS * st * Math.sin(phi)
+            );
+        }
+
+        // 生成节点线族
+        function createNodalLines(l, m, useSinAlso, color, opacity, numPoints = 260) {
+            const group = new THREE.Group();
+
+            // θ 常数线 (P_l^m(cosθ)=0)
+            const cosThetaZeros = findZeros(l, m);
+            for (const x of cosThetaZeros) {
+                const theta = Math.acos(x);
+                const pts = [];
+                const dphi = 2 * Math.PI / numPoints;
+                for (let i = 0; i <= numPoints; i++) {
+                    const phi = i * dphi;
+                    pts.push(spherePoint(theta, phi));
+                }
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({ color, transparent: true, opacity, depthWrite: true, depthTest: true });
+                group.add(new THREE.Line(geom, mat));
+            }
+
+            // φ 常数线 (cos(mφ)=0 或 sin(mφ)=0)
+            const phiOffsets = [0];
+            if (useSinAlso) phiOffsets.push(Math.PI / 2); // cos 和 sin 各一组
+            for (const offset of phiOffsets) {
+                const twoM = 2 * m;
+                for (let k = 0; k < twoM; k++) {
+                    const phi = (Math.PI / 2 + k * Math.PI + offset) / m;
+                    const pts = [];
+                    const dtheta = Math.PI / numPoints;
+                    for (let i = 0; i <= numPoints; i++) {
+                        const theta = 0.01 + i * dtheta;
+                        pts.push(spherePoint(theta, phi));
+                    }
+                    const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                    const mat = new THREE.LineBasicMaterial({ color, transparent: true, opacity, depthWrite: true, depthTest: true });
+                    group.add(new THREE.Line(geom, mat));
+                }
+            }
+            return group;
+        }
+
+        // 主组
+        const rootGroup = new THREE.Group();
+        rootGroup.name = 'nodal-weave';
+        scene.add(rootGroup);
+
+        // 三个颜色配置：每个颜色由几个(l,m)对组成
+        const configs = [
+            { pairs: [{ l: 5, m: 3 }, { l: 7, m: 4 }, { l: 6, m: 2 }], color: COLOR_GOLD, opacity: 0.68, useSin: true },
+            { pairs: [{ l: 6, m: 3 }, { l: 8, m: 4 }, { l: 5, m: 2 }], color: COLOR_CYAN, opacity: 0.65, useSin: true },
+            { pairs: [{ l: 7, m: 3 }, { l: 9, m: 4 }, { l: 6, m: 4 }], color: COLOR_MAGENTA, opacity: 0.62, useSin: false }
+        ];
+
+        configs.forEach(cfg => {
+            cfg.pairs.forEach(({ l, m }) => {
+                const nodal = createNodalLines(l, m, cfg.useSin, cfg.color, cfg.opacity);
+                rootGroup.add(nodal);
+            });
+        });
+
+        console.log('球面调和节点线总数:', rootGroup.children.length);
+
+        // 背景星点
+        const starsGroup = new THREE.Group();
+        const starsGeom = new THREE.BufferGeometry();
+        const starsCount = 500;
+        const starsPos = new Float32Array(starsCount * 3);
+        for (let i = 0; i < starsCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const dist = 6.5 + Math.random() * 10;
+            starsPos[i * 3] = dist * Math.sin(phi) * Math.cos(theta);
+            starsPos[i * 3 + 1] = dist * Math.sin(phi) * Math.sin(theta);
+            starsPos[i * 3 + 2] = dist * Math.cos(phi);
+        }
+        starsGeom.setAttribute('position', new THREE.BufferAttribute(starsPos, 3));
+        const starsMat = new THREE.PointsMaterial({
+            color: 0x908878,
+            size: 0.018,
+            transparent: true,
+            opacity: 0.55,
+            depthWrite: false,
+        });
+        starsGroup.add(new THREE.Points(starsGeom, starsMat));
+        scene.add(starsGroup);
+
+        // 动画循环
+        function animate() {
+            const t = getElapsed();
+            rootGroup.rotation.x = t * 0.14;
+            rootGroup.rotation.y = t * 0.23;
+            rootGroup.rotation.z = t * 0.10;
+            starsGroup.rotation.y = t * 0.04;
+            starsGroup.rotation.x = t * 0.025;
+
+            const camRadius = 7.0;
+            const camAngle = t * 0.08;
+            const camHeight = 2.3 + Math.sin(t * 0.16) * 0.7;
+            camera.position.x = Math.cos(camAngle) * camRadius;
+            camera.position.z = Math.sin(camAngle) * camRadius;
+            camera.position.y = camHeight;
+            camera.lookAt(0, 0, 0);
+            renderer.render(scene, camera);
+            requestAnimationFrame(animate);
+        }
+
+        // 预渲染首帧，确保立即显示
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+
+        // 响应式
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth,
+                h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth,
+                h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 120));
+
+        console.log('✅ 球面调和零点编织动画已稳定运行');
+    </script>
+</body>
+</html>

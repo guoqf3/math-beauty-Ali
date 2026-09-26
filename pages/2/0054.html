@@ -1,0 +1,653 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CONFETTI · 纸屑风暴</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #0a0a18;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2;
+            text-align: center;
+            pointer-events: none;
+            opacity: 0.55;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+        .overlay:hover {
+            opacity: 0.9;
+        }
+        .title {
+            color: rgba(255, 235, 220, 0.8);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 20px rgba(255, 150, 80, 0.5);
+        }
+        .hint {
+            color: rgba(210, 180, 160, 0.5);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+        @media (max-width: 768px) {
+            .overlay {
+                bottom: 18px;
+            }
+            .title {
+                font-size: 8px;
+                letter-spacing: 0.45em;
+            }
+            .hint {
+                font-size: 6px;
+                letter-spacing: 0.22em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="pixi-container" style="position:fixed;top:0;left:0;width:100%;height:100%;z-index:1;"></div>
+    <div class="overlay">
+        <div class="title">Confetti</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js"></script>
+    <script>
+        (function() {
+            // ─── 等待PixiJS加载 ────────────────────────────────────────
+            if (typeof PIXI === 'undefined') {
+                // 如果CDN加载失败，显示深色背景并静默退出
+                document.body.style.background = '#0a0a18';
+                const container = document.getElementById('pixi-container');
+                if (container) {
+                    container.style.background = '#0a0a18';
+                }
+                console.warn('PixiJS 加载失败');
+                return;
+            }
+
+            // ─── 全局变量 ──────────────────────────────────────────────
+            let app;
+            let particleContainer;
+            let particles = [];
+            let mouse = { x: -9999, y: -9999, active: false, vx: 0, vy: 0, lastX: -9999, lastY: -9999 };
+            let time = 0;
+            let colorShift = 0;
+            let burstParticles = [];
+            let maxParticles = 900;
+            let textures = [];
+            let glowSprite;
+            let glowTexture;
+            let bgGradient;
+
+            // ─── 初始化PixiJS应用 ──────────────────────────────────────
+            function initPixi() {
+                const container = document.getElementById('pixi-container');
+                const width = window.innerWidth;
+                const height = window.innerHeight;
+                const resolution = Math.min(window.devicePixelRatio || 1, 2);
+
+                app = new PIXI.Application({
+                    width: width,
+                    height: height,
+                    resolution: resolution,
+                    backgroundColor: 0x0a0a18,
+                    antialias: true,
+                    autoDensity: true,
+                    powerPreference: 'high-performance',
+                });
+
+                container.appendChild(app.view);
+
+                // 创建粒子容器（高性能批处理）
+                particleContainer = new PIXI.ParticleContainer(2000, {
+                    position: true,
+                    rotation: true,
+                    scale: true,
+                    tint: true,
+                    alpha: true,
+                    uvs: true,
+                }, 2000, true);
+                particleContainer.blendMode = PIXI.BLEND_MODES.ADD;
+                app.stage.addChild(particleContainer);
+
+                // 创建背景渐变
+                createBackgroundGradient();
+
+                // 生成纸屑纹理
+                generateTextures();
+
+                // 创建鼠标光晕精灵
+                createGlowSprite();
+
+                // 初始粒子
+                initConfetti();
+
+                // 设置事件
+                setupEvents();
+
+                // 启动动画
+                app.ticker.add(animate);
+                app.ticker.maxFPS = 60;
+            }
+
+            // ─── 创建背景渐变 ──────────────────────────────────────────
+            function createBackgroundGradient() {
+                const bgCanvas = document.createElement('canvas');
+                bgCanvas.width = 2;
+                bgCanvas.height = 256;
+                const bgCtx = bgCanvas.getContext('2d');
+                const gradient = bgCtx.createLinearGradient(0, 0, 0, 256);
+                gradient.addColorStop(0, '#0d0d1e');
+                gradient.addColorStop(0.5, '#0a0a18');
+                gradient.addColorStop(1, '#0e0a14');
+                bgCtx.fillStyle = gradient;
+                bgCtx.fillRect(0, 0, 2, 256);
+
+                const texture = PIXI.Texture.from(bgCanvas);
+                const bgSprite = new PIXI.Sprite(texture);
+                bgSprite.width = app.screen.width;
+                bgSprite.height = app.screen.height;
+                bgSprite.alpha = 0.6;
+                app.stage.addChildAt(bgSprite, 0);
+                bgGradient = bgSprite;
+            }
+
+            // ─── 生成纸屑纹理 ──────────────────────────────────────────
+            function generateTextures() {
+                const colors = [
+                    { hue: 0, label: '红' },
+                    { hue: 25, label: '橙红' },
+                    { hue: 45, label: '金黄' },
+                    { hue: 70, label: '黄绿' },
+                    { hue: 140, label: '翠绿' },
+                    { hue: 170, label: '青绿' },
+                    { hue: 200, label: '天蓝' },
+                    { hue: 230, label: '蓝紫' },
+                    { hue: 270, label: '紫' },
+                    { hue: 300, label: '品红' },
+                    { hue: 330, label: '粉红' },
+                    { hue: 15, label: '珊瑚' },
+                ];
+
+                for (const color of colors) {
+                    const canvas = document.createElement('canvas');
+                    const size = 16;
+                    canvas.width = size;
+                    canvas.height = size;
+                    const ctx = canvas.getContext('2d');
+
+                    // 绘制纸屑形状（不规则四边形）
+                    const hue = color.hue;
+                    const sat = 75 + Math.random() * 15;
+                    const light = 55 + Math.random() * 25;
+
+                    // 主色
+                    ctx.fillStyle = `hsl(${hue}, ${sat}%, ${light}%)`;
+                    ctx.beginPath();
+                    ctx.moveTo(2, 4);
+                    ctx.lineTo(13, 2);
+                    ctx.lineTo(14, 11);
+                    ctx.lineTo(5, 14);
+                    ctx.closePath();
+                    ctx.fill();
+
+                    // 高光
+                    ctx.fillStyle = `hsla(${hue}, ${sat}%, ${Math.min(100, light + 25)}%, 0.5)`;
+                    ctx.beginPath();
+                    ctx.moveTo(3, 4);
+                    ctx.lineTo(9, 3);
+                    ctx.lineTo(8, 8);
+                    ctx.lineTo(4, 9);
+                    ctx.closePath();
+                    ctx.fill();
+
+                    // 暗部
+                    ctx.fillStyle = `hsla(${hue}, ${sat}%, ${Math.max(0, light - 20)}%, 0.4)`;
+                    ctx.beginPath();
+                    ctx.moveTo(10, 7);
+                    ctx.lineTo(14, 6);
+                    ctx.lineTo(13, 11);
+                    ctx.lineTo(9, 12);
+                    ctx.closePath();
+                    ctx.fill();
+
+                    textures.push({
+                        texture: PIXI.Texture.from(canvas),
+                        hue: hue,
+                    });
+                }
+            }
+
+            // ─── 创建鼠标光晕 ──────────────────────────────────────────
+            function createGlowSprite() {
+                const glowCanvas = document.createElement('canvas');
+                glowCanvas.width = 128;
+                glowCanvas.height = 128;
+                const glowCtx = glowCanvas.getContext('2d');
+                const gradient = glowCtx.createRadialGradient(64, 64, 0, 64, 64, 64);
+                gradient.addColorStop(0, 'rgba(255, 200, 150, 0.08)');
+                gradient.addColorStop(0.5, 'rgba(255, 150, 100, 0.03)');
+                gradient.addColorStop(1, 'transparent');
+                glowCtx.fillStyle = gradient;
+                glowCtx.fillRect(0, 0, 128, 128);
+
+                glowTexture = PIXI.Texture.from(glowCanvas);
+                glowSprite = new PIXI.Sprite(glowTexture);
+                glowSprite.width = 160;
+                glowSprite.height = 160;
+                glowSprite.anchor.set(0.5, 0.5);
+                glowSprite.alpha = 0;
+                glowSprite.blendMode = PIXI.BLEND_MODES.ADD;
+                app.stage.addChild(glowSprite);
+            }
+
+            // ─── 创建纸屑粒子 ──────────────────────────────────────────
+            function createConfettiParticle(x, y, burstSpeed) {
+                const texIndex = Math.floor(Math.random() * textures.length);
+                const tex = textures[texIndex];
+                const sprite = new PIXI.Sprite(tex.texture);
+                sprite.anchor.set(0.5, 0.5);
+
+                const z = 0.2 + Math.random() * 0.8;
+                const baseScale = (0.4 + z * 0.9) * (0.8 + Math.random() * 0.5);
+
+                sprite.scale.set(baseScale, baseScale * (0.7 + Math.random() * 0.6));
+                sprite.tint = hslToHex(tex.hue + Math.random() * 20 - 10, 65 + Math.random() * 25, 55 + Math.random() * 25);
+
+                const angle = Math.random() * Math.PI * 2;
+                const speed = burstSpeed ? (2 + Math.random() * 8) : (0.3 + Math.random() * 1.5);
+
+                const particle = {
+                    sprite: sprite,
+                    x: x !== undefined ? x : Math.random() * app.screen.width,
+                    y: y !== undefined ? y : Math.random() * app.screen.height,
+                    z: z,
+                    vx: Math.cos(angle) * speed,
+                    vy: Math.sin(angle) * speed - (burstSpeed ? 1 : 0.2),
+                    rotation: Math.random() * Math.PI * 2,
+                    rotationSpeed: (Math.random() - 0.5) * 0.08,
+                    scale: baseScale,
+                    scaleY: baseScale * (0.7 + Math.random() * 0.6),
+                    alpha: 0.5 + Math.random() * 0.5,
+                    hue: tex.hue,
+                    gravity: 0.04 + z * 0.05,
+                    drag: 0.98 + (1 - z) * 0.015,
+                    swaySpeed: 0.5 + Math.random() * 1.5,
+                    swayPhase: Math.random() * Math.PI * 2,
+                    swayAmount: 0.3 + Math.random() * 0.7,
+                    life: 1.0,
+                    decay: 0.0002 + Math.random() * 0.0004,
+                    burstMode: burstSpeed ? true : false,
+                };
+
+                particleContainer.addChild(sprite);
+                return particle;
+            }
+
+            function hslToHex(hue, sat, light) {
+                const h = ((hue % 360) + 360) % 360;
+                const s = sat / 100;
+                const l = light / 100;
+                const c = (1 - Math.abs(2 * l - 1)) * s;
+                const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+                const m = l - c / 2;
+                let r, g, b;
+                if (h < 60) { r = c;
+                    g = x;
+                    b = 0; } else if (h < 120) { r = x;
+                    g = c;
+                    b = 0; } else if (h < 180) { r = 0;
+                    g = c;
+                    b = x; } else if (h < 240) { r = 0;
+                    g = x;
+                    b = c; } else if (h < 300) { r = x;
+                    g = 0;
+                    b = c; } else { r = c;
+                    g = 0;
+                    b = x; }
+                const toHex = (val) => Math.round((val + m) * 255).toString(16).padStart(2, '0');
+                return parseInt(`${toHex(r)}${toHex(g)}${toHex(b)}`, 16);
+            }
+
+            // ─── 初始化纸屑 ────────────────────────────────────────────
+            function initConfetti() {
+                particles = [];
+                particleContainer.removeChildren();
+                const count = Math.max(400, Math.min(900, Math.floor(app.screen.width * app.screen.height / 2000)));
+                maxParticles = count;
+                for (let i = 0; i < count; i++) {
+                    const p = createConfettiParticle();
+                    particles.push(p);
+                }
+            }
+
+            // ─── 创建爆发 ──────────────────────────────────────────────
+            function createBurst(x, y) {
+                const count = 40 + Math.floor(Math.random() * 25);
+                for (let i = 0; i < count; i++) {
+                    if (particles.length >= maxParticles + 200) break;
+                    const angle = Math.random() * Math.PI * 2;
+                    const speed = 3 + Math.random() * 10;
+                    const texIndex = Math.floor(Math.random() * textures.length);
+                    const tex = textures[texIndex];
+                    const sprite = new PIXI.Sprite(tex.texture);
+                    sprite.anchor.set(0.5, 0.5);
+                    const scale = 0.6 + Math.random() * 0.9;
+                    sprite.scale.set(scale, scale * (0.6 + Math.random() * 0.5));
+                    sprite.tint = hslToHex(tex.hue + colorShift + Math.random() * 30, 70 + Math.random() * 25, 60 + Math.random() * 25);
+                    sprite.alpha = 0.8;
+
+                    const burstParticle = {
+                        sprite: sprite,
+                        x: x,
+                        y: y,
+                        z: 0.5 + Math.random() * 0.5,
+                        vx: Math.cos(angle) * speed,
+                        vy: Math.sin(angle) * speed - 1.5,
+                        rotation: Math.random() * Math.PI * 2,
+                        rotationSpeed: (Math.random() - 0.5) * 0.3,
+                        scale: scale,
+                        scaleY: scale * (0.6 + Math.random() * 0.5),
+                        alpha: 0.8,
+                        hue: tex.hue,
+                        gravity: 0.08,
+                        drag: 0.97,
+                        swaySpeed: 0.5 + Math.random() * 1,
+                        swayPhase: Math.random() * Math.PI * 2,
+                        swayAmount: 0.2 + Math.random() * 0.5,
+                        life: 1.0,
+                        decay: 0.01 + Math.random() * 0.012,
+                        burstMode: true,
+                    };
+
+                    particleContainer.addChild(sprite);
+                    particles.push(burstParticle);
+                }
+
+                // 限制总粒子数
+                if (particles.length > maxParticles + 200) {
+                    const toRemove = particles.splice(0, particles.length - (maxParticles + 200));
+                    for (const p of toRemove) {
+                        particleContainer.removeChild(p.sprite);
+                        p.sprite.destroy({ texture: false, children: true });
+                    }
+                }
+            }
+
+            // ─── 动画循环 ──────────────────────────────────────────────
+            function animate() {
+                time += 0.016;
+                const dt = 1.0;
+                const w = app.screen.width;
+                const h = app.screen.height;
+
+                // 更新鼠标速度
+                if (mouse.active && mouse.lastX > -9000) {
+                    mouse.vx = (mouse.x - mouse.lastX) * 0.08;
+                    mouse.vy = (mouse.y - mouse.lastY) * 0.08;
+                } else {
+                    mouse.vx *= 0.92;
+                    mouse.vy *= 0.92;
+                }
+                mouse.lastX = mouse.x;
+                mouse.lastY = mouse.y;
+
+                // 更新光晕
+                if (mouse.active && mouse.x > 0) {
+                    glowSprite.alpha = 0.8;
+                    glowSprite.x = mouse.x;
+                    glowSprite.y = mouse.y;
+                    const glowScale = 1 + Math.sin(time * 2) * 0.15;
+                    glowSprite.scale.set(glowScale, glowScale);
+                } else {
+                    glowSprite.alpha *= 0.92;
+                }
+
+                // 更新粒子
+                for (let i = particles.length - 1; i >= 0; i--) {
+                    const p = particles[i];
+                    const sway = Math.sin(time * p.swaySpeed + p.swayPhase) * p.swayAmount;
+
+                    // 应用风（鼠标）
+                    if (mouse.active && mouse.x > 0) {
+                        const dx = mouse.x - p.x;
+                        const dy = mouse.y - p.y;
+                        const distSq = dx * dx + dy * dy;
+                        const radius = 220;
+                        const radiusSq = radius * radius;
+                        if (distSq < radiusSq && distSq > 0.01) {
+                            const dist = Math.sqrt(distSq);
+                            const falloff = 1 - dist / radius;
+                            // 风涡：切向力 + 径向推离
+                            const tangentX = -dy / dist;
+                            const tangentY = dx / dist;
+                            const vortexStrength = falloff * 2.2;
+                            const radialStrength = falloff * 0.6;
+                            p.vx += (tangentX * vortexStrength + dx / dist * radialStrength) * 0.3;
+                            p.vy += (tangentY * vortexStrength + dy / dist * radialStrength) * 0.3;
+                            // 被搅动时增亮
+                            p.alpha = Math.min(1, p.alpha + 0.01);
+                        }
+                    }
+
+                    // 重力
+                    p.vy += p.gravity;
+                    // 水平摇摆
+                    p.vx += sway * 0.05;
+
+                    // 阻尼
+                    p.vx *= p.drag;
+                    p.vy *= p.drag;
+
+                    // 速度限制
+                    const maxSpeed = p.burstMode ? 12 : 3;
+                    const speed = Math.sqrt(p.vx * p.vx + p.vy * p.vy);
+                    if (speed > maxSpeed) {
+                        p.vx = (p.vx / speed) * maxSpeed;
+                        p.vy = (p.vy / speed) * maxSpeed;
+                    }
+
+                    // 更新位置
+                    p.x += p.vx * dt;
+                    p.y += p.vy * dt;
+
+                    // 更新旋转
+                    p.rotation += p.rotationSpeed;
+                    // 模拟3D翻转
+                    const flipY = Math.abs(Math.cos(p.rotation * 2 + p.swayPhase));
+                    const scaleY = p.scaleY * (0.5 + flipY * 0.5);
+
+                    // 边界处理
+                    if (p.x < -40) p.x = w + 40;
+                    if (p.x > w + 40) p.x = -40;
+                    if (p.y > h + 50) {
+                        p.y = -30;
+                        p.x = Math.random() * w;
+                        p.vx = (Math.random() - 0.5) * 1.5;
+                        p.vy = 0.3 + Math.random() * 0.8;
+                    }
+                    if (p.y < -50) {
+                        p.y = h + 30;
+                    }
+
+                    // 生命周期
+                    if (p.burstMode) {
+                        p.life -= p.decay;
+                        if (p.life <= 0) {
+                            p.alpha = Math.max(0, p.life * 3);
+                        }
+                    }
+
+                    // 更新精灵
+                    p.sprite.x = p.x;
+                    p.sprite.y = p.y;
+                    p.sprite.rotation = p.rotation;
+                    p.sprite.scale.set(p.scale, scaleY);
+                    p.sprite.alpha = p.alpha * (p.burstMode ? Math.min(1, p.life * 4) : 1);
+
+                    // 移除消亡的爆发粒子
+                    if (p.burstMode && p.life <= 0 && p.alpha <= 0.01) {
+                        particleContainer.removeChild(p.sprite);
+                        p.sprite.destroy({ texture: false, children: true });
+                        particles.splice(i, 1);
+                    }
+                }
+
+                // 更新背景渐变
+                if (bgGradient) {
+                    bgGradient.width = w;
+                    bgGradient.height = h;
+                }
+            }
+
+            // ─── 设置事件 ──────────────────────────────────────────────
+            function setupEvents() {
+                const view = app.view;
+
+                view.addEventListener('mousemove', (e) => {
+                    mouse.x = e.clientX;
+                    mouse.y = e.clientY;
+                    mouse.active = true;
+                });
+
+                view.addEventListener('mouseleave', () => {
+                    mouse.active = false;
+                    mouse.x = -9999;
+                    mouse.y = -9999;
+                    mouse.lastX = -9999;
+                    mouse.lastY = -9999;
+                    mouse.vx = 0;
+                    mouse.vy = 0;
+                });
+
+                view.addEventListener('mousedown', (e) => {
+                    mouse.x = e.clientX;
+                    mouse.y = e.clientY;
+                    mouse.active = true;
+                    createBurst(mouse.x, mouse.y);
+                    colorShift += 15 + Math.random() * 20;
+                    if (colorShift > 120) colorShift = -15;
+                });
+
+                // 触摸事件
+                view.addEventListener('touchmove', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        mouse.x = touch.clientX;
+                        mouse.y = touch.clientY;
+                        mouse.active = true;
+                    }
+                }, { passive: false });
+
+                view.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        mouse.x = touch.clientX;
+                        mouse.y = touch.clientY;
+                        mouse.active = true;
+                        createBurst(mouse.x, mouse.y);
+                        colorShift += 15 + Math.random() * 20;
+                        if (colorShift > 120) colorShift = -15;
+                    }
+                }, { passive: false });
+
+                view.addEventListener('touchend', () => {
+                    mouse.active = false;
+                    mouse.x = -9999;
+                    mouse.y = -9999;
+                    mouse.lastX = -9999;
+                    mouse.lastY = -9999;
+                });
+
+                view.addEventListener('touchcancel', () => {
+                    mouse.active = false;
+                    mouse.x = -9999;
+                    mouse.y = -9999;
+                });
+
+                // 窗口大小调整
+                window.addEventListener('resize', () => {
+                    if (app) {
+                        app.renderer.resize(window.innerWidth, window.innerHeight);
+                        if (bgGradient) {
+                            bgGradient.width = app.screen.width;
+                            bgGradient.height = app.screen.height;
+                        }
+                    }
+                });
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                try {
+                    initPixi();
+                    console.log('PixiJS 纸屑风暴已启动');
+                } catch (err) {
+                    console.error('初始化失败:', err);
+                    // 兜底：确保背景可见
+                    document.body.style.background = '#0a0a18';
+                    const container = document.getElementById('pixi-container');
+                    if (container) {
+                        container.style.background = '#0a0a18';
+                    }
+                }
+            }
+
+            // 页面加载后启动
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            // 确保加载完成后背景填充
+            window.addEventListener('load', () => {
+                document.body.style.background = '#0a0a18';
+                const container = document.getElementById('pixi-container');
+                if (container) {
+                    container.style.background = '#0a0a18';
+                }
+            });
+        })();
+    </script>
+</body>
+</html>

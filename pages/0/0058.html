@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>三次曲面 · 27条直线编织</title>
+    <style>
+        :root {
+            --bg: #06060c;
+            --gold: #d4a843;
+            --cyan: #45b7aa;
+            --magenta: #d4708a;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'SimSun', serif;
+            -webkit-font-smoothing: antialiased;
+            user-select: none;
+        }
+        #canvas-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+        }
+        canvas { display: block; }
+        .overlay-title {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 22px 20px 8px;
+            text-align: center;
+            background: linear-gradient(180deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.8) 55%, rgba(6,6,12,0) 100%);
+        }
+        .overlay-title h2 {
+            font-size: clamp(1.1rem, 2.2vw, 1.8rem);
+            font-weight: 400;
+            letter-spacing: 0.13em;
+            color: #e8d5b0;
+            text-shadow: 0 0 30px rgba(212,168,67,0.45), 0 0 60px rgba(212,168,67,0.18);
+            margin: 0 0 2px;
+            line-height: 1.3;
+        }
+        .overlay-title .sub {
+            font-size: clamp(0.65rem, 1.1vw, 0.85rem);
+            letter-spacing: 0.22em;
+            color: rgba(200,180,150,0.65);
+        }
+        .overlay-formula {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 8px 20px 18px;
+            text-align: center;
+            background: linear-gradient(0deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.82) 55%, rgba(6,6,12,0) 100%);
+        }
+        .formula-text {
+            font-size: clamp(0.6rem, 1.0vw, 0.8rem);
+            color: rgba(210,200,185,0.8);
+            letter-spacing: 0.03em;
+            line-height: 1.7;
+        }
+        .clr-gold { color: #d4a843; font-weight: bold; }
+        .clr-cyan { color: #45b7aa; font-weight: bold; }
+        .clr-magenta { color: #d4708a; font-weight: bold; }
+        .formula-sep {
+            display: inline-block;
+            margin: 0 14px;
+            color: rgba(150,140,130,0.35);
+        }
+    </style>
+</head>
+<body>
+    <div class="overlay-title">
+        <h2>三次曲面 · 27条直线编织</h2>
+        <div class="sub">Fermat cubic · Salmon's 27 lines · Algebraic surface</div>
+    </div>
+    <div class="overlay-formula">
+        <div class="formula-text">
+            <span class="clr-gold">5族 (每族3条)</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-cyan">10族 (每族2条)</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-magenta">6族 (每族1条)</span>
+            <span class="formula-sep">‖</span>
+            x³+y³+z³+w³=0
+        </div>
+    </div>
+    <div id="canvas-container"></div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(46, container.clientWidth / container.clientHeight, 0.5, 22);
+        camera.position.set(3.5, 2.3, 7.2);
+        camera.lookAt(0, 0, 0);
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x06060c, 1);
+        container.appendChild(renderer.domElement);
+
+        let startTime = performance.now();
+        const getElapsed = () => (performance.now() - startTime) * 0.001;
+
+        const COLOR_GOLD = 0xd4a843;
+        const COLOR_CYAN = 0x45b7aa;
+        const COLOR_MAGENTA = 0xd4708a;
+        const SCALE = 2.3;
+        const PROJ_W = 2.3;
+
+        // 球极投影
+        function stereographic(x, y, z, w) {
+            const denom = PROJ_W - w;
+            if (Math.abs(denom) < 0.025) return null;
+            const f = SCALE / denom;
+            return new THREE.Vector3(x * f, y * f, z * f);
+        }
+
+        // Fermat三次曲面x³+y³+z³+w³=0上的27条直线
+        // 使用经典参数化：取ω=e^{2πi/3}, 直线形式如 (t, ωᵏt, 0, ωʲ) 及其置换、符号变化等
+        const omega = { re: -0.5, im: Math.sqrt(3) / 2 };
+        const omega2 = { re: -0.5, im: -Math.sqrt(3) / 2 };
+
+        function complexMult(a, b) {
+            return { re: a.re * b.re - a.im * b.im, im: a.re * b.im + a.im * b.re };
+        }
+        function complexAdd(a, b) { return { re: a.re + b.re, im: a.im + b.im }; }
+        function complexNeg(a) { return { re: -a.re, im: -a.im }; }
+
+        // 生成27条直线：每条直线由两点定义，向两端延伸
+        function generateLineFromDirection(dir4, color, opacity) {
+            const group = new THREE.Group();
+            const numStrands = 4;
+            const tMin = -3.5, tMax = 3.5;
+            const steps = 300;
+
+            for (let s = 0; s < numStrands; s++) {
+                const offset = (s - numStrands / 2) * 0.02;
+                const pts = [];
+                for (let i = 0; i <= steps; i++) {
+                    const t = tMin + i * (tMax - tMin) / steps;
+                    const x = dir4.x * t + offset * (dir4.y - dir4.w);
+                    const y = dir4.y * t + offset * (dir4.z - dir4.x);
+                    const z = dir4.z * t + offset * (dir4.w - dir4.y);
+                    const w = dir4.w * t + offset * (dir4.x - dir4.z);
+                    const proj = stereographic(x, y, z, w);
+                    if (proj && proj.length() < 9.5) pts.push(proj);
+                }
+                if (pts.length >= 2) {
+                    const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                    const mat = new THREE.LineBasicMaterial({
+                        color, transparent: true, opacity,
+                        depthWrite: true, depthTest: true,
+                    });
+                    group.add(new THREE.Line(geom, mat));
+                }
+            }
+            return group;
+        }
+
+        // 构造27条直线的方向向量
+        function generateAllLines() {
+            const dirs = [];
+
+            // 类型1：形如 (1, -ωᵏ, 0, 0) 的直线，其中ωᵏ∈{1,ω,ω²}
+            const roots = [{ re: 1, im: 0 }, omega, omega2];
+            for (const r of roots) {
+                dirs.push({ x: 1, y: -r.re, z: -r.im, w: 0 });
+                dirs.push({ x: 1, y: 0, z: -r.re, w: -r.im });
+                dirs.push({ x: 0, y: 1, z: -r.re, w: -r.im });
+            }
+
+            // 类型2：形如 (1, ωᵏ, 0, ωʲ) 经过置换
+            const perms = [
+                [0, 1, 2, 3], [0, 2, 1, 3], [0, 3, 2, 1],
+                [1, 0, 2, 3], [1, 2, 0, 3], [1, 3, 2, 0],
+            ];
+            for (const perm of perms) {
+                for (const r1 of roots) {
+                    for (const r2 of roots) {
+                        const arr = [
+                            { re: 1, im: 0 },
+                            r1,
+                            { re: 0, im: 0 },
+                            r2
+                        ];
+                        const dir = { x: 0, y: 0, z: 0, w: 0 };
+                        const keys = ['x', 'y', 'z', 'w'];
+                        dir[keys[perm[0]]] = arr[0].re;
+                        dir[keys[perm[1]]] = arr[1].re;
+                        dir[keys[perm[2]]] = arr[2].re;
+                        dir[keys[perm[3]]] = arr[3].re;
+                        // 检查是否满足 x³+y³+z³+w³=0 对直线上的点成立（即方向向量自身满足方程）
+                        const val = dir.x * dir.x * dir.x + dir.y * dir.y * dir.y + dir.z * dir.z * dir.z + dir.w * dir.w *
+                            dir.w;
+                        if (Math.abs(val) < 0.001) {
+                            dirs.push(dir);
+                        }
+                    }
+                }
+            }
+
+            // 去重
+            const uniqueDirs = [];
+            for (const d of dirs) {
+                const norm = Math.sqrt(d.x * d.x + d.y * d.y + d.z * d.z + d.w * d.w);
+                if (norm < 1e-6) continue;
+                const nd = { x: d.x / norm, y: d.y / norm, z: d.z / norm, w: d.w / norm };
+                let dup = false;
+                for (const ud of uniqueDirs) {
+                    const dot = Math.abs(nd.x * ud.x + nd.y * ud.y + nd.z * ud.z + nd.w * ud.w);
+                    if (dot > 0.999) { dup = true; break; }
+                }
+                if (!dup) uniqueDirs.push(nd);
+            }
+            return uniqueDirs.slice(0, 27);
+        }
+
+        const allDirs = generateAllLines();
+        console.log('三次曲面上直线数量:', allDirs.length);
+
+        const rootGroup = new THREE.Group();
+        rootGroup.name = 'cubic-surface';
+        scene.add(rootGroup);
+
+        allDirs.forEach((dir, idx) => {
+            const color = idx % 3 === 0 ? COLOR_GOLD : (idx % 3 === 1 ? COLOR_CYAN : COLOR_MAGENTA);
+            rootGroup.add(generateLineFromDirection(dir, color, 0.58));
+        });
+
+        // 辅助参考球面
+        for (let i = 0; i < 10; i++) {
+            const lat = (i + 0.5) * Math.PI / 10;
+            const r = SCALE * Math.sin(lat);
+            const z = SCALE * Math.cos(lat);
+            const pts = [];
+            for (let j = 0; j <= 240; j++) {
+                const phi = j * 2 * Math.PI / 240;
+                pts.push(new THREE.Vector3(r * Math.cos(phi), z, r * Math.sin(phi)));
+            }
+            const geom = new THREE.BufferGeometry().setFromPoints(pts);
+            rootGroup.add(new THREE.Line(geom, new THREE.LineBasicMaterial({
+                color: 0x403830, transparent: true, opacity: 0.09, depthWrite: true, depthTest: true
+            })));
+        }
+        for (let k = 0; k < 8; k++) {
+            const phi = k * Math.PI / 4;
+            const pts = [];
+            for (let j = 0; j <= 240; j++) {
+                const theta = 0.02 + j * Math.PI / 240;
+                const st = Math.sin(theta);
+                pts.push(new THREE.Vector3(SCALE * st * Math.cos(phi), SCALE * Math.cos(theta), SCALE * st * Math.sin(
+                    phi)));
+            }
+            const geom = new THREE.BufferGeometry().setFromPoints(pts);
+            rootGroup.add(new THREE.Line(geom, new THREE.LineBasicMaterial({
+                color: 0x303840, transparent: true, opacity: 0.07, depthWrite: true, depthTest: true
+            })));
+        }
+
+        console.log('三次曲面编织线条总数:', rootGroup.children.length);
+
+        // 背景星点
+        const starsGroup = new THREE.Group();
+        const starsGeom = new THREE.BufferGeometry();
+        const starsCount = 550;
+        const starsPos = new Float32Array(starsCount * 3);
+        for (let i = 0; i < starsCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const dist = 6.5 + Math.random() * 10;
+            starsPos[i * 3] = dist * Math.sin(phi) * Math.cos(theta);
+            starsPos[i * 3 + 1] = dist * Math.sin(phi) * Math.sin(theta);
+            starsPos[i * 3 + 2] = dist * Math.cos(phi);
+        }
+        starsGeom.setAttribute('position', new THREE.BufferAttribute(starsPos, 3));
+        const starsMat = new THREE.PointsMaterial({
+            color: 0x908878, size: 0.018, transparent: true, opacity: 0.55, depthWrite: false,
+        });
+        starsGroup.add(new THREE.Points(starsGeom, starsMat));
+        scene.add(starsGroup);
+
+        let animFrameId;
+        function mainLoop() {
+            const t = getElapsed();
+            rootGroup.rotation.x = t * 0.14;
+            rootGroup.rotation.y = t * 0.24;
+            rootGroup.rotation.z = t * 0.10;
+            starsGroup.rotation.y = t * 0.04;
+            starsGroup.rotation.x = t * 0.025;
+
+            const camRadius = 7.3;
+            const camAngle = t * 0.08;
+            const camHeight = 2.4 + Math.sin(t * 0.16) * 0.7;
+            camera.position.x = Math.cos(camAngle) * camRadius;
+            camera.position.z = Math.sin(camAngle) * camRadius;
+            camera.position.y = camHeight;
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        function scheduleFrame() {
+            animFrameId = requestAnimationFrame(() => {
+                try { mainLoop(); } catch (e) { console.warn('动画异常:', e); }
+                scheduleFrame();
+            });
+        }
+
+        const backupTimer = setInterval(() => {
+            if (animFrameId !== undefined) {
+                cancelAnimationFrame(animFrameId);
+                scheduleFrame();
+            }
+        }, 3000);
+
+        renderer.render(scene, camera);
+        scheduleFrame();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = container.clientWidth / Math.max(container.clientHeight, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            camera.aspect = container.clientWidth / Math.max(container.clientHeight, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        }, 120));
+
+        console.log('✅ 三次曲面27条直线编织动画已稳定运行');
+    </script>
+</body>
+</html>

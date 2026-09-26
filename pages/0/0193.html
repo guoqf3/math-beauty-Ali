@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Clifford环面 · 四维立体投影</title>
+    <style>
+        :root { --bg: #02040a; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'STSong', 'Songti SC', 'Noto Serif SC', 'SimSun', 'Times New Roman', serif;
+            -webkit-font-smoothing: antialiased;
+            height: 100vh; width: 100vw;
+            user-select: none; -webkit-user-select: none; cursor: default;
+        }
+        #canvas-container { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+        canvas { display: block; }
+        #title-overlay {
+            position: fixed; top: 24px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+        }
+        #title-overlay .title {
+            font-size: clamp(1.0rem, 2.2vw, 1.5rem); font-weight: 400; letter-spacing: 0.08em;
+            color: #cfc7b5; text-shadow: 0 0 42px rgba(200,180,150,0.5), 0 0 72px rgba(170,150,130,0.22);
+            line-height: 1.4; white-space: nowrap;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.48rem, 0.85vw, 0.64rem); font-weight: 300; letter-spacing: 0.12em;
+            color: #a09888; text-shadow: 0 0 16px rgba(155,145,125,0.32);
+            margin-top: 2px; white-space: nowrap;
+        }
+        #formula-overlay {
+            position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+            background: rgba(2,4,10,0.7); padding: 10px 22px; border-radius: 32px;
+            border: 1px solid rgba(175,155,135,0.16);
+            backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); max-width: 95vw;
+        }
+        #formula-overlay .formula {
+            font-size: clamp(0.38rem, 0.7vw, 0.56rem); font-weight: 300; letter-spacing: 0.04em;
+            color: #c5bdaa; text-shadow: 0 0 13px rgba(185,170,145,0.25);
+            line-height: 1.5; white-space: nowrap;
+        }
+        #formula-overlay .formula .c1 { color: #d4885c; }
+        #formula-overlay .formula .c2 { color: #5d9ec6; }
+        #formula-overlay .formula .c3 { color: #c77d9f; }
+        @media (max-width: 600px) {
+            #title-overlay { top: 14px; }
+            #formula-overlay { bottom: 10px; padding: 7px 12px; border-radius: 24px; }
+            #formula-overlay .formula { font-size: 0.32rem; white-space: normal; line-height: 1.3; }
+            #title-overlay .title { font-size: 0.68rem; }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="title-overlay">
+        <div class="title">Clifford环面 · 四维立体投影</div>
+        <div class="subtitle">CLIFFORD TORUS &nbsp;·&nbsp; 4D STEREOGRAPHIC PROJECTION</div>
+    </div>
+    <div id="formula-overlay">
+        <div class="formula">
+            <span class="c1">u‑线:</span> u∈[0,2π] 固定v &nbsp;
+            <span class="c2">v‑线:</span> v∈[0,2π] 固定u &nbsp;
+            <span class="c3">对角:</span> u−v=const
+            <br>
+            <span style="color:#9aa8b8;">(cos u, sin u, cos v, sin v)/√2 &nbsp;|&nbsp; SO(4)双旋转 &nbsp;|&nbsp; 立体投影→ℝ³</span>
+        </div>
+    </div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#02040a');
+        scene.fog = new THREE.Fog('#02040a', 9, 21);
+
+        const camera = new THREE.PerspectiveCamera(
+            50, container.clientWidth / Math.max(container.clientHeight, 1), 0.3, 24
+        );
+        camera.position.set(0.7, 0.35, 7.2);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = false;
+        container.appendChild(renderer.domElement);
+
+        // ==================== 颜色常量 ====================
+        const C1 = '#d4885c'; // 暖金 – u‑线
+        const C2 = '#5d9ec6'; // 冰蓝 – v‑线
+        const C3 = '#c77d9f'; // 玫瑰粉 – 对角线族
+        const C_SPHERE = '#3a4a5c';
+        const C_GLINT = '#8898aa';
+
+        const VIEW_R = 2.6;
+        const MAX_DIST = VIEW_R * 1.28;
+
+        // ==================== Clifford环面参数 ====================
+        const R_CLIFFORD = 1 / Math.sqrt(2); // 标准Clifford环面半径
+        const NUM_CURVES = 26; // 每族曲线数
+        const NUM_SAMPLES = 280; // 每条曲线采样点
+
+        // ==================== 四维旋转与投影 ====================
+        function rotate4D(x1, x2, x3, x4, alpha, beta) {
+            const cA = Math.cos(alpha), sA = Math.sin(alpha);
+            const cB = Math.cos(beta), sB = Math.sin(beta);
+            const y1 = x1 * cA - x2 * sA;
+            const y2 = x1 * sA + x2 * cA;
+            const y3 = x3 * cB - x4 * sB;
+            const y4 = x3 * sB + x4 * cB;
+            return [y1, y2, y3, y4];
+        }
+
+        function stereographicProject(v4) {
+            const [x1, x2, x3, x4] = v4;
+            const denom = 1 - x4;
+            if (Math.abs(denom) < 0.0006) {
+                const s = denom >= 0 ? 1 : -1;
+                return new THREE.Vector3(s * x1 * 55, s * x2 * 55, s * x3 * 55);
+            }
+            const scale = 2.95;
+            return new THREE.Vector3(x1 / denom * scale, x2 / denom * scale, x3 / denom * scale);
+        }
+
+        function softClamp(vec) {
+            const len = vec.length();
+            if (len > MAX_DIST && len > 0.001) {
+                const excess = len - MAX_DIST;
+                const clamped = MAX_DIST + Math.log(1 + excess) * 1.15;
+                vec.normalize().multiplyScalar(Math.min(clamped, MAX_DIST * 1.3));
+            }
+            return vec;
+        }
+
+        // ==================== 生成曲线 ====================
+        function generateCliffordCurves(type, numCurves, numSamples) {
+            const curves = [];
+            if (type === 'u') {
+                const vValues = [];
+                for (let k = 0; k < numCurves; k++) {
+                    vValues.push((k / numCurves) * Math.PI * 2);
+                }
+                for (const v of vValues) {
+                    const pts = [];
+                    const dt = (Math.PI * 2) / numSamples;
+                    for (let i = 0; i <= numSamples; i++) {
+                        const u = i * dt;
+                        const x1 = R_CLIFFORD * Math.cos(u);
+                        const x2 = R_CLIFFORD * Math.sin(u);
+                        const x3 = R_CLIFFORD * Math.cos(v);
+                        const x4 = R_CLIFFORD * Math.sin(v);
+                        pts.push({ raw: [x1, x2, x3, x4] });
+                    }
+                    curves.push(pts);
+                }
+            } else if (type === 'v') {
+                const uValues = [];
+                for (let k = 0; k < numCurves; k++) {
+                    uValues.push((k / numCurves) * Math.PI * 2);
+                }
+                for (const u of uValues) {
+                    const pts = [];
+                    const dt = (Math.PI * 2) / numSamples;
+                    for (let i = 0; i <= numSamples; i++) {
+                        const v = i * dt;
+                        const x1 = R_CLIFFORD * Math.cos(u);
+                        const x2 = R_CLIFFORD * Math.sin(u);
+                        const x3 = R_CLIFFORD * Math.cos(v);
+                        const x4 = R_CLIFFORD * Math.sin(v);
+                        pts.push({ raw: [x1, x2, x3, x4] });
+                    }
+                    curves.push(pts);
+                }
+            } else if (type === 'diag') {
+                const offsets = [];
+                for (let k = 0; k < numCurves; k++) {
+                    offsets.push((k / numCurves) * Math.PI * 2);
+                }
+                for (const offset of offsets) {
+                    const pts = [];
+                    const dt = (Math.PI * 2) / numSamples;
+                    for (let i = 0; i <= numSamples; i++) {
+                        const t = i * dt;
+                        const u = t;
+                        const v = (offset - t + Math.PI * 2) % (Math.PI * 2);
+                        const x1 = R_CLIFFORD * Math.cos(u);
+                        const x2 = R_CLIFFORD * Math.sin(u);
+                        const x3 = R_CLIFFORD * Math.cos(v);
+                        const x4 = R_CLIFFORD * Math.sin(v);
+                        pts.push({ raw: [x1, x2, x3, x4] });
+                    }
+                    curves.push(pts);
+                }
+            }
+            return curves;
+        }
+
+        console.log('生成u-线族...');
+        const uCurves = generateCliffordCurves('u', NUM_CURVES, NUM_SAMPLES);
+        console.log('生成v-线族...');
+        const vCurves = generateCliffordCurves('v', NUM_CURVES, NUM_SAMPLES);
+        console.log('生成对角线族...');
+        const dCurves = generateCliffordCurves('diag', NUM_CURVES, NUM_SAMPLES);
+
+        // ==================== 创建动态线几何体 ====================
+        function createDynamicLineGroup(curvesData, colorHex, opacity) {
+            const totalVerts = curvesData.reduce((sum, c) => sum + c.length, 0);
+            const positionsArr = new Float32Array(totalVerts * 3);
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.BufferAttribute(positionsArr, 3));
+            const material = new THREE.LineBasicMaterial({
+                color: new THREE.Color(colorHex),
+                transparent: true, opacity: opacity, depthWrite: true,
+            });
+            const line = new THREE.Line(geometry, material);
+            line.userData = { curvesData, positions: positionsArr, totalVerts };
+            return line;
+        }
+
+        const lineU = createDynamicLineGroup(uCurves, C1, 0.58);
+        const lineV = createDynamicLineGroup(vCurves, C2, 0.55);
+        const lineD = createDynamicLineGroup(dCurves, C3, 0.56);
+
+        const mainGroup = new THREE.Group();
+        mainGroup.add(lineU);
+        mainGroup.add(lineV);
+        mainGroup.add(lineD);
+        scene.add(mainGroup);
+
+        // ==================== 更新函数 ====================
+        function updateLinePositions(lineObj, alpha, beta) {
+            const { curvesData, positions } = lineObj.userData;
+            let vi = 0;
+            for (const curve of curvesData) {
+                for (const pt of curve) {
+                    const rot = rotate4D(...pt.raw, alpha, beta);
+                    let proj = stereographicProject(rot);
+                    proj = softClamp(proj);
+                    positions[vi] = proj.x;
+                    positions[vi + 1] = proj.y;
+                    positions[vi + 2] = proj.z;
+                    vi += 3;
+                }
+            }
+            lineObj.geometry.attributes.position.needsUpdate = true;
+        }
+
+        function updateAllLines(alpha, beta) {
+            updateLinePositions(lineU, alpha, beta);
+            updateLinePositions(lineV, alpha, beta);
+            updateLinePositions(lineD, alpha, beta);
+        }
+
+        // ==================== 参考球面线框 ====================
+        function createSphereWireframe(radius, colorHex, opacity) {
+            const group = new THREE.Group();
+            const segs = 170;
+            const circles = [
+                (a) => new THREE.Vector3(Math.cos(a) * radius, Math.sin(a) * radius, 0),
+                (a) => new THREE.Vector3(Math.cos(a) * radius, 0, Math.sin(a) * radius),
+                (a) => new THREE.Vector3(0, Math.cos(a) * radius, Math.sin(a) * radius),
+            ];
+            for (const gen of circles) {
+                const pts = [];
+                for (let i = 0; i <= segs; i++) pts.push(gen((i / segs) * Math.PI * 2));
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(colorHex),
+                    transparent: true, opacity: opacity, depthWrite: true,
+                });
+                group.add(new THREE.Line(geom, mat));
+            }
+            return group;
+        }
+        const sphereRef = createSphereWireframe(VIEW_R, C_SPHERE, 0.2);
+        scene.add(sphereRef);
+
+        // ==================== 原点光点 ====================
+        function originGlint() {
+            const group = new THREE.Group();
+            const sz = 0.07;
+            const pairs = [
+                [new THREE.Vector3(-sz, 0, 0), new THREE.Vector3(sz, 0, 0)],
+                [new THREE.Vector3(0, -sz, 0), new THREE.Vector3(0, sz, 0)],
+                [new THREE.Vector3(0, 0, -sz), new THREE.Vector3(0, 0, sz)],
+            ];
+            for (const [a, b] of pairs) {
+                const g = new THREE.BufferGeometry().setFromPoints([a, b]);
+                const m = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(C_GLINT),
+                    transparent: true, opacity: 0.7, depthWrite: true,
+                });
+                group.add(new THREE.Line(g, m));
+            }
+            return group;
+        }
+        scene.add(originGlint());
+
+        // ==================== 球面参考点 ====================
+        function createRefDots(radius, colorHex, sz) {
+            const group = new THREE.Group();
+            const dirs = [
+                [1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1],
+                [0.577,0.577,0.577],[0.577,0.577,-0.577],[0.577,-0.577,0.577],
+                [-0.577,0.577,0.577],[0.577,-0.577,-0.577],[-0.577,0.577,-0.577],
+                [-0.577,-0.577,0.577],[-0.577,-0.577,-0.577]
+            ];
+            for (const d of dirs) {
+                const pt = new THREE.Vector3(d[0], d[1], d[2]).normalize().multiplyScalar(radius);
+                const pairs = [
+                    [pt.clone().add(new THREE.Vector3(-sz, 0, 0)), pt.clone().add(new THREE.Vector3(sz, 0, 0))],
+                    [pt.clone().add(new THREE.Vector3(0, -sz, 0)), pt.clone().add(new THREE.Vector3(0, sz, 0))],
+                ];
+                for (const [a, b] of pairs) {
+                    const g = new THREE.BufferGeometry().setFromPoints([a, b]);
+                    const m = new THREE.LineBasicMaterial({
+                        color: new THREE.Color(colorHex),
+                        transparent: true, opacity: 0.4, depthWrite: true,
+                    });
+                    group.add(new THREE.Line(g, m));
+                }
+            }
+            return group;
+        }
+        const refDots = createRefDots(VIEW_R, C_SPHERE, 0.045);
+        mainGroup.add(refDots);
+
+        // ==================== 动画循环（绝对时间） ====================
+        let time = 0;
+        let lastTime = performance.now();
+        let frameCount = 0;
+        let logTime = 0;
+
+        function animate(now) {
+            requestAnimationFrame(animate);
+            let delta = (now - lastTime) / 1000;
+            if (delta <= 0 || delta > 0.5) delta = 0.016;
+            lastTime = now;
+            time += delta;
+            frameCount++;
+            if (now - logTime > 4000) {
+                console.log(`[动画运行中] 帧:${frameCount} 时间:${time.toFixed(2)}s`);
+                logTime = now;
+            }
+
+            const alpha = time * 0.36;
+            const beta = time * 0.50;
+
+            updateAllLines(alpha, beta);
+
+            mainGroup.rotation.y += 0.0015;
+            mainGroup.rotation.x += 0.0008;
+            sphereRef.rotation.copy(mainGroup.rotation);
+
+            const camX = 0.7 + Math.sin(time * 0.15) * 0.55;
+            const camY = 0.35 + Math.cos(time * 0.18) * 0.5;
+            camera.position.set(camX, camY, 7.2);
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        // ==================== 窗口调整 ====================
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth, h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth, h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 100));
+
+        // ==================== 启动 ====================
+        console.log('=== Clifford环面 · 四维立体投影 ===');
+        console.log('u-线:', NUM_CURVES, 'v-线:', NUM_CURVES, '对角线:', NUM_CURVES);
+        console.log('总曲线数:', NUM_CURVES * 3);
+        console.log('✅ 初始帧渲染完成，启动绝对时间动画循环...');
+
+        updateAllLines(0, 0);
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

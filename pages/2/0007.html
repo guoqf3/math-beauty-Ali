@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>流动丝带</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            /* 兜底浅蓝背景，防黑屏 */
+            background-color: #dbe4ee; 
+        }
+        #container {
+            width: 100vw;
+            height: 100vh;
+            display: block;
+        }
+        #hint {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: rgba(100, 130, 170, 0.6);
+            font-family: sans-serif;
+            font-size: 14px;
+            letter-spacing: 1px;
+            pointer-events: none;
+            user-select: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="container"></div>
+    <div id="hint">移动鼠标扰动 · 点击产生涟漪</div>
+
+    <!-- 引入 PixiJS 7 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.4.2/pixi.min.js"></script>
+    
+    <script>
+        // 初始化 PixiJS 应用
+        const app = new PIXI.Application({
+            resizeTo: window,
+            backgroundColor: 0xdbe4ee, // 淡蓝底色
+            antialias: true,
+            autoDensity: true,
+            resolution: window.devicePixelRatio || 1
+        });
+        document.getElementById('container').appendChild(app.view);
+
+        // 创建全屏 Sprite 用于承载 Shader
+        const geo = new PIXI.Graphics();
+        geo.beginFill(0xffffff);
+        geo.drawRect(0, 0, 1, 1);
+        geo.endFill();
+        const texture = app.renderer.generateTexture(geo);
+        const sprite = new PIXI.Sprite(texture);
+        sprite.width = window.innerWidth;
+        sprite.height = window.innerHeight;
+        app.stage.addChild(sprite);
+
+        // 交互变量
+        let mouse = { x: 0.5, y: 0.5 };
+        let clickForce = 0;
+
+        // 自定义 WebGL 着色器
+        const filter = new PIXI.Filter(
+            // 顶点着色器
+            `
+            attribute vec2 aVertexPosition;
+            attribute vec2 aTextureCoord;
+            uniform mat3 projectionMatrix;
+            varying vec2 vTextureCoord;
+            void main(void) {
+                gl_Position = vec4((projectionMatrix * vec3(aVertexPosition, 1.0)).xy, 0.0, 1.0);
+                vTextureCoord = aTextureCoord;
+            }
+            `,
+            // 片元着色器 (核心视觉特效)
+            `
+            precision highp float;
+            varying vec2 vTextureCoord;
+            uniform float uTime;
+            uniform vec2 uMouse;
+            uniform float uClickForce;
+            uniform vec2 uResolution;
+
+            // 随机噪声生成
+            float hash(vec2 p) {
+                return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+            }
+
+            // 价值噪声
+            float noise(vec2 p) {
+                vec2 i = floor(p);
+                vec2 f = fract(p);
+                vec2 u = f * f * (3.0 - 2.0 * f);
+                return mix(mix(hash(i + vec2(0.0, 0.0)), hash(i + vec2(1.0, 0.0)), u.x),
+                           mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
+            }
+
+            // 分形布朗运动
+            float fbm(vec2 p) {
+                float value = 0.0;
+                float amplitude = 0.5;
+                float frequency = 1.0;
+                for (int i = 0; i < 5; i++) {
+                    value += amplitude * noise(p * frequency);
+                    amplitude *= 0.5;
+                    frequency *= 2.0;
+                }
+                return value;
+            }
+
+            void main(void) {
+                // 坐标标准化和比例修正
+                vec2 uv = vTextureCoord;
+                vec2 aspect = vec2(uResolution.x / uResolution.y, 1.0);
+                vec2 p = uv * aspect;
+                vec2 m = uMouse * aspect;
+
+                // 鼠标扰动场
+                float mouseDist = length(p - m);
+                float influence = exp(-mouseDist * 6.0) * 0.5;
+
+                // 点击冲击波
+                float wave = sin(mouseDist * 40.0 - uTime * 15.0) * exp(-mouseDist * 8.0) * uClickForce;
+
+                // 动画时间（速度适中偏快，流畅）
+                float t = uTime * 0.2;
+
+                // 生成扭曲空间 (高度还原图片的流畅线条感)
+                vec2 q = vec2(fbm(p + t), fbm(p + vec2(5.2, 1.3) - t));
+                vec2 r = vec2(fbm(p + q + vec2(1.7, 9.2) + influence * (uMouse - uv) * 0.2), 
+                              fbm(p + q + vec2(8.3, 2.8) + 0.126 * t));
+                
+                // 结合鼠标扭曲和点击波浪
+                float f = fbm(p + r + wave * 0.4);
+
+                // 生成细密的丝带线条
+                float lines = sin(f * 50.0 + uTime * 3.0) * 0.5 + 0.5;
+                lines = pow(lines, 3.0);
+
+                // 提取原图的淡蓝色调搭配
+                vec3 bgColor = vec3(0.78, 0.84, 0.92); // 浅蓝背景
+                vec3 lineColor = vec3(0.95, 0.97, 1.0); // 白色线条
+                vec3 deepColor = vec3(0.55, 0.65, 0.8); // 深蓝阴影
+
+                // 混合颜色与光线
+                vec3 finalColor = mix(bgColor, deepColor, smoothstep(0.0, 1.0, f));
+                finalColor = mix(finalColor, lineColor, lines * 0.8);
+
+                // 鼠标附近增加亮度，增强交互感
+                finalColor += influence * vec3(0.1, 0.15, 0.2);
+
+                gl_FragColor = vec4(finalColor, 1.0);
+            }
+            `
+        );
+
+        sprite.filters = [filter];
+
+        // 鼠标移动交互
+        window.addEventListener('mousemove', (e) => {
+            mouse.x = e.clientX / window.innerWidth;
+            mouse.y = 1.0 - (e.clientY / window.innerHeight);
+        });
+
+        // 鼠标点击交互
+        window.addEventListener('mousedown', () => {
+            clickForce = 1.0;
+        });
+
+        // 窗口大小调整
+        window.addEventListener('resize', () => {
+            sprite.width = window.innerWidth;
+            sprite.height = window.innerHeight;
+            filter.uniforms.uResolution = [window.innerWidth, window.innerHeight];
+        });
+
+        // 初始化分辨率参数
+        filter.uniforms.uResolution = [window.innerWidth, window.innerHeight];
+
+        // 动画主循环
+        app.ticker.add(() => {
+            // 平滑衰减点击力度，防止突兀
+            clickForce *= 0.96;
+            if (clickForce < 0.001) clickForce = 0;
+
+            // 更新着色器变量
+            filter.uniforms.uTime = app.ticker.lastTime / 1000;
+            filter.uniforms.uMouse = [mouse.x, mouse.y];
+            filter.uniforms.uClickForce = clickForce;
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>深蓝光域舞台</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            /* 兜底深蓝色背景，防黑屏 */
+            background-color: #0a1220; 
+        }
+        #container {
+            width: 100vw;
+            height: 100vh;
+            display: block;
+        }
+        /* 极简提示，几乎看不见，满足纯净画面要求 */
+        #hint {
+            position: absolute;
+            bottom: 15px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: rgba(255, 200, 100, 0.3);
+            font-family: sans-serif;
+            font-size: 12px;
+            letter-spacing: 2px;
+            pointer-events: none;
+            user-select: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="container"></div>
+    <div id="hint">移动鼠标拨动光线 · 点击产生涟漪</div>
+
+    <!-- 引入 PixiJS 7 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.4.2/pixi.min.js"></script>
+
+    <script>
+        // 1. 初始化 PixiJS 应用 (防止黑屏的深蓝底色)
+        const app = new PIXI.Application({
+            resizeTo: window,
+            backgroundColor: 0x0a1220,
+            antialias: true,
+            autoDensity: true,
+            resolution: window.devicePixelRatio || 1
+        });
+        document.getElementById('container').appendChild(app.view);
+
+        // 2. 创建全屏容器 Sprite
+        const geo = new PIXI.Graphics();
+        geo.beginFill(0xffffff);
+        geo.drawRect(0, 0, 1, 1);
+        geo.endFill();
+        const texture = app.renderer.generateTexture(geo);
+        const sprite = new PIXI.Sprite(texture);
+        sprite.width = window.innerWidth;
+        sprite.height = window.innerHeight;
+        app.stage.addChild(sprite);
+
+        // 3. 交互变量
+        let mouse = { x: 0.5, y: 0.5 };
+        let clickEnergy = 0;
+
+        // 4. 定制着色器（1次Draw Call，极致性能）
+        const filter = new PIXI.Filter(
+            // 顶点着色器
+            `
+            attribute vec2 aVertexPosition;
+            attribute vec2 aTextureCoord;
+            uniform mat3 projectionMatrix;
+            varying vec2 vTextureCoord;
+            void main(void) {
+                gl_Position = vec4((projectionMatrix * vec3(aVertexPosition, 1.0)).xy, 0.0, 1.0);
+                vTextureCoord = aTextureCoord;
+            }
+            `,
+            // 片元着色器 (模拟 3D 黄金流线舞台)
+            `
+            precision highp float;
+            varying vec2 vTextureCoord;
+            uniform float uTime;
+            uniform vec2 uMouse;
+            uniform float uClickEnergy;
+            uniform vec2 uResolution;
+
+            void main(void) {
+                // 坐标归一化与宽高比修正
+                vec2 uv = vTextureCoord;
+                vec2 aspect = vec2(uResolution.x / uResolution.y, 1.0);
+                vec2 p = (uv - 0.5) * aspect;
+                
+                // 鼠标坐标
+                vec2 m = (uMouse - 0.5) * aspect;
+                
+                // 计算鼠标距离，用于视差和涟漪
+                float dMouse = length(p - m);
+                float mouseInfluence = exp(-dMouse * 2.0) * 0.2;
+
+                // 极坐标计算
+                float r = length(p);
+                float a = atan(p.y, p.x);
+
+                // 点击激发的涟漪波
+                float clickWave = sin(dMouse * 30.0 - uTime * 12.0) * exp(-dMouse * 8.0) * uClickEnergy;
+
+                // 时间变量 (速度适中且明快)
+                float t = uTime * 0.5;
+
+                // 基础背景色 (深邃的蓝灰色渐变)
+                vec3 deepBlue = vec3(0.03, 0.05, 0.10);
+                vec3 midBlue = vec3(0.08, 0.12, 0.22);
+                
+                // 3D 凹陷舞台效果 (圆形渐变)
+                float stageDepth = smoothstep(0.7, 0.2, r);
+                vec3 bg = mix(midBlue, deepBlue, stageDepth);
+
+                // 鼠标移动引起的全局扭曲效果
+                float twist = mouseInfluence * 0.5;
+
+                // 计算环绕的流线光束
+                // 利用正弦函数叠加不同频率、深度的圆环
+                float glow1 = abs(sin(a * 3.0 + r * 10.0 - t * 4.0 + twist));
+                float glow2 = abs(sin(a * 5.0 - r * 15.0 + t * 6.0 - twist));
+                float glow3 = abs(sin(a * 8.0 + r * 20.0 + t * 8.0));
+
+                // 线条锐化与衰减
+                float line1 = pow(glow1, 40.0) * smoothstep(0.9, 0.6, r);
+                float line2 = pow(glow2, 30.0) * smoothstep(1.0, 0.8, r);
+                float line3 = pow(glow3, 25.0) * smoothstep(1.2, 0.9, r);
+
+                // 生成阶梯感 (模拟底座的层叠)
+                float steps = smoothstep(0.5, 0.3, fract(r * 5.0 - t * 0.5));
+                float stepColor = steps * smoothstep(0.5, 0.4, r) * (1.0 - smoothstep(0.7, 0.8, r));
+
+                // 金色/铜色光效混合
+                vec3 gold = vec3(1.0, 0.65, 0.2);
+                vec3 brightGold = vec3(1.0, 0.9, 0.6);
+                
+                // 混合流光
+                bg = mix(bg, gold, line1 * 0.8);
+                bg = mix(bg, gold, line2 * 0.6);
+                bg = mix(bg, brightGold, line3 * 0.5);
+                
+                // 中心舞台微微反光
+                bg += vec3(0.1, 0.2, 0.3) * smoothstep(0.7, 0.0, r) * 0.5;
+                
+                // 叠加阶梯的金属反光
+                bg += gold * stepColor * 0.1;
+
+                // 中心爆发能量
+                bg += vec3(1.0, 0.8, 0.4) * clickWave;
+                // 鼠标跟随光源
+                bg += vec3(0.4, 0.2, 0.05) * mouseInfluence;
+
+                gl_FragColor = vec4(bg, 1.0);
+            }
+            `
+        );
+
+        // 应用滤镜
+        sprite.filters = [filter];
+
+        // 5. 事件监听
+        window.addEventListener('mousemove', (e) => {
+            mouse.x = e.clientX / window.innerWidth;
+            mouse.y = 1.0 - (e.clientY / window.innerHeight);
+        });
+
+        window.addEventListener('mousedown', () => {
+            clickEnergy = 1.0;
+        });
+
+        window.addEventListener('resize', () => {
+            sprite.width = window.innerWidth;
+            sprite.height = window.innerHeight;
+            filter.uniforms.uResolution = [window.innerWidth, window.innerHeight];
+        });
+
+        // 初始化参数
+        filter.uniforms.uResolution = [window.innerWidth, window.innerHeight];
+
+        // 6. 动画主循环
+        app.ticker.add(() => {
+            // 点击能量平滑衰减
+            clickEnergy *= 0.95;
+            if (clickEnergy < 0.001) clickEnergy = 0;
+
+            // 更新着色器数据 (动画速度很快，不拖沓)
+            filter.uniforms.uTime = app.ticker.lastTime / 1000;
+            filter.uniforms.uMouse = [mouse.x, mouse.y];
+            filter.uniforms.uClickEnergy = clickEnergy;
+        });
+    </script>
+</body>
+</html>

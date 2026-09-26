@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>电弧核心</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #030308;
+            font-family: sans-serif;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="arcCanvas"></canvas>
+    <script>
+        (function() {
+            'use strict';
+
+            const canvas = document.getElementById('arcCanvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            // ---------- 配置参数 ----------
+            const CONFIG = {
+                arcCount: 12,               // 电弧分支数量
+                segmentsPerArc: 35,         // 每条电弧的段数
+                maxArcLength: 0.45,         // 最大电弧长度（占屏幕比例）
+                baseJitter: 0.12,           // 基础抖动幅度
+                mouseInfluenceRadius: 260,  // 鼠标影响半径
+                mousePullStrength: 0.15,    // 鼠标牵引强度
+                clickPulseRadius: 300,      // 点击脉冲最大半径
+                clickPulseDuration: 800,    // 脉冲持续时间(ms)
+                clickPulseStrength: 90,     // 脉冲强度
+                maxPulses: 4,               // 最大脉冲数量
+                coreGlowRadius: 60,         // 核心光晕半径
+                coreHue: 210,               // 核心色相（蓝）
+                arcHueBase: 200,            // 电弧基础色相
+                arcHueVariation: 60,        // 电弧色相变化
+                saturation: 90,
+                lightness: 70,
+                lineWidth: 1.8,             // 电弧线宽
+                glowLineWidth: 4.5,         // 光晕线宽
+                backgroundFade: 0.15,       // 背景拖尾强度
+                centerXRatio: 0.5,          // 核心X位置
+                centerYRatio: 0.5,          // 核心Y位置
+            };
+
+            let width = 0;
+            let height = 0;
+            let dpr = 1;
+            let centerX = 0;
+            let centerY = 0;
+            let arcs = [];
+            let pulses = [];
+            let mouseX = -9999;
+            let mouseY = -9999;
+            let mouseActive = false;
+            let targetMouseX = -9999;
+            let targetMouseY = -9999;
+            let smoothMouseX = -9999;
+            let smoothMouseY = -9999;
+            let animationId = null;
+            let lastTime = 0;
+            let time = 0;
+
+            // ---------- 脉冲类 ----------
+            class Pulse {
+                constructor(x, y, startTime) {
+                    this.x = x;
+                    this.y = y;
+                    this.startTime = startTime;
+                    this.duration = CONFIG.clickPulseDuration;
+                    this.maxRadius = CONFIG.clickPulseRadius;
+                    this.strength = CONFIG.clickPulseStrength;
+                }
+
+                getProgress(now) {
+                    return Math.min(1, (now - this.startTime) / this.duration);
+                }
+
+                getRadius(now) {
+                    const p = this.getProgress(now);
+                    return this.maxRadius * (0.2 + 0.8 * p);
+                }
+
+                getEnvelope(now) {
+                    return Math.max(0, 1 - this.getProgress(now));
+                }
+            }
+
+            // ---------- 电弧类 ----------
+            class Arc {
+                constructor(baseAngle, hue, jitterSeed) {
+                    this.baseAngle = baseAngle;
+                    this.hue = hue;
+                    this.jitterSeed = jitterSeed;
+                    this.points = [];
+                    this.length = CONFIG.maxArcLength * (0.6 + Math.random() * 0.4);
+                    // 初始化点
+                    for (let i = 0; i <= CONFIG.segmentsPerArc; i++) {
+                        this.points.push({ x: centerX, y: centerY, jitterX: 0, jitterY: 0 });
+                    }
+                }
+
+                // 更新电弧点位置
+                update(now, dt, time) {
+                    const maxDist = Math.min(width, height) * this.length;
+                    const mouseInfluence = mouseActive && smoothMouseX > -1000;
+
+                    for (let i = 0; i <= CONFIG.segmentsPerArc; i++) {
+                        const t = i / CONFIG.segmentsPerArc;
+                        const dist = t * maxDist;
+
+                        // 基础方向：从核心向外，带一些自然弯曲
+                        const angleOffset = Math.sin(t * Math.PI * 2 + this.jitterSeed + time * 1.5) * CONFIG
+                            .baseJitter * t;
+                        const angle = this.baseAngle + angleOffset;
+
+                        // 计算基础目标位置
+                        let px = centerX + Math.cos(angle) * dist;
+                        let py = centerY + Math.sin(angle) * dist;
+
+                        // 鼠标影响：将电弧拉向鼠标
+                        if (mouseInfluence) {
+                            const dx = smoothMouseX - px;
+                            const dy = smoothMouseY - py;
+                            const distToMouse = Math.sqrt(dx * dx + dy * dy);
+                            const influenceRadius = CONFIG.mouseInfluenceRadius * (1 - t * 0.3);
+                            if (distToMouse < influenceRadius) {
+                                const influence = (1 - distToMouse / influenceRadius) * CONFIG.mousePullStrength * t;
+                                px += dx * influence;
+                                py += dy * influence;
+                            }
+                        }
+
+                        // 脉冲影响：电弧被向外推
+                        for (const pulse of pulses) {
+                            const pProgress = pulse.getProgress(now);
+                            if (pProgress >= 1) continue;
+                            const pRadius = pulse.getRadius(now);
+                            const dx = px - pulse.x;
+                            const dy = py - pulse.y;
+                            const distToPulse = Math.sqrt(dx * dx + dy * dy);
+                            if (distToPulse < pRadius && distToPulse > 0.01) {
+                                const force = (1 - distToPulse / pRadius) * pulse.strength * pulse.getEnvelope(now) * t;
+                                px += (dx / distToPulse) * force;
+                                py += (dy / distToPulse) * force;
+                            }
+                        }
+
+                        // 抖动
+                        const jitterX = (Math.random() - 0.5) * CONFIG.baseJitter * maxDist * 0.3;
+                        const jitterY = (Math.random() - 0.5) * CONFIG.baseJitter * maxDist * 0.3;
+
+                        this.points[i] = {
+                            x: px + jitterX,
+                            y: py + jitterY
+                        };
+                    }
+                }
+
+                // 绘制电弧
+                draw(ctx, now, time) {
+                    if (this.points.length < 2) return;
+
+                    // 计算当前亮度（基于鼠标距离）
+                    const tipPoint = this.points[this.points.length - 1];
+                    let brightness = CONFIG.lightness;
+                    if (mouseActive && smoothMouseX > -1000) {
+                        const dx = tipPoint.x - smoothMouseX;
+                        const dy = tipPoint.y - smoothMouseY;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        if (dist < CONFIG.mouseInfluenceRadius) {
+                            brightness += (1 - dist / CONFIG.mouseInfluenceRadius) * 20;
+                        }
+                    }
+                    brightness = Math.min(95, Math.max(50, brightness));
+
+                    // 设置线条样式
+                    ctx.lineCap = 'round';
+                    ctx.lineJoin = 'round';
+
+                    // 绘制光晕层
+                    ctx.beginPath();
+                    ctx.moveTo(this.points[0].x, this.points[0].y);
+                    for (let i = 1; i < this.points.length; i++) {
+                        // 使用贝塞尔曲线平滑
+                        const prev = this.points[i - 1];
+                        const curr = this.points[i];
+                        const midX = (prev.x + curr.x) / 2;
+                        const midY = (prev.y + curr.y) / 2;
+                        ctx.quadraticCurveTo(prev.x, prev.y, midX, midY);
+                    }
+                    ctx.strokeStyle = `hsla(${this.hue}, ${CONFIG.saturation}%, ${brightness}%, 0.25)`;
+                    ctx.lineWidth = CONFIG.glowLineWidth;
+                    ctx.stroke();
+
+                    // 绘制主线
+                    ctx.beginPath();
+                    ctx.moveTo(this.points[0].x, this.points[0].y);
+                    for (let i = 1; i < this.points.length; i++) {
+                        const prev = this.points[i - 1];
+                        const curr = this.points[i];
+                        const midX = (prev.x + curr.x) / 2;
+                        const midY = (prev.y + curr.y) / 2;
+                        ctx.quadraticCurveTo(prev.x, prev.y, midX, midY);
+                    }
+                    ctx.strokeStyle = `hsla(${this.hue}, ${CONFIG.saturation}%, ${brightness + 5}%, 0.85)`;
+                    ctx.lineWidth = CONFIG.lineWidth;
+                    ctx.stroke();
+
+                    // 绘制末端亮点
+                    const tip = this.points[this.points.length - 1];
+                    const tipGrad = ctx.createRadialGradient(tip.x, tip.y, 0, tip.x, tip.y, 8);
+                    tipGrad.addColorStop(0, `hsla(${this.hue}, 100%, 95%, 0.8)`);
+                    tipGrad.addColorStop(1, `hsla(${this.hue}, 100%, 80%, 0)`);
+                    ctx.fillStyle = tipGrad;
+                    ctx.beginPath();
+                    ctx.arc(tip.x, tip.y, 8, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            // ---------- 初始化电弧 ----------
+            function initArcs() {
+                arcs = [];
+                for (let i = 0; i < CONFIG.arcCount; i++) {
+                    const angle = (i / CONFIG.arcCount) * Math.PI * 2;
+                    const hue = (CONFIG.arcHueBase + Math.random() * CONFIG.arcHueVariation) % 360;
+                    const jitterSeed = Math.random() * Math.PI * 2;
+                    arcs.push(new Arc(angle, hue, jitterSeed));
+                }
+            }
+
+            // ---------- 调整画布尺寸 ----------
+            function resizeCanvas() {
+                dpr = Math.min(window.devicePixelRatio || 1, 2);
+                width = window.innerWidth;
+                height = window.innerHeight;
+                canvas.width = Math.floor(width * dpr);
+                canvas.height = Math.floor(height * dpr);
+                canvas.style.width = width + 'px';
+                canvas.style.height = height + 'px';
+                ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                centerX = width * CONFIG.centerXRatio;
+                centerY = height * CONFIG.centerYRatio;
+                ctx.fillStyle = '#030308';
+                ctx.fillRect(0, 0, width, height);
+                initArcs();
+                // 立即绘制一帧，避免白屏
+                drawScene(performance.now());
+            }
+
+            // ---------- 绘制场景 ----------
+            function drawScene(now) {
+                // 半透明背景拖尾
+                ctx.fillStyle = 'rgba(3, 3, 8, ' + CONFIG.backgroundFade + ')';
+                ctx.fillRect(0, 0, width, height);
+
+                // 开启混合模式
+                ctx.globalCompositeOperation = 'lighter';
+
+                // 平滑鼠标位置
+                if (mouseActive) {
+                    smoothMouseX += (targetMouseX - smoothMouseX) * 0.15;
+                    smoothMouseY += (targetMouseY - smoothMouseY) * 0.15;
+                }
+
+                // 绘制核心光晕
+                const coreGlow = ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, CONFIG.coreGlowRadius * 2);
+                coreGlow.addColorStop(0, 'rgba(100, 150, 255, 0.5)');
+                coreGlow.addColorStop(0.4, 'rgba(60, 100, 220, 0.25)');
+                coreGlow.addColorStop(1, 'rgba(0, 0, 0, 0)');
+                ctx.fillStyle = coreGlow;
+                ctx.beginPath();
+                ctx.arc(centerX, centerY, CONFIG.coreGlowRadius * 2, 0, Math.PI * 2);
+                ctx.fill();
+
+                // 绘制所有电弧
+                for (const arc of arcs) {
+                    arc.draw(ctx, now, time);
+                }
+
+                // 绘制核心亮点
+                const coreBright = ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, CONFIG.coreGlowRadius);
+                coreBright.addColorStop(0, 'rgba(200, 220, 255, 0.9)');
+                coreBright.addColorStop(0.5, 'rgba(120, 160, 255, 0.5)');
+                coreBright.addColorStop(1, 'rgba(0, 0, 0, 0)');
+                ctx.fillStyle = coreBright;
+                ctx.beginPath();
+                ctx.arc(centerX, centerY, CONFIG.coreGlowRadius, 0, Math.PI * 2);
+                ctx.fill();
+
+                // 恢复混合模式
+                ctx.globalCompositeOperation = 'source-over';
+
+                // 移除过期脉冲
+                pulses = pulses.filter(p => p.getProgress(now) < 1);
+                if (pulses.length > CONFIG.maxPulses) {
+                    pulses = pulses.slice(-CONFIG.maxPulses);
+                }
+            }
+
+            // ---------- 更新电弧 ----------
+            function updateArcs(now) {
+                const dt = Math.min(2, (now - lastTime) / 16.67) || 1;
+                time = now * 0.001;
+
+                for (const arc of arcs) {
+                    arc.update(now, dt, time);
+                }
+            }
+
+            // ---------- 动画循环 ----------
+            function animate(timestamp) {
+                const now = performance.now();
+                if (lastTime === 0) lastTime = now;
+                const dt = now - lastTime;
+                if (dt > 100) {
+                    lastTime = now - 16;
+                } else {
+                    lastTime = now;
+                }
+
+                updateArcs(now);
+                drawScene(now);
+
+                animationId = requestAnimationFrame(animate);
+            }
+
+            // ---------- 鼠标与触摸事件 ----------
+            function updateMousePosition(clientX, clientY) {
+                targetMouseX = clientX;
+                targetMouseY = clientY;
+                if (!mouseActive) {
+                    mouseActive = true;
+                    smoothMouseX = targetMouseX;
+                    smoothMouseY = targetMouseY;
+                }
+            }
+
+            function handleClick(clientX, clientY) {
+                const now = performance.now();
+                pulses.push(new Pulse(clientX, clientY, now));
+                if (pulses.length > CONFIG.maxPulses) {
+                    pulses = pulses.slice(-CONFIG.maxPulses);
+                }
+            }
+
+            function setupEvents() {
+                window.addEventListener('mousemove', (e) => {
+                    updateMousePosition(e.clientX, e.clientY);
+                }, { passive: true });
+
+                window.addEventListener('mouseleave', () => {
+                    mouseActive = false;
+                    smoothMouseX = -9999;
+                    smoothMouseY = -9999;
+                });
+
+                window.addEventListener('mousedown', (e) => {
+                    handleClick(e.clientX, e.clientY);
+                });
+
+                window.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        updateMousePosition(touch.clientX, touch.clientY);
+                        handleClick(touch.clientX, touch.clientY);
+                    }
+                }, { passive: false });
+
+                window.addEventListener('touchmove', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        updateMousePosition(touch.clientX, touch.clientY);
+                    }
+                }, { passive: false });
+
+                window.addEventListener('touchend', () => {
+                    mouseActive = false;
+                    smoothMouseX = -9999;
+                    smoothMouseY = -9999;
+                });
+
+                window.addEventListener('resize', () => {
+                    resizeCanvas();
+                });
+
+                document.addEventListener('visibilitychange', () => {
+                    if (document.hidden) {
+                        if (animationId) {
+                            cancelAnimationFrame(animationId);
+                            animationId = null;
+                        }
+                        lastTime = 0;
+                    } else {
+                        if (!animationId) {
+                            lastTime = 0;
+                            animationId = requestAnimationFrame(animate);
+                        }
+                    }
+                });
+            }
+
+            // ---------- 启动 ----------
+            function init() {
+                resizeCanvas();
+                setupEvents();
+                lastTime = 0;
+                animationId = requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.__arcCore = {
+                config: CONFIG,
+                arcs: arcs,
+                pulses: pulses,
+            };
+        })();
+    </script>
+</body>
+</html>

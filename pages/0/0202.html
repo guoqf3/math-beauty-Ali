@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>四维正一百二十胞体 · 投影线网流动</title>
+    <style>
+        :root { --bg: #03050a; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'STSong', 'Songti SC', 'Noto Serif SC', 'SimSun', 'Times New Roman', serif;
+            -webkit-font-smoothing: antialiased;
+            height: 100vh; width: 100vw;
+            user-select: none; -webkit-user-select: none; cursor: default;
+        }
+        #canvas-container { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+        canvas { display: block; }
+        #title-overlay {
+            position: fixed; top: 24px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+        }
+        #title-overlay .title {
+            font-size: clamp(1.0rem, 2.2vw, 1.5rem); font-weight: 400; letter-spacing: 0.08em;
+            color: #cfc7b5; text-shadow: 0 0 42px rgba(200,180,150,0.5), 0 0 72px rgba(170,150,130,0.22);
+            line-height: 1.4; white-space: nowrap;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.48rem, 0.85vw, 0.64rem); font-weight: 300; letter-spacing: 0.12em;
+            color: #a09888; text-shadow: 0 0 16px rgba(155,145,125,0.32);
+            margin-top: 2px; white-space: nowrap;
+        }
+        #formula-overlay {
+            position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+            background: rgba(3,5,10,0.7); padding: 10px 22px; border-radius: 32px;
+            border: 1px solid rgba(175,155,135,0.16);
+            backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); max-width: 95vw;
+        }
+        #formula-overlay .formula {
+            font-size: clamp(0.38rem, 0.7vw, 0.56rem); font-weight: 300; letter-spacing: 0.04em;
+            color: #c5bdaa; text-shadow: 0 0 13px rgba(185,170,145,0.25);
+            line-height: 1.55; white-space: nowrap;
+        }
+        #formula-overlay .formula .c1 { color: #d4885c; }
+        #formula-overlay .formula .c2 { color: #5d9ec6; }
+        #formula-overlay .formula .c3 { color: #c77d9f; }
+        @media (max-width: 600px) {
+            #title-overlay { top: 14px; }
+            #formula-overlay { bottom: 10px; padding: 7px 12px; border-radius: 24px; }
+            #formula-overlay .formula { font-size: 0.32rem; white-space: normal; line-height: 1.3; }
+            #title-overlay .title { font-size: 0.68rem; }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="title-overlay">
+        <div class="title">四维正一百二十胞体 · 投影线网流动</div>
+        <div class="subtitle">120‑CELL PROJECTION &nbsp;·&nbsp; 600 VERTICES &nbsp;·&nbsp; 1200 EDGES</div>
+    </div>
+    <div id="formula-overlay">
+        <div class="formula">
+            <span class="c1">短边:</span> 投影长度<1/3分位 &nbsp;
+            <span class="c2">中边:</span> 1/3≤长度<2/3分位 &nbsp;
+            <span class="c3">长边:</span> 长度≥2/3分位
+            <br>
+            <span style="color:#9aa8b8;">SO(4)双旋转 R(α,β) &nbsp;|&nbsp; 正交投影→ℝ³ &nbsp;|&nbsp; 颜色随形流动</span>
+        </div>
+    </div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#03050a');
+        scene.fog = new THREE.Fog('#03050a', 10, 26);
+
+        const camera = new THREE.PerspectiveCamera(
+            50,
+            container.clientWidth / Math.max(container.clientHeight, 1),
+            0.3,
+            28
+        );
+        camera.position.set(1.5, 0.8, 7.5);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = false;
+        container.appendChild(renderer.domElement);
+
+        // ==================== 常量 ====================
+        const C1 = '#d4885c'; // 暖金 – 短边
+        const C2 = '#5d9ec6'; // 冰蓝 – 中边
+        const C3 = '#c77d9f'; // 玫瑰粉 – 长边
+        const C_SPHERE = '#3a4a5c';
+        const C_GLINT = '#8898aa';
+
+        // ==================== 生成120-cell顶点 ====================
+        function generate120CellVertices() {
+            const phi = (1 + Math.sqrt(5)) / 2;
+            const phi2 = phi * phi;
+            const vertices4D = [];
+
+            // 类型1: (±2, ±2, 0, 0) 的所有排列 (96个)
+            const base1 = [2, 2, 0, 0];
+            const perms = [
+                [0,1,2,3],[0,1,3,2],[0,2,1,3],[0,2,3,1],[0,3,1,2],[0,3,2,1],
+                [1,0,2,3],[1,0,3,2],[1,2,0,3],[1,2,3,0],[1,3,0,2],[1,3,2,0],
+                [2,0,1,3],[2,0,3,1],[2,1,0,3],[2,1,3,0],[2,3,0,1],[2,3,1,0],
+                [3,0,1,2],[3,0,2,1],[3,1,0,2],[3,1,2,0],[3,2,0,1],[3,2,1,0]
+            ];
+            for (const p of perms) {
+                for (let s0 = -1; s0 <= 1; s0 += 2) {
+                    for (let s1 = -1; s1 <= 1; s1 += 2) {
+                        for (let s2 = -1; s2 <= 1; s2 += 2) {
+                            for (let s3 = -1; s3 <= 1; s3 += 2) {
+                                const v = [0,0,0,0];
+                                v[0] = s0 * base1[p[0]];
+                                v[1] = s1 * base1[p[1]];
+                                v[2] = s2 * base1[p[2]];
+                                v[3] = s3 * base1[p[3]];
+                                vertices4D.push(v);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 类型2: (±1, ±1, ±1, ±√5) 的所有排列，加上 (±1, ±√5, ±1, ±1) 等 (192个)
+            const base2 = [1, 1, 1, Math.sqrt(5)];
+            for (const p of perms) {
+                for (let s0 = -1; s0 <= 1; s0 += 2) {
+                    for (let s1 = -1; s1 <= 1; s1 += 2) {
+                        for (let s2 = -1; s2 <= 1; s2 += 2) {
+                            for (let s3 = -1; s3 <= 1; s3 += 2) {
+                                const v = [0,0,0,0];
+                                v[0] = s0 * base2[p[0]];
+                                v[1] = s1 * base2[p[1]];
+                                v[2] = s2 * base2[p[2]];
+                                v[3] = s3 * base2[p[3]];
+                                vertices4D.push(v);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 类型3: (±φ², ±φ, ±1, 0) 的所有偶排列和任意符号 (192个)
+            const base3 = [phi2, phi, 1, 0];
+            const evenPerms = [
+                [0,1,2,3],[0,2,3,1],[0,3,1,2],
+                [1,0,3,2],[1,2,0,3],[1,3,2,0],
+                [2,0,1,3],[2,1,3,0],[2,3,0,1],
+                [3,0,2,1],[3,1,0,2],[3,2,1,0]
+            ];
+            for (const p of evenPerms) {
+                for (let s0 = -1; s0 <= 1; s0 += 2) {
+                    for (let s1 = -1; s1 <= 1; s1 += 2) {
+                        for (let s2 = -1; s2 <= 1; s2 += 2) {
+                            for (let s3 = -1; s3 <= 1; s3 += 2) {
+                                const v = [0,0,0,0];
+                                v[0] = s0 * base3[p[0]];
+                                v[1] = s1 * base3[p[1]];
+                                v[2] = s2 * base3[p[2]];
+                                v[3] = s3 * base3[p[3]];
+                                vertices4D.push(v);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 去重
+            const unique = [];
+            const eps = 0.01;
+            for (const v of vertices4D) {
+                let dup = false;
+                for (const u of unique) {
+                    const dx = u[0]-v[0], dy = u[1]-v[1], dz = u[2]-v[2], dw = u[3]-v[3];
+                    if (Math.sqrt(dx*dx+dy*dy+dz*dz+dw*dw) < eps) { dup = true; break; }
+                }
+                if (!dup) unique.push(v);
+            }
+            // 归一化到指定半径
+            const targetR = 2.8;
+            return unique.map(v => {
+                const len = Math.sqrt(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]+v[3]*v[3]);
+                const s = targetR / len;
+                return [v[0]*s, v[1]*s, v[2]*s, v[3]*s];
+            });
+        }
+
+        const verts4D = generate120CellVertices();
+        console.log('120-cell顶点数:', verts4D.length);
+
+        // ==================== 生成边 ====================
+        function buildEdges(verts) {
+            const n = verts.length;
+            let minDist = Infinity;
+            for (let i=0; i<n; i++) {
+                for (let j=i+1; j<n; j++) {
+                    const dx = verts[i][0]-verts[j][0], dy = verts[i][1]-verts[j][1],
+                          dz = verts[i][2]-verts[j][2], dw = verts[i][3]-verts[j][3];
+                    const d = Math.sqrt(dx*dx+dy*dy+dz*dz+dw*dw);
+                    if (d > 0.001 && d < minDist) minDist = d;
+                }
+            }
+            const thresh = minDist * 1.05;
+            const edges = [];
+            for (let i=0; i<n; i++) {
+                for (let j=i+1; j<n; j++) {
+                    const dx = verts[i][0]-verts[j][0], dy = verts[i][1]-verts[j][1],
+                          dz = verts[i][2]-verts[j][2], dw = verts[i][3]-verts[j][3];
+                    const d = Math.sqrt(dx*dx+dy*dy+dz*dz+dw*dw);
+                    if (d <= thresh) edges.push([i, j]);
+                }
+            }
+            return { edges, minDist };
+        }
+
+        const { edges, minDist } = buildEdges(verts4D);
+        console.log('边数:', edges.length, '最小边长:', minDist);
+
+        // ==================== 投影与旋转工具 ====================
+        function rotate4D(x1, x2, x3, x4, alpha, beta) {
+            const cA = Math.cos(alpha), sA = Math.sin(alpha);
+            const cB = Math.cos(beta), sB = Math.sin(beta);
+            const y1 = x1*cA - x2*sA;
+            const y2 = x1*sA + x2*cA;
+            const y3 = x3*cB - x4*sB;
+            const y4 = x3*sB + x4*cB;
+            return [y1, y2, y3, y4];
+        }
+
+        function project(v4) {
+            const scale = 2.9;
+            return new THREE.Vector3(v4[0]*scale, v4[1]*scale, v4[2]*scale);
+        }
+
+        // ==================== 创建三个动态线段几何体 ====================
+        function createDynamicLineSegments(colorHex, opacity) {
+            const geom = new THREE.BufferGeometry();
+            const positionsArr = new Float32Array(0); // 初始空
+            geom.setAttribute('position', new THREE.BufferAttribute(positionsArr, 3));
+            const mat = new THREE.LineBasicMaterial({
+                color: new THREE.Color(colorHex),
+                transparent: true,
+                opacity: opacity,
+                depthWrite: true,
+            });
+            const lines = new THREE.LineSegments(geom, mat);
+            lines.userData = { positionsArr };
+            return lines;
+        }
+
+        const linesShort = createDynamicLineSegments(C1, 0.7);
+        const linesMid = createDynamicLineSegments(C2, 0.66);
+        const linesLong = createDynamicLineSegments(C3, 0.68);
+
+        const mainGroup = new THREE.Group();
+        mainGroup.add(linesShort);
+        mainGroup.add(linesMid);
+        mainGroup.add(linesLong);
+        scene.add(mainGroup);
+
+        // ==================== 更新函数 ====================
+        function updateEdgesDynamic(alpha, beta) {
+            // 计算所有投影点
+            const projPts = verts4D.map(v => {
+                const rot = rotate4D(v[0], v[1], v[2], v[3], alpha, beta);
+                return project(rot);
+            });
+
+            // 计算每条边的投影长度
+            const edgeLengths = edges.map(([i,j]) => projPts[i].distanceTo(projPts[j]));
+
+            // 排序索引
+            const indices = edgeLengths.map((_, idx) => idx);
+            indices.sort((a,b) => edgeLengths[a] - edgeLengths[b]);
+
+            const total = edges.length;
+            const third = Math.floor(total / 3);
+            const groups = [
+                indices.slice(0, third),           // 短边
+                indices.slice(third, 2*third),     // 中边
+                indices.slice(2*third)             // 长边
+            ];
+
+            // 构建三个position数组
+            const lineObjs = [linesShort, linesMid, linesLong];
+            lineObjs.forEach((lineObj, gIdx) => {
+                const idxList = groups[gIdx];
+                const numEdges = idxList.length;
+                const arr = new Float32Array(numEdges * 6);
+                for (let k=0; k<numEdges; k++) {
+                    const [i, j] = edges[idxList[k]];
+                    const a = projPts[i], b = projPts[j];
+                    const off = k * 6;
+                    arr[off] = a.x; arr[off+1] = a.y; arr[off+2] = a.z;
+                    arr[off+3] = b.x; arr[off+4] = b.y; arr[off+5] = b.z;
+                }
+                const geom = lineObj.geometry;
+                geom.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+                geom.attributes.position.needsUpdate = true;
+            });
+        }
+
+        // ==================== 参考球面线框 ====================
+        function createSphereWireframe(radius, colorHex, opacity) {
+            const group = new THREE.Group();
+            const segs = 170;
+            const circles = [
+                (a) => new THREE.Vector3(Math.cos(a)*radius, Math.sin(a)*radius, 0),
+                (a) => new THREE.Vector3(Math.cos(a)*radius, 0, Math.sin(a)*radius),
+                (a) => new THREE.Vector3(0, Math.cos(a)*radius, Math.sin(a)*radius),
+            ];
+            for (const gen of circles) {
+                const pts = [];
+                for (let i=0; i<=segs; i++) pts.push(gen((i/segs)*Math.PI*2));
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(colorHex),
+                    transparent: true, opacity: opacity, depthWrite: true,
+                });
+                group.add(new THREE.Line(geom, mat));
+            }
+            return group;
+        }
+        const refRadius = 3.0;
+        const sphereRef = createSphereWireframe(refRadius, C_SPHERE, 0.2);
+        scene.add(sphereRef);
+
+        // 原点光点
+        function originGlint() {
+            const group = new THREE.Group();
+            const sz = 0.1;
+            const pairs = [
+                [new THREE.Vector3(-sz,0,0), new THREE.Vector3(sz,0,0)],
+                [new THREE.Vector3(0,-sz,0), new THREE.Vector3(0,sz,0)],
+                [new THREE.Vector3(0,0,-sz), new THREE.Vector3(0,0,sz)],
+            ];
+            for (const [a,b] of pairs) {
+                const g = new THREE.BufferGeometry().setFromPoints([a,b]);
+                const m = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(C_GLINT),
+                    transparent: true, opacity: 0.7, depthWrite: true,
+                });
+                group.add(new THREE.Line(g, m));
+            }
+            return group;
+        }
+        scene.add(originGlint());
+
+        // ==================== 动画循环（绝对时间） ====================
+        let time = 0;
+        let lastTime = performance.now();
+        let frameCount = 0;
+        let logTime = 0;
+
+        function animate(now) {
+            requestAnimationFrame(animate);
+            let delta = (now - lastTime) / 1000;
+            if (delta <= 0 || delta > 0.5) delta = 0.016;
+            lastTime = now;
+            time += delta;
+            frameCount++;
+            if (now - logTime > 4000) {
+                console.log(`[动画运行中] 帧:${frameCount} 时间:${time.toFixed(2)}s`);
+                logTime = now;
+            }
+
+            const alpha = time * 0.32;
+            const beta = time * 0.43;
+
+            updateEdgesDynamic(alpha, beta);
+
+            mainGroup.rotation.y += 0.0015;
+            mainGroup.rotation.x += 0.0008;
+            sphereRef.rotation.copy(mainGroup.rotation);
+
+            const camX = 1.5 + Math.sin(time * 0.14) * 0.5;
+            const camY = 0.8 + Math.cos(time * 0.18) * 0.45;
+            const camZ = 7.5 + Math.sin(time * 0.11) * 0.5;
+            camera.position.set(camX, camY, camZ);
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        // ==================== 窗口调整 ====================
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth;
+            const h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth;
+            const h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 100));
+
+        console.log('=== 四维正一百二十胞体 · 投影线网流动 ===');
+        console.log('顶点数:', verts4D.length, '边数:', edges.length);
+        console.log('✅ 初始帧渲染完成，启动绝对时间动画循环...');
+
+        // 预热第一帧
+        updateEdgesDynamic(0, 0);
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

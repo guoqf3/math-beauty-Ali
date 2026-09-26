@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>球面Apollonian圆族 · 距离比同心圆网</title>
+    <style>
+        :root { --bg: #02040a; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'STSong', 'Songti SC', 'Noto Serif SC', 'SimSun', 'Times New Roman', serif;
+            -webkit-font-smoothing: antialiased;
+            height: 100vh; width: 100vw;
+            user-select: none; -webkit-user-select: none; cursor: default;
+        }
+        #canvas-container { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+        canvas { display: block; }
+        #title-overlay {
+            position: fixed; top: 24px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+        }
+        #title-overlay .title {
+            font-size: clamp(1.0rem, 2.2vw, 1.5rem); font-weight: 400; letter-spacing: 0.09em;
+            color: #cfc7b5; text-shadow: 0 0 42px rgba(200,180,150,0.5), 0 0 70px rgba(170,150,130,0.2);
+            line-height: 1.4; white-space: nowrap;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.46rem, 0.82vw, 0.62rem); font-weight: 300; letter-spacing: 0.12em;
+            color: #a09888; text-shadow: 0 0 14px rgba(155,145,125,0.3);
+            margin-top: 2px; white-space: nowrap;
+        }
+        #formula-overlay {
+            position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+            background: rgba(2,4,10,0.7); padding: 10px 22px; border-radius: 32px;
+            border: 1px solid rgba(175,155,135,0.18);
+            backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); max-width: 95vw;
+        }
+        #formula-overlay .formula {
+            font-size: clamp(0.36rem, 0.68vw, 0.54rem); font-weight: 300; letter-spacing: 0.04em;
+            color: #c5bdaa; text-shadow: 0 0 13px rgba(185,170,145,0.25);
+            line-height: 1.5; white-space: nowrap;
+        }
+        #formula-overlay .formula .c1 { color: #d4885c; }
+        #formula-overlay .formula .c2 { color: #5d9ec6; }
+        #formula-overlay .formula .c3 { color: #c77d9f; }
+        @media (max-width: 600px) {
+            #title-overlay { top: 14px; }
+            #formula-overlay { bottom: 10px; padding: 7px 12px; border-radius: 24px; }
+            #formula-overlay .formula { font-size: 0.32rem; white-space: normal; line-height: 1.3; }
+            #title-overlay .title { font-size: 0.68rem; }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="title-overlay">
+        <div class="title">球面Apollonian圆族 · 距离比同心圆网</div>
+        <div class="subtitle">SPHERICAL APOLLONIAN CIRCLES &nbsp;·&nbsp; DISTANCE RATIO FAMILIES</div>
+    </div>
+    <div id="formula-overlay">
+        <div class="formula">
+            <span class="c1">𝒞z:</span> |X−Pz|/|X−Qz|=k, Pz/Qz在z轴 &nbsp;
+            <span class="c2">𝒞x:</span> |X−Px|/|X−Qx|=k, Px/Qx在x轴 &nbsp;
+            <span class="c3">𝒞y:</span> |X−Py|/|X−Qy|=k, Py/Qy在y轴
+            <br>
+            <span style="color:#9aa8b8;">R=2.6 &nbsp;|&nbsp; 每族18圆 &nbsp;|&nbsp; k∈[0.35,2.85] &nbsp;|&nbsp; 绝对时间驱动</span>
+        </div>
+    </div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#02040a');
+        scene.fog = new THREE.Fog('#02040a', 8, 22);
+
+        const camera = new THREE.PerspectiveCamera(
+            50, container.clientWidth / Math.max(container.clientHeight, 1), 0.3, 25
+        );
+        camera.position.set(1.0, 0.5, 7.4);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = false;
+        container.appendChild(renderer.domElement);
+
+        const C1 = '#d4885c', C2 = '#5d9ec6', C3 = '#c77d9f';
+        const C_REF = '#3a4a5c', C_GLINT = '#8898aa';
+        const R = 2.6;
+
+        // 三对极点：在坐标轴上，球面内
+        const PZ = new THREE.Vector3(0, 0, 1.8);
+        const QZ = new THREE.Vector3(0, 0, -1.8);
+        const PX = new THREE.Vector3(1.8, 0, 0);
+        const QX = new THREE.Vector3(-1.8, 0, 0);
+        const PY = new THREE.Vector3(0, 1.8, 0);
+        const QY = new THREE.Vector3(0, -1.8, 0);
+
+        const NUM_CIRCLES = 18;
+        const CIRCLE_SAMPLES = 240;
+
+        // 生成一族Apollonian圆：球面上满足 |X-P| / |X-Q| = k 的点
+        // 这等价于球面x²+y²+z²=R²与平面 n·X = d 的交线
+        // 其中 n = k²Q - P，d = (k²|Q|² - |P|² + R²(k²-1)) / 2
+        function createApollonianCircles(P, Q, colorHex, opacity) {
+            const group = new THREE.Group();
+            const kValues = [];
+            const kMin = 0.35, kMax = 2.85;
+            for (let i = 0; i < NUM_CIRCLES; i++) {
+                const t = i / (NUM_CIRCLES - 1);
+                kValues.push(kMin * Math.pow(kMax / kMin, t));
+            }
+
+            for (const k of kValues) {
+                const k2 = k * k;
+                const nx = k2 * Q.x - P.x;
+                const ny = k2 * Q.y - P.y;
+                const nz = k2 * Q.z - P.z;
+                const nLen = Math.sqrt(nx*nx + ny*ny + nz*nz);
+                if (nLen < 1e-9) continue;
+
+                const n = new THREE.Vector3(nx/nLen, ny/nLen, nz/nLen);
+                const d = (k2 * (Q.x*Q.x+Q.y*Q.y+Q.z*Q.z) - (P.x*P.x+P.y*P.y+P.z*P.z) + R*R*(k2-1)) / (2 * nLen);
+
+                // 圆心在平面法向上距原点d处，半径r_c = sqrt(R² - d²)
+                const rAbs = Math.abs(d);
+                if (rAbs >= R - 0.015) continue;
+                const r_c = Math.sqrt(Math.max(0.001, R*R - d*d));
+                const center = n.clone().multiplyScalar(d);
+
+                // 构造平面上两个正交方向
+                let u, v;
+                if (Math.abs(n.x) < 0.9) {
+                    u = new THREE.Vector3(-n.y, n.x, 0).normalize();
+                } else {
+                    u = new THREE.Vector3(0, -n.z, n.y).normalize();
+                }
+                v = new THREE.Vector3().crossVectors(n, u).normalize();
+
+                const pts = [];
+                for (let j = 0; j <= CIRCLE_SAMPLES; j++) {
+                    const angle = (j / CIRCLE_SAMPLES) * Math.PI * 2;
+                    const pt = center.clone()
+                        .add(u.clone().multiplyScalar(r_c * Math.cos(angle)))
+                        .add(v.clone().multiplyScalar(r_c * Math.sin(angle)));
+                    pts.push(pt);
+                }
+
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(colorHex),
+                    transparent: true, opacity: opacity, depthWrite: true
+                });
+                group.add(new THREE.Line(geom, mat));
+            }
+            return group;
+        }
+
+        console.log('生成z轴Apollonian圆族...');
+        const groupZ = createApollonianCircles(PZ, QZ, C1, 0.58);
+        console.log('生成x轴Apollonian圆族...');
+        const groupX = createApollonianCircles(PX, QX, C2, 0.55);
+        console.log('生成y轴Apollonian圆族...');
+        const groupY = createApollonianCircles(PY, QY, C3, 0.56);
+
+        const mainGroup = new THREE.Group();
+        mainGroup.add(groupZ);
+        mainGroup.add(groupX);
+        mainGroup.add(groupY);
+        scene.add(mainGroup);
+
+        console.log('z族圆数:', groupZ.children.length, 'x族:', groupX.children.length, 'y族:', groupY.children.length);
+
+        // 参考球面线框
+        function createSphereWireframe(radius, colorHex, opacity) {
+            const group = new THREE.Group();
+            const segs = 180;
+            const gen = (f) => {
+                const pts = [];
+                for (let i = 0; i <= segs; i++) pts.push(f((i/segs)*Math.PI*2));
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(colorHex),
+                    transparent: true, opacity: opacity, depthWrite: true
+                });
+                group.add(new THREE.Line(geom, mat));
+            };
+            gen((a) => new THREE.Vector3(Math.cos(a)*radius, Math.sin(a)*radius, 0));
+            gen((a) => new THREE.Vector3(Math.cos(a)*radius, 0, Math.sin(a)*radius));
+            gen((a) => new THREE.Vector3(0, Math.cos(a)*radius, Math.sin(a)*radius));
+            for (const z of [-radius*0.5, radius*0.5]) {
+                const r = Math.sqrt(radius*radius - z*z);
+                const pts = [];
+                for (let i = 0; i <= segs; i++) {
+                    const a = (i/segs)*Math.PI*2;
+                    pts.push(new THREE.Vector3(Math.cos(a)*r, z, Math.sin(a)*r));
+                }
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(colorHex),
+                    transparent: true, opacity: opacity*0.6, depthWrite: true
+                });
+                group.add(new THREE.Line(geom, mat));
+            }
+            return group;
+        }
+        const sphereRef = createSphereWireframe(R, C_REF, 0.22);
+        scene.add(sphereRef);
+
+        // 轴端点光点
+        (() => {
+            const sz = 0.055;
+            const axes = [[R,0,0],[-R,0,0],[0,R,0],[0,-R,0],[0,0,R],[0,0,-R]];
+            const gGroup = new THREE.Group();
+            axes.forEach(([ax,ay,az]) => {
+                const pt = new THREE.Vector3(ax, ay, az);
+                [[-sz,0,0],[sz,0,0],[0,-sz,0],[0,sz,0],[0,0,-sz],[0,0,sz]].forEach(([dx,dy,dz]) => {
+                    const g = new THREE.BufferGeometry().setFromPoints([pt.clone().add(new THREE.Vector3(dx,dy,dz)), pt]);
+                    const m = new THREE.LineBasicMaterial({ color: new THREE.Color(C_GLINT), transparent:true, opacity:0.5, depthWrite:true });
+                    gGroup.add(new THREE.Line(g, m));
+                });
+            });
+            mainGroup.add(gGroup);
+        })();
+
+        // 原点光点
+        (() => {
+            const sz = 0.08;
+            const g = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-sz,0,0),new THREE.Vector3(sz,0,0),new THREE.Vector3(0,-sz,0),new THREE.Vector3(0,sz,0),new THREE.Vector3(0,0,-sz),new THREE.Vector3(0,0,sz)]);
+            const m = new THREE.LineBasicMaterial({ color: new THREE.Color(C_GLINT), transparent:true, opacity:0.72, depthWrite:true });
+            scene.add(new THREE.LineSegments(g, m));
+        })();
+
+        // 极点光点（三对）
+        (() => {
+            const sz = 0.06;
+            const poles = [PZ, QZ, PX, QX, PY, QY];
+            const gGroup = new THREE.Group();
+            poles.forEach(pt => {
+                [[-sz,0,0],[sz,0,0],[0,-sz,0],[0,sz,0],[0,0,-sz],[0,0,sz]].forEach(([dx,dy,dz]) => {
+                    const g = new THREE.BufferGeometry().setFromPoints([pt.clone().add(new THREE.Vector3(dx,dy,dz)), pt]);
+                    const m = new THREE.LineBasicMaterial({ color: new THREE.Color(C_GLINT), transparent:true, opacity:0.65, depthWrite:true });
+                    gGroup.add(new THREE.Line(g, m));
+                });
+            });
+            mainGroup.add(gGroup);
+        })();
+
+        // 动画循环（绝对时间）
+        const startTime = performance.now();
+        let frameCount = 0;
+        let currentTime = 0;
+
+        function animate(now) {
+            requestAnimationFrame(animate);
+            const elapsed = (now - startTime) / 1000;
+            if (elapsed <= 0) { renderer.render(scene, camera); return; }
+            currentTime = elapsed;
+            frameCount++;
+            if (frameCount === 1 || frameCount % 180 === 0) {
+                console.log(`[动画运行中] 帧:${frameCount} 时间:${currentTime.toFixed(2)}s 圆:${groupZ.children.length+groupX.children.length+groupY.children.length}`);
+            }
+
+            mainGroup.rotation.y = currentTime * 0.28;
+            mainGroup.rotation.x = currentTime * 0.15 + Math.sin(currentTime * 0.23) * 0.2;
+            mainGroup.rotation.z = Math.cos(currentTime * 0.18) * 0.12;
+            sphereRef.rotation.copy(mainGroup.rotation);
+
+            const camX = 1.0 + Math.sin(currentTime * 0.14) * 0.5;
+            const camY = 0.5 + Math.cos(currentTime * 0.17) * 0.45;
+            const camZ = 7.4 + Math.sin(currentTime * 0.11) * 0.45;
+            camera.position.set(camX, camY, camZ);
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth, h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth, h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 100));
+
+        console.log('=== 球面Apollonian圆族 · 距离比同心圆网 ===');
+        console.log('z族(暖金):', groupZ.children.length, 'x族(冰蓝):', groupX.children.length, 'y族(玫瑰粉):', groupY.children.length);
+        console.log('总圆数:', groupZ.children.length + groupX.children.length + groupY.children.length);
+        console.log('✅ 初始帧渲染完成，启动绝对时间动画循环...');
+
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VORTEX · 粒子漩涡</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #0a0a16;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2;
+            text-align: center;
+            pointer-events: none;
+            opacity: 0.55;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+
+        .overlay:hover {
+            opacity: 0.9;
+        }
+
+        .title {
+            color: rgba(230, 225, 255, 0.8);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 20px rgba(140, 120, 240, 0.5);
+        }
+
+        .hint {
+            color: rgba(185, 175, 215, 0.5);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+
+        @media (max-width: 768px) {
+            .overlay {
+                bottom: 18px;
+            }
+            .title {
+                font-size: 8px;
+                letter-spacing: 0.45em;
+            }
+            .hint {
+                font-size: 6px;
+                letter-spacing: 0.22em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <div class="overlay">
+        <div class="title">Vortex</div>
+        <div class="hint">move · click</div>
+    </div>
+    <script>
+        (function() {
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            let centerX, centerY;
+            let particles = [];
+            let mouse = { x: -9999, y: -9999, active: false };
+            let time = 0;
+            let colorShift = 0;
+            let burstParticles = [];
+
+            const PARTICLE_COUNT = () => Math.max(180, Math.min(380, Math.floor(W * H / 2600)));
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                centerX = W / 2;
+                centerY = H / 2;
+                ctx.fillStyle = '#0a0a16';
+                ctx.fillRect(0, 0, W, H);
+            }
+
+            class Particle {
+                constructor() {
+                    this.orbitRadius = Math.random() * Math.max(W, H) * 0.55;
+                    this.orbitAngle = Math.random() * Math.PI * 2;
+                    this.orbitSpeed = (0.15 + Math.random() * 0.5) * (Math.random() < 0.3 ? -1 : 1);
+                    this.size = 1.0 + Math.random() * 2.0;
+                    this.hue = 210 + Math.random() * 70 - 35;
+                    this.saturation = 60 + Math.random() * 30;
+                    this.brightness = 0.5 + Math.random() * 0.4;
+                    this.z = Math.random() * 0.8 + 0.2; // 深度因子
+                    this.drift = Math.random() * Math.PI * 2;
+                }
+
+                update(dt) {
+                    // 基础轨道运动
+                    this.orbitAngle += this.orbitSpeed * dt * 0.04;
+                    // 轻微径向漂移
+                    const driftFactor = 0.15 + 0.1 * Math.sin(time * 0.5 + this.drift);
+                    this.orbitRadius += Math.sin(time * 0.7 + this.drift) * driftFactor * dt * 0.2;
+
+                    // 鼠标扰动
+                    if (mouse.active) {
+                        const dx = mouse.x - (centerX + this.orbitRadius * Math.cos(this.orbitAngle));
+                        const dy = mouse.y - (centerY + this.orbitRadius * Math.sin(this.orbitAngle));
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        if (dist < 130) {
+                            const force = (1 - dist / 130) * 0.08;
+                            this.orbitAngle += (dx / dist) * force * 0.5;
+                            this.orbitRadius += (dy / dist) * force * 3.0;
+                        }
+                    }
+
+                    // 碰撞避免
+                    for (const other of particles) {
+                        if (other === this) continue;
+                        const dx = (centerX + other.orbitRadius * Math.cos(other.orbitAngle)) - (centerX + this.orbitRadius * Math.cos(this.orbitAngle));
+                        const dy = (centerY + other.orbitRadius * Math.sin(other.orbitAngle)) - (centerY + this.orbitRadius * Math.sin(this.orbitAngle));
+                        const distSq = dx * dx + dy * dy;
+                        if (distSq < 36 && distSq > 0.01) {
+                            const dist = Math.sqrt(distSq);
+                            const push = (6 - dist) * 0.02;
+                            this.orbitRadius += (dx / dist) * push;
+                        }
+                    }
+
+                    // 边界限制
+                    const maxR = Math.max(W, H) * 0.55;
+                    if (this.orbitRadius < 10) this.orbitRadius = 10;
+                    if (this.orbitRadius > maxR) this.orbitRadius = maxR;
+                }
+
+                draw(ctx) {
+                    const x = centerX + this.orbitRadius * Math.cos(this.orbitAngle);
+                    const y = centerY + this.orbitRadius * Math.sin(this.orbitAngle);
+                    const distFromCenter = this.orbitRadius / (Math.max(W, H) * 0.55);
+
+                    const hue = this.hue + colorShift + distFromCenter * 50 + Math.sin(time + this.drift) * 20;
+                    const sat = this.saturation + distFromCenter * 20;
+                    const light = 45 + this.brightness * 20 + distFromCenter * 15;
+                    const alpha = 0.5 + this.brightness * 0.3;
+                    const size = this.size * (0.8 + 0.4 * Math.sin(time * 2 + this.drift));
+
+                    ctx.fillStyle = `hsla(${hue}, ${sat}%, ${light}%, ${alpha})`;
+                    ctx.beginPath();
+                    ctx.arc(x, y, size, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    if (this.size > 2.5) {
+                        const glowSize = size * 2.5;
+                        const grad = ctx.createRadialGradient(x, y, 0, x, y, glowSize);
+                        grad.addColorStop(0, `hsla(${hue}, ${sat}%, ${light + 15}%, ${alpha * 0.35})`);
+                        grad.addColorStop(1, 'transparent');
+                        ctx.fillStyle = grad;
+                        ctx.beginPath();
+                        ctx.arc(x, y, glowSize, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+                }
+            }
+
+            function initParticles() {
+                const count = PARTICLE_COUNT();
+                particles = [];
+                for (let i = 0; i < count; i++) {
+                    particles.push(new Particle());
+                }
+            }
+
+            function createBurst(x, y) {
+                const count = 25 + Math.floor(Math.random() * 20);
+                for (let i = 0; i < count; i++) {
+                    const angle = Math.random() * Math.PI * 2;
+                    const speed = 2 + Math.random() * 5;
+                    burstParticles.push({
+                        x,
+                        y,
+                        vx: Math.cos(angle) * speed,
+                        vy: Math.sin(angle) * speed,
+                        life: 0.6 + Math.random() * 0.5,
+                        maxLife: 1.2,
+                        size: 1.5 + Math.random() * 2.5,
+                        hue: 220 + colorShift + Math.random() * 50 - 25,
+                        alpha: 0.8,
+                    });
+                }
+                if (burstParticles.length > 180) burstParticles.splice(0, burstParticles.length - 180);
+            }
+
+            function updateBurstParticles(dt) {
+                for (let i = burstParticles.length - 1; i >= 0; i--) {
+                    const p = burstParticles[i];
+                    p.x += p.vx * dt;
+                    p.y += p.vy * dt;
+                    p.vx *= 0.95;
+                    p.vy *= 0.95;
+                    p.life -= 0.02 * dt;
+                    if (p.life <= 0) burstParticles.splice(i, 1);
+                }
+            }
+
+            function drawBurstParticles(ctx) {
+                for (const p of burstParticles) {
+                    const alpha = p.life * 0.7;
+                    const size = p.size * p.life;
+                    const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, size * 2);
+                    grad.addColorStop(0, `hsla(${p.hue}, 80%, 80%, ${alpha})`);
+                    grad.addColorStop(1, 'transparent');
+                    ctx.fillStyle = grad;
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, size * 2, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            function drawCursorGlow(ctx) {
+                if (!mouse.active) return;
+                const radius = 70;
+                const hue = 225 + colorShift;
+                const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                gradient.addColorStop(0, `hsla(${hue}, 65%, 75%, 0.06)`);
+                gradient.addColorStop(0.7, `hsla(${hue}, 55%, 70%, 0.02)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            function drawConnections(ctx) {
+                const maxDist = 70;
+                const maxDistSq = maxDist * maxDist;
+                let count = 0;
+                const maxLines = 600;
+                for (let i = 0; i < particles.length; i++) {
+                    for (let j = i + 1; j < particles.length; j++) {
+                        if (count > maxLines) return;
+                        const p1 = particles[i];
+                        const p2 = particles[j];
+                        const x1 = centerX + p1.orbitRadius * Math.cos(p1.orbitAngle);
+                        const y1 = centerY + p1.orbitRadius * Math.sin(p1.orbitAngle);
+                        const x2 = centerX + p2.orbitRadius * Math.cos(p2.orbitAngle);
+                        const y2 = centerY + p2.orbitRadius * Math.sin(p2.orbitAngle);
+                        const dx = x1 - x2;
+                        const dy = y1 - y2;
+                        if (Math.abs(dx) > maxDist || Math.abs(dy) > maxDist) continue;
+                        const distSq = dx * dx + dy * dy;
+                        if (distSq < maxDistSq) {
+                            const dist = Math.sqrt(distSq);
+                            const alpha = 0.08 * (1 - dist / maxDist);
+                            const hue = 225 + colorShift + (p1.hue + p2.hue) * 0.25;
+                            ctx.strokeStyle = `hsla(${hue}, 55%, 65%, ${alpha})`;
+                            ctx.lineWidth = 0.5;
+                            ctx.beginPath();
+                            ctx.moveTo(x1, y1);
+                            ctx.lineTo(x2, y2);
+                            ctx.stroke();
+                            count++;
+                        }
+                    }
+                }
+            }
+
+            let lastTime = 0;
+            let accumulator = 0;
+            const fixedStep = 1000 / 60;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+
+                accumulator += dt;
+                const steps = Math.min(Math.floor(accumulator / fixedStep), 3);
+                accumulator -= steps * fixedStep;
+
+                for (let s = 0; s < steps; s++) {
+                    time += 0.016;
+                    const dtNorm = fixedStep / 1000 * 60;
+                    for (const p of particles) {
+                        p.update(dtNorm);
+                    }
+                    updateBurstParticles(dtNorm);
+                }
+
+                ctx.fillStyle = 'rgba(10, 10, 22, 0.16)';
+                ctx.fillRect(0, 0, W, H);
+
+                drawConnections(ctx);
+
+                for (const p of particles) {
+                    p.draw(ctx);
+                }
+
+                drawBurstParticles(ctx);
+                drawCursorGlow(ctx);
+
+                requestAnimationFrame(animate);
+            }
+
+            function onMouseMove(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                createBurst(mouse.x, mouse.y);
+                colorShift += 35 + Math.random() * 30;
+                if (colorShift > 140) colorShift = -30;
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    createBurst(mouse.x, mouse.y);
+                    colorShift += 35 + Math.random() * 30;
+                    if (colorShift > 140) colorShift = -30;
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onResize() {
+                setupCanvas();
+                const targetCount = PARTICLE_COUNT();
+                if (targetCount !== particles.length) {
+                    while (particles.length < targetCount) {
+                        particles.push(new Particle());
+                    }
+                    if (particles.length > targetCount) {
+                        particles.length = targetCount;
+                    }
+                }
+                burstParticles = [];
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function init() {
+                setupCanvas();
+                initParticles();
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+                window.addEventListener('resize', onResize);
+
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#0a0a16';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+        })();
+    </script>
+</body>
+</html>

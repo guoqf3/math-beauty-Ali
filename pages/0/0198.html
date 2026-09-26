@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>环面结交织 · Hopf纤维化准周期曲线</title>
+    <style>
+        :root { --bg: #02040a; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'STSong', 'Songti SC', 'Noto Serif SC', 'SimSun', 'Times New Roman', serif;
+            -webkit-font-smoothing: antialiased;
+            height: 100vh; width: 100vw;
+            user-select: none; -webkit-user-select: none; cursor: default;
+        }
+        #canvas-container { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+        canvas { display: block; }
+        #title-overlay {
+            position: fixed; top: 24px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+        }
+        #title-overlay .title {
+            font-size: clamp(1.0rem, 2.2vw, 1.5rem); font-weight: 400; letter-spacing: 0.08em;
+            color: #cfc7b5; text-shadow: 0 0 42px rgba(200,180,150,0.5), 0 0 72px rgba(170,150,130,0.22);
+            line-height: 1.4; white-space: nowrap;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.48rem, 0.85vw, 0.64rem); font-weight: 300; letter-spacing: 0.12em;
+            color: #a09888; text-shadow: 0 0 16px rgba(155,145,125,0.32);
+            margin-top: 2px; white-space: nowrap;
+        }
+        #formula-overlay {
+            position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+            background: rgba(2,4,10,0.7); padding: 10px 22px; border-radius: 32px;
+            border: 1px solid rgba(175,155,135,0.16);
+            backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); max-width: 95vw;
+        }
+        #formula-overlay .formula {
+            font-size: clamp(0.38rem, 0.7vw, 0.56rem); font-weight: 300; letter-spacing: 0.04em;
+            color: #c5bdaa; text-shadow: 0 0 13px rgba(185,170,145,0.25);
+            line-height: 1.5; white-space: nowrap;
+        }
+        #formula-overlay .formula .c1 { color: #d4885c; }
+        #formula-overlay .formula .c2 { color: #5d9ec6; }
+        #formula-overlay .formula .c3 { color: #c77d9f; }
+        @media (max-width: 600px) {
+            #title-overlay { top: 14px; }
+            #formula-overlay { bottom: 10px; padding: 7px 12px; border-radius: 24px; }
+            #formula-overlay .formula { font-size: 0.32rem; white-space: normal; line-height: 1.3; }
+            #title-overlay .title { font-size: 0.68rem; }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="title-overlay">
+        <div class="title">环面结交织 · Hopf纤维化准周期曲线</div>
+        <div class="subtitle">TORUS KNOT WEAVING &nbsp;·&nbsp; STEREOGRAPHIC PROJECTION OF S³</div>
+    </div>
+    <div id="formula-overlay">
+        <div class="formula">
+            <span class="c1">(2,3):</span> z₁=cosθ e^{i(pt+δ)} z₂=sinθ e^{i(qt)} p/q=2/3 &nbsp;
+            <span class="c2">(3,5):</span> p/q=3/5 &nbsp;
+            <span class="c3">(5,8):</span> p/q=5/8
+            <br>
+            <span style="color:#9aa8b8;">θ∈[0.15,1.4] 每族8条 &nbsp;|&nbsp; t∈[0,2π] &nbsp;|&nbsp; 立体投影→ℝ³</span>
+        </div>
+    </div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#02040a');
+        scene.fog = new THREE.Fog('#02040a', 8, 18);
+
+        const camera = new THREE.PerspectiveCamera(
+            50,
+            container.clientWidth / Math.max(container.clientHeight, 1),
+            0.3,
+            22
+        );
+        camera.position.set(0.9, 0.45, 6.8);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = false;
+        container.appendChild(renderer.domElement);
+
+        // ==================== 颜色 ====================
+        const C1 = '#d4885c';
+        const C2 = '#5d9ec6';
+        const C3 = '#c77d9f';
+        const C_SPHERE = '#3a4a5c';
+        const C_GLINT = '#8898aa';
+
+        const SPHERE_R = 2.55;
+        const NUM_CURVES = 8;
+        const NUM_SAMPLES = 320;
+
+        // ==================== 环面结生成 ====================
+        function torusKnotCurves(p, q, numCurves, numSamples) {
+            const thetaValues = [];
+            const minTheta = 0.15;
+            const maxTheta = 1.4;
+            for (let k = 0; k < numCurves; k++) {
+                thetaValues.push(minTheta + (k / (numCurves - 1)) * (maxTheta - minTheta));
+            }
+            const allCurves = [];
+            for (const theta of thetaValues) {
+                const cosTheta = Math.cos(theta);
+                const sinTheta = Math.sin(theta);
+                const phase = (theta / maxTheta) * Math.PI * 2; // 不同初始相位
+                const pts = [];
+                const dt = (Math.PI * 2) / numSamples;
+                for (let i = 0; i <= numSamples; i++) {
+                    const t = i * dt;
+                    const alpha = p * t + phase;
+                    const beta = q * t;
+                    // S^3 点: (cosθ*e^{iα}, sinθ*e^{iβ}) = (x1+iy1, x2+iy2)
+                    const x1 = cosTheta * Math.cos(alpha);
+                    const y1 = cosTheta * Math.sin(alpha);
+                    const x2 = sinTheta * Math.cos(beta);
+                    const y2 = sinTheta * Math.sin(beta);
+                    // 立体投影 (投影点 (0,0,0,1)):
+                    const denom = 1 - y2;
+                    if (Math.abs(denom) < 0.001) {
+                        // 奇异点处理
+                        const s = denom >= 0 ? 1 : -1;
+                        pts.push(new THREE.Vector3(s * x1 * 50, s * y1 * 50, s * x2 * 50));
+                    } else {
+                        const scale = 2.8; // 缩放到视图范围
+                        const X = x1 / denom * scale;
+                        const Y = y1 / denom * scale;
+                        const Z = x2 / denom * scale;
+                        pts.push(new THREE.Vector3(X, Y, Z));
+                    }
+                }
+                allCurves.push(pts);
+            }
+            return allCurves;
+        }
+
+        // 软钳制函数
+        function softClampVec(vec, maxDist) {
+            const len = vec.length();
+            if (len > maxDist && len > 0.001) {
+                const excess = len - maxDist;
+                const clamped = maxDist + Math.log(1 + excess) * 1.2;
+                vec.normalize().multiplyScalar(Math.min(clamped, maxDist * 1.3));
+            }
+            return vec;
+        }
+
+        // 对生成的点进行钳制
+        function clampCurves(curves, maxDist) {
+            return curves.map(curve => curve.map(p => softClampVec(p.clone(), maxDist)));
+        }
+
+        const maxDist = SPHERE_R * 1.25;
+
+        console.log('生成环面结族 (2,3)...');
+        const curves23 = clampCurves(torusKnotCurves(2, 3, NUM_CURVES, NUM_SAMPLES), maxDist);
+        console.log('生成环面结族 (3,5)...');
+        const curves35 = clampCurves(torusKnotCurves(3, 5, NUM_CURVES, NUM_SAMPLES), maxDist);
+        console.log('生成环面结族 (5,8)...');
+        const curves58 = clampCurves(torusKnotCurves(5, 8, NUM_CURVES, NUM_SAMPLES), maxDist);
+
+        function createCurveGroup(curves, colorHex, opacity) {
+            const group = new THREE.Group();
+            for (const pts of curves) {
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(colorHex),
+                    transparent: true,
+                    opacity: opacity,
+                    depthWrite: true,
+                });
+                group.add(new THREE.Line(geom, mat));
+            }
+            return group;
+        }
+
+        const group1 = createCurveGroup(curves23, C1, 0.65);
+        const group2 = createCurveGroup(curves35, C2, 0.62);
+        const group3 = createCurveGroup(curves58, C3, 0.64);
+
+        const mainGroup = new THREE.Group();
+        mainGroup.add(group1);
+        mainGroup.add(group2);
+        mainGroup.add(group3);
+        scene.add(mainGroup);
+
+        // ==================== 参考球面线框 ====================
+        function createSphereWireframe(radius, colorHex, opacity) {
+            const group = new THREE.Group();
+            const segs = 180;
+            const circles = [
+                (a) => new THREE.Vector3(Math.cos(a) * radius, Math.sin(a) * radius, 0),
+                (a) => new THREE.Vector3(Math.cos(a) * radius, 0, Math.sin(a) * radius),
+                (a) => new THREE.Vector3(0, Math.cos(a) * radius, Math.sin(a) * radius),
+            ];
+            for (const gen of circles) {
+                const pts = [];
+                for (let i = 0; i <= segs; i++) pts.push(gen((i / segs) * Math.PI * 2));
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(colorHex),
+                    transparent: true,
+                    opacity: opacity,
+                    depthWrite: true,
+                });
+                group.add(new THREE.Line(geom, mat));
+            }
+            return group;
+        }
+        const sphereRef = createSphereWireframe(SPHERE_R, C_SPHERE, 0.22);
+        scene.add(sphereRef);
+
+        // ==================== 原点光点 ====================
+        function originGlint() {
+            const group = new THREE.Group();
+            const sz = 0.08;
+            const pairs = [
+                [new THREE.Vector3(-sz, 0, 0), new THREE.Vector3(sz, 0, 0)],
+                [new THREE.Vector3(0, -sz, 0), new THREE.Vector3(0, sz, 0)],
+                [new THREE.Vector3(0, 0, -sz), new THREE.Vector3(0, 0, sz)],
+            ];
+            for (const [a, b] of pairs) {
+                const g = new THREE.BufferGeometry().setFromPoints([a, b]);
+                const m = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(C_GLINT),
+                    transparent: true,
+                    opacity: 0.7,
+                    depthWrite: true,
+                });
+                group.add(new THREE.Line(g, m));
+            }
+            return group;
+        }
+        scene.add(originGlint());
+
+        // ==================== 动画循环 ====================
+        let time = 0;
+        let lastTime = performance.now();
+        let frameCount = 0;
+        let logTime = 0;
+
+        function animate(now) {
+            requestAnimationFrame(animate);
+            let delta = (now - lastTime) / 1000;
+            if (delta <= 0 || delta > 0.5) delta = 0.016;
+            lastTime = now;
+            time += delta;
+            frameCount++;
+            if (now - logTime > 4000) {
+                console.log(`[动画运行中] 帧:${frameCount} 时间:${time.toFixed(2)}s`);
+                logTime = now;
+            }
+
+            mainGroup.rotation.y = time * 0.28;
+            mainGroup.rotation.x = time * 0.16 + Math.sin(time * 0.24) * 0.2;
+            mainGroup.rotation.z = Math.cos(time * 0.2) * 0.14;
+
+            sphereRef.rotation.copy(mainGroup.rotation);
+
+            const camX = 0.9 + Math.sin(time * 0.15) * 0.5;
+            const camY = 0.45 + Math.cos(time * 0.18) * 0.45;
+            const camZ = 6.8 + Math.sin(time * 0.12) * 0.45;
+            camera.position.set(camX, camY, camZ);
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth;
+            const h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth;
+            const h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 100));
+
+        console.log('=== 环面结交织 · Hopf纤维化准周期曲线 ===');
+        console.log('(2,3)族:', curves23.length, '条');
+        console.log('(3,5)族:', curves35.length, '条');
+        console.log('(5,8)族:', curves58.length, '条');
+        console.log('总曲线数:', NUM_CURVES * 3);
+        console.log('✅ 初始帧渲染完成，启动绝对时间动画循环...');
+
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

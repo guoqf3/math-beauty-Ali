@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>球面正交弦网络 · 笛卡尔空间弦</title>
+    <style>
+        :root { --bg: #02040a; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'STSong', 'Songti SC', 'Noto Serif SC', 'SimSun', 'Times New Roman', serif;
+            -webkit-font-smoothing: antialiased;
+            height: 100vh; width: 100vw;
+            user-select: none; -webkit-user-select: none; cursor: default;
+        }
+        #canvas-container { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+        canvas { display: block; }
+        #title-overlay {
+            position: fixed; top: 22px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+        }
+        #title-overlay .title {
+            font-size: clamp(1.0rem, 2.2vw, 1.5rem); font-weight: 400; letter-spacing: 0.09em;
+            color: #cfc7b5; text-shadow: 0 0 42px rgba(200,180,150,0.5), 0 0 70px rgba(170,150,130,0.2);
+            line-height: 1.4; white-space: nowrap;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.46rem, 0.82vw, 0.62rem); font-weight: 300; letter-spacing: 0.12em;
+            color: #a09888; text-shadow: 0 0 14px rgba(155,145,125,0.3);
+            margin-top: 2px; white-space: nowrap;
+        }
+        #formula-overlay {
+            position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+            background: rgba(2,4,10,0.72); padding: 10px 24px; border-radius: 34px;
+            border: 1px solid rgba(175,155,135,0.18);
+            backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); max-width: 95vw;
+        }
+        #formula-overlay .formula {
+            font-size: clamp(0.36rem, 0.68vw, 0.54rem); font-weight: 300; letter-spacing: 0.04em;
+            color: #c5bdaa; text-shadow: 0 0 13px rgba(185,170,145,0.25);
+            line-height: 1.5; white-space: nowrap;
+        }
+        #formula-overlay .formula .c1 { color: #d4885c; }
+        #formula-overlay .formula .c2 { color: #5d9ec6; }
+        #formula-overlay .formula .c3 { color: #c77d9f; }
+        @media (max-width: 600px) {
+            #title-overlay { top: 14px; }
+            #formula-overlay { bottom: 10px; padding: 7px 12px; border-radius: 24px; }
+            #formula-overlay .formula { font-size: 0.32rem; white-space: normal; line-height: 1.3; }
+            #title-overlay .title { font-size: 0.68rem; }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="title-overlay">
+        <div class="title">球面正交弦网络 · 笛卡尔空间弦</div>
+        <div class="subtitle">ORTHOGONAL CHORD NETWORK &nbsp;·&nbsp; CARTESIAN GRID WITHIN A SPHERE</div>
+    </div>
+    <div id="formula-overlay">
+        <div class="formula">
+            <span class="c1">𝒞ₓ:</span> {(x,y₀,z₀) | x²≤R²−y₀²−z₀²} &nbsp;
+            <span class="c2">𝒞ᵧ:</span> {(x₀,y,z₀) | y²≤R²−x₀²−z₀²} &nbsp;
+            <span class="c3">𝒞₂:</span> {(x₀,y₀,z) | z²≤R²−x₀²−y₀²}
+            <br>
+            <span style="color:#9aa8b8;">x₀,y₀,z₀∈[−2.5,2.5] 步长0.38 | 球半径R=2.6 | 约400+弦 | 绝对时间驱动</span>
+        </div>
+    </div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#02040a');
+        scene.fog = new THREE.Fog('#02040a', 8, 22);
+
+        const camera = new THREE.PerspectiveCamera(
+            50, container.clientWidth / Math.max(container.clientHeight, 1), 0.3, 25
+        );
+        camera.position.set(0.8, 0.4, 7.2);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = false;
+        container.appendChild(renderer.domElement);
+
+        // ==================== 常数 ====================
+        const C1 = '#d4885c', C2 = '#5d9ec6', C3 = '#c77d9f';
+        const C_REF = '#3a4a5c', C_GLINT = '#8898aa';
+        const R = 2.6;
+        const R2 = R * R;
+        const STEP = 0.38;
+        const MAX_VAL = 2.5;
+        const gridVals = [];
+        for (let v = -MAX_VAL; v <= MAX_VAL + 0.001; v += STEP) {
+            gridVals.push(parseFloat(v.toFixed(10)));
+        }
+
+        // ==================== 生成正交弦 ====================
+        function generateChords(axis) {
+            const segments = [];
+            for (const v1 of gridVals) {
+                for (const v2 of gridVals) {
+                    const r2 = R2 - v1 * v1 - v2 * v2;
+                    if (r2 <= 0.001) continue;
+                    const half = Math.sqrt(r2);
+                    let pA, pB;
+                    if (axis === 'x') {
+                        pA = new THREE.Vector3(-half, v1, v2);
+                        pB = new THREE.Vector3(half, v1, v2);
+                    } else if (axis === 'y') {
+                        pA = new THREE.Vector3(v1, -half, v2);
+                        pB = new THREE.Vector3(v1, half, v2);
+                    } else {
+                        pA = new THREE.Vector3(v1, v2, -half);
+                        pB = new THREE.Vector3(v1, v2, half);
+                    }
+                    segments.push(pA, pB);
+                }
+            }
+            return segments;
+        }
+
+        console.log('生成X方向弦...');
+        const segsX = generateChords('x');
+        console.log('生成Y方向弦...');
+        const segsY = generateChords('y');
+        console.log('生成Z方向弦...');
+        const segsZ = generateChords('z');
+        console.log('X弦:', segsX.length/2, 'Y弦:', segsY.length/2, 'Z弦:', segsZ.length/2);
+
+        // ==================== 创建线段 ====================
+        function createChordSegments(segments, colorHex, opacity) {
+            if (segments.length === 0) return new THREE.Group();
+            const verts = [];
+            for (const pt of segments) {
+                verts.push(pt.x, pt.y, pt.z);
+            }
+            const geom = new THREE.BufferGeometry();
+            geom.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+            const mat = new THREE.LineBasicMaterial({
+                color: new THREE.Color(colorHex),
+                transparent: true, opacity: opacity, depthWrite: true
+            });
+            return new THREE.LineSegments(geom, mat);
+        }
+
+        const linesX = createChordSegments(segsX, C1, 0.65);
+        const linesY = createChordSegments(segsY, C2, 0.62);
+        const linesZ = createChordSegments(segsZ, C3, 0.63);
+        const mainGroup = new THREE.Group();
+        mainGroup.add(linesX);
+        mainGroup.add(linesY);
+        mainGroup.add(linesZ);
+        scene.add(mainGroup);
+
+        // ==================== 参考球面线框 ====================
+        function createSphereWireframe(radius, colorHex, opacity) {
+            const group = new THREE.Group();
+            const segs = 180;
+            const gen = (f) => {
+                const pts = [];
+                for (let i = 0; i <= segs; i++) pts.push(f((i / segs) * Math.PI * 2));
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(colorHex),
+                    transparent: true, opacity: opacity, depthWrite: true
+                });
+                group.add(new THREE.Line(geom, mat));
+            };
+            gen((a) => new THREE.Vector3(Math.cos(a) * radius, Math.sin(a) * radius, 0));
+            gen((a) => new THREE.Vector3(Math.cos(a) * radius, 0, Math.sin(a) * radius));
+            gen((a) => new THREE.Vector3(0, Math.cos(a) * radius, Math.sin(a) * radius));
+            const addLat = (zVal) => {
+                const r = Math.sqrt(Math.max(0.001, radius * radius - zVal * zVal));
+                const pts = [];
+                for (let i = 0; i <= segs; i++) {
+                    const a = (i / segs) * Math.PI * 2;
+                    pts.push(new THREE.Vector3(Math.cos(a) * r, zVal, Math.sin(a) * r));
+                }
+                const g = new THREE.BufferGeometry().setFromPoints(pts);
+                const m = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(colorHex),
+                    transparent: true, opacity: opacity * 0.6, depthWrite: true
+                });
+                group.add(new THREE.Line(g, m));
+            };
+            addLat(radius * 0.5);
+            addLat(-radius * 0.5);
+            return group;
+        }
+        const sphereRef = createSphereWireframe(R, C_REF, 0.24);
+        scene.add(sphereRef);
+
+        // ==================== 球面网格结构光点 ====================
+        function createGridGlints(radius, step, colorHex, sz) {
+            const group = new THREE.Group();
+            const vals = [];
+            for (let v = -radius; v <= radius + 0.001; v += step) vals.push(v);
+            for (const v1 of vals) {
+                for (const v2 of vals) {
+                    const r2 = radius * radius - v1 * v1 - v2 * v2;
+                    if (r2 > 0.02) {
+                        const h = Math.sqrt(r2);
+                        for (const sign of [-1, 1]) {
+                            const pt = new THREE.Vector3(sign * h, v1, v2);
+                            if (pt.length() < radius * 1.02 && pt.length() > radius * 0.98) {
+                                [
+                                    [-sz, 0, 0],
+                                    [sz, 0, 0],
+                                    [0, -sz, 0],
+                                    [0, sz, 0],
+                                    [0, 0, -sz],
+                                    [0, 0, sz]
+                                ].forEach(([dx, dy, dz]) => {
+                                    const g = new THREE.BufferGeometry().setFromPoints([
+                                        pt.clone().add(new THREE.Vector3(dx, dy, dz)), pt
+                                    ]);
+                                    const m = new THREE.LineBasicMaterial({
+                                        color: new THREE.Color(colorHex),
+                                        transparent: true,
+                                        opacity: 0.35,
+                                        depthWrite: true
+                                    });
+                                    group.add(new THREE.Line(g, m));
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            return group;
+        }
+        const glintGroup = createGridGlints(R, STEP * 2, C_GLINT, 0.04);
+        mainGroup.add(glintGroup);
+
+        // ==================== 轴端点光点 ====================
+        (() => {
+            const sz = 0.06;
+            const axes = [
+                [R, 0, 0],
+                [-R, 0, 0],
+                [0, R, 0],
+                [0, -R, 0],
+                [0, 0, R],
+                [0, 0, -R]
+            ];
+            const gGroup = new THREE.Group();
+            axes.forEach(([ax, ay, az]) => {
+                const pt = new THREE.Vector3(ax, ay, az);
+                [
+                    [-sz, 0, 0],
+                    [sz, 0, 0],
+                    [0, -sz, 0],
+                    [0, sz, 0],
+                    [0, 0, -sz],
+                    [0, 0, sz]
+                ].forEach(([dx, dy, dz]) => {
+                    const g = new THREE.BufferGeometry().setFromPoints([pt.clone().add(
+                        new THREE.Vector3(dx, dy, dz)), pt]);
+                    const m = new THREE.LineBasicMaterial({
+                        color: new THREE.Color(C_GLINT),
+                        transparent: true,
+                        opacity: 0.55,
+                        depthWrite: true
+                    });
+                    gGroup.add(new THREE.Line(g, m));
+                });
+            });
+            mainGroup.add(gGroup);
+        })();
+
+        // ==================== 原点光点 ====================
+        (() => {
+            const sz = 0.08;
+            const g = new THREE.BufferGeometry().setFromPoints([
+                new THREE.Vector3(-sz, 0, 0),
+                new THREE.Vector3(sz, 0, 0),
+                new THREE.Vector3(0, -sz, 0),
+                new THREE.Vector3(0, sz, 0),
+                new THREE.Vector3(0, 0, -sz),
+                new THREE.Vector3(0, 0, sz)
+            ]);
+            const m = new THREE.LineBasicMaterial({
+                color: new THREE.Color(C_GLINT),
+                transparent: true,
+                opacity: 0.75,
+                depthWrite: true
+            });
+            scene.add(new THREE.LineSegments(g, m));
+        })();
+
+        // ==================== 动画循环（绝对时间） ====================
+        const startTime = performance.now();
+        let frameCount = 0;
+        let currentTime = 0;
+        const totalChords = (segsX.length + segsY.length + segsZ.length) / 2;
+
+        function animate(now) {
+            requestAnimationFrame(animate);
+            const elapsed = (now - startTime) / 1000;
+            if (elapsed <= 0) { renderer.render(scene, camera); return; }
+            currentTime = elapsed;
+            frameCount++;
+            if (frameCount === 1 || frameCount % 180 === 0) {
+                console.log(`[动画运行中] 帧:${frameCount} 时间:${currentTime.toFixed(2)}s 弦:${totalChords}`);
+            }
+
+            // 主结构绕对角线旋转
+            mainGroup.rotation.y = currentTime * 0.26;
+            mainGroup.rotation.x = currentTime * 0.14 + Math.sin(currentTime * 0.23) * 0.2;
+            mainGroup.rotation.z = Math.cos(currentTime * 0.18) * 0.12;
+
+            // 参考球面同步旋转
+            sphereRef.rotation.copy(mainGroup.rotation);
+
+            // 相机轻柔游走
+            const camX = 0.8 + Math.sin(currentTime * 0.14) * 0.55;
+            const camY = 0.4 + Math.cos(currentTime * 0.17) * 0.48;
+            const camZ = 7.2 + Math.sin(currentTime * 0.11) * 0.48;
+            camera.position.set(camX, camY, camZ);
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        // ==================== 窗口调整 ====================
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth,
+                h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth,
+                h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 100));
+
+        // ==================== 启动 ====================
+        console.log('=== 球面正交弦网络 · 笛卡尔空间弦 ===');
+        console.log('X弦:', segsX.length / 2, 'Y弦:', segsY.length / 2, 'Z弦:', segsZ.length / 2);
+        console.log('总弦数:', totalChords);
+        console.log('网格步长:', STEP, '球半径:', R);
+        console.log('✅ 初始帧渲染完成，启动绝对时间动画循环...');
+
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

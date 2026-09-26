@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HONEY · 蜂巢光效</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #0a0a18;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            right: 32px;
+            z-index: 2;
+            text-align: right;
+            pointer-events: none;
+            opacity: 0.55;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+
+        .overlay:hover {
+            opacity: 0.9;
+        }
+
+        .title {
+            color: rgba(235, 225, 255, 0.8);
+            font-size: 11px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 18px rgba(160, 130, 240, 0.5);
+        }
+
+        .hint {
+            color: rgba(190, 180, 220, 0.5);
+            font-size: 8px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+
+        @media (max-width: 768px) {
+            .overlay {
+                bottom: 18px;
+                right: 20px;
+            }
+            .title {
+                font-size: 9px;
+                letter-spacing: 0.45em;
+            }
+            .hint {
+                font-size: 7px;
+                letter-spacing: 0.25em;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="canvas"></canvas>
+
+    <div class="overlay">
+        <div class="title">Honey</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script>
+        (function() {
+            // ─── 画布初始化 ───────────────────────────────────────────────
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            let hexes = [];           // 存储六边形数据 {x, y, baseHue, baseSat, baseLight}
+            let ripples = [];         // 点击波纹
+            let mouse = { x: -9999, y: -9999, active: false };
+            let time = 0;
+            let colorShift = 0;
+
+            // 六边形参数
+            let hexRadius = 22;       // 六边形外接圆半径
+            let hexWidth = 0;
+            let hexHeight = 0;
+            let cols = 0, rows = 0;
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                ctx.fillStyle = '#0a0a18';
+                ctx.fillRect(0, 0, W, H);
+            }
+
+            // ─── 计算六边形网格 ─────────────────────────────────────────
+            function initHexGrid() {
+                // 根据屏幕尺寸调整六边形大小，确保数量适中
+                const targetHexCount = 500; // 目标六边形数量
+                const area = W * H;
+                // 六边形面积近似： (3*sqrt(3)/2) * r^2 ≈ 2.598 * r^2
+                // 目标面积 = area / targetHexCount
+                const targetAreaPerHex = area / targetHexCount;
+                hexRadius = Math.sqrt(targetAreaPerHex / 2.598);
+                hexRadius = Math.max(14, Math.min(40, hexRadius));
+
+                // 六边形排列参数
+                hexWidth = hexRadius * Math.sqrt(3);      // 水平间距
+                hexHeight = hexRadius * 1.5;               // 垂直间距
+
+                cols = Math.ceil(W / hexWidth) + 1;
+                rows = Math.ceil(H / hexHeight) + 1;
+
+                hexes = [];
+                // 预计算六边形顶点相对于中心的偏移（平顶六边形）
+                const angleOffset = -Math.PI / 6; // 平顶，第一个角在30度
+                const angleStep = Math.PI / 3;
+                for (let r = 0; r < rows; r++) {
+                    for (let c = 0; c < cols; c++) {
+                        // 偶数行偏移 half width
+                        const offsetX = (r % 2 === 0) ? 0 : hexWidth / 2;
+                        const x = c * hexWidth + offsetX + hexWidth / 2;
+                        const y = r * hexHeight + hexRadius;
+                        // 仅保留在屏幕内或靠近屏幕的六边形（外扩一个半径）
+                        if (x > -hexRadius * 2 && x < W + hexRadius * 2 && y > -hexRadius * 2 && y < H + hexRadius * 2) {
+                            hexes.push({
+                                x: x,
+                                y: y,
+                                baseHue: 210 + Math.random() * 60 - 30,
+                                baseSat: 55 + Math.random() * 20,
+                                baseLight: 30 + Math.random() * 15,
+                            });
+                        }
+                    }
+                }
+            }
+
+            // ─── 获取六边形顶点（平顶） ────────────────────────────────
+            function getHexVertices(cx, cy, radius) {
+                const vertices = [];
+                const startAngle = -Math.PI / 6; // 平顶，第一个角在30度
+                for (let i = 0; i < 6; i++) {
+                    const angle = startAngle + i * Math.PI / 3;
+                    vertices.push({
+                        x: cx + radius * Math.cos(angle),
+                        y: cy + radius * Math.sin(angle)
+                    });
+                }
+                return vertices;
+            }
+
+            // ─── 创建波纹 ───────────────────────────────────────────────
+            function createRipple(x, y) {
+                ripples.push({
+                    x: x,
+                    y: y,
+                    radius: 10,
+                    maxRadius: Math.max(W, H) * 0.7,
+                    strength: 1.0,
+                    decay: 0.012,
+                    growth: 5.0 + Math.random() * 2.5,
+                    hue: 220 + colorShift + Math.random() * 60 - 30,
+                });
+                if (ripples.length > 8) ripples.shift();
+            }
+
+            function updateRipples(dt) {
+                for (let i = ripples.length - 1; i >= 0; i--) {
+                    const r = ripples[i];
+                    r.radius += r.growth * dt;
+                    r.strength -= r.decay * dt;
+                    if (r.strength <= 0 || r.radius > r.maxRadius) {
+                        ripples.splice(i, 1);
+                    }
+                }
+            }
+
+            // ─── 绘制六边形 ─────────────────────────────────────────────
+            function drawHexes(ctx) {
+                const mouseRadius = 180;
+                const mouseRadiusSq = mouseRadius * mouseRadius;
+
+                for (let i = 0; i < hexes.length; i++) {
+                    const h = hexes[i];
+                    const dx = h.x - mouse.x;
+                    const dy = h.y - mouse.y;
+                    const distSq = dx * dx + dy * dy;
+
+                    // 基础亮度：微弱呼吸
+                    const breath = 0.08 + 0.05 * Math.sin(time * 1.5 + h.x * 0.03 + h.y * 0.03);
+                    let intensity = breath;
+
+                    // 鼠标影响
+                    if (mouse.active && distSq < mouseRadiusSq) {
+                        const dist = Math.sqrt(distSq);
+                        const falloff = 1 - dist / mouseRadius;
+                        intensity += falloff * 0.8;
+                    }
+
+                    // 波纹影响
+                    for (const r of ripples) {
+                        const rx = h.x - r.x;
+                        const ry = h.y - r.y;
+                        const dist = Math.sqrt(rx * rx + ry * ry);
+                        const bandWidth = 35 + r.radius * 0.1;
+                        const innerR = Math.max(0, r.radius - bandWidth);
+                        const outerR = r.radius + bandWidth;
+                        if (dist > innerR && dist < outerR) {
+                            const bandIntensity = (1 - Math.abs(dist - r.radius) / bandWidth) * r.strength;
+                            intensity += bandIntensity * 0.9;
+                        }
+                    }
+
+                    // 限制强度
+                    intensity = Math.max(0, Math.min(1, intensity));
+
+                    // 颜色计算
+                    const hue = h.baseHue + colorShift + intensity * 25;
+                    const sat = h.baseSat + intensity * 20;
+                    const light = h.baseLight + intensity * 40;
+                    const alpha = 0.6 + intensity * 0.4;
+
+                    // 绘制六边形
+                    const radius = hexRadius * (0.9 + intensity * 0.1); // 略微膨胀
+                    const vertices = getHexVertices(h.x, h.y, radius);
+
+                    ctx.fillStyle = `hsla(${hue}, ${sat}%, ${light}%, ${alpha})`;
+                    ctx.beginPath();
+                    ctx.moveTo(vertices[0].x, vertices[0].y);
+                    for (let v = 1; v < 6; v++) {
+                        ctx.lineTo(vertices[v].x, vertices[v].y);
+                    }
+                    ctx.closePath();
+                    ctx.fill();
+
+                    // 高亮描边（亮度较高时）
+                    if (intensity > 0.45) {
+                        ctx.strokeStyle = `hsla(${hue}, ${sat + 10}%, ${Math.min(85, light + 25)}%, ${(intensity - 0.45) * 0.8})`;
+                        ctx.lineWidth = 0.8;
+                        ctx.stroke();
+                    }
+                }
+            }
+
+            // ─── 绘制波纹圆环（装饰） ───────────────────────────────────
+            function drawRippleCircles(ctx) {
+                for (const r of ripples) {
+                    const alpha = r.strength * 0.25;
+                    ctx.strokeStyle = `hsla(${r.hue}, 70%, 75%, ${alpha})`;
+                    ctx.lineWidth = 1.8;
+                    ctx.beginPath();
+                    ctx.arc(r.x, r.y, r.radius, 0, Math.PI * 2);
+                    ctx.stroke();
+                }
+            }
+
+            // ─── 鼠标光晕 ───────────────────────────────────────────────
+            function drawCursorGlow(ctx) {
+                if (!mouse.active) return;
+                const radius = 80;
+                const hue = 220 + colorShift;
+                const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                gradient.addColorStop(0, `hsla(${hue}, 60%, 75%, 0.07)`);
+                gradient.addColorStop(0.7, `hsla(${hue}, 50%, 70%, 0.02)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // ─── 主循环 ─────────────────────────────────────────────────
+            let lastTime = 0;
+            let accumulator = 0;
+            const fixedStep = 1000 / 60;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+
+                accumulator += dt;
+                const steps = Math.min(Math.floor(accumulator / fixedStep), 3);
+                accumulator -= steps * fixedStep;
+
+                for (let s = 0; s < steps; s++) {
+                    time += 0.016;
+                    updateRipples(fixedStep / 1000 * 60);
+                }
+
+                // 清除画布
+                ctx.fillStyle = '#0a0a18';
+                ctx.fillRect(0, 0, W, H);
+
+                // 绘制六边形网格
+                drawHexes(ctx);
+
+                // 绘制波纹圆环
+                drawRippleCircles(ctx);
+
+                // 鼠标光晕
+                drawCursorGlow(ctx);
+
+                requestAnimationFrame(animate);
+            }
+
+            // ─── 交互事件 ───────────────────────────────────────────────
+            function onMouseMove(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                createRipple(mouse.x, mouse.y);
+                colorShift += 35 + Math.random() * 30;
+                if (colorShift > 160) colorShift = -30;
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    createRipple(mouse.x, mouse.y);
+                    colorShift += 35 + Math.random() * 30;
+                    if (colorShift > 160) colorShift = -30;
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onResize() {
+                setupCanvas();
+                initHexGrid();
+                ripples = [];
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+                initHexGrid();
+
+                // 初始添加少量波纹，避免画面完全静止
+                for (let i = 0; i < 2; i++) {
+                    createRipple(W * (0.3 + Math.random() * 0.4), H * (0.3 + Math.random() * 0.4));
+                }
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            // 确保初始背景填充
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#0a0a18';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+
+        })();
+    </script>
+</body>
+</html>

@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>生命幻境</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #0a0a10;
+            font-family: sans-serif;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="lifeCanvas"></canvas>
+    <script>
+        (function() {
+            'use strict';
+
+            const canvas = document.getElementById('lifeCanvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            // ---------- 配置参数 ----------
+            const CONFIG = {
+                cellSize: 10,              // 每个细胞的大小（像素）
+                updateInterval: 80,        // 更新间隔（毫秒）
+                mouseBrushRadius: 4,       // 鼠标笔刷半径（细胞数）
+                maxAge: 60,                // 最大年龄（用于颜色映射）
+                backgroundColor: '#0a0a10',
+                // 颜色方案：根据年龄从青色到紫色
+                hueMin: 160,
+                hueMax: 300,
+                saturation: 80,
+                lightnessMin: 40,
+                lightnessMax: 80,
+            };
+
+            let width = 0;
+            let height = 0;
+            let dpr = 1;
+            let cols = 0;
+            let rows = 0;
+            // 使用两个数组：current 和 next，存储细胞年龄（0表示死亡）
+            let current = [];
+            let next = [];
+            let mouseX = -9999;
+            let mouseY = -9999;
+            let mouseActive = false;
+            let targetMouseX = -9999;
+            let targetMouseY = -9999;
+            let smoothMouseX = -9999;
+            let smoothMouseY = -9999;
+            let animationId = null;
+            let lastTime = 0;
+            let lastUpdateTime = 0;
+            let time = 0;
+
+            // ---------- 初始化网格 ----------
+            function initGrid() {
+                cols = Math.ceil(width / CONFIG.cellSize);
+                rows = Math.ceil(height / CONFIG.cellSize);
+                current = new Array(rows);
+                next = new Array(rows);
+                for (let r = 0; r < rows; r++) {
+                    current[r] = new Uint8Array(cols);
+                    next[r] = new Uint8Array(cols);
+                }
+                // 随机初始化一些细胞
+                const initialDensity = 0.15;
+                for (let r = 0; r < rows; r++) {
+                    for (let c = 0; c < cols; c++) {
+                        if (Math.random() < initialDensity) {
+                            current[r][c] = 1; // 初始年龄为1
+                        }
+                    }
+                }
+            }
+
+            // ---------- 计算下一代 ----------
+            function updateGeneration() {
+                for (let r = 0; r < rows; r++) {
+                    for (let c = 0; c < cols; c++) {
+                        // 计算邻居数
+                        let neighbors = 0;
+                        for (let dr = -1; dr <= 1; dr++) {
+                            for (let dc = -1; dc <= 1; dc++) {
+                                if (dr === 0 && dc === 0) continue;
+                                const nr = r + dr;
+                                const nc = c + dc;
+                                if (nr >= 0 && nr < rows && nc >= 0 && nc < cols && current[nr][nc] > 0) {
+                                    neighbors++;
+                                }
+                            }
+                        }
+                        // 生命游戏规则 B3/S23
+                        if (current[r][c] > 0) {
+                            // 存活细胞
+                            if (neighbors === 2 || neighbors === 3) {
+                                // 存活，年龄增加
+                                next[r][c] = Math.min(current[r][c] + 1, CONFIG.maxAge);
+                            } else {
+                                // 死亡
+                                next[r][c] = 0;
+                            }
+                        } else {
+                            // 死细胞
+                            if (neighbors === 3) {
+                                // 新生
+                                next[r][c] = 1;
+                            } else {
+                                next[r][c] = 0;
+                            }
+                        }
+                    }
+                }
+                // 交换数组
+                const temp = current;
+                current = next;
+                next = temp;
+            }
+
+            // ---------- 鼠标播种生命 ----------
+            function seedAtMouse() {
+                if (mouseActive && smoothMouseX > -1000) {
+                    const c = Math.floor(smoothMouseX / CONFIG.cellSize);
+                    const r = Math.floor(smoothMouseY / CONFIG.cellSize);
+                    const brushRadius = CONFIG.mouseBrushRadius;
+                    for (let dr = -brushRadius; dr <= brushRadius; dr++) {
+                        for (let dc = -brushRadius; dc <= brushRadius; dc++) {
+                            const nr = r + dr;
+                            const nc = c + dc;
+                            if (nr >= 0 && nr < rows && nc >= 0 && nc < cols) {
+                                // 以一定概率播种
+                                if (Math.random() < 0.8) {
+                                    current[nr][nc] = Math.max(1, current[nr][nc]);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ---------- 调整画布尺寸 ----------
+            function resizeCanvas() {
+                dpr = Math.min(window.devicePixelRatio || 1, 2);
+                width = window.innerWidth;
+                height = window.innerHeight;
+                canvas.width = Math.floor(width * dpr);
+                canvas.height = Math.floor(height * dpr);
+                canvas.style.width = width + 'px';
+                canvas.style.height = height + 'px';
+                ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                ctx.fillStyle = CONFIG.backgroundColor;
+                ctx.fillRect(0, 0, width, height);
+                initGrid();
+                // 立即绘制一帧
+                drawGrid();
+            }
+
+            // ---------- 绘制网格 ----------
+            function drawGrid() {
+                ctx.fillStyle = CONFIG.backgroundColor;
+                ctx.fillRect(0, 0, width, height);
+                const cellW = CONFIG.cellSize;
+                const cellH = CONFIG.cellSize;
+
+                for (let r = 0; r < rows; r++) {
+                    for (let c = 0; c < cols; c++) {
+                        const age = current[r][c];
+                        if (age > 0) {
+                            // 根据年龄映射颜色
+                            const t = age / CONFIG.maxAge;
+                            const hue = CONFIG.hueMin + t * (CONFIG.hueMax - CONFIG.hueMin);
+                            const lightness = CONFIG.lightnessMin + t * (CONFIG.lightnessMax - CONFIG.lightnessMin);
+                            ctx.fillStyle = `hsl(${hue}, ${CONFIG.saturation}%, ${lightness}%)`;
+                            ctx.fillRect(c * cellW, r * cellH, cellW - 0.5, cellH - 0.5);
+                        }
+                    }
+                }
+            }
+
+            // ---------- 动画循环 ----------
+            function animate(timestamp) {
+                const now = performance.now();
+                if (lastTime === 0) {
+                    lastTime = now;
+                    lastUpdateTime = now;
+                }
+                const dt = now - lastTime;
+                lastTime = now;
+
+                // 平滑鼠标位置
+                if (mouseActive) {
+                    smoothMouseX += (targetMouseX - smoothMouseX) * 0.3;
+                    smoothMouseY += (targetMouseY - smoothMouseY) * 0.3;
+                }
+
+                // 每 updateInterval 毫秒更新一代
+                if (now - lastUpdateTime >= CONFIG.updateInterval) {
+                    updateGeneration();
+                    lastUpdateTime = now;
+                }
+
+                // 持续播种（鼠标移动时）
+                seedAtMouse();
+
+                // 绘制
+                drawGrid();
+
+                animationId = requestAnimationFrame(animate);
+            }
+
+            // ---------- 交互事件 ----------
+            function updateMousePosition(clientX, clientY) {
+                targetMouseX = clientX;
+                targetMouseY = clientY;
+                if (!mouseActive) {
+                    mouseActive = true;
+                    smoothMouseX = targetMouseX;
+                    smoothMouseY = targetMouseY;
+                }
+            }
+
+            function handleClick(clientX, clientY) {
+                // 点击随机化局部区域
+                const c = Math.floor(clientX / CONFIG.cellSize);
+                const r = Math.floor(clientY / CONFIG.cellSize);
+                const radius = 8; // 影响半径
+                for (let dr = -radius; dr <= radius; dr++) {
+                    for (let dc = -radius; dc <= radius; dc++) {
+                        const nr = r + dr;
+                        const nc = c + dc;
+                        if (nr >= 0 && nr < rows && nc >= 0 && nc < cols) {
+                            current[nr][nc] = Math.random() < 0.5 ? 1 : 0;
+                        }
+                    }
+                }
+            }
+
+            function setupEvents() {
+                window.addEventListener('mousemove', (e) => {
+                    updateMousePosition(e.clientX, e.clientY);
+                }, { passive: true });
+
+                window.addEventListener('mouseleave', () => {
+                    mouseActive = false;
+                    smoothMouseX = -9999;
+                    smoothMouseY = -9999;
+                });
+
+                window.addEventListener('mousedown', (e) => {
+                    handleClick(e.clientX, e.clientY);
+                });
+
+                window.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        updateMousePosition(touch.clientX, touch.clientY);
+                        handleClick(touch.clientX, touch.clientY);
+                    }
+                }, { passive: false });
+
+                window.addEventListener('touchmove', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        updateMousePosition(touch.clientX, touch.clientY);
+                    }
+                }, { passive: false });
+
+                window.addEventListener('touchend', () => {
+                    mouseActive = false;
+                    smoothMouseX = -9999;
+                    smoothMouseY = -9999;
+                });
+
+                window.addEventListener('resize', () => {
+                    resizeCanvas();
+                });
+
+                document.addEventListener('visibilitychange', () => {
+                    if (document.hidden) {
+                        if (animationId) {
+                            cancelAnimationFrame(animationId);
+                            animationId = null;
+                        }
+                        lastTime = 0;
+                    } else {
+                        if (!animationId) {
+                            lastTime = 0;
+                            animationId = requestAnimationFrame(animate);
+                        }
+                    }
+                });
+            }
+
+            // ---------- 启动 ----------
+            function init() {
+                resizeCanvas();
+                setupEvents();
+                lastTime = 0;
+                animationId = requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.__lifeGame = {
+                config: CONFIG,
+            };
+        })();
+    </script>
+</body>
+</html>

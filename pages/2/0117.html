@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TERRA · 地形网格</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #070710;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        .overlay {
+            position: fixed;
+            bottom: 26px;
+            left: 32px;
+            z-index: 2;
+            text-align: left;
+            pointer-events: none;
+            opacity: 0.55;
+            transition: opacity 0.8s ease;
+            mix-blend-mode: screen;
+        }
+
+        .overlay:hover {
+            opacity: 0.9;
+        }
+
+        .title {
+            color: rgba(220, 225, 240, 0.8);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.65em;
+            text-transform: uppercase;
+            margin-bottom: 4px;
+            text-shadow: 0 0 16px rgba(100, 120, 190, 0.4);
+        }
+
+        .hint {
+            color: rgba(160, 170, 200, 0.5);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+
+        @media (max-width: 768px) {
+            .overlay {
+                bottom: 16px;
+                left: 18px;
+            }
+            .title {
+                font-size: 8px;
+                letter-spacing: 0.45em;
+            }
+            .hint {
+                font-size: 6px;
+                letter-spacing: 0.22em;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="canvas"></canvas>
+
+    <div class="overlay">
+        <div class="title">Terra</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script>
+        (function() {
+            // ─── 画布初始化 ───────────────────────────────────────────────
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            let cols, rows;
+            let points = [];       // 存储网格点数据 { x, y, z, baseZ, velZ, phase, hueOffset }
+            let ripples = [];      // 点击波纹
+            let mouse = { x: -9999, y: -9999, px: -9999, py: -9999, active: false };
+            let time = 0;
+            let colorShift = 0;    // 点击切换色相偏移
+            let terrainScale = 1;  // 地形起伏缩放
+
+            // ─── 网格参数 ───────────────────────────────────────────────
+            const CELL_SIZE = 26;  // 网格间距（基准）
+            const BASE_AMP = 28;   // 基础地形振幅
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+                // 计算网格行列数
+                cols = Math.ceil(W / CELL_SIZE) + 2;
+                rows = Math.ceil(H / CELL_SIZE) + 2;
+
+                // 调整地形振幅以适应屏幕
+                const minDim = Math.min(W, H);
+                terrainScale = Math.max(0.7, Math.min(1.6, minDim / 700));
+
+                // 初始化网格点
+                initPoints();
+
+                // 填充深色背景
+                ctx.fillStyle = '#070710';
+                ctx.fillRect(0, 0, W, H);
+            }
+
+            function initPoints() {
+                points = [];
+                for (let r = 0; r < rows; r++) {
+                    for (let c = 0; c < cols; c++) {
+                        const x = (c - 1) * CELL_SIZE + CELL_SIZE * 0.5;
+                        const y = (r - 1) * CELL_SIZE + CELL_SIZE * 0.5;
+                        // 为每个点生成独特的相位和色相偏移
+                        const phase = (r * 0.61 + c * 0.37) * 0.9;
+                        const hueOffset = (r * 0.7 + c * 0.5) * 3.2;
+                        points.push({
+                            x: x,
+                            y: y,
+                            z: 0,
+                            baseZ: 0,
+                            velZ: 0,
+                            phase: phase,
+                            hueOffset: hueOffset,
+                        });
+                    }
+                }
+            }
+
+            // ─── 噪声场（伪3D地形高度）──────────────────────────────────
+            function getTerrainHeight(x, y, t) {
+                const nx = x * 0.012;
+                const ny = y * 0.012;
+                // 多层正弦波叠加，模拟连续地形
+                const h =
+                    Math.sin(nx * 2.1 + t * 0.35) * 0.38 +
+                    Math.cos(ny * 1.9 + t * 0.28) * 0.36 +
+                    Math.sin((nx + ny) * 1.3 + t * 0.42) * 0.30 +
+                    Math.cos((nx - ny) * 1.6 + t * 0.32) * 0.28 +
+                    Math.sin(nx * 3.7 + ny * 2.3 + t * 0.22) * 0.22 +
+                    Math.cos(nx * 2.8 - ny * 3.1 + t * 0.18) * 0.20;
+                return h / 1.74; // 归一化大约在[-1, 1]
+            }
+
+            // ─── 更新所有点的高度 ──────────────────────────────────────
+            function updateTerrain(dt) {
+                const t = time;
+                for (let i = 0; i < points.length; i++) {
+                    const p = points[i];
+                    // 基础地形高度（从噪声场获取）
+                    const baseZ = getTerrainHeight(p.x, p.y, t) * BASE_AMP * terrainScale;
+
+                    // 鼠标抬升效果
+                    let mouseLift = 0;
+                    if (mouse.active) {
+                        const dx = p.x - mouse.x;
+                        const dy = p.y - mouse.y;
+                        const distSq = dx * dx + dy * dy;
+                        const influenceRadius = 130;
+                        const infSq = influenceRadius * influenceRadius;
+                        if (distSq < infSq) {
+                            const dist = Math.sqrt(distSq);
+                            const falloff = (1 - dist / influenceRadius);
+                            mouseLift = falloff * falloff * 38 * terrainScale;
+                        }
+                    }
+
+                    // 波纹抬升
+                    let rippleLift = 0;
+                    for (let j = ripples.length - 1; j >= 0; j--) {
+                        const rip = ripples[j];
+                        const dx = p.x - rip.x;
+                        const dy = p.y - rip.y;
+                        const distSq = dx * dx + dy * dy;
+                        const bandWidth = 70 + rip.radius * 0.25;
+                        const innerR = Math.max(0, rip.radius - bandWidth);
+                        const outerR = rip.radius + bandWidth;
+                        const innerSq = innerR * innerR;
+                        const outerSq = outerR * outerR;
+                        if (distSq > innerSq && distSq < outerSq) {
+                            const dist = Math.sqrt(distSq);
+                            const bandFactor = 1 - Math.abs(dist - rip.radius) / bandWidth;
+                            rippleLift += rip.strength * bandFactor * bandFactor * 15;
+                        }
+                    }
+
+                    const targetZ = baseZ + mouseLift + rippleLift;
+
+                    // 平滑过渡到目标高度（弹簧物理）
+                    p.velZ += (targetZ - p.z) * 0.08 * dt;
+                    p.velZ *= 0.94;
+                    p.z += p.velZ * dt;
+                }
+            }
+
+            // ─── 波纹管理 ───────────────────────────────────────────────
+            function createRipple(x, y) {
+                ripples.push({
+                    x: x,
+                    y: y,
+                    radius: 8,
+                    maxRadius: Math.max(W, H) * 0.45,
+                    strength: 2.8 + Math.random() * 0.8,
+                    life: 1.0,
+                    decay: 0.011 + Math.random() * 0.005,
+                    growth: 4.0 + Math.random() * 1.5,
+                });
+                if (ripples.length > 6) ripples.shift();
+            }
+
+            function updateRipples(dt) {
+                for (let i = ripples.length - 1; i >= 0; i--) {
+                    const rip = ripples[i];
+                    rip.radius += rip.growth * dt;
+                    rip.life -= rip.decay * dt;
+                    rip.strength *= 0.985;
+                    if (rip.life <= 0 || rip.radius > rip.maxRadius || rip.strength < 0.05) {
+                        ripples.splice(i, 1);
+                    }
+                }
+            }
+
+            // ─── 绘制地形网格 ───────────────────────────────────────────
+            function drawTerrain(ctx) {
+                // 获取当前调色板
+                const palette = getPalette();
+
+                // 绘制连接线（先绘制线以形成网格）
+                ctx.lineWidth = 0.7;
+                ctx.lineCap = 'round';
+
+                for (let r = 0; r < rows; r++) {
+                    for (let c = 0; c < cols; c++) {
+                        const idx = r * cols + c;
+                        const p = points[idx];
+
+                        // 向右连接
+                        if (c < cols - 1) {
+                            const pRight = points[idx + 1];
+                            const avgZ = (p.z + pRight.z) * 0.5;
+                            const color = getTerrainColor(avgZ, p.x, p.y, palette);
+                            ctx.strokeStyle = color;
+                            ctx.beginPath();
+                            ctx.moveTo(p.x, p.y + p.z * 0.3);
+                            ctx.lineTo(pRight.x, pRight.y + pRight.z * 0.3);
+                            ctx.stroke();
+                        }
+
+                        // 向下连接
+                        if (r < rows - 1) {
+                            const pDown = points[idx + cols];
+                            const avgZ = (p.z + pDown.z) * 0.5;
+                            const color = getTerrainColor(avgZ, p.x, p.y, palette);
+                            ctx.strokeStyle = color;
+                            ctx.beginPath();
+                            ctx.moveTo(p.x, p.y + p.z * 0.3);
+                            ctx.lineTo(pDown.x, pDown.y + pDown.z * 0.3);
+                            ctx.stroke();
+                        }
+                    }
+                }
+
+                // 绘制点（在线上方）
+                for (let r = 0; r < rows; r++) {
+                    for (let c = 0; c < cols; c++) {
+                        const idx = r * cols + c;
+                        const p = points[idx];
+                        const drawY = p.y + p.z * 0.3;
+                        const color = getTerrainColor(p.z, p.x, p.y, palette);
+                        const pointSize = 1.5 + (p.z / (BASE_AMP * terrainScale)) * 2.5;
+                        ctx.fillStyle = color;
+                        ctx.beginPath();
+                        ctx.arc(p.x, drawY, pointSize, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+                }
+            }
+
+            // ─── 调色板 ────────────────────────────────────────────────
+            function getPalette() {
+                const palettes = [
+                    { low: '#0d1b2a', mid: '#2a4494', high: '#89b4fa', glow: '#c5dcff', shift: 0 },
+                    { low: '#160f1e', mid: '#4a2d6a', high: '#a87bc9', glow: '#e0c3f0', shift: 35 },
+                    { low: '#0a1a1a', mid: '#1d6a5a', high: '#5adbc0', glow: '#b8f0e0', shift: 70 },
+                    { low: '#1a0f0a', mid: '#a05020', high: '#e8a040', glow: '#f8d8a8', shift: 105 },
+                ];
+                const idx = Math.floor(colorShift / 35) % palettes.length;
+                return palettes[idx];
+            }
+
+            function getTerrainColor(z, x, y, palette) {
+                const normalized = Math.max(-1, Math.min(1, z / (BASE_AMP * terrainScale * 1.6)));
+                const t = (normalized + 1) / 2; // 0~1
+
+                // 颜色混合
+                let r1, g1, b1, r2, g2, b2;
+                if (t < 0.5) {
+                    const tt = t * 2;
+                    r1 = parseInt(palette.low.slice(1, 3), 16);
+                    g1 = parseInt(palette.low.slice(3, 5), 16);
+                    b1 = parseInt(palette.low.slice(5, 7), 16);
+                    r2 = parseInt(palette.mid.slice(1, 3), 16);
+                    g2 = parseInt(palette.mid.slice(3, 5), 16);
+                    b2 = parseInt(palette.mid.slice(5, 7), 16);
+                    const r = Math.round(r1 + (r2 - r1) * tt);
+                    const g = Math.round(g1 + (g2 - g1) * tt);
+                    const b = Math.round(b1 + (b2 - b1) * tt);
+                    return `rgb(${r},${g},${b})`;
+                } else {
+                    const tt = (t - 0.5) * 2;
+                    r1 = parseInt(palette.mid.slice(1, 3), 16);
+                    g1 = parseInt(palette.mid.slice(3, 5), 16);
+                    b1 = parseInt(palette.mid.slice(5, 7), 16);
+                    r2 = parseInt(palette.high.slice(1, 3), 16);
+                    g2 = parseInt(palette.high.slice(3, 5), 16);
+                    b2 = parseInt(palette.high.slice(5, 7), 16);
+                    const r = Math.round(r1 + (r2 - r1) * tt);
+                    const g = Math.round(g1 + (g2 - g1) * tt);
+                    const b = Math.round(b1 + (b2 - b1) * tt);
+                    return `rgb(${r},${g},${b})`;
+                }
+            }
+
+            // ─── 绘制波纹（在地形上方）──────────────────────────────────
+            function drawRipples(ctx) {
+                for (const rip of ripples) {
+                    const alpha = rip.life * 0.3;
+                    const lineWidth = 1.0 + rip.life * 2.2;
+                    ctx.strokeStyle = `rgba(200, 220, 255, ${alpha})`;
+                    ctx.lineWidth = lineWidth;
+                    ctx.lineCap = 'round';
+                    ctx.beginPath();
+                    ctx.arc(rip.x, rip.y, rip.radius, 0, Math.PI * 2);
+                    ctx.stroke();
+
+                    if (rip.radius > 20) {
+                        ctx.strokeStyle = `rgba(180, 200, 240, ${alpha * 0.5})`;
+                        ctx.lineWidth = lineWidth * 0.5;
+                        ctx.beginPath();
+                        ctx.arc(rip.x, rip.y, rip.radius * 0.85, 0, Math.PI * 2);
+                        ctx.stroke();
+                    }
+                }
+            }
+
+            // ─── 鼠标光晕 ───────────────────────────────────────────────
+            function drawCursorGlow(ctx) {
+                if (!mouse.active) return;
+                const radius = 70;
+                const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                gradient.addColorStop(0, 'rgba(180, 200, 255, 0.05)');
+                gradient.addColorStop(0.6, 'rgba(140, 160, 220, 0.015)');
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // ─── 主循环 ─────────────────────────────────────────────────
+            let lastTime = 0;
+            let accumulator = 0;
+            const fixedStep = 1000 / 60;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+
+                accumulator += dt;
+                const steps = Math.min(Math.floor(accumulator / fixedStep), 3);
+                accumulator -= steps * fixedStep;
+
+                for (let s = 0; s < steps; s++) {
+                    time += 0.014;
+                    updateRipples(fixedStep / 1000 * 60);
+                }
+
+                // 更新地形（每帧执行一次即可）
+                updateTerrain(dt / 16.667);
+
+                // 拖尾效果
+                ctx.fillStyle = 'rgba(7, 7, 16, 0.14)';
+                ctx.fillRect(0, 0, W, H);
+
+                // 绘制地形网格
+                drawTerrain(ctx);
+
+                // 绘制波纹
+                drawRipples(ctx);
+
+                // 绘制鼠标光晕
+                drawCursorGlow(ctx);
+
+                requestAnimationFrame(animate);
+            }
+
+            // ─── 交互事件 ───────────────────────────────────────────────
+            function onMouseMove(e) {
+                mouse.px = mouse.x;
+                mouse.py = mouse.y;
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                createRipple(mouse.x, mouse.y);
+                // 切换色相
+                colorShift += 35;
+                if (colorShift >= 140) colorShift = 0;
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.px = mouse.x;
+                    mouse.py = mouse.y;
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    createRipple(mouse.x, mouse.y);
+                    colorShift += 35;
+                    if (colorShift >= 140) colorShift = 0;
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onResize() {
+                setupCanvas();
+                // 清空波纹
+                ripples = [];
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#070710';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+
+        })();
+    </script>
+</body>
+</html>

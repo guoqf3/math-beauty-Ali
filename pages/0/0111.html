@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>环面测地流 · 稠密交织</title>
+    <style>
+        :root {
+            --bg: #06060c;
+            --gold: #d4a843;
+            --cyan: #45b7aa;
+            --magenta: #d4708a;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'SimSun', serif;
+            -webkit-font-smoothing: antialiased;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        #canvas-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+        }
+        canvas {
+            display: block;
+        }
+        .overlay-title {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 22px 20px 8px;
+            text-align: center;
+            background: linear-gradient(180deg, rgba(6, 6, 12, 0.95) 0%, rgba(6, 6, 12, 0.8) 55%, rgba(6, 6, 12, 0) 100%);
+        }
+        .overlay-title h2 {
+            font-size: clamp(1.1rem, 2.2vw, 1.8rem);
+            font-weight: 400;
+            letter-spacing: 0.13em;
+            color: #e8d5b0;
+            text-shadow: 0 0 30px rgba(212, 168, 67, 0.45), 0 0 60px rgba(212, 168, 67, 0.18);
+            margin: 0 0 2px;
+            line-height: 1.3;
+        }
+        .overlay-title .sub {
+            font-size: clamp(0.65rem, 1.1vw, 0.85rem);
+            letter-spacing: 0.22em;
+            color: rgba(200, 180, 150, 0.65);
+        }
+        .overlay-formula {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 8px 20px 18px;
+            text-align: center;
+            background: linear-gradient(0deg, rgba(6, 6, 12, 0.95) 0%, rgba(6, 6, 12, 0.82) 55%, rgba(6, 6, 12, 0) 100%);
+        }
+        .formula-text {
+            font-size: clamp(0.6rem, 1.0vw, 0.8rem);
+            color: rgba(210, 200, 185, 0.8);
+            letter-spacing: 0.03em;
+            line-height: 1.7;
+            font-style: italic;
+        }
+        .clr-gold { color: #d4a843; font-style: normal; font-weight: bold; }
+        .clr-cyan { color: #45b7aa; font-style: normal; font-weight: bold; }
+        .clr-magenta { color: #d4708a; font-style: normal; font-weight: bold; }
+        .formula-sep {
+            display: inline-block;
+            margin: 0 14px;
+            color: rgba(150, 140, 130, 0.35);
+            font-style: normal;
+        }
+    </style>
+</head>
+<body>
+    <div class="overlay-title">
+        <h2>环面测地流 · 稠密交织</h2>
+        <div class="sub">Geodesic foliation on T² · Rational & Irrational slopes</div>
+    </div>
+    <div class="overlay-formula">
+        <div class="formula-text">
+            <span class="clr-gold">T² : ( (R+r cos v)cos u , (R+r cos v)sin u , r sin v )</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-cyan">u = θ , v = ω θ + φ₀</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-magenta">ω ∈ ℚ ⇒ 闭合 · ω ∉ ℚ ⇒ 稠密</span>
+        </div>
+    </div>
+    <div id="canvas-container"></div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ---------- 场景初始化 ----------
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+
+        const camera = new THREE.PerspectiveCamera(48, container.clientWidth / container.clientHeight, 0.5, 30);
+        camera.position.set(3.5, 2.2, 8.5);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x06060c, 1);
+        container.appendChild(renderer.domElement);
+
+        const clock = new THREE.Clock();
+        clock.start();
+
+        // ---------- 颜色 ----------
+        const COLOR_GOLD = 0xd4a843;
+        const COLOR_CYAN = 0x45b7aa;
+        const COLOR_MAGENTA = 0xd4708a;
+
+        // ---------- 环面测地线生成 ----------
+        const R = 2.4;   // 大半径
+        const r = 0.9;   // 小半径
+        const numPoints = 2400; // 每条线的点数
+
+        function torusPoint(u, v) {
+            const x = (R + r * Math.cos(v)) * Math.cos(u);
+            const y = (R + r * Math.cos(v)) * Math.sin(u);
+            const z = r * Math.sin(v);
+            return new THREE.Vector3(x, y, z);
+        }
+
+        function createTorusGeodesic(omega, phi0, color, uRange = 48 * Math.PI) {
+            // u 从 0 到 uRange，使得无理斜率产生足够缠绕
+            const points = [];
+            const du = uRange / numPoints;
+            for (let i = 0; i <= numPoints; i++) {
+                const u = i * du;
+                const v = omega * u + phi0;
+                points.push(torusPoint(u, v));
+            }
+            const geom = new THREE.BufferGeometry().setFromPoints(points);
+            const mat = new THREE.LineBasicMaterial({
+                color: color,
+                linewidth: 1,
+                transparent: true,
+                opacity: 0.65,
+                depthWrite: true,
+                depthTest: true,
+            });
+            return new THREE.Line(geom, mat);
+        }
+
+        // 定义三组测地线（金色、青色、品红），每组包含不同斜率的线
+        const torusGroup = new THREE.Group();
+        torusGroup.name = 'torus-geodesics';
+        scene.add(torusGroup);
+
+        // 金色组：有理斜率，形成闭合曲线（视觉上较整齐）
+        const goldSlopes = [
+            { omega: 1 / 2, phi: 0 },
+            { omega: 2 / 3, phi: Math.PI / 3 },
+            { omega: 3 / 4, phi: Math.PI / 2 },
+            { omega: 4 / 5, phi: Math.PI / 5 },
+            { omega: 5 / 6, phi: Math.PI / 4 },
+            { omega: 1 / 3, phi: Math.PI / 6 },
+            { omega: 2 / 5, phi: Math.PI / 2.5 },
+        ];
+
+        goldSlopes.forEach(({ omega, phi }) => {
+            const line = createTorusGeodesic(omega, phi, COLOR_GOLD);
+            torusGroup.add(line);
+        });
+
+        // 青色组：接近黄金分割的无理斜率，稠密填充环面
+        const cyanSlopes = [
+            { omega: Math.sqrt(2), phi: 0 },
+            { omega: Math.sqrt(3), phi: Math.PI / 3 },
+            { omega: (1 + Math.sqrt(5)) / 2, phi: Math.PI / 4 }, // 黄金比例
+            { omega: Math.PI, phi: Math.PI / 2 },
+            { omega: Math.E, phi: Math.PI / 6 },
+            { omega: Math.sqrt(5), phi: Math.PI / 5 },
+            { omega: 1.6180339, phi: Math.PI / 2.7 }, // 近似黄金比
+        ];
+
+        cyanSlopes.forEach(({ omega, phi }) => {
+            const line = createTorusGeodesic(omega, phi, COLOR_CYAN);
+            torusGroup.add(line);
+        });
+
+        // 品红组：混合有理与无理，额外增加缠绕复杂性
+        const magentaSlopes = [
+            { omega: 2.71828, phi: Math.PI / 3 },   // e
+            { omega: 1.4142, phi: Math.PI / 2 },    // sqrt2 近似
+            { omega: 0.618, phi: Math.PI / 4 },     // 黄金比例倒数
+            { omega: 3.14159, phi: Math.PI / 6 },
+            { omega: 7 / 3, phi: Math.PI / 2.2 },
+            { omega: 3 / 5, phi: Math.PI / 5 },
+            { omega: 5 / 8, phi: Math.PI / 3.5 },
+        ];
+
+        magentaSlopes.forEach(({ omega, phi }) => {
+            const line = createTorusGeodesic(omega, phi, COLOR_MAGENTA);
+            torusGroup.add(line);
+        });
+
+        // 为了增加线条密度，再额外添加一些靠近的斜率
+        const extraGold = [0.45, 0.55, 0.65, 0.72, 0.78].map(o => ({ omega: o, phi: Math.random() * Math.PI * 2 }));
+        extraGold.forEach(({ omega, phi }) => {
+            torusGroup.add(createTorusGeodesic(omega, phi, COLOR_GOLD));
+        });
+        const extraCyan = [1.73, 2.23, 2.41, 1.89, 2.09].map(o => ({ omega: o, phi: Math.random() * Math.PI * 2 }));
+        extraCyan.forEach(({ omega, phi }) => {
+            torusGroup.add(createTorusGeodesic(omega, phi, COLOR_CYAN));
+        });
+        const extraMagenta = [1.23, 0.87, 1.95, 2.54, 3.33].map(o => ({ omega: o, phi: Math.random() * Math.PI * 2 }));
+        extraMagenta.forEach(({ omega, phi }) => {
+            torusGroup.add(createTorusGeodesic(omega, phi, COLOR_MAGENTA));
+        });
+
+        // ---------- 附加球面大圆族（增加交织感） ----------
+        const sphereGroup = new THREE.Group();
+        sphereGroup.name = 'sphere-great-circles';
+        const sphereRadius = 3.1;
+        function createGreatCircle(normal, color) {
+            const n = normal.clone().normalize();
+            let u, v;
+            if (Math.abs(n.x) < 0.9) {
+                u = new THREE.Vector3(1, 0, 0).cross(n).normalize();
+            } else {
+                u = new THREE.Vector3(0, 1, 0).cross(n).normalize();
+            }
+            v = n.clone().cross(u).normalize();
+            const pts = [];
+            for (let i = 0; i <= 600; i++) {
+                const t = (i / 600) * Math.PI * 2;
+                const pt = u.clone().multiplyScalar(Math.cos(t))
+                    .add(v.clone().multiplyScalar(Math.sin(t)))
+                    .normalize()
+                    .multiplyScalar(sphereRadius);
+                pts.push(pt);
+            }
+            const geom = new THREE.BufferGeometry().setFromPoints(pts);
+            const mat = new THREE.LineBasicMaterial({
+                color: color,
+                linewidth: 1,
+                transparent: true,
+                opacity: 0.4,
+                depthTest: true,
+                depthWrite: true,
+            });
+            return new THREE.Line(geom, mat);
+        }
+
+        // 用斐波那契球分布生成若干法向量
+        const normalCount = 18;
+        const normals = [];
+        const phi_golden = Math.PI * (3 - Math.sqrt(5));
+        for (let i = 0; i < normalCount; i++) {
+            const y = 1 - (2 * i + 1) / normalCount;
+            const radiusAtY = Math.sqrt(1 - y * y);
+            const theta = phi_golden * i;
+            normals.push(new THREE.Vector3(
+                Math.cos(theta) * radiusAtY,
+                y,
+                Math.sin(theta) * radiusAtY
+            ).normalize());
+        }
+        normals.forEach((n, idx) => {
+            let col = COLOR_GOLD;
+            if (idx % 3 === 1) col = COLOR_CYAN;
+            else if (idx % 3 === 2) col = COLOR_MAGENTA;
+            sphereGroup.add(createGreatCircle(n, col));
+        });
+        scene.add(sphereGroup);
+
+        // ---------- 背景星点 ----------
+        const starsGroup = new THREE.Group();
+        starsGroup.name = 'stars';
+        const starsGeom = new THREE.BufferGeometry();
+        const starsCount = 400;
+        const starsPositions = new Float32Array(starsCount * 3);
+        for (let i = 0; i < starsCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const dist = 7 + Math.random() * 9;
+            starsPositions[i * 3] = dist * Math.sin(phi) * Math.cos(theta);
+            starsPositions[i * 3 + 1] = dist * Math.sin(phi) * Math.sin(theta);
+            starsPositions[i * 3 + 2] = dist * Math.cos(phi);
+        }
+        starsGeom.setAttribute('position', new THREE.BufferAttribute(starsPositions, 3));
+        const starsMat = new THREE.PointsMaterial({
+            color: 0x908878,
+            size: 0.018,
+            transparent: true,
+            opacity: 0.5,
+            depthWrite: false,
+        });
+        starsGroup.add(new THREE.Points(starsGeom, starsMat));
+        scene.add(starsGroup);
+
+        // ---------- 动画循环 ----------
+        function animate() {
+            const elapsed = clock.getElapsedTime();
+
+            // 环面组复合旋转
+            torusGroup.rotation.x = elapsed * 0.21;
+            torusGroup.rotation.y = elapsed * 0.33;
+            torusGroup.rotation.z = elapsed * 0.17;
+
+            // 球面组轻微独立旋转
+            sphereGroup.rotation.x = elapsed * 0.12;
+            sphereGroup.rotation.y = elapsed * 0.18;
+            sphereGroup.rotation.z = elapsed * 0.09;
+
+            // 背景星点
+            starsGroup.rotation.y = elapsed * 0.04;
+            starsGroup.rotation.x = elapsed * 0.025;
+
+            // 相机动态环绕
+            const camRadius = 8.4;
+            const camAngle = elapsed * 0.11;
+            const camHeight = 2.6 + Math.sin(elapsed * 0.19) * 0.8;
+            camera.position.x = Math.cos(camAngle) * camRadius;
+            camera.position.z = Math.sin(camAngle) * camRadius;
+            camera.position.y = camHeight;
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        // 使用 Three.js 内置动画循环，保证稳定性
+        renderer.setAnimationLoop(animate);
+
+        // ---------- 窗口缩放 ----------
+        function onResize() {
+            const w = container.clientWidth;
+            const h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }
+        window.addEventListener('resize', onResize);
+        window.addEventListener('orientationchange', () => setTimeout(onResize, 120));
+        onResize();
+
+        console.log('✨ 环面测地流动画已启动 - 有理与无理斜率交织');
+    </script>
+</body>
+</html>

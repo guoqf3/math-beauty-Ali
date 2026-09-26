@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>像素涟漪</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #1a1a2e;
+            font-family: sans-serif;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="pixelCanvas"></canvas>
+    <script>
+        (function() {
+            'use strict';
+
+            const canvas = document.getElementById('pixelCanvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            // ---------- 配置 ----------
+            const CONFIG = {
+                cellSize: 12,              // 每个像素块的大小（px），影响性能和视觉粒度
+                rippleDuration: 1200,      // 波纹持续时间(ms)
+                rippleMaxRadius: 220,      // 波纹最大半径（像素）
+                rippleStrength: 80,        // 波纹强度（影响颜色亮度）
+                mouseGlowRadius: 140,      // 鼠标光晕半径
+                mouseGlowStrength: 40,     // 鼠标光晕强度
+                maxRipples: 8,             // 最大同时波纹数量
+                baseHue: 220,              // 基础色相（蓝）
+                hueVariation: 80,          // 色相变化范围
+                saturation: 85,
+                lightnessBase: 25,         // 基础亮度（低）
+                lightnessMax: 85,          // 最大亮度
+                backgroundColor: '#1a1a2e',
+            };
+
+            let width = 0;
+            let height = 0;
+            let dpr = 1;
+            let cols = 0;
+            let rows = 0;
+            let mouseX = -9999;
+            let mouseY = -9999;
+            let mouseActive = false;
+            let targetMouseX = -9999;
+            let targetMouseY = -9999;
+            let smoothMouseX = -9999;
+            let smoothMouseY = -9999;
+            let ripples = [];
+            let animationId = null;
+            let lastTime = 0;
+            let time = 0;
+
+            // ---------- 波纹类 ----------
+            class Ripple {
+                constructor(x, y, startTime) {
+                    this.x = x;
+                    this.y = y;
+                    this.startTime = startTime;
+                    this.duration = CONFIG.rippleDuration;
+                    this.maxRadius = CONFIG.rippleMaxRadius;
+                    this.strength = CONFIG.rippleStrength;
+                }
+
+                getProgress(now) {
+                    return Math.min(1, (now - this.startTime) / this.duration);
+                }
+
+                // 获取波纹对某点的影响值（0-1）
+                getInfluence(px, py, now) {
+                    const progress = this.getProgress(now);
+                    if (progress >= 1) return 0;
+                    const dx = px - this.x;
+                    const dy = py - this.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    const radius = this.maxRadius * (0.2 + 0.8 * progress);
+                    if (dist > radius) return 0;
+                    const envelope = Math.max(0, 1 - progress) * (1 - dist / radius);
+                    // 使用正弦波模拟波纹
+                    const wave = Math.sin((dist / radius) * Math.PI * 6 - progress * 12);
+                    return Math.max(0, envelope * (0.5 + 0.5 * wave));
+                }
+            }
+
+            // ---------- 计算像素颜色 ----------
+            function getPixelColor(cellX, cellY, now) {
+                const centerX = cellX * CONFIG.cellSize + CONFIG.cellSize / 2;
+                const centerY = cellY * CONFIG.cellSize + CONFIG.cellSize / 2;
+
+                let totalInfluence = 0;
+                let maxDist = CONFIG.mouseGlowRadius;
+
+                // 鼠标光晕影响
+                if (mouseActive && smoothMouseX > -1000) {
+                    const dx = centerX - smoothMouseX;
+                    const dy = centerY - smoothMouseY;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    if (dist < CONFIG.mouseGlowRadius) {
+                        const influence = (1 - dist / CONFIG.mouseGlowRadius);
+                        totalInfluence += influence * CONFIG.mouseGlowStrength;
+                    }
+                }
+
+                // 波纹影响
+                for (const ripple of ripples) {
+                    const influence = ripple.getInfluence(centerX, centerY, now);
+                    totalInfluence += influence * ripple.strength;
+                }
+
+                // 限制影响范围
+                totalInfluence = Math.max(0, Math.min(1, totalInfluence / 100));
+
+                // 映射到亮度和色相
+                const lightness = CONFIG.lightnessBase + totalInfluence * (CONFIG.lightnessMax - CONFIG.lightnessBase);
+                const hue = (CONFIG.baseHue + totalInfluence * CONFIG.hueVariation) % 360;
+
+                return {
+                    hue: hue,
+                    sat: CONFIG.saturation,
+                    light: lightness,
+                };
+            }
+
+            // ---------- 绘制像素网格 ----------
+            function drawPixels(now) {
+                ctx.fillStyle = CONFIG.backgroundColor;
+                ctx.fillRect(0, 0, width, height);
+
+                // 平滑鼠标位置
+                if (mouseActive) {
+                    smoothMouseX += (targetMouseX - smoothMouseX) * 0.2;
+                    smoothMouseY += (targetMouseY - smoothMouseY) * 0.2;
+                }
+
+                // 遍历所有像素块
+                for (let r = 0; r < rows; r++) {
+                    for (let c = 0; c < cols; c++) {
+                        const color = getPixelColor(c, r, now);
+                        ctx.fillStyle = `hsl(${color.hue}, ${color.sat}%, ${color.light}%)`;
+                        ctx.fillRect(c * CONFIG.cellSize, r * CONFIG.cellSize, CONFIG.cellSize - 0.5, CONFIG.cellSize - 0.5);
+                    }
+                }
+
+                // 移除过期波纹
+                ripples = ripples.filter(r => r.getProgress(now) < 1);
+                if (ripples.length > CONFIG.maxRipples) {
+                    ripples = ripples.slice(-CONFIG.maxRipples);
+                }
+            }
+
+            // ---------- 调整画布尺寸 ----------
+            function resizeCanvas() {
+                dpr = Math.min(window.devicePixelRatio || 1, 2);
+                width = window.innerWidth;
+                height = window.innerHeight;
+                canvas.width = Math.floor(width * dpr);
+                canvas.height = Math.floor(height * dpr);
+                canvas.style.width = width + 'px';
+                canvas.style.height = height + 'px';
+                ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+                // 重新计算网格
+                cols = Math.ceil(width / CONFIG.cellSize);
+                rows = Math.ceil(height / CONFIG.cellSize);
+
+                // 填充背景，避免白屏
+                ctx.fillStyle = CONFIG.backgroundColor;
+                ctx.fillRect(0, 0, width, height);
+
+                // 立即绘制一帧
+                drawPixels(performance.now());
+            }
+
+            // ---------- 动画循环 ----------
+            function animate(timestamp) {
+                const now = performance.now();
+                if (lastTime === 0) lastTime = now;
+                const dt = now - lastTime;
+                if (dt > 100) {
+                    lastTime = now - 16;
+                } else {
+                    lastTime = now;
+                }
+                time = now * 0.001;
+
+                drawPixels(now);
+
+                animationId = requestAnimationFrame(animate);
+            }
+
+            // ---------- 交互事件 ----------
+            function updateMousePosition(clientX, clientY) {
+                targetMouseX = clientX;
+                targetMouseY = clientY;
+                if (!mouseActive) {
+                    mouseActive = true;
+                    smoothMouseX = targetMouseX;
+                    smoothMouseY = targetMouseY;
+                }
+            }
+
+            function handleClick(clientX, clientY) {
+                const now = performance.now();
+                ripples.push(new Ripple(clientX, clientY, now));
+                if (ripples.length > CONFIG.maxRipples) {
+                    ripples = ripples.slice(-CONFIG.maxRipples);
+                }
+            }
+
+            function setupEvents() {
+                window.addEventListener('mousemove', (e) => {
+                    updateMousePosition(e.clientX, e.clientY);
+                }, { passive: true });
+
+                window.addEventListener('mouseleave', () => {
+                    mouseActive = false;
+                    smoothMouseX = -9999;
+                    smoothMouseY = -9999;
+                });
+
+                window.addEventListener('mousedown', (e) => {
+                    handleClick(e.clientX, e.clientY);
+                });
+
+                window.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        updateMousePosition(touch.clientX, touch.clientY);
+                        handleClick(touch.clientX, touch.clientY);
+                    }
+                }, { passive: false });
+
+                window.addEventListener('touchmove', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        updateMousePosition(touch.clientX, touch.clientY);
+                    }
+                }, { passive: false });
+
+                window.addEventListener('touchend', () => {
+                    mouseActive = false;
+                    smoothMouseX = -9999;
+                    smoothMouseY = -9999;
+                });
+
+                window.addEventListener('resize', () => {
+                    resizeCanvas();
+                });
+
+                document.addEventListener('visibilitychange', () => {
+                    if (document.hidden) {
+                        if (animationId) {
+                            cancelAnimationFrame(animationId);
+                            animationId = null;
+                        }
+                        lastTime = 0;
+                    } else {
+                        if (!animationId) {
+                            lastTime = 0;
+                            animationId = requestAnimationFrame(animate);
+                        }
+                    }
+                });
+            }
+
+            // ---------- 启动 ----------
+            function init() {
+                resizeCanvas();
+                setupEvents();
+                lastTime = 0;
+                animationId = requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.__pixelRipple = {
+                config: CONFIG,
+                ripples: ripples,
+            };
+        })();
+    </script>
+</body>
+</html>

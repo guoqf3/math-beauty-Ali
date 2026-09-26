@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>热核膨胀 · 气体模拟</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #080a12;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            font-family: 'Segoe UI', system-ui, sans-serif;
+        }
+        .container {
+            position: relative;
+            border-radius: 28px;
+            overflow: hidden;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.9), 0 0 0 1px rgba(255, 255, 255, 0.04);
+            background: #080a12;
+        }
+        canvas {
+            display: block;
+            width: 1000px;
+            height: 600px;
+            cursor: pointer;
+            background: radial-gradient(ellipse at 50% 50%, #0f131f, #030408);
+        }
+        .fallback {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: rgba(255, 255, 255, 0.25);
+            font-size: 18px;
+            letter-spacing: 4px;
+            pointer-events: none;
+            text-align: center;
+            display: none;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 20px 40px;
+            border-radius: 60px;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(6px);
+        }
+        .credit {
+            position: absolute;
+            bottom: 20px;
+            right: 28px;
+            color: rgba(255, 255, 255, 0.12);
+            font-size: 13px;
+            letter-spacing: 2px;
+            font-weight: 300;
+            pointer-events: none;
+            backdrop-filter: blur(4px);
+            padding: 6px 16px;
+            border-radius: 40px;
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.02);
+        }
+        .hint {
+            position: absolute;
+            top: 20px;
+            left: 28px;
+            color: rgba(255, 255, 255, 0.12);
+            font-size: 13px;
+            font-weight: 300;
+            letter-spacing: 0.5px;
+            pointer-events: none;
+            backdrop-filter: blur(4px);
+            padding: 6px 16px;
+            border-radius: 40px;
+            background: rgba(0, 0, 0, 0.2);
+            border: 1px solid rgba(255, 255, 255, 0.02);
+        }
+        @media (max-width: 1024px) {
+            canvas {
+                width: 100%;
+                height: auto;
+                aspect-ratio: 1000 / 600;
+            }
+            .credit,
+            .hint {
+                display: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <canvas id="canvas" width="1000" height="600"></canvas>
+        <div class="fallback" id="fallback">✦ 热核膨胀 · 请刷新页面 ✦</div>
+        <div class="hint"><i>✦ 悬停加热 · 气体膨胀</i></div>
+        <div class="credit">vibe <span>·</span> code</div>
+    </div>
+
+    <script>
+        // ============================================================
+        //  热核膨胀 · 气体模拟
+        //  物理：粒子模拟气体分子，高速运动并相互排斥，
+        //  鼠标位置充当“热源”，加热附近的粒子使其加速膨胀，
+        //  速度映射为颜色温度（蓝→红）。
+        // ============================================================
+
+        console.log('✅ 热核膨胀 加载开始');
+
+        // 全局错误捕获：如果出错，显示备用文字
+        window.addEventListener('error', function(e) {
+            const fallback = document.getElementById('fallback');
+            if (fallback) fallback.style.display = 'block';
+            console.error('全局错误:', e.message);
+        });
+
+        // ---------- 获取元素 ----------
+        const canvas = document.getElementById('canvas');
+        const fallback = document.getElementById('fallback');
+
+        if (!canvas) {
+            console.error('❌ Canvas 元素未找到');
+            if (fallback) fallback.style.display = 'block';
+            throw new Error('Canvas 元素不存在');
+        }
+
+        let ctx = null;
+        try {
+            ctx = canvas.getContext('2d');
+            if (!ctx) throw new Error('无法获取 2D 上下文');
+        } catch (err) {
+            console.error('❌ 上下文获取失败:', err.message);
+            if (fallback) fallback.style.display = 'block';
+            throw err;
+        }
+
+        console.log('✅ Canvas 就绪');
+
+        const W = 1000,
+            H = 600;
+
+        // ---------- 状态 ----------
+        let mouse = { x: -9999, y: -9999, active: false };
+        let time = 0;
+
+        // ---------- 气体模拟参数 ----------
+        const NUM_PARTICLES = 300;
+        const DAMPING = 0.995; // 极低阻尼，保持动能
+        const MAX_SPEED = 16; // 速度上限
+        const MOUSE_HEAT = 0.35; // 鼠标加热强度
+        const HEAT_RADIUS = 220; // 加热半径
+        const REPULSE_RADIUS = 22; // 粒子间排斥半径
+        const REPULSE_FORCE = 0.15; // 排斥力强度
+        const BORDER_BOUNCE = 0.85; // 边界反弹能量损失
+
+        // ---------- 初始化粒子 ----------
+        let particles = [];
+        try {
+            for (let i = 0; i < NUM_PARTICLES; i++) {
+                particles.push({
+                    x: Math.random() * W,
+                    y: Math.random() * H,
+                    // 初始速度较高，立刻进入运动状态
+                    vx: (Math.random() - 0.5) * 8,
+                    vy: (Math.random() - 0.5) * 8,
+                    prevX: 0,
+                    prevY: 0,
+                    size: 1.8 + Math.random() * 1.8,
+                    phase: Math.random() * Math.PI * 2
+                });
+            }
+            console.log('✅ 粒子初始化成功，数量:', NUM_PARTICLES);
+        } catch (err) {
+            console.error('❌ 粒子初始化失败:', err.message);
+            if (fallback) fallback.style.display = 'block';
+            throw err;
+        }
+
+        // ---------- 背景繁星 ----------
+        let stars = [];
+        for (let i = 0; i < 40; i++) {
+            stars.push({
+                x: Math.random() * W,
+                y: Math.random() * H,
+                r: 0.3 + Math.random() * 0.8,
+                phase: Math.random() * Math.PI * 2
+            });
+        }
+
+        // ---------- 物理更新（热力学核心） ----------
+        function updatePhysics() {
+            // 1. 粒子间排斥力（模拟气体压力）
+            for (let i = 0; i < NUM_PARTICLES; i++) {
+                const p = particles[i];
+                for (let j = i + 1; j < NUM_PARTICLES; j++) {
+                    const q = particles[j];
+                    const dx = p.x - q.x;
+                    const dy = p.y - q.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    if (dist < REPULSE_RADIUS && dist > 0.5) {
+                        const force = (1 - dist / REPULSE_RADIUS) * REPULSE_FORCE;
+                        const fx = (dx / dist) * force;
+                        const fy = (dy / dist) * force;
+                        p.vx += fx;
+                        p.vy += fy;
+                        q.vx -= fx;
+                        q.vy -= fy;
+                    }
+                }
+            }
+
+            // 2. 鼠标热源（加热粒子）
+            if (mouse.active) {
+                for (const p of particles) {
+                    const dx = p.x - mouse.x;
+                    const dy = p.y - mouse.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    if (dist < HEAT_RADIUS && dist > 0.5) {
+                        // 热量使粒子加速（向外膨胀）
+                        const heat = (1 - dist / HEAT_RADIUS) * MOUSE_HEAT;
+                        // 方向：从鼠标指向粒子（推动粒子远离热源）
+                        p.vx += (dx / dist) * heat;
+                        p.vy += (dy / dist) * heat;
+                        // 核心区域增加随机扰动，模拟热噪声
+                        if (dist < 40) {
+                            p.vx += (Math.random() - 0.5) * 0.3;
+                            p.vy += (Math.random() - 0.5) * 0.3;
+                        }
+                    }
+                }
+            }
+
+            // 3. 更新每个粒子
+            for (const p of particles) {
+                // 保存前一帧位置（用于拖尾）
+                p.prevX = p.x;
+                p.prevY = p.y;
+
+                // 阻尼（动能几乎不衰减）
+                p.vx *= DAMPING;
+                p.vy *= DAMPING;
+
+                // 速度限制
+                const sp = Math.sqrt(p.vx * p.vx + p.vy * p.vy);
+                if (sp > MAX_SPEED) {
+                    p.vx = (p.vx / sp) * MAX_SPEED;
+                    p.vy = (p.vy / sp) * MAX_SPEED;
+                }
+
+                // 位置更新
+                p.x += p.vx;
+                p.y += p.vy;
+
+                // 边界反弹（带能量损失）
+                if (p.x < 0) { p.x = 0;
+                    p.vx *= -BORDER_BOUNCE; }
+                if (p.x > W) { p.x = W;
+                    p.vx *= -BORDER_BOUNCE; }
+                if (p.y < 0) { p.y = 0;
+                    p.vy *= -BORDER_BOUNCE; }
+                if (p.y > H) { p.y = H;
+                    p.vy *= -BORDER_BOUNCE; }
+            }
+        }
+
+        // ---------- 渲染（温度颜色映射） ----------
+        function draw() {
+            // 半透明背景：形成运动拖尾
+            ctx.fillStyle = 'rgba(8, 10, 18, 0.08)';
+            ctx.fillRect(0, 0, W, H);
+
+            // ---- 1. 绘制粒子拖尾（高温轨迹） ----
+            for (const p of particles) {
+                const speed = Math.sqrt(p.vx * p.vx + p.vy * p.vy);
+                if (speed < 0.3) continue;
+
+                // 速度映射为温度颜色：蓝(230) → 青(180) → 黄(50) → 红(0)
+                const ratio = speed / MAX_SPEED;
+                const hue = 230 - ratio * 230;
+                const alpha = 0.35 + ratio * 0.4;
+                const lineWidth = 1.2 + speed * 0.5;
+
+                ctx.shadowBlur = 18;
+                ctx.shadowColor = `hsla(${hue}, 100%, 70%, ${alpha * 0.2})`;
+                ctx.strokeStyle = `hsla(${hue}, 95%, 60%, ${alpha})`;
+                ctx.lineWidth = lineWidth;
+                ctx.beginPath();
+                ctx.moveTo(p.prevX, p.prevY);
+                ctx.lineTo(p.x, p.y);
+                ctx.stroke();
+            }
+
+            ctx.shadowBlur = 0;
+
+            // ---- 2. 绘制粒子核心（发光热核） ----
+            for (const p of particles) {
+                const speed = Math.sqrt(p.vx * p.vx + p.vy * p.vy);
+                const ratio = speed / MAX_SPEED;
+                const hue = 230 - ratio * 230;
+                const lightness = 55 + ratio * 30;
+                const size = p.size * (1 + speed * 0.06);
+
+                const grad = ctx.createRadialGradient(
+                    p.x - 1, p.y - 1, 0.5,
+                    p.x, p.y, size * 2.8
+                );
+                grad.addColorStop(0, `hsla(${hue}, 100%, 90%, 0.95)`);
+                grad.addColorStop(0.3, `hsla(${hue + 10}, 85%, 65%, 0.6)`);
+                grad.addColorStop(1, `hsla(${hue + 20}, 70%, 40%, 0)`);
+
+                ctx.shadowBlur = 28;
+                ctx.shadowColor = `hsla(${hue}, 100%, 60%, ${0.15 + ratio * 0.3})`;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, size * 1.6, 0, Math.PI * 2);
+                ctx.fillStyle = grad;
+                ctx.fill();
+
+                // 核心高光
+                ctx.shadowBlur = 0;
+                ctx.beginPath();
+                ctx.arc(p.x - 0.5, p.y - 0.5, size * 0.25, 0, Math.PI * 2);
+                ctx.fillStyle = `hsla(0, 0%, 100%, ${0.2 + ratio * 0.3})`;
+                ctx.fill();
+            }
+
+            // ---- 3. 背景繁星 ----
+            for (const star of stars) {
+                const flicker = 0.5 + 0.5 * Math.sin(time * 0.025 + star.phase);
+                const alpha = 0.1 + flicker * 0.25;
+                ctx.beginPath();
+                ctx.arc(star.x, star.y, star.r * 0.6, 0, Math.PI * 2);
+                ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+                ctx.fill();
+            }
+
+            // ---- 4. 鼠标热源光晕 ----
+            if (mouse.active) {
+                const grad = ctx.createRadialGradient(
+                    mouse.x, mouse.y, 0,
+                    mouse.x, mouse.y, HEAT_RADIUS
+                );
+                grad.addColorStop(0, 'rgba(255, 180, 80, 0.06)');
+                grad.addColorStop(0.5, 'rgba(255, 100, 50, 0.02)');
+                grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+                ctx.fillStyle = grad;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, HEAT_RADIUS, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        // ---------- 动画循环 ----------
+        let animFrameId = null;
+
+        function animate(timestamp) {
+            try {
+                time = timestamp || 0;
+                updatePhysics();
+                draw();
+                animFrameId = requestAnimationFrame(animate);
+            } catch (err) {
+                console.error('❌ 动画循环出错:', err.message);
+                if (fallback) fallback.style.display = 'block';
+                if (animFrameId) cancelAnimationFrame(animFrameId);
+            }
+        }
+
+        // ---------- 鼠标事件 ----------
+        function handleMouseMove(e) {
+            try {
+                const rect = canvas.getBoundingClientRect();
+                const scaleX = canvas.width / rect.width;
+                const scaleY = canvas.height / rect.height;
+                mouse.x = (e.clientX - rect.left) * scaleX;
+                mouse.y = (e.clientY - rect.top) * scaleY;
+                mouse.active = true;
+            } catch (err) {}
+        }
+
+        function handleMouseLeave() {
+            mouse.active = false;
+        }
+
+        canvas.addEventListener('mousemove', handleMouseMove);
+        canvas.addEventListener('mouseleave', handleMouseLeave);
+
+        // 触摸支持
+        canvas.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            try {
+                const rect = canvas.getBoundingClientRect();
+                const touch = e.touches[0];
+                const scaleX = canvas.width / rect.width;
+                const scaleY = canvas.height / rect.height;
+                mouse.x = (touch.clientX - rect.left) * scaleX;
+                mouse.y = (touch.clientY - rect.top) * scaleY;
+                mouse.active = true;
+            } catch (err) {}
+        }, { passive: false });
+
+        canvas.addEventListener('touchend', () => {
+            mouse.active = false;
+        });
+
+        // ---------- 窗口自适应 ----------
+        function resizeCanvas() {
+            try {
+                const container = canvas.parentElement;
+                const maxW = window.innerWidth - 40;
+                const maxH = window.innerHeight - 40;
+                const ratio = canvas.width / canvas.height;
+                let w = Math.min(1000, maxW);
+                let h = w / ratio;
+                if (h > maxH) {
+                    h = maxH;
+                    w = h * ratio;
+                }
+                canvas.style.width = w + 'px';
+                canvas.style.height = h + 'px';
+            } catch (err) {}
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // ---------- 启动动画 ----------
+        console.log('🚀 启动热核膨胀动画');
+        try {
+            animate(0);
+        } catch (err) {
+            console.error('❌ 启动失败:', err.message);
+            if (fallback) fallback.style.display = 'block';
+        }
+
+        // 兜底检测：如果3秒后还是空白，显示备用文字
+        setTimeout(() => {
+            if (fallback && !fallback.style.display) {
+                try {
+                    const imageData = ctx.getImageData(0, 0, W, H).data;
+                    let isBlank = true;
+                    for (let i = 0; i < 1000; i++) {
+                        if (imageData[i * 4 + 3] > 0) { isBlank = false; break; }
+                    }
+                    if (isBlank) {
+                        console.warn('⚠️ 检测到空白帧，显示备用文字');
+                        fallback.style.display = 'block';
+                    }
+                } catch (e) {
+                    fallback.style.display = 'block';
+                }
+            }
+        }, 3000);
+
+        console.log('✅ 热核膨胀已就绪，移动鼠标加热气体！');
+    </script>
+</body>
+</html>

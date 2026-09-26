@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>傅里叶变换的声波画 · Seeing Sound</title>
+<style>
+  *{box-sizing:border-box;}
+  html,body{
+    margin:0;height:100%;overflow:hidden;background:#06070e;color:#e8eaf2;
+    font-family:"Helvetica Neue",Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  canvas{display:block;position:fixed;inset:0;}
+
+  /* ---------- 开始界面 ---------- */
+  #start{
+    position:fixed;inset:0;z-index:10;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    gap:26px;padding:24px;text-align:center;
+    background:radial-gradient(circle at 50% 42%, rgba(34,46,92,.60), rgba(6,7,14,.96) 72%);
+    transition:opacity .9s ease, visibility .9s;
+  }
+  #start.hide{opacity:0;visibility:hidden;pointer-events:none;}
+  #start h1{
+    margin:0;font-weight:200;letter-spacing:.30em;text-indent:.30em;
+    font-size:clamp(17px,2.6vw,28px);
+    background:linear-gradient(92deg,#8fb6ff,#c9a8ff 45%,#ffd48a);
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+  }
+  #start p{
+    margin:0;max-width:560px;line-height:2.0;letter-spacing:.10em;
+    font-size:clamp(11px,1.3vw,13.5px);font-weight:300;color:rgba(196,208,236,.62);
+  }
+  .btns{display:flex;gap:14px;flex-wrap:wrap;justify-content:center;margin-top:6px;}
+  button{
+    font-family:inherit;font-size:12.5px;letter-spacing:.16em;
+    color:#dce6ff;background:transparent;cursor:pointer;
+    border:1px solid rgba(150,185,255,.32);border-radius:999px;
+    padding:12px 26px;transition:.35s cubic-bezier(.4,0,.2,1);
+  }
+  button:hover{
+    background:rgba(120,160,255,.13);
+    border-color:rgba(185,215,255,.85);
+    box-shadow:0 0 26px rgba(120,160,255,.28);
+    transform:translateY(-1px);
+  }
+  button:active{transform:translateY(0);}
+
+  /* ---------- 底部状态栏 ---------- */
+  #hud{
+    position:fixed;left:0;right:0;bottom:0;z-index:5;
+    display:flex;justify-content:space-between;align-items:center;gap:14px;
+    padding:14px 20px;pointer-events:none;
+    font-size:10.5px;letter-spacing:.15em;color:rgba(180,198,232,.42);
+    opacity:0;transition:opacity .8s .3s;
+  }
+  #hud.on{opacity:1;}
+  #hud .right{display:flex;gap:9px;pointer-events:auto;}
+  #hud button{padding:7px 15px;font-size:10px;border-color:rgba(150,185,255,.22);}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="start">
+  <h1>看 见 声 音 的 形 状</h1>
+  <p>
+    傅里叶变换把时间中的声波拆解成无数频率成分。<br>
+    每一种频率，都在这里长成一道光 —— 低频沉入紫罗兰，高频绽成金。
+  </p>
+  <div class="btns">
+    <button id="btnSynth">▶ 内置音源</button>
+    <button id="btnMic">◉ 麦克风</button>
+  </div>
+</div>
+
+<div id="hud">
+  <div id="hudInfo">FFT 4096 · 360 频带 · 对数映射</div>
+  <div class="right">
+    <button id="btnPause">暂停</button>
+    <button id="btnSave">保存画作</button>
+  </div>
+</div>
+
+<script>
+(function(){
+'use strict';
+
+/* =========================================================
+   0. 基础引用与常量
+   ========================================================= */
+const canvas   = document.getElementById('c');
+const ctx      = canvas.getContext('2d', { alpha:false });
+const startEl  = document.getElementById('start');
+const hudEl    = document.getElementById('hud');
+const infoEl   = document.getElementById('hudInfo');
+const btnPause = document.getElementById('btnPause');
+const btnSave  = document.getElementById('btnSave');
+
+const TAU       = Math.PI * 2;
+const FFT_SIZE  = 4096;      // FFT 窗口长度 → 2048 个频点
+const RAY_COUNT = 360;       // 视觉频带数（对数采样）
+
+/* 画布几何 */
+let W=0, H=0, DPR=1;
+let cx=0, cy=0, baseR=0, maxR=0, ampRange=0;
+
+/* 音频 */
+let audioCtx=null, analyser=null, masterGain=null, freqData=null;
+let hasAudio=false, paused=false;
+let synthTimer=null, nextNoteTime=0, scale=[];
+
+/* 视觉状态 */
+let rays=[];                       // 每条射线：{t, f, bin, col}
+let smooth = new Float32Array(RAY_COUNT);
+let rotation = 0;
+let prevTime = 0;
+
+/* =========================================================
+   1. 频率 → 色彩 映射
+   低频：紫罗兰（理性深沉）
+   中频：蓝 → 青（透明感）
+   高频：金（感性明亮）
+   ========================================================= */
+const STOPS = [
+  { p:0.00, c:[118, 52, 205] },
+  { p:0.26, c:[ 72,104, 240] },
+  { p:0.50, c:[ 58,186, 232] },
+  { p:0.72, c:[124,226, 200] },
+  { p:1.00, c:[255,206, 120] }
+];
+
+function palette(t){
+  t = t < 0 ? 0 : (t > 1 ? 1 : t);
+  for (let i = 0; i < STOPS.length - 1; i++){
+    const a = STOPS[i], b = STOPS[i+1];
+    if (t <= b.p){
+      let k = (t - a.p) / (b.p - a.p);
+      k = k * k * (3 - 2 * k);            // smoothstep
+      return [
+        a.c[0] + (b.c[0]-a.c[0]) * k,
+        a.c[1] + (b.c[1]-a.c[1]) * k,
+        a.c[2] + (b.c[2]-a.c[2]) * k
+      ];
+    }
+  }
+  return STOPS[STOPS.length-1].c.slice();
+}
+
+/* =========================================================
+   2. 尺寸与对数频带布局
+   ========================================================= */
+function resize(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width  = Math.round(W * DPR);
+  canvas.height = Math.round(H * DPR);
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  cx = W * 0.5;
+  cy = H * 0.5;
+
+  const m = Math.min(W, H);
+  baseR    = m * 0.135;
+  maxR     = m * 0.450;
+  ampRange = maxR - baseR;
+}
+
+/**
+ * 用对数刻度把 45Hz–16kHz 均匀分成 RAY_COUNT 条射线。
+ * 这样低频不会被挤压成一团，人耳感知更接近线性。
+ */
+function buildRays(sampleRate){
+  const nyquist   = sampleRate / 2;
+  const MIN_F     = 45;
+  const MAX_F     = Math.min(16000, nyquist * 0.98);
+  const binsPerHz = FFT_SIZE / sampleRate;
+
+  rays = [];
+  for (let i = 0; i < RAY_COUNT; i++){
+    const t = i / (RAY_COUNT - 1);
+    const f = MIN_F * Math.pow(MAX_F / MIN_F, t);
+    rays.push({
+      t:   t,
+      f:   f,
+      bin: f * binsPerHz,
+      col: palette(t)
+    });
+  }
+}
+
+/* 在相邻频点之间做线性插值，避免对数映射带来的锯齿 */
+function binValue(data, bin){
+  const n = data.length;
+  let i0 = bin | 0;
+  if (i0 < 0) return data[0] / 255;
+  if (i0 >= n - 1) return data[n-1] / 255;
+  const fr = bin - i0;
+  return (data[i0] * (1 - fr) + data[i0 + 1] * fr) / 255;
+}
+
+/* =========================================================
+   3. 音频引擎
+   ========================================================= */
+async function initAudio(mode){
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === 'suspended') await audioCtx.resume();
+
+  analyser = audioCtx.createAnalyser();
+  analyser.fftSize = FFT_SIZE;
+  analyser.smoothingTimeConstant = 0.72;
+  analyser.minDecibels = -100;
+  analyser.maxDecibels = -22;
+  freqData = new Uint8Array(analyser.frequencyBinCount);
+
+  masterGain = audioCtx.createGain();
+  masterGain.gain.value = 0.35;
+  masterGain.connect(analyser);
+
+  if (mode === 'mic'){
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio:{ echoCancellation:false, noiseSuppression:false, autoGainControl:false }
+    });
+    audioCtx.createMediaStreamSource(stream).connect(analyser);
+    infoEl.textContent = '实时麦克风 · FFT 4096 · 对数频带';
+  } else {
+    startSynth();
+    infoEl.textContent = '内置合成音源 · FFT 4096 · 对数频带';
+  }
+
+  buildRays(audioCtx.sampleRate);
+  hasAudio = true;
+}
+
+/* ---------- 内置合成器：五声音阶随机音符 + 低频铺底 ---------- */
+
+function startSynth(){
+  const root = 196; // G3
+  const ratios = [1, 9/8, 5/4, 3/2, 5/3, 2, 9/4, 5/2, 3, 10/3, 4];
+  scale = ratios.map(r => root * r);
+
+  startPad();
+
+  nextNoteTime = audioCtx.currentTime + 0.15;
+  synthTimer = setInterval(scheduleNotes, 120);
+}
+
+function scheduleNotes(){
+  if (!audioCtx || paused) return;
+  const now = audioCtx.currentTime;
+  let guard = 0;
+  while (nextNoteTime < now + 0.6 && guard++ < 12){
+    playRandomNote(nextNoteTime);
+    nextNoteTime += 0.17 + Math.random() * 0.45;
+  }
+}
+
+function playRandomNote(when){
+  const f   = scale[(Math.random() * scale.length) | 0];
+  const dur = 0.55 + Math.random() * 1.7;
+  const vol = 0.09 + Math.random() * 0.13;
+  const r   = Math.random();
+  const type = r < 0.55 ? 'sine' : (r < 0.85 ? 'triangle' : 'sawtooth');
+
+  voice(f, when, dur, type, vol);
+  if (Math.random() < 0.40) voice(f * 2, when, dur * 0.60, 'sine', vol * 0.32);
+  if (Math.random() < 0.28) voice(f / 2, when, dur * 1.40, 'sine', vol * 0.45);
+  if (Math.random() < 0.16) voice(f * 3, when, dur * 0.42, 'sine', vol * 0.16);
+}
+
+function voice(freq, when, dur, type, vol){
+  const osc = audioCtx.createOscillator();
+  const g   = audioCtx.createGain();
+  const lp  = audioCtx.createBiquadFilter();
+
+  lp.type = 'lowpass';
+  lp.frequency.value = Math.min(18000, freq * 6);
+  lp.Q.value = 0.6;
+
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, when);
+  osc.frequency.linearRampToValueAtTime(
+    freq * (1 + (Math.random() - 0.5) * 0.005),
+    when + dur
+  );
+
+  g.gain.setValueAtTime(0.0001, when);
+  g.gain.exponentialRampToValueAtTime(vol, when + 0.035);
+  g.gain.exponentialRampToValueAtTime(0.0001, when + dur);
+
+  osc.connect(lp); lp.connect(g); g.connect(masterGain);
+  osc.start(when);
+  osc.stop(when + dur + 0.06);
+}
+
+/* 低频铺底：让画面内圈永远有呼吸感 */
+function startPad(){
+  [65.41, 98.00, 130.81].forEach((f, i) => {
+    const osc = audioCtx.createOscillator();
+    const g   = audioCtx.createGain();
+    const lfo = audioCtx.createOscillator();
+    const lg  = audioCtx.createGain();
+
+    osc.type = 'sine';
+    osc.frequency.value = f;
+    g.gain.value = 0.030;
+
+    lfo.frequency.value = 0.05 + i * 0.035;
+    lg.gain.value = 0.022;
+    lfo.connect(lg); lg.connect(g.gain);
+
+    osc.connect(g); g.connect(masterGain);
+    osc.start(); lfo.start();
+  });
+}
+
+/* =========================================================
+   4. 绘制
+   ========================================================= */
+function drawFrame(tSec, dt){
+  /* ---------- 4.1 背景 ---------- */
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = '#06070e';
+  ctx.fillRect(0, 0, W, H);
+
+  const bg = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(W, H) * 0.62);
+  bg.addColorStop(0.00, 'rgba(26,34,64,0.58)');
+  bg.addColorStop(0.45, 'rgba(12,16,34,0.30)');
+  bg.addColorStop(1.00, 'rgba(6,7,14,0)');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  /* ---------- 4.2 采集频谱 ---------- */
+  if (hasAudio && !paused){
+    analyser.getByteFrequencyData(freqData);
+  }
+
+  const K = 0.34;
+  for (let i = 0; i < RAY_COUNT; i++){
+    let v = 0;
+    if (hasAudio && !paused){
+      v = binValue(freqData, rays[i].bin);
+      v = Math.pow(v, 1.22);              // 压缩动态范围，弱信号也能看见
+    }
+    if (!paused) smooth[i] += (v - smooth[i]) * K;
+  }
+
+  if (!paused) rotation += dt * 0.045;
+  if (!rays.length) return;
+
+  /* ---------- 4.3 低频能量（用于中心辉光） ---------- */
+  let lowE = 0;
+  for (let i = 0; i < 36; i++) lowE += smooth[i];
+  lowE /= 36;
+
+  ctx.globalCompositeOperation = 'lighter';
+
+  /* ---------- 4.4 基准圆 ---------- */
+  ctx.beginPath();
+  ctx.arc(cx, cy, baseR, 0, TAU);
+  ctx.strokeStyle = 'rgba(96,128,190,0.11)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  /* ---------- 4.5 核心：频率射线（花瓣） ---------- */
+  ctx.lineCap = 'round';
+
+  for (let i = 0; i < RAY_COUNT; i++){
+    const a = smooth[i];
+    if (a < 0.012) continue;
+
+    const r   = rays[i];
+    const ang = -Math.PI * 0.5 + r.t * TAU + rotation;
+    const ca  = Math.cos(ang), sa = Math.sin(ang);
+
+    const r0 = baseR * (1 + a * 0.07);
+    const r1 = baseR + a * ampRange;
+
+    const x0 = cx + ca * r0, y0 = cy + sa * r0;
+    const x1 = cx + ca * r1, y1 = cy + sa * r1;
+
+    const C  = r.col;
+    const cr = C[0] | 0, cg = C[1] | 0, cb = C[2] | 0;
+
+    const alpha = 0.07 + a * a * 0.60;
+    const w     = 0.7 + a * 3.0;
+
+    /* 外层辉光（仅中等强度以上才画，节省开销） */
+    if (a > 0.22){
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(x1, y1);
+      ctx.strokeStyle = `rgba(${cr},${cg},${cb},${alpha * 0.22})`;
+      ctx.lineWidth = w * 4.2;
+      ctx.stroke();
+    }
+
+    /* 主笔触 */
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x1, y1);
+    ctx.strokeStyle = `rgba(${cr},${cg},${cb},${alpha})`;
+    ctx.lineWidth = w;
+    ctx.stroke();
+  }
+
+  /* ---------- 4.6 声纹包络线 ---------- */
+  ctx.beginPath();
+  for (let i = 0; i < RAY_COUNT; i++){
+    const r   = rays[i];
+    const ang = -Math.PI * 0.5 + r.t * TAU + rotation;
+    const rad = baseR + smooth[i] * ampRange;
+    const x   = cx + Math.cos(ang) * rad;
+    const y   = cy + Math.sin(ang) * rad;
+    if (i === 0) ctx.moveTo(x, y);
+    else         ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+  ctx.strokeStyle = 'rgba(214,232,255,0.20)';
+  ctx.lineWidth = 1.1;
+  ctx.stroke();
+
+  /* ---------- 4.7 中心辉光 ---------- */
+  const glowR = baseR * (0.85 + lowE * 1.7);
+  const gg = ctx.createRadialGradient(cx, cy, 0, cx, cy, glowR);
+  gg.addColorStop(0.00, `rgba(126,156,255,${0.09 + lowE * 0.26})`);
+  gg.addColorStop(0.45, `rgba(96,92,225,${0.04 + lowE * 0.11})`);
+  gg.addColorStop(1.00, 'rgba(80,80,200,0)');
+  ctx.fillStyle = gg;
+  ctx.beginPath();
+  ctx.arc(cx, cy, glowR, 0, TAU);
+  ctx.fill();
+
+  /* ---------- 4.8 边缘暗角 ---------- */
+  ctx.globalCompositeOperation = 'source-over';
+  const vg = ctx.createRadialGradient(
+    cx, cy, Math.min(W, H) * 0.22,
+    cx, cy, Math.max(W, H) * 0.78
+  );
+  vg.addColorStop(0, 'rgba(0,0,0,0)');
+  vg.addColorStop(1, 'rgba(0,0,0,0.66)');
+  ctx.fillStyle = vg;
+  ctx.fillRect(0, 0, W, H);
+}
+
+/* =========================================================
+   5. 主循环
+   ========================================================= */
+function loop(now){
+  requestAnimationFrame(loop);
+
+  let dt = prevTime ? (now - prevTime) / 1000 : 0.016;
+  prevTime = now;
+  if (dt > 0.05) dt = 0.05;
+
+  drawFrame(now / 1000, dt);
+}
+
+/* =========================================================
+   6. 交互
+   ========================================================= */
+function hideStart(){
+  startEl.classList.add('hide');
+  hudEl.classList.add('on');
+}
+
+document.getElementById('btnSynth').addEventListener('click', async () => {
+  hideStart();
+  try { await initAudio('synth'); }
+  catch (e){ console.error(e); infoEl.textContent = '音频初始化失败'; }
+});
+
+document.getElementById('btnMic').addEventListener('click', async () => {
+  hideStart();
+  try { await initAudio('mic'); }
+  catch (e){
+    console.error(e);
+    infoEl.textContent = '麦克风不可用，已切回内置音源';
+    try { await initAudio('synth'); } catch(_){}
+  }
+});
+
+btnPause.addEventListener('click', () => {
+  paused = !paused;
+  btnPause.textContent = paused ? '继续' : '暂停';
+  if (audioCtx){
+    if (paused) audioCtx.suspend();
+    else        audioCtx.resume();
+  }
+});
+
+btnSave.addEventListener('click', () => {
+  const a = document.createElement('a');
+  a.download = 'fourier-sound-painting-' + Date.now() + '.png';
+  a.href = canvas.toDataURL('image/png');
+  a.click();
+});
+
+window.addEventListener('resize', resize);
+
+/* =========================================================
+   7. 启动
+   ========================================================= */
+resize();
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>

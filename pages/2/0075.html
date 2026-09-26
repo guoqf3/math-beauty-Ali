@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SANDCLOCK · 流沙时钟</title>
+    <style>
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body {
+            background:#0d0a08; overflow:hidden; height:100vh; width:100vw;
+            font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+            cursor:crosshair; user-select:none; -webkit-user-select:none;
+            -webkit-tap-highlight-color:transparent; touch-action:none;
+            position:fixed; top:0; left:0;
+        }
+        canvas { display:block; position:fixed; top:0; left:0; width:100%; height:100%; z-index:1; }
+        .overlay {
+            position:fixed; bottom:28px; left:50%; transform:translateX(-50%);
+            z-index:2; text-align:center; pointer-events:none; opacity:0.5;
+            transition:opacity 0.7s ease; mix-blend-mode:screen;
+        }
+        .overlay:hover { opacity:0.85; }
+        .title {
+            color:rgba(230,210,180,0.75); font-size:10px; font-weight:300;
+            letter-spacing:0.6em; text-transform:uppercase; margin-bottom:5px;
+            text-shadow:0 0 20px rgba(180,140,80,0.4);
+        }
+        .hint {
+            color:rgba(190,170,140,0.45); font-size:7px; font-weight:300;
+            letter-spacing:0.3em; text-transform:uppercase;
+        }
+        @media (max-width:768px) {
+            .overlay { bottom:18px; }
+            .title { font-size:8px; letter-spacing:0.45em; }
+            .hint { font-size:6px; letter-spacing:0.22em; }
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <div class="overlay">
+        <div class="title">Sandclock</div>
+        <div class="hint">move · click</div>
+    </div>
+    <script>
+        (function() {
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha:false });
+
+            let W, H, DPR;
+            let grains = [];
+            let mouse = { x:-9999, y:-9999, active:false, vx:0, vy:0, lastX:-9999, lastY:-9999 };
+            let time = 0;
+            let colorShift = 0;
+            let flyingGrains = [];
+            let groundY;
+
+            // 性能参数：粒子数量更充足
+            const GRAIN_COUNT = () => Math.max(140, Math.min(300, Math.floor(W * H / 4200)));
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                ctx.fillStyle = '#0d0a08';
+                ctx.fillRect(0, 0, W, H);
+                groundY = H * 0.6;  // 稍微降低地面，增加下落空间
+            }
+
+            class Grain {
+                constructor() {
+                    this.reset();
+                    // 初始随机分布在整个空间
+                    this.y = Math.random() * H;
+                    this.isSettled = Math.random() < 0.2;  // 少部分初始已沉降
+                    if (this.isSettled) {
+                        this.y = groundY - Math.random() * 30;
+                        this.vy = 0;
+                    }
+                }
+
+                reset() {
+                    this.x = Math.random() * W;
+                    this.y = Math.random() * H * 0.2;
+                    this.vx = (Math.random() - 0.5) * 0.4;
+                    this.vy = 0.3 + Math.random() * 0.8;
+                    this.size = 1.1 + Math.random() * 1.8;
+                    this.hue = 30 + Math.random() * 25;
+                    this.saturation = 35 + Math.random() * 25;
+                    this.lightness = 45 + Math.random() * 22;
+                    this.alpha = 0.5 + Math.random() * 0.35;
+                    this.isSettled = false;
+                    this.settledTime = 0;
+                }
+
+                update(dt, mouse, t) {
+                    if (this.isSettled) {
+                        // 已沉降沙粒：等待一定时间后自然重新悬浮
+                        this.settledTime += dt;
+                        // 鼠标扰动可立即重新运动
+                        if (mouse.active) {
+                            const dx = mouse.x - this.x;
+                            const dy = mouse.y - this.y;
+                            const distSq = dx*dx + dy*dy;
+                            const radius = 100;
+                            if (distSq < radius*radius) {
+                                const dist = Math.sqrt(distSq);
+                                const falloff = 1 - dist/radius;
+                                this.vx += (dx/dist) * falloff * 0.6;
+                                this.vy += (dy/dist) * falloff * 0.4;
+                                this.isSettled = false;
+                                this.settledTime = 0;
+                                return; // 立即进入运动状态
+                            }
+                        }
+                        // 自然重新悬浮：沉降超过4~8秒后回到顶部
+                        const resuspendThreshold = 4 + Math.random() * 4;
+                        if (this.settledTime > resuspendThreshold) {
+                            this.reset();
+                            return;
+                        }
+                        // 微小抖动
+                        this.vx *= 0.95;
+                        this.vy *= 0.95;
+                        this.x += this.vx * dt;
+                        this.y += this.vy * dt;
+                        return;
+                    }
+
+                    // 运动状态
+                    this.vy += 0.12 * dt;       // 重力稍微减小，让下落更平滑
+                    this.vx += (Math.random() - 0.5) * 0.06;
+
+                    if (mouse.active) {
+                        const dx = mouse.x - this.x;
+                        const dy = mouse.y - this.y;
+                        const distSq = dx*dx + dy*dy;
+                        const radius = 160;
+                        if (distSq < radius*radius && distSq > 0.01) {
+                            const dist = Math.sqrt(distSq);
+                            const falloff = 1 - dist/radius;
+                            this.vx += mouse.vx * falloff * 0.35;
+                            this.vy += mouse.vy * falloff * 0.35;
+                            this.vx += (dx/dist) * falloff * 0.18;
+                        }
+                    }
+
+                    this.vx *= 0.99;
+                    this.vy *= 0.99;
+
+                    const maxSpeed = 3.2;
+                    const speed = Math.sqrt(this.vx*this.vx + this.vy*this.vy);
+                    if (speed > maxSpeed) {
+                        this.vx = (this.vx/speed) * maxSpeed;
+                        this.vy = (this.vy/speed) * maxSpeed;
+                    }
+
+                    this.x += this.vx * dt;
+                    this.y += this.vy * dt;
+
+                    // 到达地面
+                    if (this.y >= groundY) {
+                        this.y = groundY;
+                        this.vy *= -0.25;
+                        this.vx *= 0.7;
+                        if (Math.abs(this.vy) < 0.5 && Math.abs(this.vx) < 0.2) {
+                            this.isSettled = true;
+                            this.settledTime = 0;
+                            this.vy = 0;
+                            this.vx = 0;
+                        }
+                    }
+
+                    // 边界
+                    if (this.x < -10) this.x = W + 10;
+                    if (this.x > W + 10) this.x = -10;
+                    if (this.y > H + 20) {
+                        this.reset();
+                    }
+                }
+
+                draw(ctx, t) {
+                    const flicker = 0.85 + 0.15 * Math.sin(t*0.5 + this.x*0.01 + this.y*0.01);
+                    const alpha = this.alpha * flicker;
+                    const hue = this.hue + colorShift + Math.sin(t*0.3 + this.y*0.01)*8;
+                    const sat = this.saturation + Math.sin(t*0.4 + this.x*0.015)*10;
+                    const light = this.lightness + flicker*10;
+
+                    ctx.fillStyle = `hsla(${hue}, ${sat}%, ${light}%, ${alpha})`;
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, this.size, 0, Math.PI*2);
+                    ctx.fill();
+
+                    const glowSize = this.size * 2;
+                    const gradient = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, glowSize);
+                    gradient.addColorStop(0, `hsla(${hue}, ${sat}%, ${light+10}%, ${alpha*0.5})`);
+                    gradient.addColorStop(1, 'transparent');
+                    ctx.fillStyle = gradient;
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, glowSize, 0, Math.PI*2);
+                    ctx.fill();
+                }
+            }
+
+            function initGrains() {
+                const count = GRAIN_COUNT();
+                grains = [];
+                for (let i=0; i<count; i++) {
+                    grains.push(new Grain());
+                }
+            }
+
+            function createFlyaway(x, y) {
+                const count = 30 + Math.floor(Math.random()*25);
+                for (let i=0; i<count; i++) {
+                    const angle = Math.random() * Math.PI*2;
+                    const speed = 1.5 + Math.random()*6;
+                    flyingGrains.push({
+                        x, y,
+                        vx: Math.cos(angle)*speed,
+                        vy: Math.sin(angle)*speed - 1,
+                        life: 0.8 + Math.random()*0.7,
+                        maxLife: 1.5,
+                        size: 1 + Math.random()*2,
+                        hue: 30 + colorShift + Math.random()*30 - 15,
+                        saturation: 40 + Math.random()*30,
+                        lightness: 50 + Math.random()*25,
+                        alpha: 0.7,
+                    });
+                }
+                if (flyingGrains.length > 180) flyingGrains.splice(0, flyingGrains.length-180);
+            }
+
+            function updateFlyingGrains(dt) {
+                for (let i=flyingGrains.length-1; i>=0; i--) {
+                    const g = flyingGrains[i];
+                    g.x += g.vx * dt;
+                    g.y += g.vy * dt;
+                    g.vy += 0.2 * dt;
+                    g.vx *= 0.96;
+                    g.life -= 0.02 * dt;
+                    if (g.life <= 0) flyingGrains.splice(i,1);
+                }
+            }
+
+            function drawFlyingGrains(ctx) {
+                for (const g of flyingGrains) {
+                    const alpha = g.life * g.alpha;
+                    const size = g.size * g.life;
+                    const light = g.lightness + g.life*15;
+                    ctx.fillStyle = `hsla(${g.hue}, ${g.saturation}%, ${light}%, ${alpha})`;
+                    ctx.beginPath();
+                    ctx.arc(g.x, g.y, size, 0, Math.PI*2);
+                    ctx.fill();
+                }
+            }
+
+            function drawGround(ctx) {
+                const gradient = ctx.createLinearGradient(0, groundY-20, 0, groundY+30);
+                gradient.addColorStop(0, 'transparent');
+                gradient.addColorStop(0.5, `hsla(35, 40%, 50%, 0.15)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.fillRect(0, groundY-20, W, 50);
+            }
+
+            function drawCursorGlow(ctx) {
+                if (!mouse.active) return;
+                const radius = 50;
+                const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                gradient.addColorStop(0, `hsla(35, 50%, 75%, 0.07)`);
+                gradient.addColorStop(0.7, `hsla(35, 40%, 65%, 0.025)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI*2);
+                ctx.fill();
+            }
+
+            let lastTime = 0;
+            let accumulator = 0;
+            const fixedStep = 1000/60;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+
+                accumulator += dt;
+                const steps = Math.min(Math.floor(accumulator / fixedStep), 3);
+                accumulator -= steps * fixedStep;
+
+                for (let s=0; s<steps; s++) {
+                    time += 0.016;
+                    const dtNorm = fixedStep / 1000 * 60;
+
+                    if (mouse.active && mouse.lastX > -9000) {
+                        mouse.vx = (mouse.x - mouse.lastX) * 0.06;
+                        mouse.vy = (mouse.y - mouse.lastY) * 0.06;
+                    } else {
+                        mouse.vx *= 0.9;
+                        mouse.vy *= 0.9;
+                    }
+                    mouse.lastX = mouse.x;
+                    mouse.lastY = mouse.y;
+
+                    for (const g of grains) {
+                        g.update(dtNorm, mouse, time);
+                    }
+                    updateFlyingGrains(dtNorm);
+                }
+
+                ctx.fillStyle = 'rgba(13, 10, 8, 0.2)';
+                ctx.fillRect(0, 0, W, H);
+
+                drawGround(ctx);
+
+                for (const g of grains) g.draw(ctx, time);
+                drawFlyingGrains(ctx);
+                drawCursorGlow(ctx);
+
+                requestAnimationFrame(animate);
+            }
+
+            function onMouseMove(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+            }
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999; mouse.y = -9999;
+                mouse.lastX = -9999; mouse.lastY = -9999;
+                mouse.vx = 0; mouse.vy = 0;
+            }
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                createFlyaway(mouse.x, mouse.y);
+                colorShift += 10 + Math.random()*15;
+                if (colorShift > 50) colorShift = -10;
+            }
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                }
+            }
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    createFlyaway(mouse.x, mouse.y);
+                    colorShift += 10 + Math.random()*15;
+                    if (colorShift > 50) colorShift = -10;
+                }
+            }
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999; mouse.y = -9999;
+                mouse.lastX = -9999; mouse.lastY = -9999;
+                mouse.vx = 0; mouse.vy = 0;
+            }
+            function onResize() {
+                setupCanvas();
+                const targetCount = GRAIN_COUNT();
+                if (targetCount !== grains.length) {
+                    while (grains.length < targetCount) grains.push(new Grain());
+                    if (grains.length > targetCount) grains.length = targetCount;
+                }
+                flyingGrains = [];
+                mouse.active = false;
+                mouse.x = -9999; mouse.y = -9999;
+                mouse.lastX = -9999; mouse.lastY = -9999;
+            }
+
+            function init() {
+                setupCanvas();
+                initGrains();
+                canvas.addEventListener('mousemove', onMouseMove, {passive:true});
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, {passive:false});
+                canvas.addEventListener('touchstart', onTouchStart, {passive:false});
+                canvas.addEventListener('touchend', onTouchEnd, {passive:true});
+                canvas.addEventListener('touchcancel', onTouchEnd, {passive:true});
+                window.addEventListener('resize', onResize);
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#0d0a08';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+        })();
+    </script>
+</body>
+</html>

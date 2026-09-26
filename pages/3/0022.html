@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>一行脉动生物 · 三角函数的生命感</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    background: #03010a; overflow: hidden; touch-action: none;
+  }
+  canvas { display: block; position: fixed; inset: 0; }
+
+  .hud {
+    position: fixed; left: 22px; bottom: 20px;
+    font: 11.5px/1.95 ui-monospace, Menlo, Consolas, monospace;
+    color: rgba(185, 155, 255, 0.32);
+    letter-spacing: 0.10em;
+    pointer-events: none; user-select: none;
+  }
+  .hud b { color: rgba(225, 205, 255, 0.88); font-weight: 500; letter-spacing: 0.20em; }
+  .hud i { color: rgba(195, 170, 255, 0.55); font-style: normal; }
+  .hud code {
+    color: rgba(255, 205, 130, 0.75);
+    font-family: inherit;
+    letter-spacing: 0.04em;
+  }
+  .hud .dim { color: rgba(170, 140, 230, 0.28); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud">
+  <div><b>ONE-LINE PULSING ORGANISM</b></div>
+  <div><i>核心公式</i> <code>r = 1 + Σ aₖ · sin(nₖθ + ωₖt)</code></div>
+  <div><i>频率</i> 3 · 5 · 8 · 13 · 21 &nbsp;<span class="dim">斐波那契</span></div>
+  <div><i>振幅</i> 0.22 → 0.04 &nbsp;<span class="dim">近似黄金递减</span></div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ================= 画布 ================= */
+  const cvs = document.getElementById('c');
+  const ctx = cvs.getContext('2d', { alpha: false });
+
+  let W = 0, H = 0, DPR = 1, cx = 0, cy = 0, S = 0, R = 0;
+  let bg = null;
+
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth;
+    H = window.innerHeight;
+    cvs.width  = Math.round(W * DPR);
+    cvs.height = Math.round(H * DPR);
+    cvs.style.width  = W + 'px';
+    cvs.style.height = H + 'px';
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+    cx = W * 0.5;
+    cy = H * 0.5;
+    S  = Math.min(W, H);
+    R  = S * 0.24;
+
+    bg = ctx.createRadialGradient(cx, cy, 0, cx, cy, S * 0.95);
+    bg.addColorStop(0.00, '#0c0722');
+    bg.addColorStop(0.35, '#060315');
+    bg.addColorStop(0.72, '#020109');
+    bg.addColorStop(1.00, '#000002');
+  }
+  window.addEventListener('resize', resize);
+
+  /* ================================================================
+     核心：一行公式
+     r(θ,t) = 1 + Σ aₖ · sin(nₖ·θ + ωₖ·t)
+
+     频率 nₖ = 3, 5, 8, 13, 21      —— 斐波那契数列
+     振幅 aₖ ≈ 0.22 · φ⁻ᵏ          —— 近似黄金比递减
+     角速度 ωₖ 正负交替              —— 形成对流行波
+     ================================================================ */
+  const radius = (th, t) =>
+      1
+    + .22 * Math.sin( 3 * th + t * 1.00)
+    + .14 * Math.sin( 5 * th - t * 1.40)
+    + .09 * Math.sin( 8 * th + t * 1.90)
+    + .06 * Math.sin(13 * th - t * 2.50)
+    + .04 * Math.sin(21 * th + t * 3.10);
+
+  /* ================= 采样缓存 ================= */
+  const N = 720;
+  const rBase = new Float32Array(N);   // 物理半径
+  const cosA  = new Float32Array(N);   // 屏幕角余弦
+  const sinA  = new Float32Array(N);   // 屏幕角正弦
+  const angS  = new Float32Array(N);   // 屏幕角度
+
+  /* ================= 发光精灵 ================= */
+  const sprite = document.createElement('canvas');
+  (function () {
+    const gs = 64;
+    sprite.width = sprite.height = gs;
+    const g = sprite.getContext('2d');
+    const rg = g.createRadialGradient(gs / 2, gs / 2, 0, gs / 2, gs / 2, gs / 2);
+    rg.addColorStop(0.00, 'rgba(255,250,238,1.0)');
+    rg.addColorStop(0.18, 'rgba(255,228,175,0.72)');
+    rg.addColorStop(0.44, 'rgba(255,185,115,0.18)');
+    rg.addColorStop(0.75, 'rgba(255,155,90,0.04)');
+    rg.addColorStop(1.00, 'rgba(255,140,80,0)');
+    g.fillStyle = rg;
+    g.fillRect(0, 0, gs, gs);
+  })();
+
+  /* ================= 环境微粒 ================= */
+  const dust = [];
+  (function () {
+    for (let i = 0; i < 90; i++) {
+      dust.push({
+        x: Math.random(),
+        y: Math.random(),
+        r: Math.random() * 1.3 + 0.30,
+        ph: Math.random() * Math.PI * 2,
+        sp: 0.10 + Math.random() * 0.35,
+        hue: 250 + Math.random() * 110
+      });
+    }
+  })();
+
+  /* ================= 主循环 ================= */
+  function frame(now) {
+    const t = now * 0.001;
+
+    /* ---------- 背景 ---------- */
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, W, H);
+
+    /* ---------- 环境微粒 ---------- */
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < dust.length; i++) {
+      const p = dust[i];
+      const x = p.x * W + Math.sin(t * p.sp + p.ph) * 22;
+      const y = p.y * H + Math.cos(t * p.sp * 0.66 + p.ph * 1.4) * 26;
+      const a = 0.05 + 0.15 * (0.5 + 0.5 * Math.sin(t * 0.70 + p.ph * 2.0));
+
+      ctx.fillStyle = 'hsla(' + p.hue + ', 85%, 76%, ' + a + ')';
+      ctx.beginPath();
+      ctx.arc(x, y, p.r, 0, 6.2832);
+      ctx.fill();
+    }
+
+    /* ---------- 整体呼吸与漂浮 ---------- */
+    const breathe = 1 + 0.070 * Math.sin(t * 0.85)
+                      + 0.035 * Math.sin(t * 1.90 + 1.1);
+    const rot = t * 0.12;
+
+    /* 中心轻微摇摆 —— 像悬浮在水中 */
+    const ox = Math.sin(t * 0.58) * R * 0.055;
+    const oy = Math.cos(t * 0.47) * R * 0.055;
+    const CX = cx + ox;
+    const CY = cy + oy;
+
+    const Rc = R * breathe;
+
+    /* ---------- 统一采样 ---------- */
+    for (let i = 0; i < N; i++) {
+      const thP = i / N * 6.283185307;
+      const thS = thP + rot;
+      rBase[i] = radius(thP, t) * Rc;
+      cosA[i]  = Math.cos(thS);
+      sinA[i]  = Math.sin(thS);
+      angS[i]  = thS;
+    }
+
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    /* ============ 1. 中心核 ============ */
+    {
+      const coreR = Rc * 0.40 * (1 + 0.18 * Math.sin(t * 1.55));
+      const g = ctx.createRadialGradient(CX, CY, 0, CX, CY, coreR);
+      g.addColorStop(0.00, 'hsla(48, 100%, 93%, 0.68)');
+      g.addColorStop(0.16, 'hsla(38, 100%, 80%, 0.38)');
+      g.addColorStop(0.42, 'hsla(330, 100%, 70%, 0.13)');
+      g.addColorStop(0.72, 'hsla(300, 100%, 64%, 0.035)');
+      g.addColorStop(1.00, 'hsla(280, 100%, 60%, 0)');
+
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(CX, CY, coreR, 0, 6.2832);
+      ctx.fill();
+    }
+
+    /* ============ 2. 多层轮廓（体积感） ============ */
+    const LAYERS = 7;
+    const hueSwing = 12 * Math.sin(t * 0.23);   // 整体色相缓慢摆动
+
+    for (let L = LAYERS; L >= 1; L--) {
+      const ratio = L / LAYERS;
+      const lph = L * 1.37;
+
+      ctx.beginPath();
+      for (let i = 0; i <= N; i++) {
+        const k = i % N;
+
+        // 每层独立角向调制 —— 层与层形状略有差异
+        const mod = 1 + 0.038 * Math.sin(angS[k] * (5 + L * 0.8)
+                                         + t * (1.6 + L * 0.15) + lph);
+
+        const r = rBase[k] * ratio * mod;
+        const x = CX + cosA[k] * r;
+        const y = CY + sinA[k] * r;
+
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+
+      // 外层蓝紫 → 内层品红
+      const hue = 320 - ratio * 55 + hueSwing + 16 * Math.sin(t * 0.4 + ratio * 3.2);
+      const sat = 74 + ratio * 22;
+      const lig = 36 + ratio * 38;
+      const alpha = 0.07 + ratio * ratio * 0.56;
+
+      // 光晕
+      ctx.strokeStyle = 'hsla(' + hue + ', ' + sat + '%, '
+                      + Math.min(90, lig + 24) + '%, ' + (alpha * 0.20) + ')';
+      ctx.lineWidth = (1 - ratio) * 3.0 + 4.5;
+      ctx.stroke();
+
+      // 实体
+      ctx.strokeStyle = 'hsla(' + hue + ', ' + sat + '%, ' + lig + '%, ' + alpha + ')';
+      ctx.lineWidth = (1 - ratio) * 2.2 + 0.55;
+      ctx.stroke();
+    }
+
+    /* ============ 3. 径向脉络 ============ */
+    const VEINS = 72;
+    for (let v = 0; v < VEINS; v++) {
+      const thS = v / VEINS * 6.2832 + rot * 0.6;
+      const thP = thS - rot;
+      const rOut = radius(thP, t) * Rc;
+      const rIn  = rOut * 0.13;
+
+      const a = 0.045 + 0.055 * (0.5 + 0.5 * Math.sin(thS * 9 + t * 2.3));
+      const hue = 275 + 55 * Math.sin(thS * 3 + t * 0.55);
+
+      ctx.strokeStyle = 'hsla(' + hue + ', 90%, 74%, ' + a + ')';
+      ctx.lineWidth = 0.55;
+      ctx.beginPath();
+      ctx.moveTo(CX + Math.cos(thS) * rIn, CY + Math.sin(thS) * rIn);
+      ctx.lineTo(CX + Math.cos(thS) * rOut * 0.94, CY + Math.sin(thS) * rOut * 0.94);
+      ctx.stroke();
+    }
+
+    /* ============ 4. 流动光点 ============ */
+    const DOTS = 46;
+    for (let d = 0; d < DOTS; d++) {
+      const thP = d / DOTS * 6.2832 + t * 0.28 + 0.40 * Math.sin(d * 2.4);
+      const thS = thP + rot;
+
+      const base = radius(thP, t) * Rc;
+      const rad  = base * (0.62 + 0.30 * Math.sin(d * 1.7 + t * 1.3));
+      const x = CX + Math.cos(thS) * rad;
+      const y = CY + Math.sin(thS) * rad;
+
+      const tw = 0.5 + 0.5 * Math.sin(t * 3.1 + d * 1.9);
+      const sz = S * 0.012 * (0.55 + 0.75 * tw);
+
+      ctx.globalAlpha = 0.30 + 0.55 * tw;
+      ctx.drawImage(sprite, x - sz * 0.5, y - sz * 0.5, sz, sz);
+    }
+    ctx.globalAlpha = 1;
+
+    /* ============ 5. 最外层柔光晕 ============ */
+    {
+      const haloR = Rc * 1.60;
+      const g = ctx.createRadialGradient(CX, CY, Rc * 0.55, CX, CY, haloR);
+      g.addColorStop(0.00, 'hsla(320, 100%, 66%, 0)');
+      g.addColorStop(0.68, 'hsla(300, 100%, 62%, 0.045)');
+      g.addColorStop(0.87, 'hsla(282, 100%, 62%, 0.085)');
+      g.addColorStop(1.00, 'hsla(262, 100%, 60%, 0)');
+
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(CX, CY, haloR, 0, 6.2832);
+      ctx.fill();
+    }
+
+    ctx.globalCompositeOperation = 'source-over';
+    requestAnimationFrame(frame);
+  }
+
+  /* ================= 启动 ================= */
+  resize();
+  requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

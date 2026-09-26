@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Schwarz P极小曲面 · 等值线交织</title>
+    <style>
+        :root { --bg: #02040a; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'STSong', 'Songti SC', 'Noto Serif SC', 'SimSun', 'Times New Roman', serif;
+            -webkit-font-smoothing: antialiased;
+            height: 100vh; width: 100vw;
+            user-select: none; -webkit-user-select: none; cursor: default;
+        }
+        #canvas-container { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+        canvas { display: block; }
+        #title-overlay {
+            position: fixed; top: 24px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+        }
+        #title-overlay .title {
+            font-size: clamp(1.0rem, 2.2vw, 1.5rem); font-weight: 400; letter-spacing: 0.08em;
+            color: #cfc7b5; text-shadow: 0 0 42px rgba(200,180,150,0.5), 0 0 72px rgba(170,150,130,0.22);
+            line-height: 1.4; white-space: nowrap;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.48rem, 0.85vw, 0.64rem); font-weight: 300; letter-spacing: 0.12em;
+            color: #a09888; text-shadow: 0 0 16px rgba(155,145,125,0.32);
+            margin-top: 2px; white-space: nowrap;
+        }
+        #formula-overlay {
+            position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+            background: rgba(2,4,10,0.7); padding: 10px 22px; border-radius: 32px;
+            border: 1px solid rgba(175,155,135,0.16);
+            backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); max-width: 95vw;
+        }
+        #formula-overlay .formula {
+            font-size: clamp(0.38rem, 0.7vw, 0.56rem); font-weight: 300; letter-spacing: 0.04em;
+            color: #c5bdaa; text-shadow: 0 0 13px rgba(185,170,145,0.25);
+            line-height: 1.5; white-space: nowrap;
+        }
+        #formula-overlay .formula .c1 { color: #d4885c; }
+        #formula-overlay .formula .c2 { color: #5d9ec6; }
+        #formula-overlay .formula .c3 { color: #c77d9f; }
+        @media (max-width: 600px) {
+            #title-overlay { top: 14px; }
+            #formula-overlay { bottom: 10px; padding: 7px 12px; border-radius: 24px; }
+            #formula-overlay .formula { font-size: 0.32rem; white-space: normal; line-height: 1.3; }
+            #title-overlay .title { font-size: 0.68rem; }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="title-overlay">
+        <div class="title">Schwarz P极小曲面 · 等值线交织</div>
+        <div class="subtitle">TRIPLY PERIODIC MINIMAL SURFACE &nbsp;·&nbsp; SLICE CONTOURS</div>
+    </div>
+    <div id="formula-overlay">
+        <div class="formula">
+            <span class="c1">Z切片:</span> cos(x)+cos(y)=−cos(z₀) &nbsp;
+            <span class="c2">Y切片:</span> cos(x)+cos(z)=−cos(y₀) &nbsp;
+            <span class="c3">X切片:</span> cos(y)+cos(z)=−cos(x₀)
+            <br>
+            <span style="color:#9aa8b8;">x,y,z∈[−π,π] &nbsp;16切片/方向 &nbsp;网格120×120 &nbsp;|&nbsp; 绝对时间驱动</span>
+        </div>
+    </div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#02040a');
+        scene.fog = new THREE.Fog('#02040a', 7, 18);
+
+        const camera = new THREE.PerspectiveCamera(
+            50,
+            container.clientWidth / Math.max(container.clientHeight, 1),
+            0.3,
+            22
+        );
+        camera.position.set(0.6, 0.35, 6.8);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = false;
+        container.appendChild(renderer.domElement);
+
+        // ==================== 颜色 ====================
+        const C1 = '#d4885c'; // 暖金 – Z切片等值线
+        const C2 = '#5d9ec6'; // 冰蓝 – Y切片等值线
+        const C3 = '#c77d9f'; // 玫瑰粉 – X切片等值线
+        const C_SPHERE = '#3a4a5c';
+        const C_GLINT = '#8898aa';
+
+        const VIEW_RADIUS = 2.7;
+        const PI = Math.PI;
+        const RANGE = PI; // 坐标范围 [-π, π]
+        const SCALE = VIEW_RADIUS / RANGE; // 将坐标缩放到球半径内
+        const NUM_SLICES = 16; // 每个方向的切片数
+        const GRID_RES = 120; // 每片二维采样分辨率
+
+        // ==================== 等值线提取工具 ====================
+        function extractContourSegments(fixedCoord, fixedValue, direction) {
+            // direction: 'z' 表示固定z, 变量为x,y ; 'y' 固定y, 变量为x,z ; 'x' 固定x, 变量为y,z
+            const segments = [];
+            const constTerm = Math.cos(fixedValue); // 固定坐标的cos值
+            const step = (2 * RANGE) / GRID_RES;
+            const start = -RANGE;
+
+            // 根据方向确定变量范围与映射
+            let uRange, vRange, getPoint;
+            if (direction === 'z') {
+                uRange = vRange = { min: start, max: RANGE, step };
+                getPoint = (u, v) => new THREE.Vector3(u, v, fixedCoord).multiplyScalar(SCALE);
+            } else if (direction === 'y') {
+                uRange = { min: start, max: RANGE, step };
+                vRange = { min: start, max: RANGE, step };
+                getPoint = (u, v) => new THREE.Vector3(u, fixedCoord, v).multiplyScalar(SCALE);
+            } else if (direction === 'x') {
+                uRange = { min: start, max: RANGE, step };
+                vRange = { min: start, max: RANGE, step };
+                getPoint = (u, v) => new THREE.Vector3(fixedCoord, u, v).multiplyScalar(SCALE);
+            }
+
+            const uSize = GRID_RES + 1;
+            const vSize = GRID_RES + 1;
+            // 预先计算所有网格点的函数值
+            const values = new Float32Array(uSize * vSize);
+            for (let i = 0; i < uSize; i++) {
+                const u = start + i * step;
+                for (let j = 0; j < vSize; j++) {
+                    const v = start + j * step;
+                    // f(u,v) = cos(u) + cos(v) + constTerm
+                    const val = Math.cos(u) + Math.cos(v) + constTerm;
+                    values[i * vSize + j] = val;
+                }
+            }
+
+            // 遍历网格单元，检测符号变化并插值
+            for (let i = 0; i < uSize - 1; i++) {
+                for (let j = 0; j < vSize - 1; j++) {
+                    const idx00 = i * vSize + j;
+                    const idx10 = (i+1) * vSize + j;
+                    const idx01 = i * vSize + j + 1;
+                    const idx11 = (i+1) * vSize + j + 1;
+
+                    const f00 = values[idx00], f10 = values[idx10], f01 = values[idx01], f11 = values[idx11];
+                    // 检查四条边上的符号变化
+                    // 边 (00-10)
+                    if (f00 * f10 < 0) {
+                        const t = -f00 / (f10 - f00);
+                        const u = start + i * step + t * step;
+                        const v = start + j * step;
+                        segments.push(getPoint(u, v));
+                    }
+                    // 边 (00-01)
+                    if (f00 * f01 < 0) {
+                        const t = -f00 / (f01 - f00);
+                        const u = start + i * step;
+                        const v = start + j * step + t * step;
+                        segments.push(getPoint(u, v));
+                    }
+                    // 边 (10-11)
+                    if (f10 * f11 < 0) {
+                        const t = -f10 / (f11 - f10);
+                        const u = start + (i+1) * step;
+                        const v = start + j * step + t * step;
+                        segments.push(getPoint(u, v));
+                    }
+                    // 边 (01-11)
+                    if (f01 * f11 < 0) {
+                        const t = -f01 / (f11 - f01);
+                        const u = start + i * step + t * step;
+                        const v = start + (j+1) * step;
+                        segments.push(getPoint(u, v));
+                    }
+                }
+            }
+            return segments;
+        }
+
+        // ==================== 生成所有切片的顶点数组 ====================
+        function buildSliceVertices(direction) {
+            const allVerts = [];
+            const sliceValues = [];
+            const stepSlice = (2 * RANGE) / (NUM_SLICES - 1);
+            for (let k = 0; k < NUM_SLICES; k++) {
+                sliceValues.push(-RANGE + k * stepSlice);
+            }
+            for (const val of sliceValues) {
+                const segs = extractContourSegments(val, val, direction);
+                // segs数组包含孤立的点，需要成对才能构成线段，但这里每个seg是由符号变化产生的单个点，
+                // 标准的等值线追踪会连接两个相交边形成线段，我们的简化方法每个单元格内可能产生0或2或4个点，
+                // 需要将它们按正确顺序连接。为简便，我们采用线段化方式：每两个相交边构成一条线段。
+                // 然而上述循环只提取了交点，未连接。为了正确生成线段，我们需要在单元格内配对交点。
+                // 改进：在每个单元格内收集交点，然后配对连接。
+                // 重新实现：遍历单元格，收集本单元格内的交点列表，然后连接成线段（通常为0,2,4个交点）。
+            }
+            // 上述简单实现有误，让我们重新设计提取方法：在每个单元格内收集交点，然后将交点成对连接。
+            return allVerts;
+        }
+
+        // 重新实现正确的等值线段提取
+        function extractContourLines(fixedCoord, fixedValue, direction) {
+            const constTerm = Math.cos(fixedValue);
+            const step = (2 * RANGE) / GRID_RES;
+            const start = -RANGE;
+            const uSize = GRID_RES + 1;
+            const vSize = GRID_RES + 1;
+            const values = new Float32Array(uSize * vSize);
+            for (let i = 0; i < uSize; i++) {
+                const u = start + i * step;
+                for (let j = 0; j < vSize; j++) {
+                    const v = start + j * step;
+                    values[i * vSize + j] = Math.cos(u) + Math.cos(v) + constTerm;
+                }
+            }
+
+            const lineVerts = [];
+            const getPoint = (u, v) => {
+                if (direction === 'z') return new THREE.Vector3(u, v, fixedCoord).multiplyScalar(SCALE);
+                if (direction === 'y') return new THREE.Vector3(u, fixedCoord, v).multiplyScalar(SCALE);
+                return new THREE.Vector3(fixedCoord, u, v).multiplyScalar(SCALE);
+            };
+
+            for (let i = 0; i < uSize - 1; i++) {
+                for (let j = 0; j < vSize - 1; j++) {
+                    const idx00 = i * vSize + j;
+                    const idx10 = (i+1) * vSize + j;
+                    const idx01 = i * vSize + j + 1;
+                    const idx11 = (i+1) * vSize + j + 1;
+                    const f00 = values[idx00], f10 = values[idx10], f01 = values[idx01], f11 = values[idx11];
+
+                    const intersections = [];
+                    // 边00-10
+                    if (f00 * f10 < 0) {
+                        const t = -f00 / (f10 - f00);
+                        intersections.push(getPoint(start + i * step + t * step, start + j * step));
+                    }
+                    // 边00-01
+                    if (f00 * f01 < 0) {
+                        const t = -f00 / (f01 - f00);
+                        intersections.push(getPoint(start + i * step, start + j * step + t * step));
+                    }
+                    // 边10-11
+                    if (f10 * f11 < 0) {
+                        const t = -f10 / (f11 - f10);
+                        intersections.push(getPoint(start + (i+1) * step, start + j * step + t * step));
+                    }
+                    // 边01-11
+                    if (f01 * f11 < 0) {
+                        const t = -f01 / (f11 - f01);
+                        intersections.push(getPoint(start + i * step + t * step, start + (j+1) * step));
+                    }
+
+                    // 如果有4个交点，通常连接(0,1)和(2,3)或适当的顺序
+                    if (intersections.length === 4) {
+                        // 简单启发：按角度排序后连接相邻点
+                        const center = new THREE.Vector3(
+                            (intersections[0].x + intersections[1].x + intersections[2].x + intersections[3].x)/4,
+                            (intersections[0].y + intersections[1].y + intersections[2].y + intersections[3].y)/4,
+                            (intersections[0].z + intersections[1].z + intersections[2].z + intersections[3].z)/4
+                        );
+                        intersections.sort((a,b) => Math.atan2(a.y-center.y, a.x-center.x) - Math.atan2(b.y-center.y, b.x-center.x));
+                        lineVerts.push(intersections[0].x, intersections[0].y, intersections[0].z,
+                                       intersections[1].x, intersections[1].y, intersections[1].z);
+                        lineVerts.push(intersections[2].x, intersections[2].y, intersections[2].z,
+                                       intersections[3].x, intersections[3].y, intersections[3].z);
+                    } else if (intersections.length === 2) {
+                        lineVerts.push(intersections[0].x, intersections[0].y, intersections[0].z,
+                                       intersections[1].x, intersections[1].y, intersections[1].z);
+                    }
+                    // 忽略0个交点的情况
+                }
+            }
+            return lineVerts;
+        }
+
+        function buildAllSliceVertices(direction) {
+            const allVerts = [];
+            const stepSlice = (2 * RANGE) / (NUM_SLICES - 1);
+            for (let k = 0; k < NUM_SLICES; k++) {
+                const val = -RANGE + k * stepSlice;
+                const verts = extractContourLines(val, val, direction);
+                allVerts.push(...verts);
+            }
+            return allVerts;
+        }
+
+        console.log('生成Z切片等值线...');
+        const vertsZ = buildAllSliceVertices('z');
+        console.log('生成Y切片等值线...');
+        const vertsY = buildAllSliceVertices('y');
+        console.log('生成X切片等值线...');
+        const vertsX = buildAllSliceVertices('x');
+
+        console.log('Z切片线段顶点数:', vertsZ.length/3, 'Y:', vertsY.length/3, 'X:', vertsX.length/3);
+
+        function createLineSegmentsFromFlatArray(flatVerts, colorHex, opacity) {
+            if (flatVerts.length === 0) return new THREE.Group();
+            const geom = new THREE.BufferGeometry();
+            geom.setAttribute('position', new THREE.Float32BufferAttribute(flatVerts, 3));
+            const mat = new THREE.LineBasicMaterial({
+                color: new THREE.Color(colorHex),
+                transparent: true,
+                opacity: opacity,
+                depthWrite: true,
+            });
+            return new THREE.LineSegments(geom, mat);
+        }
+
+        const linesZ = createLineSegmentsFromFlatArray(vertsZ, C1, 0.55);
+        const linesY = createLineSegmentsFromFlatArray(vertsY, C2, 0.52);
+        const linesX = createLineSegmentsFromFlatArray(vertsX, C3, 0.54);
+
+        const mainGroup = new THREE.Group();
+        mainGroup.add(linesZ);
+        mainGroup.add(linesY);
+        mainGroup.add(linesX);
+        scene.add(mainGroup);
+
+        // ==================== 参考球面线框 ====================
+        function createSphereWireframe(radius, colorHex, opacity) {
+            const group = new THREE.Group();
+            const segs = 160;
+            const circles = [
+                (a) => new THREE.Vector3(Math.cos(a)*radius, Math.sin(a)*radius, 0),
+                (a) => new THREE.Vector3(Math.cos(a)*radius, 0, Math.sin(a)*radius),
+                (a) => new THREE.Vector3(0, Math.cos(a)*radius, Math.sin(a)*radius),
+            ];
+            for (const gen of circles) {
+                const pts = [];
+                for (let i=0; i<=segs; i++) pts.push(gen((i/segs)*Math.PI*2));
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(colorHex),
+                    transparent: true, opacity: opacity, depthWrite: true,
+                });
+                group.add(new THREE.Line(geom, mat));
+            }
+            return group;
+        }
+        const sphereRef = createSphereWireframe(VIEW_RADIUS, C_SPHERE, 0.22);
+        scene.add(sphereRef);
+
+        // 原点光点
+        function originGlint() {
+            const group = new THREE.Group();
+            const sz = 0.07;
+            const pairs = [
+                [new THREE.Vector3(-sz,0,0), new THREE.Vector3(sz,0,0)],
+                [new THREE.Vector3(0,-sz,0), new THREE.Vector3(0,sz,0)],
+                [new THREE.Vector3(0,0,-sz), new THREE.Vector3(0,0,sz)],
+            ];
+            for (const [a,b] of pairs) {
+                const g = new THREE.BufferGeometry().setFromPoints([a,b]);
+                const m = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(C_GLINT),
+                    transparent: true, opacity: 0.7, depthWrite: true,
+                });
+                group.add(new THREE.Line(g, m));
+            }
+            return group;
+        }
+        scene.add(originGlint());
+
+        // ==================== 动画循环（绝对时间） ====================
+        let time = 0;
+        let lastTime = performance.now();
+        let frameCount = 0;
+        let logTime = 0;
+
+        function animate(now) {
+            requestAnimationFrame(animate);
+            let delta = (now - lastTime) / 1000;
+            if (delta <= 0 || delta > 0.5) delta = 0.016;
+            lastTime = now;
+            time += delta;
+            frameCount++;
+            if (now - logTime > 4000) {
+                console.log(`[动画运行中] 帧:${frameCount} 时间:${time.toFixed(2)}s`);
+                logTime = now;
+            }
+
+            mainGroup.rotation.y = time * 0.3;
+            mainGroup.rotation.x = time * 0.17 + Math.sin(time * 0.25) * 0.22;
+            mainGroup.rotation.z = Math.cos(time * 0.2) * 0.15;
+
+            sphereRef.rotation.copy(mainGroup.rotation);
+
+            const camX = 0.6 + Math.sin(time * 0.15) * 0.55;
+            const camY = 0.35 + Math.cos(time * 0.18) * 0.48;
+            const camZ = 6.8 + Math.sin(time * 0.12) * 0.5;
+            camera.position.set(camX, camY, camZ);
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth;
+            const h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth;
+            const h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 100));
+
+        console.log('=== Schwarz P极小曲面 · 等值线交织 ===');
+        console.log('Z切片线段数:', vertsZ.length/6, 'Y:', vertsY.length/6, 'X:', vertsX.length/6);
+        console.log('总线段数:', (vertsZ.length+vertsY.length+vertsX.length)/6);
+        console.log('✅ 初始帧渲染完成，启动绝对时间动画循环...');
+
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

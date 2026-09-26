@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WATERCOLOR · 水彩晕染</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #0d0d15;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2;
+            text-align: center;
+            pointer-events: none;
+            opacity: 0.5;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+        .overlay:hover {
+            opacity: 0.85;
+        }
+        .title {
+            color: rgba(225, 215, 245, 0.7);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 20px rgba(160, 130, 230, 0.5);
+        }
+        .hint {
+            color: rgba(180, 170, 210, 0.45);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+        @media (max-width: 768px) {
+            .overlay { bottom: 18px; }
+            .title { font-size: 8px; letter-spacing: 0.45em; }
+            .hint { font-size: 6px; letter-spacing: 0.22em; }
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <div class="overlay">
+        <div class="title">Watercolor</div>
+        <div class="hint">move · click</div>
+    </div>
+    <script>
+        (function() {
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            let blobs = [];
+            let mouse = { x: -9999, y: -9999, active: false, lastX: -9999, lastY: -9999 };
+            let time = 0;
+            let colorIndex = 0;
+            const palette = [
+                { h: 330, s: 75, l: 65 },  // 粉红
+                { h: 265, s: 70, l: 65 },  // 紫
+                { h: 200, s: 75, l: 60 },  // 蓝
+                { h: 160, s: 65, l: 55 },  // 青绿
+                { h: 40, s: 80, l: 60 },   // 金黄
+                { h: 15, s: 75, l: 60 },   // 橙红
+            ];
+            let bloomParticles = [];
+            let lastSpawnTime = 0;
+
+            // 性能参数
+            const BLOB_COUNT = () => Math.max(35, Math.min(80, Math.floor(W * H / 15000)));
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                ctx.fillStyle = '#0d0d15';
+                ctx.fillRect(0, 0, W, H);
+            }
+
+            // ─── 水彩色斑 ─────────────────────────────────────────────
+            class WatercolorBlob {
+                constructor(x, y, hue, saturation, lightness, size) {
+                    this.x = x || Math.random() * W;
+                    this.y = y || Math.random() * H;
+                    this.hue = hue !== undefined ? hue : palette[Math.floor(Math.random() * palette.length)].h + Math.random() * 40 - 20;
+                    this.saturation = saturation !== undefined ? saturation : 60 + Math.random() * 35;
+                    this.lightness = lightness !== undefined ? lightness : 50 + Math.random() * 25;
+                    this.size = size || 15 + Math.random() * 45;
+                    this.baseSize = this.size;
+                    this.vx = (Math.random() - 0.5) * 0.4;
+                    this.vy = (Math.random() - 0.5) * 0.4;
+                    this.alpha = 0.12 + Math.random() * 0.2;
+                    this.growSpeed = 0.2 + Math.random() * 0.6;
+                    this.diffuseSpeed = 0.15 + Math.random() * 0.35;
+                    this.phase = Math.random() * Math.PI * 2;
+                    this.pulseSpeed = 0.3 + Math.random() * 0.6;
+                }
+
+                update(dt, mouse, t) {
+                    // 缓慢扩散
+                    this.size += this.growSpeed * dt * 0.2;
+                    this.size = Math.min(this.size, this.baseSize * 2.5);
+
+                    // 缓慢移动
+                    this.vx += (Math.random() - 0.5) * 0.04;
+                    this.vy += (Math.random() - 0.5) * 0.04;
+                    this.vx *= 0.98;
+                    this.vy *= 0.98;
+                    this.x += this.vx * dt;
+                    this.y += this.vy * dt;
+
+                    // 鼠标影响：轻微吸引并混合色彩
+                    if (mouse.active) {
+                        const dx = mouse.x - this.x;
+                        const dy = mouse.y - this.y;
+                        const distSq = dx * dx + dy * dy;
+                        const radius = 180;
+                        if (distSq < radius * radius && distSq > 0.01) {
+                            const dist = Math.sqrt(distSq);
+                            const falloff = 1 - dist / radius;
+                            this.x += dx / dist * falloff * 0.6;
+                            this.y += dy / dist * falloff * 0.6;
+                            // 色彩向鼠标当前颜色偏移
+                            const targetHue = palette[colorIndex % palette.length].h;
+                            this.hue += (targetHue - this.hue) * falloff * 0.03;
+                            // 增亮
+                            this.alpha = Math.min(0.45, this.alpha + 0.005);
+                        }
+                    }
+
+                    // 边界环绕
+                    if (this.x < -50) this.x = W + 50;
+                    if (this.x > W + 50) this.x = -50;
+                    if (this.y < -50) this.y = H + 50;
+                    if (this.y > H + 50) this.y = -50;
+                }
+
+                draw(ctx, t) {
+                    const pulse = 0.75 + 0.25 * Math.sin(t * this.pulseSpeed + this.phase);
+                    const currentSize = this.size * pulse;
+                    const alpha = this.alpha * (0.7 + 0.3 * pulse);
+                    const hue = this.hue + Math.sin(t * 0.3 + this.phase) * 10;
+
+                    // 多层径向渐变模拟水彩晕染
+                    const gradient = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, currentSize);
+                    gradient.addColorStop(0, `hsla(${hue}, ${this.saturation}%, ${this.lightness + 20}%, ${alpha})`);
+                    gradient.addColorStop(0.4, `hsla(${hue}, ${this.saturation}%, ${this.lightness}%, ${alpha * 0.7})`);
+                    gradient.addColorStop(0.7, `hsla(${hue}, ${this.saturation}%, ${this.lightness - 10}%, ${alpha * 0.35})`);
+                    gradient.addColorStop(1, 'transparent');
+                    ctx.fillStyle = gradient;
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, currentSize, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // 边缘淡色晕
+                    if (currentSize > 25) {
+                        const edgeSize = currentSize * 1.3;
+                        const edgeGradient = ctx.createRadialGradient(this.x, this.y, currentSize * 0.6, this.x, this.y, edgeSize);
+                        edgeGradient.addColorStop(0, 'transparent');
+                        edgeGradient.addColorStop(0.5, `hsla(${hue + 15}, ${this.saturation * 0.8}%, ${this.lightness + 5}%, ${alpha * 0.25})`);
+                        edgeGradient.addColorStop(1, 'transparent');
+                        ctx.fillStyle = edgeGradient;
+                        ctx.beginPath();
+                        ctx.arc(this.x, this.y, edgeSize, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+                }
+            }
+
+            // ─── 点击绽放粒子 ───────────────────────────────────────────
+            function createBloom(x, y, colorIdx) {
+                const hue = palette[colorIdx % palette.length].h;
+                const count = 25 + Math.floor(Math.random() * 20);
+                for (let i = 0; i < count; i++) {
+                    const angle = Math.random() * Math.PI * 2;
+                    const speed = 1.5 + Math.random() * 5;
+                    const size = 8 + Math.random() * 22;
+                    bloomParticles.push({
+                        x, y,
+                        vx: Math.cos(angle) * speed,
+                        vy: Math.sin(angle) * speed,
+                        life: 1.2 + Math.random() * 0.8,
+                        maxLife: 2.0,
+                        size: size,
+                        hue: hue + Math.random() * 50 - 25,
+                        sat: 65 + Math.random() * 25,
+                        light: 55 + Math.random() * 20,
+                        alpha: 0.5 + Math.random() * 0.3,
+                        growth: 0.5 + Math.random() * 1.2,
+                    });
+                }
+                if (bloomParticles.length > 150) {
+                    bloomParticles.splice(0, bloomParticles.length - 150);
+                }
+            }
+
+            function updateBloomParticles(dt) {
+                for (let i = bloomParticles.length - 1; i >= 0; i--) {
+                    const p = bloomParticles[i];
+                    p.x += p.vx * dt;
+                    p.y += p.vy * dt;
+                    p.vx *= 0.96;
+                    p.vy *= 0.96;
+                    p.size += p.growth * dt;
+                    p.life -= 0.008 * dt;
+                    p.alpha *= 0.997;
+                    if (p.life <= 0) {
+                        bloomParticles.splice(i, 1);
+                    }
+                }
+            }
+
+            function drawBloomParticles(ctx) {
+                for (const p of bloomParticles) {
+                    const alpha = p.life * p.alpha;
+                    const size = p.size;
+                    const gradient = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, size);
+                    gradient.addColorStop(0, `hsla(${p.hue}, ${p.sat}%, ${p.light + 15}%, ${alpha})`);
+                    gradient.addColorStop(0.5, `hsla(${p.hue}, ${p.sat}%, ${p.light}%, ${alpha * 0.5})`);
+                    gradient.addColorStop(1, 'transparent');
+                    ctx.fillStyle = gradient;
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, size, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            // ─── 鼠标光晕 ───────────────────────────────────────────────
+            function drawCursorGlow(ctx) {
+                if (!mouse.active) return;
+                const hue = palette[colorIndex % palette.length].h;
+                const radius = 45;
+                const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                gradient.addColorStop(0, `hsla(${hue}, 55%, 70%, 0.08)`);
+                gradient.addColorStop(0.7, `hsla(${hue}, 45%, 65%, 0.03)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // ─── 主循环 ─────────────────────────────────────────────────
+            let lastTime = 0;
+            let accumulator = 0;
+            const fixedStep = 1000 / 60;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+
+                accumulator += dt;
+                const steps = Math.min(Math.floor(accumulator / fixedStep), 3);
+                accumulator -= steps * fixedStep;
+
+                for (let s = 0; s < steps; s++) {
+                    time += 0.016;
+                    const dtNorm = fixedStep / 1000 * 60;
+                    for (const b of blobs) {
+                        b.update(dtNorm, mouse, time);
+                    }
+                    updateBloomParticles(dtNorm);
+
+                    // 鼠标移动时产生小色斑
+                    if (mouse.active && time - lastSpawnTime > 3) {
+                        const spawnHue = palette[colorIndex % palette.length].h;
+                        const spawnX = mouse.x + (Math.random() - 0.5) * 50;
+                        const spawnY = mouse.y + (Math.random() - 0.5) * 50;
+                        blobs.push(new WatercolorBlob(spawnX, spawnY, spawnHue + Math.random() * 20 - 10, 60 + Math.random() * 30, 55 + Math.random() * 15, 8 + Math.random() * 15));
+                        if (blobs.length > 100) blobs.shift();
+                        lastSpawnTime = time;
+                    }
+                }
+
+                // 半透明清除，营造水彩余韵
+                ctx.fillStyle = 'rgba(13, 13, 21, 0.12)';
+                ctx.fillRect(0, 0, W, H);
+
+                // 绘制水彩色斑
+                for (const b of blobs) {
+                    b.draw(ctx, time);
+                }
+
+                // 绘制绽放粒子
+                drawBloomParticles(ctx);
+
+                // 鼠标光晕
+                drawCursorGlow(ctx);
+
+                requestAnimationFrame(animate);
+            }
+
+            // ─── 交互事件 ───────────────────────────────────────────────
+            function onMouseMove(e) {
+                mouse.lastX = mouse.x;
+                mouse.lastY = mouse.y;
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+                mouse.lastX = -9999;
+                mouse.lastY = -9999;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                createBloom(mouse.x, mouse.y, colorIndex);
+                // 切换到下一个色彩
+                colorIndex = (colorIndex + 1) % palette.length;
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.lastX = mouse.x;
+                    mouse.lastY = mouse.y;
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    createBloom(mouse.x, mouse.y, colorIndex);
+                    colorIndex = (colorIndex + 1) % palette.length;
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+                mouse.lastX = -9999;
+                mouse.lastY = -9999;
+            }
+
+            function onResize() {
+                setupCanvas();
+                const targetCount = BLOB_COUNT();
+                if (targetCount !== blobs.length) {
+                    while (blobs.length < targetCount) {
+                        blobs.push(new WatercolorBlob());
+                    }
+                    if (blobs.length > targetCount) {
+                        blobs.length = targetCount;
+                    }
+                }
+                bloomParticles = [];
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+                const count = BLOB_COUNT();
+                blobs = [];
+                for (let i = 0; i < count; i++) {
+                    blobs.push(new WatercolorBlob());
+                }
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#0d0d15';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+        })();
+    </script>
+</body>
+</html>

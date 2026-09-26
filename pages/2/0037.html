@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>磁场线 · 粒子流</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #06060e;
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            touch-action: none;
+            -webkit-tap-highlight-color: transparent;
+            user-select: none;
+            -webkit-user-select: none;
+            cursor: crosshair;
+        }
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+        /* 极简提示 — 几乎不可见，淡入淡出 */
+        .hint {
+            position: fixed;
+            bottom: 24px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: rgba(255, 255, 255, 0.22);
+            font-size: 11px;
+            letter-spacing: 2px;
+            pointer-events: none;
+            transition: opacity 1.5s ease;
+            text-transform: uppercase;
+            font-weight: 300;
+            white-space: nowrap;
+            z-index: 10;
+        }
+        .hint.fade-out {
+            opacity: 0;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="hint" id="hint">移动鼠标 · 点击脉冲</div>
+
+    <script src="https://cdn.jsdelivr.net/npm/pixi.js@7.3.2/dist/pixi.min.js">
+    </script>
+    <script>
+        (function() {
+            // ============================================================
+            //  磁场线 · 粒子流  —  PixiJS v7  |  WebGL 渲染
+            // ============================================================
+
+            // ---------- 配置 ----------
+            const CONFIG = {
+                particleCount: 750, // 粒子数量
+                poleNCharge: 1.6, // N极磁荷强度
+                poleSCharge: -0.9, // S极磁荷强度
+                poleS2Charge: -0.7, // 第二个S极磁荷强度
+                minDist: 16, // 磁场计算最小距离(防数值爆炸)
+                baseSpeed: 3.6, // 粒子基础速度
+                maxSpeed: 7.2, // 粒子最大速度
+                pulseDuration: 0.55, // 脉冲持续时间(秒)
+                pulseCharge: -2.4, // 脉冲磁荷(负=吸引)
+                trailAlpha: 0.045, // 尾迹透明度
+                bgColor: 0x06060e, // 背景色
+                poleGlowSize: 36, // 磁极光晕大小
+            };
+
+            // ---------- 创建 PixiJS 应用 ----------
+            const app = new PIXI.Application({
+                width: window.innerWidth,
+                height: window.innerHeight,
+                backgroundColor: CONFIG.bgColor,
+                antialias: true,
+                autoDensity: true,
+                resolution: Math.min(window.devicePixelRatio || 1, 2),
+                powerPreference: 'high-performance',
+                clearBeforeRender: true,
+            });
+
+            document.body.appendChild(app.view);
+
+            // ---------- 获取屏幕尺寸 ----------
+            let W = app.screen.width;
+            let H = app.screen.height;
+
+            // ---------- 创建纹理 ----------
+            function createGlowTexture(hexColor, size) {
+                const canvas = document.createElement('canvas');
+                canvas.width = size;
+                canvas.height = size;
+                const ctx = canvas.getContext('2d');
+                const c = size / 2;
+                const r = size / 2 - 0.5;
+                const grad = ctx.createRadialGradient(c, c, 0, c, c, r);
+                grad.addColorStop(0, 'rgba(255,255,255,1)');
+                grad.addColorStop(0.25, hexToRgba(hexColor, 0.95));
+                grad.addColorStop(0.6, hexToRgba(hexColor, 0.45));
+                grad.addColorStop(1, hexToRgba(hexColor, 0));
+                ctx.beginPath();
+                ctx.arc(c, c, r, 0, Math.PI * 2);
+                ctx.fillStyle = grad;
+                ctx.fill();
+                return PIXI.Texture.from(canvas);
+            }
+
+            function hexToRgba(hex, alpha) {
+                const r = (hex >> 16) & 0xff;
+                const g = (hex >> 8) & 0xff;
+                const b = hex & 0xff;
+                return `rgba(${r},${g},${b},${alpha})`;
+            }
+
+            // 粒子纹理 — 多种颜色
+            const textureSize = 14;
+            const particleTextures = [
+                createGlowTexture(0xA78BFA, textureSize), // 淡紫
+                createGlowTexture(0x8B5CF6, textureSize), // 紫色
+                createGlowTexture(0x7C3AED, textureSize), // 深紫
+                createGlowTexture(0x6D8FE0, textureSize), // 蓝紫
+                createGlowTexture(0x5B8DEF, textureSize), // 亮蓝
+            ];
+
+            // ---------- 粒子容器 ----------
+            const particleContainer = new PIXI.ParticleContainer(CONFIG.particleCount * 1.2, {
+                position: true,
+                scale: true,
+                rotation: false,
+                uvs: false,
+                tint: true,
+                alpha: true,
+            });
+            particleContainer.blendMode = PIXI.BLEND_MODES.ADD;
+            app.stage.addChild(particleContainer);
+
+            // ---------- 尾迹层 ----------
+            const trailSprite = new PIXI.Sprite(PIXI.Texture.WHITE);
+            trailSprite.width = W;
+            trailSprite.height = H;
+            trailSprite.tint = CONFIG.bgColor;
+            trailSprite.alpha = CONFIG.trailAlpha;
+            trailSprite.zIndex = 0;
+            app.stage.addChildAt(trailSprite, 0);
+
+            // ---------- 磁极层 ----------
+            const poleContainer = new PIXI.Container();
+            poleContainer.blendMode = PIXI.BLEND_MODES.ADD;
+            app.stage.addChild(poleContainer);
+
+            // ---------- 磁极定义 ----------
+            const poles = {
+                N: { x: W * 0.5, y: H * 0.42, charge: CONFIG.poleNCharge, color: 0xFF6B4A, label: 'N' },
+                S1: { x: W * 0.18, y: H * 0.78, charge: CONFIG.poleSCharge, color: 0x4A8FE0, label: 'S' },
+                S2: { x: W * 0.82, y: H * 0.78, charge: CONFIG.poleS2Charge, color: 0x4A8FE0, label: 'S' },
+            };
+
+            // 脉冲磁极（临时）
+            let pulsePole = null; // { x, y, charge, timer, maxTimer }
+
+            // ---------- 创建磁极光晕 ----------
+            function createPoleGlow(hexColor, size) {
+                const g = new PIXI.Graphics();
+                const steps = 7;
+                for (let i = steps; i >= 0; i--) {
+                    const radius = (i / steps) * size;
+                    const alpha = 0.55 * (1 - i / steps);
+                    const color = new PIXI.Color(hexColor);
+                    g.beginFill(color, alpha);
+                    g.drawCircle(0, 0, radius);
+                    g.endFill();
+                }
+                // 中心亮核
+                g.beginFill(0xFFFFFF, 0.9);
+                g.drawCircle(0, 0, 2.5);
+                g.endFill();
+                return g;
+            }
+
+            const poleGraphics = {};
+            const poleGlowSize = CONFIG.poleGlowSize;
+
+            // N极光晕
+            const glowN = createPoleGlow(poles.N.color, poleGlowSize);
+            glowN.x = poles.N.x;
+            glowN.y = poles.N.y;
+            poleContainer.addChild(glowN);
+            poleGraphics.N = glowN;
+
+            // S极光晕
+            const glowS1 = createPoleGlow(poles.S1.color, poleGlowSize * 0.85);
+            glowS1.x = poles.S1.x;
+            glowS1.y = poles.S1.y;
+            poleContainer.addChild(glowS1);
+            poleGraphics.S1 = glowS1;
+
+            const glowS2 = createPoleGlow(poles.S2.color, poleGlowSize * 0.75);
+            glowS2.x = poles.S2.x;
+            glowS2.y = poles.S2.y;
+            poleContainer.addChild(glowS2);
+            poleGraphics.S2 = glowS2;
+
+            // 脉冲光晕（预创建，隐藏）
+            const pulseGlow = createPoleGlow(0xFFAA44, poleGlowSize * 0.9);
+            pulseGlow.visible = false;
+            pulseGlow.alpha = 0;
+            poleContainer.addChild(pulseGlow);
+
+            // ---------- 粒子系统 ----------
+            const particles = [];
+            const MAX_PARTICLES = CONFIG.particleCount;
+
+            // 预分配粒子对象
+            for (let i = 0; i < MAX_PARTICLES; i++) {
+                const texIndex = i % particleTextures.length;
+                const sprite = new PIXI.Sprite(particleTextures[texIndex]);
+                sprite.anchor.set(0.5);
+                sprite.scale.set(0.55 + Math.random() * 0.5);
+                sprite.alpha = 0.6 + Math.random() * 0.4;
+                // 随机初始位置（N极附近）
+                const angle = Math.random() * Math.PI * 2;
+                const dist = CONFIG.minDist + Math.random() * 45;
+                const px = poles.N.x + Math.cos(angle) * dist;
+                const py = poles.N.y + Math.sin(angle) * dist;
+                sprite.x = px;
+                sprite.y = py;
+                particleContainer.addChild(sprite);
+
+                particles.push({
+                    x: px,
+                    y: py,
+                    sprite: sprite,
+                    texIndex: texIndex,
+                    baseScale: 0.55 + Math.random() * 0.5,
+                    speedFactor: 0.85 + Math.random() * 0.3,
+                });
+            }
+
+            // ---------- 磁场计算 ----------
+            function computeMagneticField(px, py, out) {
+                let bx = 0;
+                let by = 0;
+
+                // N极
+                let dx = px - poles.N.x;
+                let dy = py - poles.N.y;
+                let d2 = dx * dx + dy * dy;
+                let d = Math.sqrt(d2);
+                if (d < CONFIG.minDist) d = CONFIG.minDist;
+                const invD3 = 1 / (d * d * d);
+                bx += poles.N.charge * dx * invD3;
+                by += poles.N.charge * dy * invD3;
+
+                // S1
+                dx = px - poles.S1.x;
+                dy = py - poles.S1.y;
+                d2 = dx * dx + dy * dy;
+                d = Math.sqrt(d2);
+                if (d < CONFIG.minDist) d = CONFIG.minDist;
+                const invD3_1 = 1 / (d * d * d);
+                bx += poles.S1.charge * dx * invD3_1;
+                by += poles.S1.charge * dy * invD3_1;
+
+                // S2
+                dx = px - poles.S2.x;
+                dy = py - poles.S2.y;
+                d2 = dx * dx + dy * dy;
+                d = Math.sqrt(d2);
+                if (d < CONFIG.minDist) d = CONFIG.minDist;
+                const invD3_2 = 1 / (d * d * d);
+                bx += poles.S2.charge * dx * invD3_2;
+                by += poles.S2.charge * dy * invD3_2;
+
+                // 脉冲磁极
+                if (pulsePole) {
+                    dx = px - pulsePole.x;
+                    dy = py - pulsePole.y;
+                    d2 = dx * dx + dy * dy;
+                    d = Math.sqrt(d2);
+                    if (d < CONFIG.minDist) d = CONFIG.minDist;
+                    const invD3_p = 1 / (d * d * d);
+                    const strength = pulsePole.charge * (1 - pulsePole.timer / pulsePole.maxTimer);
+                    bx += strength * dx * invD3_p;
+                    by += strength * dy * invD3_p;
+                }
+
+                out.bx = bx;
+                out.by = by;
+                const mag = Math.sqrt(bx * bx + by * by);
+                out.mag = mag;
+                if (mag > 1e-10) {
+                    out.nx = bx / mag;
+                    out.ny = by / mag;
+                } else {
+                    out.nx = 0;
+                    out.ny = 0;
+                }
+                return out;
+            }
+
+            // 复用对象，避免GC
+            const fieldResult = { bx: 0, by: 0, mag: 0, nx: 0, ny: 0 };
+
+            // ---------- 重置粒子到N极附近 ----------
+            function resetParticleToN(p) {
+                const angle = Math.random() * Math.PI * 2;
+                const dist = CONFIG.minDist + Math.random() * 38;
+                p.x = poles.N.x + Math.cos(angle) * dist;
+                p.y = poles.N.y + Math.sin(angle) * dist;
+                p.sprite.x = p.x;
+                p.sprite.y = p.y;
+                // 随机微调纹理
+                if (Math.random() < 0.08) {
+                    p.texIndex = Math.floor(Math.random() * particleTextures.length);
+                    p.sprite.texture = particleTextures[p.texIndex];
+                }
+            }
+
+            // ---------- 更新粒子 ----------
+            function updateParticles(dt) {
+                const speed = CONFIG.baseSpeed;
+                const maxSpeed = CONFIG.maxSpeed;
+                const dtScale = dt * 60; // 归一化到60fps
+
+                for (let i = 0; i < MAX_PARTICLES; i++) {
+                    const p = particles[i];
+
+                    // 计算磁场
+                    computeMagneticField(p.x, p.y, fieldResult);
+
+                    if (fieldResult.mag > 1e-8) {
+                        // 速度与磁场强度相关，但有上下限
+                        const magNorm = Math.min(fieldResult.mag, 0.08);
+                        const velMag = Math.min(speed + magNorm * 40 * p.speedFactor, maxSpeed);
+                        const step = velMag * dtScale;
+
+                        p.x += fieldResult.nx * step;
+                        p.y += fieldResult.ny * step;
+                    }
+
+                    // 边界检查 - 超出画布则重置
+                    if (p.x < -50 || p.x > W + 50 || p.y < -50 || p.y > H + 50) {
+                        resetParticleToN(p);
+                        continue;
+                    }
+
+                    // 检查是否到达S极
+                    const distS1 = Math.sqrt((p.x - poles.S1.x) ** 2 + (p.y - poles.S1.y) ** 2);
+                    const distS2 = Math.sqrt((p.x - poles.S2.x) ** 2 + (p.y - poles.S2.y) ** 2);
+                    if (distS1 < 28 || distS2 < 28) {
+                        resetParticleToN(p);
+                        continue;
+                    }
+
+                    // 更新Sprite位置
+                    p.sprite.x = p.x;
+                    p.sprite.y = p.y;
+
+                    // 根据磁场强度微调alpha和scale（模拟亮度变化）
+                    const intensity = Math.min(fieldResult.mag / 0.06, 1);
+                    p.sprite.alpha = 0.45 + intensity * 0.55;
+                    const scaleMod = 1 + intensity * 0.35;
+                    p.sprite.scale.set(p.baseScale * scaleMod);
+                }
+            }
+
+            // ---------- 更新脉冲 ----------
+            function updatePulse(dt) {
+                if (pulsePole) {
+                    pulsePole.timer += dt;
+                    const lifeRatio = pulsePole.timer / pulsePole.maxTimer;
+                    if (lifeRatio >= 1) {
+                        pulsePole = null;
+                        pulseGlow.visible = false;
+                        pulseGlow.alpha = 0;
+                    } else {
+                        // 脉冲光晕动画
+                        pulseGlow.visible = true;
+                        pulseGlow.alpha = (1 - lifeRatio) * 0.8;
+                        pulseGlow.x = pulsePole.x;
+                        pulseGlow.y = pulsePole.y;
+                        const scaleFactor = 0.5 + lifeRatio * 0.9;
+                        pulseGlow.scale.set(scaleFactor);
+                    }
+                }
+            }
+
+            // ---------- 鼠标/触摸交互 ----------
+            let mouseX = W * 0.5;
+            let mouseY = H * 0.42;
+            let mouseOnScreen = true;
+
+            function handlePointerMove(x, y) {
+                mouseX = x;
+                mouseY = y;
+                // 更新N极位置
+                poles.N.x = x;
+                poles.N.y = y;
+                glowN.x = x;
+                glowN.y = y;
+            }
+
+            function handlePointerDown(x, y) {
+                // 创建脉冲磁极
+                pulsePole = {
+                    x: x,
+                    y: y,
+                    charge: CONFIG.pulseCharge,
+                    timer: 0,
+                    maxTimer: CONFIG.pulseDuration,
+                };
+                // 脉冲光晕立即显示
+                pulseGlow.visible = true;
+                pulseGlow.alpha = 0.8;
+                pulseGlow.x = x;
+                pulseGlow.y = y;
+                pulseGlow.scale.set(0.5);
+            }
+
+            // 鼠标事件
+            app.view.addEventListener('mousemove', (e) => {
+                const rect = app.view.getBoundingClientRect();
+                const x = (e.clientX - rect.left) * (W / rect.width);
+                const y = (e.clientY - rect.top) * (H / rect.height);
+                handlePointerMove(x, y);
+            });
+
+            app.view.addEventListener('mousedown', (e) => {
+                const rect = app.view.getBoundingClientRect();
+                const x = (e.clientX - rect.left) * (W / rect.width);
+                const y = (e.clientY - rect.top) * (H / rect.height);
+                handlePointerDown(x, y);
+            });
+
+            // 触摸事件
+            app.view.addEventListener('touchmove', (e) => {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    const rect = app.view.getBoundingClientRect();
+                    const x = (touch.clientX - rect.left) * (W / rect.width);
+                    const y = (touch.clientY - rect.top) * (H / rect.height);
+                    handlePointerMove(x, y);
+                }
+            }, { passive: false });
+
+            app.view.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    const rect = app.view.getBoundingClientRect();
+                    const x = (touch.clientX - rect.left) * (W / rect.width);
+                    const y = (touch.clientY - rect.top) * (H / rect.height);
+                    handlePointerDown(x, y);
+                    handlePointerMove(x, y);
+                }
+            }, { passive: false });
+
+            // 鼠标离开画布
+            app.view.addEventListener('mouseleave', () => {
+                mouseOnScreen = false;
+                // N极缓慢回到默认位置
+            });
+            app.view.addEventListener('mouseenter', () => {
+                mouseOnScreen = true;
+            });
+
+            // ---------- 窗口大小调整 ----------
+            function handleResize() {
+                W = window.innerWidth;
+                H = window.innerHeight;
+                app.renderer.resize(W, H);
+
+                // 更新尾迹
+                trailSprite.width = W;
+                trailSprite.height = H;
+
+                // 更新S极位置
+                poles.S1.x = W * 0.18;
+                poles.S1.y = H * 0.78;
+                poles.S2.x = W * 0.82;
+                poles.S2.y = H * 0.78;
+                glowS1.x = poles.S1.x;
+                glowS1.y = poles.S1.y;
+                glowS2.x = poles.S2.x;
+                glowS2.y = poles.S2.y;
+
+                // 如果鼠标在画布外，N极回到中心
+                if (!mouseOnScreen) {
+                    poles.N.x = W * 0.5;
+                    poles.N.y = H * 0.42;
+                    glowN.x = poles.N.x;
+                    glowN.y = poles.N.y;
+                }
+            }
+
+            window.addEventListener('resize', handleResize);
+
+            // ---------- 主循环 ----------
+            let lastTime = performance.now();
+            let elapsed = 0;
+
+            app.ticker.add(() => {
+                const now = performance.now();
+                let dt = (now - lastTime) / 1000;
+                lastTime = now;
+
+                // 限制dt防止跳帧过大
+                if (dt > 0.05) dt = 0.05;
+                if (dt < 0.001) dt = 0.016;
+
+                // 更新粒子
+                updateParticles(dt);
+
+                // 更新脉冲
+                updatePulse(dt);
+
+                // 更新磁极光晕呼吸效果
+                elapsed += dt;
+                const breathe = 1 + Math.sin(elapsed * 2.2) * 0.06;
+                glowN.scale.set(breathe);
+                glowS1.scale.set(0.85 * breathe);
+                glowS2.scale.set(0.75 * breathe);
+
+                // 更新尾迹Sprite
+                trailSprite.width = W;
+                trailSprite.height = H;
+            });
+
+            // ---------- 淡出提示文字 ----------
+            setTimeout(() => {
+                const hint = document.getElementById('hint');
+                if (hint) {
+                    hint.classList.add('fade-out');
+                }
+            }, 3500);
+
+            // ---------- 初始粒子分布 ----------
+            // 确保粒子在N极周围合理分布
+            for (let i = 0; i < MAX_PARTICLES; i++) {
+                resetParticleToN(particles[i]);
+            }
+
+            // ---------- 防黑屏检查 ----------
+            console.log('[磁场线] PixiJS 初始化完成');
+            console.log(`[磁场线] 渲染器: ${app.renderer.type}`);
+            console.log(`[磁场线] 粒子数量: ${MAX_PARTICLES}`);
+            console.log(`[磁场线] 分辨率: ${app.renderer.resolution}`);
+
+            // 如果WebGL不可用，回退提示
+            if (app.renderer.type !== PIXI.RENDERER_TYPE.WEBGL) {
+                console.warn('[磁场线] WebGL 不可用，正在使用 Canvas 渲染器。性能可能下降。');
+                // 减少粒子数量
+                if (particles.length > 300) {
+                    for (let i = particles.length - 1; i >= 300; i--) {
+                        particleContainer.removeChild(particles[i].sprite);
+                        particles.pop();
+                    }
+                    console.log('[磁场线] 粒子数量已降至 ' + particles.length);
+                }
+            }
+
+        })();
+    </script>
+</body>
+</html>

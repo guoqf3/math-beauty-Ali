@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>玫瑰线空间编织 · 多瓣玫瑰簇</title>
+    <style>
+        :root {
+            --bg: #02010d;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'Noto Serif SC', serif;
+            height: 100vh;
+            width: 100vw;
+            user-select: none;
+            -webkit-user-select: none;
+            cursor: default;
+        }
+        #canvas-container {
+            position: fixed;
+            inset: 0;
+            z-index: 1;
+        }
+        canvas {
+            display: block;
+        }
+
+        #title-overlay {
+            position: fixed;
+            top: clamp(16px, 3.5vh, 42px);
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+            white-space: nowrap;
+        }
+        #title-overlay h1 {
+            color: #e1d0b5;
+            font-size: clamp(1.2rem, 2.3vw, 1.9rem);
+            font-weight: 400;
+            letter-spacing: 0.08em;
+            text-shadow: 0 0 28px rgba(215, 180, 130, 0.55), 0 0 75px rgba(190, 150, 100, 0.25);
+            margin: 0;
+        }
+        #title-overlay .subtitle {
+            color: #bda78c;
+            font-size: clamp(0.68rem, 1.15vw, 0.92rem);
+            letter-spacing: 0.06em;
+            margin-top: 0.28em;
+            text-shadow: 0 0 14px rgba(180, 140, 100, 0.4);
+        }
+
+        #formula-overlay {
+            position: fixed;
+            bottom: clamp(24px, 4.5vh, 54px);
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+            padding: 0 16px;
+        }
+        #formula-overlay .formula-box {
+            display: inline-block;
+            background: rgba(15, 11, 20, 0.72);
+            border: 1px solid rgba(170, 145, 115, 0.28);
+            border-radius: 12px;
+            padding: clamp(10px, 1.4vh, 16px) clamp(16px, 3vw, 28px);
+            backdrop-filter: blur(7px);
+            -webkit-backdrop-filter: blur(7px);
+        }
+        #formula-overlay .formula-main {
+            color: #f2dec5;
+            font-size: clamp(0.8rem, 1.35vw, 1.15rem);
+            letter-spacing: 0.04em;
+            line-height: 1.7;
+        }
+        #formula-overlay .formula-detail {
+            color: #a6947c;
+            font-size: clamp(0.6rem, 0.9vw, 0.8rem);
+            letter-spacing: 0.03em;
+            margin-top: 0.22em;
+            line-height: 1.5;
+        }
+
+        @media (max-width: 600px) {
+            #title-overlay h1 {
+                letter-spacing: 0.05em;
+            }
+            #formula-overlay .formula-box {
+                padding: 10px 16px;
+                border-radius: 10px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+
+    <div id="title-overlay">
+        <h1>玫瑰线空间编织</h1>
+        <div class="subtitle">Rhodonea Spatial Weave · Multifold Petals</div>
+    </div>
+
+    <div id="formula-overlay">
+        <div class="formula-box">
+            <div class="formula-main">
+                r = a·cos(pθ)<br>
+                x = r·cos θ y = r·sin θ<br>
+                z = b·sin(qθ + δ)
+            </div>
+            <div class="formula-detail">
+                θ ∈ [0, 2π] | p, q ∈ ℕ | a,b ∈ ℝ | 18 curves
+            </div>
+        </div>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.157.0/build/three.module.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#02010d');
+        scene.fog = new THREE.Fog('#02010d', 5.5, 17);
+
+        const camera = new THREE.PerspectiveCamera(
+            46,
+            container.clientWidth / container.clientHeight,
+            0.3,
+            25
+        );
+        camera.position.set(0, 0.35, 6.8);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.2;
+        container.appendChild(renderer.domElement);
+
+        scene.add(new THREE.AmbientLight('#1e1e3a', 0.4));
+
+        // ==================== 主图案组 ====================
+        const mainGroup = new THREE.Group();
+        scene.add(mainGroup);
+
+        const totalPoints = 1800;
+        const allLines = [];
+        const curveCount = 18;
+
+        // 全局缩放保证不超出画面
+        const globalScale = 0.72;
+        const zAmplitude = 0.5;
+
+        /**
+         * 生成一条三维玫瑰线
+         * @param {number} p 花瓣频率（奇数p时花瓣数=p，偶数时=2p）
+         * @param {number} a 振幅
+         * @param {number} q z轴调制频率
+         * @param {number} delta z轴相位
+         * @param {THREE.Euler} rotation 空间旋转欧拉角
+         */
+        function createRhodoneaCurve(p, a, q, delta, rotation) {
+            const rotMatrix = new THREE.Matrix4().makeRotationFromEuler(rotation);
+            const vertices = new Float32Array(totalPoints * 3);
+
+            for (let i = 0; i < totalPoints; i++) {
+                const theta = (i / (totalPoints - 1)) * Math.PI * 2;
+                const r = a * Math.cos(p * theta);
+                const x2d = r * Math.cos(theta);
+                const y2d = r * Math.sin(theta);
+                const z2d = zAmplitude * Math.sin(q * theta + delta);
+
+                const vec = new THREE.Vector3(x2d, y2d, z2d);
+                vec.applyMatrix4(rotMatrix);
+                vec.multiplyScalar(globalScale);
+
+                vertices[i * 3] = vec.x;
+                vertices[i * 3 + 1] = vec.y;
+                vertices[i * 3 + 2] = vec.z;
+            }
+            return vertices;
+        }
+
+        function createLine(vertices, hue, opacity = 0.78) {
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+            geometry.setDrawRange(0, 0); // 初始隐藏
+
+            const material = new THREE.LineBasicMaterial({
+                color: new THREE.Color().setHSL(hue, 0.92, 0.64),
+                transparent: true,
+                opacity: opacity,
+                linewidth: 1,
+                blending: THREE.AdditiveBlending,
+                depthWrite: true,
+                depthTest: true,
+            });
+
+            const line = new THREE.Line(geometry, material);
+            line.visible = false;
+            line.frustumCulled = false;
+            return line;
+        }
+
+        // ==================== 生成18条玫瑰线 ====================
+        for (let j = 0; j < curveCount; j++) {
+            // 花瓣频率：交替奇偶，产生丰富的花瓣形态
+            const p = 2 + (j % 5);          // p ∈ {2,3,4,5,6}
+            // 振幅略有变化
+            const a = 1.1 + (j % 3) * 0.2; // 1.1, 1.3, 1.5
+            // z轴调制频率
+            const q = 3 + (j % 4);          // 3,4,5,6
+            // z轴相位均匀分布
+            const delta = j * 0.55;
+            // 空间旋转：均匀分布在球面方向上
+            const rotY = (j / curveCount) * Math.PI * 2;
+            const rotX = (j * 0.65) % Math.PI;
+            const rotation = new THREE.Euler(rotX, rotY, 0);
+
+            const vertices = createRhodoneaCurve(p, a, q, delta, rotation);
+            const hue = (j / curveCount) * 0.85;
+            const line = createLine(vertices, hue, 0.76);
+            mainGroup.add(line);
+            allLines.push(line);
+        }
+
+        console.log(`✅ 已生成 ${curveCount} 条玫瑰线`);
+
+        // ==================== 动画状态机 ====================
+        const CYCLE_TOTAL = 7.0;    // 出现3s + 停顿1s + 消失3s
+        const APPEAR_TIME = 3.0;
+        const PAUSE_TIME = 1.0;
+        const DISAPPEAR_TIME = 3.0;
+
+        let animationStartTime = null;
+        let firstFrameDone = false;
+
+        function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+        function easeInCubic(t) { return t * t * t; }
+
+        function getProgress(elapsedSeconds) {
+            const cycle = elapsedSeconds % CYCLE_TOTAL;
+            if (cycle < APPEAR_TIME) {
+                const t = cycle / APPEAR_TIME;
+                return { progress: easeOutCubic(t), phase: 'appear' };
+            } else if (cycle < APPEAR_TIME + PAUSE_TIME) {
+                return { progress: 1.0, phase: 'pause' };
+            } else {
+                const t = (cycle - APPEAR_TIME - PAUSE_TIME) / DISAPPEAR_TIME;
+                return { progress: 1.0 - easeInCubic(t), phase: 'disappear' };
+            }
+        }
+
+        // ==================== 渲染循环 ====================
+        function animate(timestamp) {
+            requestAnimationFrame(animate);
+
+            // 第一帧强制空白，避免任何残留图形
+            if (animationStartTime === null) {
+                animationStartTime = timestamp;
+                allLines.forEach(line => {
+                    line.visible = false;
+                    if (line.geometry) line.geometry.setDrawRange(0, 0);
+                });
+                renderer.render(scene, camera);
+                firstFrameDone = true;
+                return;
+            }
+
+            const elapsed = (timestamp - animationStartTime) / 1000;
+            const { progress } = getProgress(elapsed);
+            const drawCount = Math.floor(progress * totalPoints);
+            const shouldBeVisible = drawCount >= 2;
+
+            // 批量更新所有线条的绘制范围
+            for (let i = 0; i < allLines.length; i++) {
+                const line = allLines[i];
+                if (!line || !line.geometry) continue;
+                const maxPts = line.geometry.attributes.position.count;
+                const lineDraw = Math.min(drawCount, maxPts);
+                if (shouldBeVisible && lineDraw >= 2) {
+                    line.visible = true;
+                    line.geometry.setDrawRange(0, lineDraw);
+                } else {
+                    line.visible = false;
+                    line.geometry.setDrawRange(0, 0);
+                }
+            }
+
+            // 整体缓慢旋转，展现立体花瓣结构
+            const rotY = elapsed * 0.08;
+            const rotX = Math.sin(elapsed * 0.17) * 0.05;
+            const rotZ = Math.cos(elapsed * 0.22) * 0.04;
+            mainGroup.rotation.set(rotX, rotY, rotZ);
+
+            // 相机轻柔晃动，增强空间感
+            camera.position.x = Math.sin(elapsed * 0.15) * 0.2;
+            camera.position.y = 0.35 + Math.cos(elapsed * 0.2) * 0.18;
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        // ==================== 响应式处理 ====================
+        function onResize() {
+            const w = container.clientWidth;
+            const h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        }
+        window.addEventListener('resize', onResize, { passive: true });
+        window.addEventListener('orientationchange', () => setTimeout(onResize, 150), { passive: true });
+
+        // ==================== 启动 ====================
+        console.log('🚀 玫瑰线空间编织动画启动');
+        console.log(`   - 曲线数量: ${curveCount}`);
+        console.log(`   - 采样点/曲线: ${totalPoints}`);
+        console.log(`   - 动画周期: ${CYCLE_TOTAL}s`);
+
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

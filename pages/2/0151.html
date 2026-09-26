@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>万花筒幻境</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #000;
+            font-family: sans-serif;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="kaleidoCanvas"></canvas>
+    <script>
+        (function() {
+            'use strict';
+
+            const canvas = document.getElementById('kaleidoCanvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            // ---------- 配置 ----------
+            const CONFIG = {
+                symmetry: 8,              // 对称重数
+                baseRadius: 0.35,         // 基础半径（占屏幕比例）
+                rotationSpeed: 0.0008,    // 旋转速度
+                distortionMax: 0.45,      // 最大扭曲偏移
+                scaleMin: 0.5,
+                scaleMax: 1.5,
+                colorThemes: [
+                    { name: 'ocean', colors: ['#00d2ff', '#3a7bd5', '#00c6ff', '#0072ff'] },
+                    { name: 'sunset', colors: ['#ff6b6b', '#feca57', '#ff9ff3', '#ff9f43'] },
+                    { name: 'forest', colors: ['#11998e', '#38ef7d', '#00b09b', '#96c93d'] },
+                    { name: 'purple', colors: ['#c471f5', '#fa71cd', '#8e2de2', '#4a00e0'] },
+                    { name: 'fire', colors: ['#f12711', '#f5af19', '#ff512f', '#dd2476'] },
+                ],
+                lineWidth: 1.8,
+                glowAlpha: 0.7,
+                trailAlpha: 0.18,         // 拖尾强度（越大越清晰）
+            };
+
+            let width = 0;
+            let height = 0;
+            let dpr = 1;
+            let centerX = 0;
+            let centerY = 0;
+            let maxRadius = 0;
+            let mouseX = -9999;
+            let mouseY = -9999;
+            let mouseActive = false;
+            let targetMouseX = -9999;
+            let targetMouseY = -9999;
+            let smoothMouseX = -9999;
+            let smoothMouseY = -9999;
+            let rotation = 0;
+            let themeIndex = 0;
+            let animationId = null;
+            let lastTime = 0;
+            let time = 0;
+
+            // 预计算颜色数组
+            let currentColors = CONFIG.colorThemes[0].colors;
+
+            // ---------- 绘制万花筒 ----------
+            function drawKaleido(now) {
+                // 清屏（全黑，无拖尾，避免性能问题；如果要拖尾可以用半透明填充）
+                ctx.fillStyle = '#000000';
+                ctx.fillRect(0, 0, width, height);
+
+                // 更新旋转
+                rotation += CONFIG.rotationSpeed * 16.67; // 根据帧率调整
+                time = now * 0.001;
+
+                // 平滑鼠标
+                if (mouseActive) {
+                    smoothMouseX += (targetMouseX - smoothMouseX) * 0.12;
+                    smoothMouseY += (targetMouseY - smoothMouseY) * 0.12;
+                }
+
+                // 计算扭曲因子：基于鼠标距离中心
+                let distortion = 0;
+                let scale = 1;
+                if (mouseActive && smoothMouseX > -1000) {
+                    const dx = smoothMouseX - centerX;
+                    const dy = smoothMouseY - centerY;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    const maxDist = Math.max(width, height) * 0.6;
+                    // 扭曲因子：0~1，距离越远扭曲越强
+                    distortion = Math.min(1, dist / maxDist) * CONFIG.distortionMax;
+                    // 缩放因子：距离近则缩小，远则放大
+                    scale = CONFIG.scaleMin + (dist / maxDist) * (CONFIG.scaleMax - CONFIG.scaleMin);
+                    // 限制范围
+                    scale = Math.max(CONFIG.scaleMin, Math.min(CONFIG.scaleMax, scale));
+                } else {
+                    // 默认缩放1
+                    scale = 1;
+                }
+
+                // 基础半径
+                const baseR = maxRadius * CONFIG.baseRadius * scale;
+                const segments = 42; // 每个对称臂上的线段数量
+                const sym = CONFIG.symmetry;
+
+                // 绘制每个对称臂
+                for (let s = 0; s < sym; s++) {
+                    const angleOffset = (s / sym) * Math.PI * 2;
+                    // 应用旋转
+                    const currentAngle = angleOffset + rotation;
+
+                    // 绘制主图形：由多条曲线段组成，使用不同颜色
+                    for (let i = 0; i < segments; i++) {
+                        const t = i / segments;
+                        const nextT = (i + 1) / segments;
+
+                        // 计算径向扭曲
+                        const wave1 = Math.sin(t * Math.PI * 6 + rotation * 2 + s) * distortion * maxRadius * 0.2;
+                        const wave2 = Math.cos(t * Math.PI * 9 + rotation * 3 + s * 1.5) * distortion * maxRadius * 0.15;
+
+                        // 半径：基础半径加上波形扭曲
+                        const r1 = baseR + wave1;
+                        const r2 = baseR * (0.85 + 0.3 * Math.sin(t * Math.PI * 3 + time * 2)) + wave2;
+
+                        // 角度：当前角度加上微小扰动
+                        const angle1 = currentAngle + t * 0.6 + wave1 * 0.01;
+                        const angle2 = currentAngle + nextT * 0.6 + wave2 * 0.01;
+
+                        const x1 = centerX + Math.cos(angle1) * r1;
+                        const y1 = centerY + Math.sin(angle1) * r1;
+                        const x2 = centerX + Math.cos(angle2) * r2;
+                        const y2 = centerY + Math.sin(angle2) * r2;
+
+                        // 从颜色主题中选择颜色，基于t和i
+                        const colorIndex = (i + s) % currentColors.length;
+                        const color = currentColors[colorIndex];
+
+                        // 设置线条
+                        ctx.strokeStyle = color;
+                        ctx.lineWidth = CONFIG.lineWidth * (0.7 + 0.5 * Math.sin(t * Math.PI * 4 + s));
+                        ctx.beginPath();
+                        ctx.moveTo(x1, y1);
+                        ctx.lineTo(x2, y2);
+                        ctx.stroke();
+
+                        // 绘制小的光点
+                        if (i % 3 === 0) {
+                            ctx.beginPath();
+                            ctx.arc(x2, y2, 2.2 * scale, 0, Math.PI * 2);
+                            ctx.fillStyle = color;
+                            ctx.fill();
+                        }
+                    }
+
+                    // 绘制额外的圆弧连接
+                    for (let i = 0; i < segments; i += 4) {
+                        const t = i / segments;
+                        const angle = currentAngle + t * 0.8 + Math.sin(t * Math.PI * 2 + time) * 0.1;
+                        const r = baseR * (0.6 + 0.4 * Math.sin(t * Math.PI * 5 + time * 1.5)) + distortion * maxRadius * 0.1;
+                        const x = centerX + Math.cos(angle) * r;
+                        const y = centerY + Math.sin(angle) * r;
+                        const nextAngle = angle + 0.15;
+                        const x2 = centerX + Math.cos(nextAngle) * r;
+                        const y2 = centerY + Math.sin(nextAngle) * r;
+                        const colIdx = (i + s * 2) % currentColors.length;
+                        ctx.strokeStyle = currentColors[colIdx];
+                        ctx.lineWidth = CONFIG.lineWidth * 0.8;
+                        ctx.beginPath();
+                        ctx.arc(x, y, Math.abs(x2 - x) * 0.8, 0, Math.PI * 2);
+                        ctx.stroke();
+                    }
+                }
+
+                // 绘制中心发光点
+                const centerGlow = ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, maxRadius * 0.15);
+                centerGlow.addColorStop(0, 'rgba(255,255,255,0.4)');
+                centerGlow.addColorStop(1, 'rgba(0,0,0,0)');
+                ctx.fillStyle = centerGlow;
+                ctx.beginPath();
+                ctx.arc(centerX, centerY, maxRadius * 0.15, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // ---------- 调整尺寸 ----------
+            function resizeCanvas() {
+                dpr = Math.min(window.devicePixelRatio || 1, 2);
+                width = window.innerWidth;
+                height = window.innerHeight;
+                canvas.width = Math.floor(width * dpr);
+                canvas.height = Math.floor(height * dpr);
+                canvas.style.width = width + 'px';
+                canvas.style.height = height + 'px';
+                ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                centerX = width / 2;
+                centerY = height / 2;
+                maxRadius = Math.min(width, height) * 0.48;
+                // 初始填充黑色
+                ctx.fillStyle = '#000';
+                ctx.fillRect(0, 0, width, height);
+                // 立即绘制一帧
+                drawKaleido(performance.now());
+            }
+
+            // ---------- 动画循环 ----------
+            function animate(timestamp) {
+                const now = performance.now();
+                if (lastTime === 0) lastTime = now;
+                const dt = now - lastTime;
+                if (dt > 100) {
+                    lastTime = now - 16;
+                } else {
+                    lastTime = now;
+                }
+                drawKaleido(now);
+                animationId = requestAnimationFrame(animate);
+            }
+
+            // ---------- 鼠标交互 ----------
+            function updateMousePosition(clientX, clientY) {
+                targetMouseX = clientX;
+                targetMouseY = clientY;
+                if (!mouseActive) {
+                    mouseActive = true;
+                    smoothMouseX = targetMouseX;
+                    smoothMouseY = targetMouseY;
+                }
+            }
+
+            function handleClick() {
+                // 切换颜色主题
+                themeIndex = (themeIndex + 1) % CONFIG.colorThemes.length;
+                currentColors = CONFIG.colorThemes[themeIndex].colors;
+            }
+
+            function setupEvents() {
+                window.addEventListener('mousemove', (e) => {
+                    updateMousePosition(e.clientX, e.clientY);
+                }, { passive: true });
+
+                window.addEventListener('mouseleave', () => {
+                    mouseActive = false;
+                    smoothMouseX = -9999;
+                    smoothMouseY = -9999;
+                });
+
+                window.addEventListener('mousedown', (e) => {
+                    handleClick();
+                });
+
+                // 触摸事件
+                window.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        updateMousePosition(touch.clientX, touch.clientY);
+                        handleClick();
+                    }
+                }, { passive: false });
+
+                window.addEventListener('touchmove', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        updateMousePosition(touch.clientX, touch.clientY);
+                    }
+                }, { passive: false });
+
+                window.addEventListener('touchend', () => {
+                    mouseActive = false;
+                    smoothMouseX = -9999;
+                    smoothMouseY = -9999;
+                });
+
+                window.addEventListener('resize', () => {
+                    resizeCanvas();
+                });
+
+                document.addEventListener('visibilitychange', () => {
+                    if (document.hidden) {
+                        if (animationId) {
+                            cancelAnimationFrame(animationId);
+                            animationId = null;
+                        }
+                        lastTime = 0;
+                    } else {
+                        if (!animationId) {
+                            lastTime = 0;
+                            animationId = requestAnimationFrame(animate);
+                        }
+                    }
+                });
+            }
+
+            // ---------- 启动 ----------
+            function init() {
+                resizeCanvas();
+                setupEvents();
+                lastTime = 0;
+                animationId = requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.__kaleido = {
+                config: CONFIG,
+                themeIndex: themeIndex,
+            };
+        })();
+    </script>
+</body>
+</html>

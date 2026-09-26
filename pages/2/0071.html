@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MAGNETIC · 磁场线</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #0a0a16;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2;
+            text-align: center;
+            pointer-events: none;
+            opacity: 0.5;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+        .overlay:hover {
+            opacity: 0.85;
+        }
+        .title {
+            color: rgba(220, 225, 250, 0.7);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 20px rgba(150, 170, 240, 0.4);
+        }
+        .hint {
+            color: rgba(170, 180, 220, 0.45);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+        @media (max-width: 768px) {
+            .overlay { bottom: 18px; }
+            .title { font-size: 8px; letter-spacing: 0.45em; }
+            .hint { font-size: 6px; letter-spacing: 0.22em; }
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <div class="overlay">
+        <div class="title">Magnetic</div>
+        <div class="hint">move · click</div>
+    </div>
+    <script>
+        (function() {
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            let particles = [];
+            let mouse = { x: -9999, y: -9999, active: false };
+            let centerPole = { x: 0, y: 0 };
+            let time = 0;
+            let mousePolarity = 1;  // 1 或 -1
+            let centerPolarity = -1;
+            let colorShift = 0;
+            let shockwave = null;
+
+            // 音频相关
+            let audioCtx = null;
+            let masterGain = null;
+            let bgGain = null;
+            let sfxGain = null;
+            let bgOsc1 = null;
+            let bgOsc2 = null;
+            let bgFilter = null;
+            let noiseBuffer = null;
+            let audioInitialized = false;
+
+            // 性能参数
+            const PARTICLE_COUNT = () => Math.max(600, Math.min(1800, Math.floor(W * H / 900)));
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                ctx.fillStyle = '#0a0a16';
+                ctx.fillRect(0, 0, W, H);
+                centerPole.x = W / 2;
+                centerPole.y = H / 2;
+            }
+
+            // ─── 初始化音频系统 ────────────────────────────────────────
+            function initAudio() {
+                if (audioInitialized) return;
+                try {
+                    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                    masterGain = audioCtx.createGain();
+                    masterGain.gain.value = 0.5;
+                    masterGain.connect(audioCtx.destination);
+
+                    // 背景音乐：两个低频振荡器产生差拍
+                    bgGain = audioCtx.createGain();
+                    bgGain.gain.value = 0.12;
+                    bgGain.connect(masterGain);
+
+                    bgFilter = audioCtx.createBiquadFilter();
+                    bgFilter.type = 'lowpass';
+                    bgFilter.frequency.value = 300;
+                    bgFilter.Q.value = 1.5;
+                    bgFilter.connect(bgGain);
+
+                    bgOsc1 = audioCtx.createOscillator();
+                    bgOsc1.type = 'sine';
+                    bgOsc1.frequency.value = 110;
+                    bgOsc1.connect(bgFilter);
+
+                    bgOsc2 = audioCtx.createOscillator();
+                    bgOsc2.type = 'sine';
+                    bgOsc2.frequency.value = 110.7;
+                    bgOsc2.connect(bgFilter);
+
+                    bgOsc1.start();
+                    bgOsc2.start();
+
+                    // 缓慢调制滤波器频率
+                    let filterLFO = audioCtx.createOscillator();
+                    filterLFO.type = 'sine';
+                    filterLFO.frequency.value = 0.1;
+                    let filterLFOgain = audioCtx.createGain();
+                    filterLFOgain.gain.value = 80;
+                    filterLFO.connect(filterLFOgain);
+                    filterLFOgain.connect(bgFilter.frequency);
+                    filterLFO.start();
+
+                    // 音效通道
+                    sfxGain = audioCtx.createGain();
+                    sfxGain.gain.value = 0.4;
+                    sfxGain.connect(masterGain);
+
+                    // 创建噪声缓冲区用于移动音效
+                    const bufferSize = 2 * audioCtx.sampleRate;
+                    noiseBuffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+                    const data = noiseBuffer.getChannelData(0);
+                    for (let i = 0; i < bufferSize; i++) {
+                        data[i] = Math.random() * 2 - 1;
+                    }
+
+                    audioInitialized = true;
+                } catch (e) {
+                    console.warn('音频初始化失败:', e);
+                }
+            }
+
+            // ─── 播放移动音效（微弱的沙沙声） ─────────────────────────
+            function playMoveSound() {
+                if (!audioCtx || !audioInitialized) return;
+                try {
+                    const noiseSource = audioCtx.createBufferSource();
+                    noiseSource.buffer = noiseBuffer;
+                    const noiseFilter = audioCtx.createBiquadFilter();
+                    noiseFilter.type = 'lowpass';
+                    noiseFilter.frequency.value = 800 + Math.random() * 400;
+                    const noiseGain = audioCtx.createGain();
+                    noiseGain.gain.value = 0.03;
+                    noiseSource.connect(noiseFilter);
+                    noiseFilter.connect(noiseGain);
+                    noiseGain.connect(sfxGain);
+                    noiseSource.start();
+                    noiseSource.stop(audioCtx.currentTime + 0.05);
+                } catch (e) {}
+            }
+
+            // ─── 播放点击音效（清脆的“叮”声） ────────────────────────
+            function playClickSound() {
+                if (!audioCtx || !audioInitialized) return;
+                try {
+                    const osc = audioCtx.createOscillator();
+                    osc.type = 'sine';
+                    osc.frequency.value = 880;
+                    const gain = audioCtx.createGain();
+                    gain.gain.setValueAtTime(0.25, audioCtx.currentTime);
+                    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.35);
+                    osc.connect(gain);
+                    gain.connect(sfxGain);
+                    osc.start();
+                    osc.stop(audioCtx.currentTime + 0.4);
+
+                    // 增加一个高频泛音
+                    const osc2 = audioCtx.createOscillator();
+                    osc2.type = 'sine';
+                    osc2.frequency.value = 1320;
+                    const gain2 = audioCtx.createGain();
+                    gain2.gain.setValueAtTime(0.12, audioCtx.currentTime);
+                    gain2.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.25);
+                    osc2.connect(gain2);
+                    gain2.connect(sfxGain);
+                    osc2.start();
+                    osc2.stop(audioCtx.currentTime + 0.3);
+                } catch (e) {}
+            }
+
+            // ─── 铁粉粒子 ─────────────────────────────────────────────
+            class IronParticle {
+                constructor() {
+                    this.x = Math.random() * W;
+                    this.y = Math.random() * H;
+                    this.angle = Math.random() * Math.PI * 2;
+                    this.length = 4 + Math.random() * 6;
+                    this.size = 0.6 + Math.random() * 1.2;
+                    this.brightness = 0.3 + Math.random() * 0.5;
+                }
+
+                update(mouse, centerPole, mousePolarity, centerPolarity) {
+                    // 计算磁场方向：由两个磁极叠加
+                    let mx = mouse.x;
+                    let my = mouse.y;
+                    if (!mouse.active) {
+                        mx = -9999;
+                        my = -9999;
+                    }
+
+                    let dirX = 0, dirY = 0;
+
+                    // 鼠标磁极贡献
+                    if (mouse.active) {
+                        const dx = this.x - mx;
+                        const dy = this.y - my;
+                        const dist = Math.sqrt(dx * dx + dy * dy) + 0.1;
+                        // 磁场强度与距离平方成反比
+                        const strength = 800 / (dist * dist + 1000);
+                        // 方向：吸引或排斥
+                        const sign = mousePolarity;
+                        dirX += (dx / dist) * strength * sign;
+                        dirY += (dy / dist) * strength * sign;
+                    }
+
+                    // 中心磁极贡献
+                    const cx = centerPole.x;
+                    const cy = centerPole.y;
+                    const dxc = this.x - cx;
+                    const dyc = this.y - cy;
+                    const distc = Math.sqrt(dxc * dxc + dyc * dyc) + 0.1;
+                    const strengthc = 700 / (distc * distc + 800);
+                    const signc = centerPolarity;
+                    dirX += (dxc / distc) * strengthc * signc;
+                    dirY += (dyc / distc) * strengthc * signc;
+
+                    // 归一化得到方向
+                    const mag = Math.sqrt(dirX * dirX + dirY * dirY);
+                    if (mag > 0.01) {
+                        this.angle = Math.atan2(dirY, dirX);
+                    }
+                }
+
+                draw(ctx, t) {
+                    const flicker = 0.7 + 0.3 * Math.sin(t * 1.5 + this.x * 0.01 + this.y * 0.01);
+                    const alpha = this.brightness * flicker;
+                    const len = this.length * (0.7 + 0.5 * flicker);
+
+                    const endX = this.x + Math.cos(this.angle) * len;
+                    const endY = this.y + Math.sin(this.angle) * len;
+
+                    // 颜色基于方向角度，形成彩虹效果
+                    const hue = (this.angle * 180 / Math.PI + 360) % 360;
+                    const sat = 60 + 30 * Math.sin(t * 0.5 + this.x * 0.005);
+                    const light = 40 + 50 * flicker;
+
+                    ctx.strokeStyle = `hsla(${hue}, ${sat}%, ${light}%, ${alpha})`;
+                    ctx.lineWidth = this.size;
+                    ctx.lineCap = 'round';
+                    ctx.beginPath();
+                    ctx.moveTo(this.x, this.y);
+                    ctx.lineTo(endX, endY);
+                    ctx.stroke();
+
+                    // 粒子头部小点
+                    ctx.fillStyle = `hsla(${hue}, ${sat}%, ${light + 15}%, ${alpha})`;
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, this.size * 0.8, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            function initParticles() {
+                const count = PARTICLE_COUNT();
+                particles = [];
+                for (let i = 0; i < count; i++) {
+                    particles.push(new IronParticle());
+                }
+            }
+
+            // ─── 冲击波效果 ────────────────────────────────────────────
+            function createShockwave(x, y) {
+                shockwave = {
+                    x, y,
+                    radius: 5,
+                    maxRadius: Math.max(W, H) * 0.7,
+                    life: 1.0,
+                    decay: 0.015,
+                    growth: 5,
+                    hue: 220 + Math.random() * 60,
+                };
+            }
+
+            function updateShockwave(dt) {
+                if (shockwave) {
+                    shockwave.radius += shockwave.growth * dt;
+                    shockwave.life -= shockwave.decay * dt;
+                    if (shockwave.life <= 0 || shockwave.radius > shockwave.maxRadius) {
+                        shockwave = null;
+                    }
+                }
+            }
+
+            function drawShockwave(ctx) {
+                if (!shockwave) return;
+                const alpha = shockwave.life * 0.3;
+                const hue = shockwave.hue;
+                ctx.strokeStyle = `hsla(${hue}, 70%, 75%, ${alpha})`;
+                ctx.lineWidth = 2.5 * shockwave.life;
+                ctx.beginPath();
+                ctx.arc(shockwave.x, shockwave.y, shockwave.radius, 0, Math.PI * 2);
+                ctx.stroke();
+
+                const innerR = shockwave.radius * 0.6;
+                ctx.strokeStyle = `hsla(${hue + 30}, 70%, 80%, ${alpha * 0.6})`;
+                ctx.lineWidth = 1.5 * shockwave.life;
+                ctx.beginPath();
+                ctx.arc(shockwave.x, shockwave.y, innerR, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+
+            // ─── 鼠标光晕 ───────────────────────────────────────────────
+            function drawCursorGlow(ctx) {
+                if (!mouse.active) return;
+                const radius = 40;
+                const hue = mousePolarity > 0 ? 210 : 320;
+                const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                gradient.addColorStop(0, `hsla(${hue}, 70%, 75%, 0.15)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // ─── 主循环 ─────────────────────────────────────────────────
+            let lastTime = 0;
+            let accumulator = 0;
+            const fixedStep = 1000 / 60;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+
+                accumulator += dt;
+                const steps = Math.min(Math.floor(accumulator / fixedStep), 3);
+                accumulator -= steps * fixedStep;
+
+                for (let s = 0; s < steps; s++) {
+                    time += 0.016;
+                    const dtNorm = fixedStep / 1000 * 60;
+                    if (mouse.active) {
+                        // 更新粒子方向
+                        for (const p of particles) {
+                            p.update(mouse, centerPole, mousePolarity, centerPolarity);
+                        }
+                    } else {
+                        // 没有鼠标时，只受中心磁极影响
+                        for (const p of particles) {
+                            p.update(mouse, centerPole, 0, centerPolarity);
+                        }
+                    }
+                    updateShockwave(dtNorm);
+                }
+
+                // 清除画布
+                ctx.fillStyle = '#0a0a16';
+                ctx.fillRect(0, 0, W, H);
+
+                // 绘制铁粉
+                for (const p of particles) {
+                    p.draw(ctx, time);
+                }
+
+                // 绘制冲击波
+                drawShockwave(ctx);
+
+                // 鼠标光晕
+                drawCursorGlow(ctx);
+
+                requestAnimationFrame(animate);
+            }
+
+            // ─── 交互事件 ───────────────────────────────────────────────
+            function onMouseMove(e) {
+                if (!audioInitialized) initAudio();
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                // 移动时播放微弱音效（节流）
+                if (Math.random() < 0.05) playMoveSound();
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onMouseDown(e) {
+                if (!audioInitialized) initAudio();
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                // 切换鼠标磁极极性
+                mousePolarity *= -1;
+                // 触发冲击波
+                createShockwave(mouse.x, mouse.y);
+                // 播放点击音效
+                playClickSound();
+                // 色彩偏移
+                colorShift += 20 + Math.random() * 20;
+                if (colorShift > 100) colorShift = -20;
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                if (!audioInitialized) initAudio();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    if (Math.random() < 0.05) playMoveSound();
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                if (!audioInitialized) initAudio();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    mousePolarity *= -1;
+                    createShockwave(mouse.x, mouse.y);
+                    playClickSound();
+                    colorShift += 20 + Math.random() * 20;
+                    if (colorShift > 100) colorShift = -20;
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onResize() {
+                setupCanvas();
+                const targetCount = PARTICLE_COUNT();
+                if (targetCount !== particles.length) {
+                    while (particles.length < targetCount) {
+                        particles.push(new IronParticle());
+                    }
+                    if (particles.length > targetCount) {
+                        particles.length = targetCount;
+                    }
+                }
+                shockwave = null;
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+                initParticles();
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                // 尝试初始化音频（可能被浏览器阻止，后续交互会触发）
+                document.addEventListener('click', function firstClick() {
+                    initAudio();
+                    document.removeEventListener('click', firstClick);
+                }, { once: true });
+
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#0a0a16';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+        })();
+    </script>
+</body>
+</html>

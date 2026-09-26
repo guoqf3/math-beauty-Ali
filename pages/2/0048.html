@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WAVEFORM · 光波粒子</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #0a0a14;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+        #pixi-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+            background: #0a0a14;
+        }
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2;
+            text-align: center;
+            pointer-events: none;
+            opacity: 0.55;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+        .overlay:hover {
+            opacity: 0.9;
+        }
+        .title {
+            color: rgba(220, 230, 250, 0.8);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 25px rgba(100, 150, 240, 0.6);
+        }
+        .hint {
+            color: rgba(170, 180, 210, 0.5);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+        @media (max-width: 768px) {
+            .overlay { bottom: 18px; }
+            .title { font-size: 8px; letter-spacing: 0.45em; }
+            .hint { font-size: 6px; letter-spacing: 0.22em; }
+        }
+    </style>
+</head>
+<body>
+    <div id="pixi-container"></div>
+    <div class="overlay">
+        <div class="title">Waveform</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js"></script>
+    <script>
+        (function() {
+            // ─── 兜底背景（确保永不黑屏） ──────────────────────────────
+            document.body.style.background = '#0a0a14';
+            const containerEl = document.getElementById('pixi-container');
+            containerEl.style.background = '#0a0a14';
+
+            // ─── PixiJS 加载失败保护 ───────────────────────────────────
+            if (typeof PIXI === 'undefined') {
+                console.warn('PixiJS 加载失败，使用Canvas兜底渲染');
+                renderFallbackCanvas();
+                return;
+            }
+
+            // ─── 全局状态 ──────────────────────────────────────────────
+            let app;
+            let particleContainer;
+            let particles = [];
+            let mouse = { x: 0, y: 0, active: false, vx: 0, vy: 0, lastX: 0, lastY: 0 };
+            let time = 0;
+            let colorShift = 0;
+            let waveMode = 0;
+            let waveSpeed = 1.0;
+            let waveAmplitude = 40;
+            let mouseRadius = 180;
+
+            // ─── 配置参数 ──────────────────────────────────────────────
+            const CONFIG = {
+                gridCols: 50,
+                gridRows: 34,
+                spacingX: 20,
+                spacingY: 24,
+                particleSize: 2.0,
+                alphaMin: 0.35,
+                alphaMax: 0.95,
+            };
+
+            function initPixi() {
+                try {
+                    const resolution = Math.min(window.devicePixelRatio || 1, 2);
+
+                    app = new PIXI.Application({
+                        width: window.innerWidth,
+                        height: window.innerHeight,
+                        resolution: resolution,
+                        backgroundColor: 0x0a0a14,
+                        antialias: true,
+                        autoDensity: true,
+                        powerPreference: 'high-performance',
+                    });
+
+                    containerEl.appendChild(app.view);
+                    console.log('PixiJS 应用创建成功');
+
+                    // 使用普通 Container 替代 ParticleContainer（更稳定）
+                    particleContainer = new PIXI.Container();
+                    particleContainer.blendMode = PIXI.BLEND_MODES.NORMAL;
+                    app.stage.addChild(particleContainer);
+
+                    // 创建粒子纹理
+                    const texture = createParticleTexture();
+
+                    // 创建网格粒子
+                    createGridParticles(texture);
+
+                    // 创建背景装饰粒子
+                    createBackgroundParticles(texture);
+
+                    // 事件
+                    setupEvents();
+
+                    // 动画循环
+                    app.ticker.add(animate);
+
+                    console.log(`已创建 ${particles.length} 个粒子`);
+                } catch (err) {
+                    console.error('PixiJS 初始化失败:', err);
+                    renderFallbackCanvas();
+                }
+            }
+
+            // ─── 创建径向渐变粒子纹理 ────────────────────────────────
+            function createParticleTexture() {
+                const size = 32;
+                const canvas = document.createElement('canvas');
+                canvas.width = size;
+                canvas.height = size;
+                const ctx = canvas.getContext('2d');
+                const gradient = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+                gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
+                gradient.addColorStop(0.3, 'rgba(255, 255, 255, 0.85)');
+                gradient.addColorStop(0.6, 'rgba(255, 255, 255, 0.4)');
+                gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+                ctx.fillStyle = gradient;
+                ctx.fillRect(0, 0, size, size);
+                return PIXI.Texture.from(canvas);
+            }
+
+            // ─── 创建网格粒子 ──────────────────────────────────────────
+            function createGridParticles(texture) {
+                const cols = CONFIG.gridCols;
+                const rows = CONFIG.gridRows;
+                const spacingX = CONFIG.spacingX;
+                const spacingY = CONFIG.spacingY;
+
+                const totalWidth = (cols - 1) * spacingX;
+                const totalHeight = (rows - 1) * spacingY;
+                const startX = (app.screen.width - totalWidth) / 2;
+                const startY = (app.screen.height - totalHeight) / 2;
+
+                for (let row = 0; row < rows; row++) {
+                    for (let col = 0; col < cols; col++) {
+                        const sprite = new PIXI.Sprite(texture);
+                        sprite.anchor.set(0.5, 0.5);
+
+                        const baseX = startX + col * spacingX;
+                        const baseY = startY + row * spacingY;
+                        const scale = CONFIG.particleSize / 8;
+
+                        sprite.x = baseX;
+                        sprite.y = baseY;
+                        sprite.scale.set(scale, scale);
+                        sprite.alpha = CONFIG.alphaMin;
+                        sprite.tint = 0x8899cc; // 初始可见颜色
+
+                        particles.push({
+                            sprite: sprite,
+                            baseX: baseX,
+                            baseY: baseY,
+                            x: baseX,
+                            y: baseY,
+                            z: 0,
+                            col: col,
+                            row: row,
+                            hue: 200 + (col / cols) * 60 + (row / rows) * 40,
+                            sat: 50 + (col / cols) * 35,
+                            light: 55 + (row / rows) * 30,
+                            alpha: CONFIG.alphaMin,
+                            scale: scale,
+                            waveOffset: Math.random() * Math.PI * 2,
+                            waveSpeed: 0.4 + Math.random() * 0.6,
+                            mouseEffect: 0,
+                        });
+
+                        particleContainer.addChild(sprite);
+                    }
+                }
+            }
+
+            // ─── 创建背景粒子 ──────────────────────────────────────────
+            function createBackgroundParticles(texture) {
+                const count = 60;
+                for (let i = 0; i < count; i++) {
+                    const sprite = new PIXI.Sprite(texture);
+                    sprite.anchor.set(0.5, 0.5);
+                    sprite.x = Math.random() * app.screen.width;
+                    sprite.y = Math.random() * app.screen.height;
+                    const scale = (0.5 + Math.random() * 0.8) / 8;
+                    sprite.scale.set(scale, scale);
+                    sprite.alpha = 0.2 + Math.random() * 0.25;
+                    sprite.tint = 0x556688;
+                    particleContainer.addChild(sprite);
+                    particles.push({
+                        sprite: sprite,
+                        isBackground: true,
+                        baseX: sprite.x,
+                        baseY: sprite.y,
+                        x: sprite.x,
+                        y: sprite.y,
+                        vx: (Math.random() - 0.5) * 0.15,
+                        vy: (Math.random() - 0.5) * 0.15,
+                        hue: 210 + Math.random() * 40,
+                        sat: 40,
+                        light: 55,
+                        alpha: 0.2 + Math.random() * 0.25,
+                        twinkleSpeed: 0.2 + Math.random() * 0.6,
+                        twinklePhase: Math.random() * Math.PI * 2,
+                    });
+                }
+            }
+
+            function hslToHex(hue, sat, light) {
+                const h = ((hue % 360) + 360) % 360;
+                const s = sat / 100;
+                const l = light / 100;
+                const c = (1 - Math.abs(2 * l - 1)) * s;
+                const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+                const m = l - c / 2;
+                let r, g, b;
+                if (h < 60) { r = c; g = x; b = 0; }
+                else if (h < 120) { r = x; g = c; b = 0; }
+                else if (h < 180) { r = 0; g = c; b = x; }
+                else if (h < 240) { r = 0; g = x; b = c; }
+                else if (h < 300) { r = x; g = 0; b = c; }
+                else { r = c; g = 0; b = x; }
+                const toHex = (val) => Math.round((val + m) * 255).toString(16).padStart(2, '0');
+                return parseInt(`${toHex(r)}${toHex(g)}${toHex(b)}`, 16);
+            }
+
+            // ─── 动画循环 ──────────────────────────────────────────────
+            function animate() {
+                try {
+                    time += 0.016;
+                    const w = app.screen.width;
+                    const h = app.screen.height;
+
+                    if (mouse.active && mouse.lastX > 0) {
+                        mouse.vx = (mouse.x - mouse.lastX) * 0.06;
+                        mouse.vy = (mouse.y - mouse.lastY) * 0.06;
+                    } else {
+                        mouse.vx *= 0.92;
+                        mouse.vy *= 0.92;
+                    }
+                    mouse.lastX = mouse.x;
+                    mouse.lastY = mouse.y;
+
+                    for (const p of particles) {
+                        if (p.isBackground) {
+                            p.x += p.vx;
+                            p.y += p.vy;
+                            if (p.x < -10) p.x = w + 10;
+                            if (p.x > w + 10) p.x = -10;
+                            if (p.y < -10) p.y = h + 10;
+                            if (p.y > h + 10) p.y = -10;
+                            const twinkle = 0.6 + 0.4 * Math.sin(time * p.twinkleSpeed + p.twinklePhase);
+                            p.sprite.x = p.x;
+                            p.sprite.y = p.y;
+                            p.sprite.alpha = p.alpha * twinkle;
+                            continue;
+                        }
+
+                        const waveFreqX = 0.012;
+                        const waveFreqY = 0.018;
+                        const waveTime = time * waveSpeed;
+                        let z = 0;
+
+                        switch (waveMode) {
+                            case 0:
+                                z = Math.sin(p.baseX * waveFreqX + waveTime) * waveAmplitude +
+                                    Math.cos(p.baseY * waveFreqY + waveTime * 0.7) * waveAmplitude * 0.6;
+                                break;
+                            case 1:
+                                const dx = p.baseX - w / 2;
+                                const dy = p.baseY - h / 2;
+                                const dist = Math.sqrt(dx * dx + dy * dy);
+                                z = Math.sin(dist * 0.05 - waveTime * 2) * waveAmplitude * 1.2;
+                                break;
+                            case 2:
+                                z = Math.sin(p.baseX * 0.02 + waveTime) * Math.cos(p.baseY * 0.02 + waveTime * 0.8) * waveAmplitude;
+                                break;
+                            case 3:
+                                z = Math.sin(p.baseX * 0.015 + waveTime * 1.3) * waveAmplitude * 0.7 +
+                                    Math.sin(p.baseY * 0.025 + waveTime * 0.9) * waveAmplitude * 0.8 +
+                                    Math.sin((p.baseX + p.baseY) * 0.01 + waveTime * 1.1) * waveAmplitude * 0.5;
+                                break;
+                        }
+
+                        let mouseZ = 0;
+                        if (mouse.active && mouse.x > 0) {
+                            const dx = mouse.x - p.baseX;
+                            const dy = mouse.y - p.baseY;
+                            const distSq = dx * dx + dy * dy;
+                            const radiusSq = mouseRadius * mouseRadius;
+                            if (distSq < radiusSq) {
+                                const dist = Math.sqrt(distSq);
+                                const falloff = 1 - dist / mouseRadius;
+                                mouseZ = Math.sin(dist * 0.1 - time * 4) * waveAmplitude * 1.5 * falloff;
+                                const speed = Math.sqrt(mouse.vx * mouse.vx + mouse.vy * mouse.vy);
+                                mouseZ += speed * 15 * falloff;
+                            }
+                        }
+
+                        const finalZ = z + mouseZ;
+                        p.y = p.baseY + finalZ;
+                        p.x = p.baseX + Math.sin(finalZ * 0.05) * 8;
+                        p.z = finalZ;
+
+                        const normalizedZ = Math.abs(finalZ) / waveAmplitude;
+                        const clampedZ = Math.min(1, normalizedZ);
+
+                        const hue = (p.hue + colorShift + finalZ * 0.5 + 360) % 360;
+                        const sat = Math.min(100, p.sat);
+                        const light = Math.min(95, p.light + clampedZ * 35);
+                        const alpha = CONFIG.alphaMin + clampedZ * (CONFIG.alphaMax - CONFIG.alphaMin);
+
+                        const tint = hslToHex(hue, sat, light);
+
+                        p.sprite.x = p.x;
+                        p.sprite.y = p.y;
+                        p.sprite.alpha = Math.max(0.1, alpha);
+                        p.sprite.tint = tint;
+
+                        const scaleFactor = 1 + clampedZ * 0.8;
+                        p.sprite.scale.set(p.scale * scaleFactor, p.scale * scaleFactor);
+                    }
+                } catch (err) {
+                    console.error('动画循环错误:', err);
+                }
+            }
+
+            // ─── 设置事件 ──────────────────────────────────────────────
+            function setupEvents() {
+                const view = app.view;
+
+                view.addEventListener('mousemove', (e) => {
+                    mouse.x = e.clientX;
+                    mouse.y = e.clientY;
+                    mouse.active = true;
+                });
+
+                view.addEventListener('mouseleave', () => {
+                    mouse.active = false;
+                    mouse.lastX = 0;
+                    mouse.lastY = 0;
+                });
+
+                view.addEventListener('mousedown', (e) => {
+                    mouse.x = e.clientX;
+                    mouse.y = e.clientY;
+                    mouse.active = true;
+                    waveMode = (waveMode + 1) % 4;
+                    colorShift += 35 + Math.random() * 30;
+                    if (colorShift > 150) colorShift = -35;
+                    waveSpeed = 0.6 + Math.random() * 1.4;
+                    waveAmplitude = 30 + Math.random() * 40;
+                });
+
+                view.addEventListener('touchmove', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        mouse.x = touch.clientX;
+                        mouse.y = touch.clientY;
+                        mouse.active = true;
+                    }
+                }, { passive: false });
+
+                view.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        mouse.x = touch.clientX;
+                        mouse.y = touch.clientY;
+                        mouse.active = true;
+                        waveMode = (waveMode + 1) % 4;
+                        colorShift += 35 + Math.random() * 30;
+                        if (colorShift > 150) colorShift = -35;
+                        waveSpeed = 0.6 + Math.random() * 1.4;
+                        waveAmplitude = 30 + Math.random() * 40;
+                    }
+                }, { passive: false });
+
+                view.addEventListener('touchend', () => {
+                    mouse.active = false;
+                    mouse.lastX = 0;
+                    mouse.lastY = 0;
+                });
+
+                window.addEventListener('resize', () => {
+                    if (app) {
+                        app.renderer.resize(window.innerWidth, window.innerHeight);
+                    }
+                });
+            }
+
+            // ─── Canvas 兜底渲染 ───────────────────────────────────────
+            function renderFallbackCanvas() {
+                const canvas = document.createElement('canvas');
+                canvas.style.position = 'fixed';
+                canvas.style.top = '0';
+                canvas.style.left = '0';
+                canvas.style.width = '100%';
+                canvas.style.height = '100%';
+                canvas.style.zIndex = '1';
+                containerEl.appendChild(canvas);
+
+                const ctx = canvas.getContext('2d');
+                const DPR = Math.min(window.devicePixelRatio || 1, 2);
+                const W = window.innerWidth;
+                const H = window.innerHeight;
+                canvas.width = W * DPR;
+                canvas.height = H * DPR;
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+                // 绘制一些发光的圆点作为兜底
+                ctx.fillStyle = '#0a0a14';
+                ctx.fillRect(0, 0, W, H);
+
+                const colors = ['#667799', '#8899bb', '#aabbdd', '#7788aa'];
+                for (let i = 0; i < 80; i++) {
+                    const x = Math.random() * W;
+                    const y = Math.random() * H;
+                    const r = 1 + Math.random() * 3;
+                    const color = colors[Math.floor(Math.random() * colors.length)];
+                    const gradient = ctx.createRadialGradient(x, y, 0, x, y, r * 4);
+                    gradient.addColorStop(0, color);
+                    gradient.addColorStop(1, 'transparent');
+                    ctx.fillStyle = gradient;
+                    ctx.beginPath();
+                    ctx.arc(x, y, r * 4, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+                console.log('Canvas 兜底渲染完成');
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                try {
+                    initPixi();
+                } catch (err) {
+                    console.error('启动失败:', err);
+                    renderFallbackCanvas();
+                }
+            }
+
+            // 等待DOM加载完成后启动
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            // 最终兜底：确保背景可见
+            window.addEventListener('load', () => {
+                document.body.style.background = '#0a0a14';
+                containerEl.style.background = '#0a0a14';
+                // 如果PixiJS没有成功初始化，使用兜底
+                if (!app || !app.view) {
+                    console.log('PixiJS 未成功初始化，执行兜底渲染');
+                    if (containerEl.childElementCount === 0) {
+                        renderFallbackCanvas();
+                    }
+                }
+            });
+
+            // 3秒后检查
+            setTimeout(() => {
+                if (!app || !app.view) {
+                    console.log('3秒后检查：PixiJS 未初始化，执行兜底渲染');
+                    if (containerEl.childElementCount === 0) {
+                        renderFallbackCanvas();
+                    }
+                }
+            }, 3000);
+        })();
+    </script>
+</body>
+</html>

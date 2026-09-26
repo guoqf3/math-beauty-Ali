@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sierpiński四面体 · 分形线网交织</title>
+    <style>
+        :root { --bg: #02040a; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'STSong', 'Songti SC', 'Noto Serif SC', 'SimSun', 'Times New Roman', serif;
+            -webkit-font-smoothing: antialiased;
+            height: 100vh; width: 100vw;
+            user-select: none; -webkit-user-select: none; cursor: default;
+        }
+        #canvas-container { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+        canvas { display: block; }
+        #title-overlay {
+            position: fixed; top: 24px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+        }
+        #title-overlay .title {
+            font-size: clamp(1.0rem, 2.2vw, 1.5rem); font-weight: 400; letter-spacing: 0.08em;
+            color: #cfc7b5; text-shadow: 0 0 42px rgba(200,180,150,0.5), 0 0 72px rgba(170,150,130,0.22);
+            line-height: 1.4; white-space: nowrap;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.48rem, 0.85vw, 0.64rem); font-weight: 300; letter-spacing: 0.12em;
+            color: #a09888; text-shadow: 0 0 16px rgba(155,145,125,0.32);
+            margin-top: 2px; white-space: nowrap;
+        }
+        #formula-overlay {
+            position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+            background: rgba(2,4,10,0.68); padding: 10px 20px; border-radius: 32px;
+            border: 1px solid rgba(175,155,135,0.16);
+            backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); max-width: 95vw;
+        }
+        #formula-overlay .formula {
+            font-size: clamp(0.38rem, 0.7vw, 0.56rem); font-weight: 300; letter-spacing: 0.04em;
+            color: #c5bdaa; text-shadow: 0 0 13px rgba(185,170,145,0.25);
+            line-height: 1.55; white-space: nowrap;
+        }
+        #formula-overlay .formula .c1 { color: #d4885c; }
+        #formula-overlay .formula .c2 { color: #5d9ec6; }
+        #formula-overlay .formula .c3 { color: #c77d9f; }
+        @media (max-width: 600px) {
+            #title-overlay { top: 14px; }
+            #formula-overlay { bottom: 10px; padding: 7px 12px; border-radius: 24px; }
+            #formula-overlay .formula { font-size: 0.32rem; white-space: normal; line-height: 1.3; }
+            #title-overlay .title { font-size: 0.68rem; }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="title-overlay">
+        <div class="title">Sierpiński四面体 · 分形线网交织</div>
+        <div class="subtitle">SIERPIŃSKI TETRAHEDRON &nbsp;·&nbsp; FRACTAL WIREFRAME DEPTH 2</div>
+    </div>
+    <div id="formula-overlay">
+        <div class="formula">
+            <span class="c1">𝒯₀:</span> (±1,±1,±1) 偶负 &nbsp;
+            <span class="c2">𝒯₀*:</span> 对偶顶点(取反) &nbsp;
+            <span class="c3">深度2:</span> 中点递归细分4³=64子四面体
+            <br>
+            <span style="color:#9aa8b8;">R=2.6 &nbsp;|&nbsp; 约180条独特边 &nbsp;|&nbsp; 绝对时间驱动</span>
+        </div>
+    </div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#02040a');
+        scene.fog = new THREE.Fog('#02040a', 8, 22);
+
+        const camera = new THREE.PerspectiveCamera(
+            50,
+            container.clientWidth / Math.max(container.clientHeight, 1),
+            0.3,
+            26
+        );
+        camera.position.set(0.6, 0.35, 7.5);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = false;
+        container.appendChild(renderer.domElement);
+
+        // ==================== 颜色 ====================
+        const C1 = '#d4885c';
+        const C2 = '#5d9ec6';
+        const C3 = '#c77d9f';
+        const C_SPHERE = '#3a4a5c';
+        const C_GLINT = '#8898aa';
+
+        const SPHERE_R = 2.6;
+        const SCALE = SPHERE_R / Math.sqrt(3);
+
+        // ==================== 去重工具 ====================
+        function edgeKey(a, b) {
+            const ax = a.x.toFixed(8), ay = a.y.toFixed(8), az = a.z.toFixed(8);
+            const bx = b.x.toFixed(8), by = b.y.toFixed(8), bz = b.z.toFixed(8);
+            if (ax < bx || (ax === bx && (ay < by || (ay === by && az <= bz)))) {
+                return `${ax},${ay},${az}|${bx},${by},${bz}`;
+            }
+            return `${bx},${by},${bz}|${ax},${ay},${az}`;
+        }
+
+        function midpoint(a, b) {
+            return new THREE.Vector3(
+                (a.x + b.x) * 0.5,
+                (a.y + b.y) * 0.5,
+                (a.z + b.z) * 0.5
+            );
+        }
+
+        // ==================== Sierpiński递归生成 ====================
+        function sierpinskiRecursive(va, vb, vc, vd, depth, targetDepths, edgeSet) {
+            const addEdges = targetDepths.includes(depth);
+            if (addEdges) {
+                const pairs = [[va, vb], [va, vc], [va, vd], [vb, vc], [vb, vd], [vc, vd]];
+                for (const [p, q] of pairs) {
+                    edgeSet.add(edgeKey(p, q));
+                }
+            }
+            if (depth >= 2) return;
+
+            const mAB = midpoint(va, vb);
+            const mAC = midpoint(va, vc);
+            const mAD = midpoint(va, vd);
+            const mBC = midpoint(vb, vc);
+            const mBD = midpoint(vb, vd);
+            const mCD = midpoint(vc, vd);
+
+            sierpinskiRecursive(va, mAB, mAC, mAD, depth + 1, targetDepths, edgeSet);
+            sierpinskiRecursive(vb, mAB, mBC, mBD, depth + 1, targetDepths, edgeSet);
+            sierpinskiRecursive(vc, mAC, mBC, mCD, depth + 1, targetDepths, edgeSet);
+            sierpinskiRecursive(vd, mAD, mBD, mCD, depth + 1, targetDepths, edgeSet);
+        }
+
+        // ==================== 生成主四面体和对偶四面体 ====================
+        const A = new THREE.Vector3(1, 1, 1).multiplyScalar(SCALE);
+        const B = new THREE.Vector3(1, -1, -1).multiplyScalar(SCALE);
+        const C = new THREE.Vector3(-1, 1, -1).multiplyScalar(SCALE);
+        const D = new THREE.Vector3(-1, -1, 1).multiplyScalar(SCALE);
+
+        const A_dual = A.clone().multiplyScalar(-1);
+        const B_dual = B.clone().multiplyScalar(-1);
+        const C_dual = C.clone().multiplyScalar(-1);
+        const D_dual = D.clone().multiplyScalar(-1);
+
+        // 主四面体边集合
+        const edgesMain_01 = new Set();
+        const edgesMain_2 = new Set();
+        sierpinskiRecursive(A, B, C, D, 0, [0, 1], edgesMain_01);
+        sierpinskiRecursive(A, B, C, D, 0, [2], edgesMain_2);
+
+        // 对偶四面体边集合
+        const edgesDual_01 = new Set();
+        const edgesDual_2 = new Set();
+        sierpinskiRecursive(A_dual, B_dual, C_dual, D_dual, 0, [0, 1], edgesDual_01);
+        sierpinskiRecursive(A_dual, B_dual, C_dual, D_dual, 0, [2], edgesDual_2);
+
+        console.log('主四面体深度0+1边:', edgesMain_01.size, '深度2边:', edgesMain_2.size);
+        console.log('对偶四面体深度0+1边:', edgesDual_01.size, '深度2边:', edgesDual_2.size);
+
+        // ==================== 创建线段 ====================
+        function createLineSegmentsFromEdgeSet(edgeSet, colorHex, opacity) {
+            if (edgeSet.size === 0) return new THREE.Group();
+            const verts = [];
+            for (const key of edgeSet) {
+                const [aStr, bStr] = key.split('|');
+                const [ax, ay, az] = aStr.split(',').map(Number);
+                const [bx, by, bz] = bStr.split(',').map(Number);
+                verts.push(ax, ay, az, bx, by, bz);
+            }
+            const geom = new THREE.BufferGeometry();
+            geom.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+            const mat = new THREE.LineBasicMaterial({
+                color: new THREE.Color(colorHex),
+                transparent: true,
+                opacity: opacity,
+                depthWrite: true,
+            });
+            return new THREE.LineSegments(geom, mat);
+        }
+
+        const group1 = createLineSegmentsFromEdgeSet(edgesMain_01, C1, 0.7);
+        const group2 = createLineSegmentsFromEdgeSet(edgesDual_01, C2, 0.68);
+        const group3a = createLineSegmentsFromEdgeSet(edgesMain_2, C3, 0.62);
+        const group3b = createLineSegmentsFromEdgeSet(edgesDual_2, C3, 0.62);
+
+        const mainGroup = new THREE.Group();
+        mainGroup.add(group1);
+        mainGroup.add(group2);
+        mainGroup.add(group3a);
+        mainGroup.add(group3b);
+        scene.add(mainGroup);
+
+        // ==================== 球面顶点光点 ====================
+        function createGlintAt(pt, colorHex, sz) {
+            const group = new THREE.Group();
+            const pairs = [
+                [pt.clone().add(new THREE.Vector3(-sz, 0, 0)), pt.clone().add(new THREE.Vector3(sz, 0, 0))],
+                [pt.clone().add(new THREE.Vector3(0, -sz, 0)), pt.clone().add(new THREE.Vector3(0, sz, 0))],
+                [pt.clone().add(new THREE.Vector3(0, 0, -sz)), pt.clone().add(new THREE.Vector3(0, 0, sz))],
+            ];
+            for (const [a, b] of pairs) {
+                const g = new THREE.BufferGeometry().setFromPoints([a, b]);
+                const m = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(colorHex),
+                    transparent: true, opacity: 0.55, depthWrite: true,
+                });
+                group.add(new THREE.Line(g, m));
+            }
+            return group;
+        }
+
+        const glintsGroup = new THREE.Group();
+        for (const pt of [A, B, C, D]) glintsGroup.add(createGlintAt(pt, C1, 0.06));
+        for (const pt of [A_dual, B_dual, C_dual, D_dual]) glintsGroup.add(createGlintAt(pt, C2, 0.05));
+        mainGroup.add(glintsGroup);
+
+        // ==================== 参考球面线框 ====================
+        function createSphereWireframe(radius, colorHex, opacity) {
+            const group = new THREE.Group();
+            const segs = 180;
+            const circles = [
+                (a) => new THREE.Vector3(Math.cos(a) * radius, Math.sin(a) * radius, 0),
+                (a) => new THREE.Vector3(Math.cos(a) * radius, 0, Math.sin(a) * radius),
+                (a) => new THREE.Vector3(0, Math.cos(a) * radius, Math.sin(a) * radius),
+            ];
+            for (const gen of circles) {
+                const pts = [];
+                for (let i = 0; i <= segs; i++) pts.push(gen((i / segs) * Math.PI * 2));
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(colorHex),
+                    transparent: true, opacity: opacity, depthWrite: true,
+                });
+                group.add(new THREE.Line(geom, mat));
+            }
+            return group;
+        }
+        const sphereRef = createSphereWireframe(SPHERE_R, C_SPHERE, 0.2);
+        scene.add(sphereRef);
+
+        // ==================== 原点光点 ====================
+        function originGlint() {
+            const group = new THREE.Group();
+            const sz = 0.09;
+            const pairs = [
+                [new THREE.Vector3(-sz, 0, 0), new THREE.Vector3(sz, 0, 0)],
+                [new THREE.Vector3(0, -sz, 0), new THREE.Vector3(0, sz, 0)],
+                [new THREE.Vector3(0, 0, -sz), new THREE.Vector3(0, 0, sz)],
+            ];
+            for (const [a, b] of pairs) {
+                const g = new THREE.BufferGeometry().setFromPoints([a, b]);
+                const m = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(C_GLINT),
+                    transparent: true, opacity: 0.7, depthWrite: true,
+                });
+                group.add(new THREE.Line(g, m));
+            }
+            return group;
+        }
+        scene.add(originGlint());
+
+        // ==================== 动画循环（绝对时间） ====================
+        let time = 0;
+        let lastTime = performance.now();
+        let frameCount = 0;
+        let logTime = 0;
+
+        function animate(now) {
+            requestAnimationFrame(animate);
+            let delta = (now - lastTime) / 1000;
+            if (delta <= 0 || delta > 0.5) delta = 0.016;
+            lastTime = now;
+            time += delta;
+            frameCount++;
+            if (now - logTime > 4000) {
+                console.log(`[动画运行中] 帧:${frameCount} 时间:${time.toFixed(2)}s 边:${edgesMain_01.size+edgesMain_2.size+edgesDual_01.size+edgesDual_2.size}`);
+                logTime = now;
+            }
+
+            mainGroup.rotation.y = time * 0.32;
+            mainGroup.rotation.x = time * 0.18 + Math.sin(time * 0.26) * 0.22;
+            mainGroup.rotation.z = Math.cos(time * 0.22) * 0.16;
+
+            sphereRef.rotation.copy(mainGroup.rotation);
+
+            const camX = 0.6 + Math.sin(time * 0.15) * 0.5;
+            const camY = 0.35 + Math.cos(time * 0.18) * 0.45;
+            const camZ = 7.5 + Math.sin(time * 0.12) * 0.45;
+            camera.position.set(camX, camY, camZ);
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        // ==================== 窗口调整 ====================
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth;
+            const h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth;
+            const h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 100));
+
+        console.log('=== Sierpiński四面体 · 分形线网交织 ===');
+        console.log('总独特边数:', edgesMain_01.size + edgesMain_2.size + edgesDual_01.size + edgesDual_2.size);
+        console.log('✅ 初始帧渲染完成，启动绝对时间动画循环...');
+
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

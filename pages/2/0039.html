@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HOLOGRAM · 全息地形（修复版）</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #05050f;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+        #pixi-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+            background: #05050f;
+        }
+        #fallback-canvas {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+            display: none;
+        }
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2;
+            text-align: center;
+            pointer-events: none;
+            opacity: 0.55;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+        .overlay:hover {
+            opacity: 0.9;
+        }
+        .title {
+            color: rgba(180, 220, 255, 0.8);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 25px rgba(80, 180, 255, 0.6);
+        }
+        .hint {
+            color: rgba(130, 170, 210, 0.5);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+        @media (max-width: 768px) {
+            .overlay { bottom: 18px; }
+            .title { font-size: 8px; letter-spacing: 0.45em; }
+            .hint { font-size: 6px; letter-spacing: 0.22em; }
+        }
+    </style>
+</head>
+<body>
+    <div id="pixi-container"></div>
+    <canvas id="fallback-canvas"></canvas>
+    <div class="overlay">
+        <div class="title">Hologram</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js"></script>
+    <script>
+        (function() {
+            // ─── 全局状态 ──────────────────────────────────────────────
+            let app;
+            let container;
+            let particles = [];
+            let gridLines = [];
+            let mouse = { x: 0, y: 0, active: false };
+            let time = 0;
+            let colorShift = 0;
+            let rotationX = 0.5;
+            let rotationZ = 0;
+            let targetRotationX = 0.5;
+            let targetRotationZ = 0;
+            let rippleCenters = [];
+            let fallbackActive = false;
+            let fallbackCtx;
+            let fallbackParticles = [];
+
+            const CONFIG = {
+                gridSize: 32,
+                spacing: 1.0,
+                heightScale: 38,
+                projectionScale: 9,
+                autoRotateSpeed: 0.08,
+                mouseRotateSpeed: 0.003,
+                rippleRadius: 120,
+                rippleStrength: 30,
+                baseHue: 205,
+                hueRange: 70,
+            };
+
+            function hslToHex(hue, sat, light) {
+                const h = ((hue % 360) + 360) % 360;
+                const s = sat / 100;
+                const l = light / 100;
+                const c = (1 - Math.abs(2 * l - 1)) * s;
+                const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+                const m = l - c / 2;
+                let r, g, b;
+                if (h < 60) { r = c; g = x; b = 0; }
+                else if (h < 120) { r = x; g = c; b = 0; }
+                else if (h < 180) { r = 0; g = c; b = x; }
+                else if (h < 240) { r = 0; g = x; b = c; }
+                else if (h < 300) { r = x; g = 0; b = c; }
+                else { r = c; g = 0; b = x; }
+                const toHex = (val) => Math.round((val + m) * 255).toString(16).padStart(2, '0');
+                return parseInt(`${toHex(r)}${toHex(g)}${toHex(b)}`, 16);
+            }
+
+            function createGlowTexture(size) {
+                const canvas = document.createElement('canvas');
+                canvas.width = size;
+                canvas.height = size;
+                const ctx = canvas.getContext('2d');
+                const center = size / 2;
+                const gradient = ctx.createRadialGradient(center, center, 0, center, center, center);
+                gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
+                gradient.addColorStop(0.25, 'rgba(255, 255, 255, 0.75)');
+                gradient.addColorStop(0.55, 'rgba(255, 255, 255, 0.3)');
+                gradient.addColorStop(0.8, 'rgba(255, 255, 255, 0.08)');
+                gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+                ctx.fillStyle = gradient;
+                ctx.fillRect(0, 0, size, size);
+                return PIXI.Texture.from(canvas);
+            }
+
+            // ─── PixiJS 初始化 ─────────────────────────────────────────
+            function initPixi() {
+                if (typeof PIXI === 'undefined') {
+                    throw new Error('PixiJS not loaded');
+                }
+
+                const containerEl = document.getElementById('pixi-container');
+                const resolution = Math.min(window.devicePixelRatio || 1, 2);
+
+                app = new PIXI.Application({
+                    width: window.innerWidth,
+                    height: window.innerHeight,
+                    resolution: resolution,
+                    backgroundColor: 0x05050f,
+                    antialias: true,
+                    autoDensity: true,
+                    powerPreference: 'high-performance',
+                });
+
+                containerEl.appendChild(app.view);
+
+                container = new PIXI.Container();
+                container.blendMode = PIXI.BLEND_MODES.ADD;
+                app.stage.addChild(container);
+
+                const glowTexture = createGlowTexture(24);
+
+                // 创建地形粒子
+                createTerrainParticles(glowTexture);
+                // 创建网格线
+                createGridLines();
+
+                setupEvents();
+                app.ticker.add(animate);
+            }
+
+            // ─── 后备方案：原生 Canvas 渲染 ────────────────────────────
+            function startFallback() {
+                fallbackActive = true;
+                document.getElementById('pixi-container').style.display = 'none';
+                const fallbackCanvas = document.getElementById('fallback-canvas');
+                fallbackCanvas.style.display = 'block';
+                const ctx = fallbackCanvas.getContext('2d');
+                fallbackCtx = ctx;
+
+                // 调整画布尺寸
+                function resizeFallback() {
+                    fallbackCanvas.width = window.innerWidth;
+                    fallbackCanvas.height = window.innerHeight;
+                    ctx.fillStyle = '#05050f';
+                    ctx.fillRect(0, 0, fallbackCanvas.width, fallbackCanvas.height);
+                }
+                resizeFallback();
+                window.addEventListener('resize', resizeFallback);
+
+                // 创建后备粒子
+                fallbackParticles = [];
+                for (let i = 0; i < 120; i++) {
+                    fallbackParticles.push({
+                        x: Math.random() * fallbackCanvas.width,
+                        y: Math.random() * fallbackCanvas.height,
+                        vx: (Math.random() - 0.5) * 0.8,
+                        vy: (Math.random() - 0.5) * 0.8,
+                        size: 1 + Math.random() * 2.5,
+                        alpha: 0.3 + Math.random() * 0.5,
+                        hue: 190 + Math.random() * 60,
+                    });
+                }
+
+                // 启动后备动画
+                function fallbackAnimate() {
+                    if (!fallbackActive) return;
+                    ctx.fillStyle = 'rgba(5,5,15,0.3)';
+                    ctx.fillRect(0, 0, fallbackCanvas.width, fallbackCanvas.height);
+
+                    // 更新和绘制粒子
+                    for (const p of fallbackParticles) {
+                        p.x += p.vx;
+                        p.y += p.vy;
+                        if (p.x < -10) p.x = fallbackCanvas.width + 10;
+                        if (p.x > fallbackCanvas.width + 10) p.x = -10;
+                        if (p.y < -10) p.y = fallbackCanvas.height + 10;
+                        if (p.y > fallbackCanvas.height + 10) p.y = -10;
+
+                        ctx.fillStyle = `hsla(${p.hue + Math.sin(Date.now() * 0.001 + p.x) * 15}, 60%, 60%, ${p.alpha})`;
+                        ctx.beginPath();
+                        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+
+                    // 鼠标光晕
+                    if (mouse.active && mouse.x > 0) {
+                        const grad = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, 60);
+                        grad.addColorStop(0, 'rgba(180,220,255,0.08)');
+                        grad.addColorStop(1, 'transparent');
+                        ctx.fillStyle = grad;
+                        ctx.beginPath();
+                        ctx.arc(mouse.x, mouse.y, 60, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+
+                    requestAnimationFrame(fallbackAnimate);
+                }
+                fallbackAnimate();
+
+                // 设置后备事件
+                const fallbackCanvas2 = fallbackCanvas;
+                fallbackCanvas2.addEventListener('mousemove', (e) => {
+                    mouse.x = e.clientX;
+                    mouse.y = e.clientY;
+                    mouse.active = true;
+                });
+                fallbackCanvas2.addEventListener('mouseleave', () => {
+                    mouse.active = false;
+                    mouse.x = -9999;
+                    mouse.y = -9999;
+                });
+                fallbackCanvas2.addEventListener('mousedown', (e) => {
+                    mouse.x = e.clientX;
+                    mouse.y = e.clientY;
+                    mouse.active = true;
+                    // 点击产生小爆发
+                    for (let i = 0; i < 15; i++) {
+                        fallbackParticles.push({
+                            x: mouse.x,
+                            y: mouse.y,
+                            vx: (Math.random() - 0.5) * 4,
+                            vy: (Math.random() - 0.5) * 4,
+                            size: 1 + Math.random() * 2,
+                            alpha: 0.5 + Math.random() * 0.3,
+                            hue: 200 + Math.random() * 40,
+                        });
+                    }
+                });
+            }
+
+            // ─── 创建地形粒子 ──────────────────────────────────────────
+            function createTerrainParticles(texture) {
+                const gridSize = CONFIG.gridSize;
+                const spacing = CONFIG.spacing;
+                const halfGrid = gridSize / 2;
+
+                for (let i = 0; i < gridSize; i++) {
+                    for (let j = 0; j < gridSize; j++) {
+                        const sprite = new PIXI.Sprite(texture);
+                        sprite.anchor.set(0.5, 0.5);
+                        sprite.blendMode = PIXI.BLEND_MODES.ADD;
+                        sprite.alpha = 0.6 + Math.random() * 0.3;
+
+                        particles.push({
+                            sprite: sprite,
+                            gridX: i,
+                            gridY: j,
+                            worldX: (i - halfGrid) * spacing,
+                            worldZ: (j - halfGrid) * spacing,
+                            height: 0,
+                            targetHeight: 0,
+                            hue: CONFIG.baseHue + (i / gridSize) * CONFIG.hueRange * 0.5,
+                            sat: 60 + (j / gridSize) * 30,
+                            light: 45 + Math.random() * 25,
+                            size: 1.2 + Math.random() * 1.8,
+                            alpha: 0.55 + Math.random() * 0.35,
+                        });
+
+                        container.addChild(sprite);
+                    }
+                }
+            }
+
+            function createGridLines() {
+                const lineGraphics = new PIXI.Graphics();
+                lineGraphics.blendMode = PIXI.BLEND_MODES.ADD;
+                container.addChild(lineGraphics);
+                gridLines.push({ graphics: lineGraphics });
+            }
+
+            function getTerrainHeight(worldX, worldZ, t) {
+                let height = Math.sin(worldX * 0.18 + t * 0.45) * 22 +
+                             Math.cos(worldZ * 0.15 + t * 0.38) * 22 +
+                             Math.sin((worldX + worldZ) * 0.1 + t * 0.3) * 16 +
+                             Math.cos((worldX - worldZ) * 0.12 + t * 0.25) * 14;
+
+                for (const ripple of rippleCenters) {
+                    const dx = worldX - ripple.x;
+                    const dz = worldZ - ripple.z;
+                    const dist = Math.sqrt(dx * dx + dz * dz);
+                    if (dist < ripple.radius) {
+                        const falloff = 1 - dist / ripple.radius;
+                        height += Math.sin(falloff * Math.PI * 3) * ripple.strength * falloff;
+                    }
+                }
+                return height;
+            }
+
+            function updateParticles() {
+                const halfGrid = CONFIG.gridSize / 2;
+                const cosRX = Math.cos(rotationX);
+                const sinRX = Math.sin(rotationX);
+                const cosRZ = Math.cos(rotationZ);
+                const sinRZ = Math.sin(rotationZ);
+
+                for (let i = rippleCenters.length - 1; i >= 0; i--) {
+                    rippleCenters[i].life -= 0.012;
+                    if (rippleCenters[i].life <= 0) rippleCenters.splice(i, 1);
+                }
+
+                for (const p of particles) {
+                    p.height = getTerrainHeight(p.worldX, p.worldZ, time);
+
+                    const x1 = p.worldX * cosRZ - p.worldZ * sinRZ;
+                    const z1 = p.worldX * sinRZ + p.worldZ * cosRZ;
+                    const z2 = p.height * cosRX - z1 * sinRX;
+                    const scale = CONFIG.projectionScale;
+
+                    p.sprite.x = app.screen.width / 2 + x1 * scale;
+                    p.sprite.y = app.screen.height / 2 - z2 * scale * 0.7;
+
+                    const normalizedHeight = (p.height + 50) / 100;
+                    const hue = CONFIG.baseHue + colorShift + normalizedHeight * CONFIG.hueRange;
+                    const sat = 55 + normalizedHeight * 35;
+                    const light = 35 + normalizedHeight * 45;
+                    const sizeFactor = 1 + (z2 / 40) * 0.5;
+                    p.sprite.scale.set((p.size * sizeFactor) / 12, (p.size * sizeFactor) / 12);
+                    p.sprite.alpha = p.alpha * (0.7 + 0.3 * normalizedHeight);
+                    p.sprite.tint = hslToHex(hue, sat, light);
+                }
+            }
+
+            function updateGridLines() {
+                if (!gridLines.length) return;
+                const lineGraphics = gridLines[0].graphics;
+                lineGraphics.clear();
+                const gridSize = CONFIG.gridSize;
+                const halfGrid = gridSize / 2;
+                const cosRX = Math.cos(rotationX);
+                const sinRX = Math.sin(rotationX);
+                const cosRZ = Math.cos(rotationZ);
+                const sinRZ = Math.sin(rotationZ);
+                const spacing = CONFIG.spacing;
+                const scale = CONFIG.projectionScale;
+
+                for (let j = 0; j < gridSize; j++) {
+                    const worldZ = (j - halfGrid) * spacing;
+                    lineGraphics.lineStyle(0.6, 0x4488cc, 0.1);
+                    lineGraphics.beginPath();
+                    let first = true;
+                    for (let i = 0; i < gridSize; i++) {
+                        const worldX = (i - halfGrid) * spacing;
+                        const height = getTerrainHeight(worldX, worldZ, time);
+                        const x1 = worldX * cosRZ - worldZ * sinRZ;
+                        const z1 = worldX * sinRZ + worldZ * cosRZ;
+                        const z2 = height * cosRX - z1 * sinRX;
+                        const sx = app.screen.width / 2 + x1 * scale;
+                        const sy = app.screen.height / 2 - z2 * scale * 0.7;
+                        if (first) { lineGraphics.moveTo(sx, sy); first = false; }
+                        else lineGraphics.lineTo(sx, sy);
+                    }
+                    lineGraphics.stroke();
+                }
+
+                for (let i = 0; i < gridSize; i++) {
+                    const worldX = (i - halfGrid) * spacing;
+                    lineGraphics.lineStyle(0.6, 0x4488cc, 0.1);
+                    lineGraphics.beginPath();
+                    let first = true;
+                    for (let j = 0; j < gridSize; j++) {
+                        const worldZ = (j - halfGrid) * spacing;
+                        const height = getTerrainHeight(worldX, worldZ, time);
+                        const x1 = worldX * cosRZ - worldZ * sinRZ;
+                        const z1 = worldX * sinRZ + worldZ * cosRZ;
+                        const z2 = height * cosRX - z1 * sinRX;
+                        const sx = app.screen.width / 2 + x1 * scale;
+                        const sy = app.screen.height / 2 - z2 * scale * 0.7;
+                        if (first) { lineGraphics.moveTo(sx, sy); first = false; }
+                        else lineGraphics.lineTo(sx, sy);
+                    }
+                    lineGraphics.stroke();
+                }
+            }
+
+            function animate() {
+                if (fallbackActive) return;
+                try {
+                    time += 0.016;
+                    rotationX += (targetRotationX - rotationX) * 0.04;
+                    rotationZ += (targetRotationZ - rotationZ) * 0.04;
+                    rotationZ += CONFIG.autoRotateSpeed * 0.016;
+
+                    if (mouse.active && mouse.x > 0) {
+                        const nx = mouse.x / app.screen.width - 0.5;
+                        const ny = mouse.y / app.screen.height - 0.5;
+                        targetRotationX = 0.3 + ny * 0.8;
+                        targetRotationZ = nx * 1.5;
+                    } else {
+                        targetRotationX = 0.45 + Math.sin(time * 0.2) * 0.1;
+                        targetRotationZ = Math.sin(time * 0.12) * 0.6;
+                    }
+
+                    updateParticles();
+                    updateGridLines();
+                } catch (err) {
+                    console.error('动画错误，切换后备方案:', err);
+                    startFallback();
+                }
+            }
+
+            function createRipple(mouseX, mouseY) {
+                const halfGrid = CONFIG.gridSize / 2;
+                const worldX = (mouseX / app.screen.width - 0.5) * CONFIG.gridSize * 0.8;
+                const worldZ = (mouseY / app.screen.height - 0.5) * CONFIG.gridSize * 0.8;
+                rippleCenters.push({
+                    x: worldX,
+                    z: worldZ,
+                    radius: CONFIG.rippleRadius,
+                    strength: CONFIG.rippleStrength,
+                    life: 1.0,
+                });
+                if (rippleCenters.length > 4) rippleCenters.shift();
+            }
+
+            function setupEvents() {
+                const view = app.view;
+                view.addEventListener('mousemove', (e) => {
+                    mouse.x = e.clientX;
+                    mouse.y = e.clientY;
+                    mouse.active = true;
+                });
+                view.addEventListener('mouseleave', () => {
+                    mouse.active = false;
+                    mouse.x = -9999;
+                    mouse.y = -9999;
+                });
+                view.addEventListener('mousedown', (e) => {
+                    mouse.x = e.clientX;
+                    mouse.y = e.clientY;
+                    mouse.active = true;
+                    createRipple(mouse.x, mouse.y);
+                    colorShift += 25 + Math.random() * 30;
+                    if (colorShift > 120) colorShift = -25;
+                });
+                view.addEventListener('touchmove', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        mouse.x = touch.clientX;
+                        mouse.y = touch.clientY;
+                        mouse.active = true;
+                    }
+                }, { passive: false });
+                view.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        mouse.x = touch.clientX;
+                        mouse.y = touch.clientY;
+                        mouse.active = true;
+                        createRipple(mouse.x, mouse.y);
+                        colorShift += 25 + Math.random() * 30;
+                        if (colorShift > 120) colorShift = -25;
+                    }
+                }, { passive: false });
+                view.addEventListener('touchend', () => {
+                    mouse.active = false;
+                    mouse.x = -9999;
+                    mouse.y = -9999;
+                });
+                window.addEventListener('resize', () => {
+                    if (app) app.renderer.resize(window.innerWidth, window.innerHeight);
+                });
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                try {
+                    initPixi();
+                    console.log('全息地形已启动');
+                } catch (err) {
+                    console.warn('PixiJS 初始化失败，启动后备方案:', err);
+                    startFallback();
+                }
+            }
+
+            // 设置超时检测：如果3秒后app未初始化，则启动后备
+            setTimeout(() => {
+                if (!app && !fallbackActive) {
+                    console.warn('PixiJS 加载超时，启动后备方案');
+                    startFallback();
+                }
+            }, 3000);
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.addEventListener('load', () => {
+                document.body.style.background = '#05050f';
+                document.getElementById('pixi-container').style.background = '#05050f';
+            });
+        })();
+    </script>
+</body>
+</html>

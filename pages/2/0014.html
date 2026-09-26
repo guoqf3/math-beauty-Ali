@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>流体光波 · 修复版</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #0a0a18;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            -webkit-tap-highlight-color: transparent;
+            -webkit-user-select: none;
+            user-select: none;
+            touch-action: none;
+            cursor: crosshair;
+        }
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+        #hint {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            color: rgba(180, 200, 255, 0.55);
+            font-size: 13px;
+            font-weight: 300;
+            letter-spacing: 3px;
+            pointer-events: none;
+            opacity: 0;
+            animation: hintFade 5s ease-in-out forwards;
+            text-shadow: 0 0 20px rgba(120, 160, 255, 0.5);
+            white-space: nowrap;
+        }
+        @keyframes hintFade {
+            0% {
+                opacity: 0;
+                transform: translateX(-50%) translateY(8px);
+            }
+            15% {
+                opacity: 1;
+                transform: translateX(-50%) translateY(0);
+            }
+            70% {
+                opacity: 1;
+            }
+            100% {
+                opacity: 0;
+                transform: translateX(-50%) translateY(-4px);
+            }
+        }
+        #loading {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 100;
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: #8899ff;
+            box-shadow: 0 0 30px #8899ff, 0 0 60px #5566cc;
+            animation: pulse 1.4s ease-in-out infinite;
+            pointer-events: none;
+        }
+        #loading.hidden {
+            display: none;
+        }
+        @keyframes pulse {
+            0%,
+            100% {
+                opacity: 0.4;
+                transform: translate(-50%, -50%) scale(0.8);
+            }
+            50% {
+                opacity: 1;
+                transform: translate(-50%, -50%) scale(1.4);
+            }
+        }
+        /* 后备动画（WebGL 失败时显示） */
+        #fallback {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: radial-gradient(circle at 50% 50%, #1a1a3e, #0a0a18);
+            z-index: 0;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="loading" aria-hidden="true"></div>
+    <div id="hint">移 动 探 索 · 点 击 共 鸣</div>
+    <div id="fallback"></div>
+
+    <!-- 使用 PixiJS v7 传统 CDN，兼容性最好 -->
+    <script src="https://cdn.jsdelivr.net/npm/pixi.js@7.4.2/dist/pixi.min.js"></script>
+
+    <script>
+        (function() {
+            // 检查 WebGL 支持
+            function isWebGLAvailable() {
+                try {
+                    const canvas = document.createElement('canvas');
+                    return !!(window.WebGLRenderingContext && (canvas.getContext('webgl') || canvas.getContext(
+                        'experimental-webgl')));
+                } catch (e) {
+                    return false;
+                }
+            }
+            if (!isWebGLAvailable()) {
+                document.getElementById('loading').classList.add('hidden');
+                document.getElementById('fallback').style.display = 'block';
+                return;
+            }
+
+            // ────────────────────────────────────────────
+            // 顶点着色器（GLSL ES 1.0，兼容 WebGL1/2）
+            // ────────────────────────────────────────────
+            const vertexShader = `
+                attribute vec2 aVertexPosition;
+                attribute vec2 aTextureCoord;
+                uniform mat3 projectionMatrix;
+                varying vec2 vTextureCoord;
+                void main(void) {
+                    vTextureCoord = aTextureCoord;
+                    gl_Position = vec4((projectionMatrix * vec3(aVertexPosition, 1.0)).xy, 0.0, 1.0);
+                }
+            `;
+
+            // ────────────────────────────────────────────
+            // 片段着色器 — 流体光波（简化版，避免数组 uniform 兼容问题）
+            // ────────────────────────────────────────────
+            const fragmentShader = `
+                precision highp float;
+
+                varying vec2 vTextureCoord;
+
+                uniform float uTime;
+                uniform vec2 uResolution;
+                uniform vec2 uMouse;
+                uniform vec2 uMousePrev;
+                uniform float uMouseSpeed;
+                uniform float uBreathe;
+                // 单个波纹数据（最多同时显示一个，足够交互）
+                uniform vec4 uRipple; // x,y,strength,startTime
+                uniform float uPixelRatio;
+
+                // ── 噪声工具 ──
+                float hash21(vec2 p) {
+                    p = fract(p * vec2(234.34, 435.345));
+                    p += dot(p, p + 34.23);
+                    return fract(p.x * p.y);
+                }
+
+                float noise2(vec2 p) {
+                    vec2 i = floor(p);
+                    vec2 f = fract(p);
+                    f = f * f * (3.0 - 2.0 * f);
+                    float a = hash21(i);
+                    float b = hash21(i + vec2(1.0, 0.0));
+                    float c = hash21(i + vec2(0.0, 1.0));
+                    float d = hash21(i + vec2(1.0, 1.0));
+                    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+                }
+
+                float fbm(vec2 p) {
+                    float v = 0.0;
+                    float amp = 0.5;
+                    float freq = 1.0;
+                    for (int i = 0; i < 5; i++) {
+                        v += amp * noise2(p * freq);
+                        freq *= 2.1;
+                        amp *= 0.48;
+                    }
+                    return v;
+                }
+
+                float distortedFbm(vec2 p, float t) {
+                    float warp1 = fbm(p * 1.2 + t * 0.12);
+                    float warp2 = fbm(p * 1.5 + warp1 * 1.8 - t * 0.09);
+                    return fbm(p * 1.1 + vec2(warp1, warp2) * 0.9 + t * 0.06);
+                }
+
+                vec3 auroraPalette(float t, float intensity) {
+                    vec3 col1 = vec3(0.02, 0.03, 0.10);
+                    vec3 col2 = vec3(0.00, 0.45, 0.75);
+                    vec3 col3 = vec3(0.55, 0.05, 0.60);
+                    vec3 col4 = vec3(0.95, 0.15, 0.55);
+                    vec3 col5 = vec3(1.00, 0.70, 0.25);
+
+                    float tt = clamp(t, 0.0, 1.0);
+                    vec3 col;
+                    if (tt < 0.25) col = mix(col1, col2, tt * 4.0);
+                    else if (tt < 0.5) col = mix(col2, col3, (tt - 0.25) * 4.0);
+                    else if (tt < 0.75) col = mix(col3, col4, (tt - 0.5) * 4.0);
+                    else col = mix(col4, col5, (tt - 0.75) * 4.0);
+
+                    col = col * (0.7 + intensity * 1.8);
+                    col = pow(col, vec3(0.85));
+                    return col;
+                }
+
+                void main() {
+                    vec2 uv = vTextureCoord;
+                    vec2 aspect = vec2(uResolution.x / uResolution.y, 1.0);
+                    vec2 p = (uv - 0.5) * aspect * 2.4;
+                    vec2 pOrig = p;
+
+                    vec2 mouse = (uMouse - 0.5) * aspect * 2.4;
+                    vec2 mousePrev = (uMousePrev - 0.5) * aspect * 2.4;
+                    vec2 mouseDelta = mouse - mousePrev;
+
+                    float distToMouse = length(p - mouse);
+                    float mouseInfluence = exp(-distToMouse * distToMouse * 4.5) * (0.3 + uMouseSpeed * 3.0);
+                    vec2 flowDir = normalize(mouseDelta + vec2(0.001, 0.001));
+                    vec2 disturbance = flowDir * mouseInfluence * 0.9;
+
+                    float swirlAngle = mouseInfluence * 1.8;
+                    float cosA = cos(swirlAngle);
+                    float sinA = sin(swirlAngle);
+                    vec2 swirlVec = vec2(
+                        cosA * (p.x - mouse.x) - sinA * (p.y - mouse.y),
+                        sinA * (p.x - mouse.x) + cosA * (p.y - mouse.y)
+                    );
+                    vec2 disturbedP = p + disturbance + (swirlVec - (p - mouse)) * mouseInfluence * 0.55;
+
+                    // 单个波纹效果
+                    float rippleEffect = 0.0;
+                    if (uRipple.z > 0.01) {
+                        vec2 ripplePos = (uRipple.xy - 0.5) * aspect * 2.4;
+                        float rDist = length(disturbedP - ripplePos);
+                        float elapsed = uTime - uRipple.w;
+                        float waveFront = elapsed * 3.5;
+                        float band = exp(-abs(rDist - waveFront) * 6.0);
+                        float decay = exp(-elapsed * 1.6);
+                        rippleEffect = band * decay * uRipple.z * 0.9;
+                        float push = sin(rDist * 25.0 - elapsed * 14.0) * decay * uRipple.z * 0.08;
+                        disturbedP += normalize(disturbedP - ripplePos + 0.001) * push;
+                    }
+
+                    float t = uTime;
+                    float breathe = uBreathe;
+
+                    float fluid1 = distortedFbm(disturbedP * 1.6 + vec2(t * 0.18, t * 0.12), t);
+                    float fluid2 = distortedFbm(disturbedP * 2.8 - vec2(t * 0.22, t * 0.17), t * 1.3);
+                    float fluid3 = fbm(disturbedP * 5.2 + vec2(t * 0.3, -t * 0.24));
+
+                    float combined = fluid1 * 0.55 + fluid2 * 0.35 + fluid3 * 0.2;
+                    combined += rippleEffect * 0.75;
+                    combined *= 0.85 + breathe * 0.3;
+                    combined += mouseInfluence * 0.35;
+
+                    float sparkle = noise2(disturbedP * 35.0 + t * 0.8);
+                    float sparkleVal = smoothstep(0.88, 0.98, sparkle);
+                    combined += sparkleVal * 0.3 * (0.7 + breathe * 0.5);
+
+                    float colorT = combined * 0.85 + 0.1 + rippleEffect * 0.4;
+                    colorT += (fluid3 - 0.5) * 0.2;
+                    colorT = clamp(colorT, 0.0, 1.0);
+
+                    float intensity = clamp(combined * 1.4 + mouseInfluence * 0.6 + rippleEffect * 0.8, 0.0, 1.6);
+                    vec3 color = auroraPalette(colorT, intensity);
+
+                    float vignette = 1.0 - length((uv - 0.5) * 1.3);
+                    vignette = smoothstep(0.0, 0.8, vignette);
+                    color *= vignette * 1.05;
+
+                    float glow = exp(-distToMouse * distToMouse * 3.2) * (0.4 + uMouseSpeed * 1.5);
+                    color += vec3(0.25, 0.35, 0.55) * glow * 0.7;
+
+                    color += vec3(0.55, 0.25, 0.45) * rippleEffect * 0.55;
+
+                    float grain = (hash21(uv * uResolution + t * 100.0) - 0.5) * 0.025;
+                    color += grain;
+
+                    gl_FragColor = vec4(color, 1.0);
+                }
+            `;
+
+            // ────────────────────────────────────────────
+            // 呼吸感音效引擎（简化，不影响视觉）
+            // ────────────────────────────────────────────
+            class BreathSoundEngine {
+                constructor() {
+                    this.ctx = null;
+                    this.masterGain = null;
+                    this.isReady = false;
+                }
+                init() {
+                    if (this.isReady) return;
+                    try {
+                        const AC = window.AudioContext || window.webkitAudioContext;
+                        this.ctx = new AC();
+                        this.masterGain = this.ctx.createGain();
+                        this.masterGain.gain.value = 0.7;
+                        this.masterGain.connect(this.ctx.destination);
+                        this.isReady = true;
+                    } catch (e) {
+                        console.warn('音频初始化失败:', e);
+                    }
+                }
+                playBreath(panValue, frequencyBase) {
+                    if (!this.ctx || !this.isReady) return;
+                    const ctx = this.ctx;
+                    const now = ctx.currentTime;
+                    const duration = 2.0;
+                    const freq = frequencyBase * (0.92 + Math.random() * 0.16);
+
+                    const osc1 = ctx.createOscillator();
+                    osc1.type = 'sine';
+                    osc1.frequency.setValueAtTime(freq, now);
+                    osc1.frequency.exponentialRampToValueAtTime(freq * 0.82, now + duration * 0.7);
+
+                    const osc2 = ctx.createOscillator();
+                    osc2.type = 'sine';
+                    osc2.frequency.setValueAtTime(freq * 2.01, now);
+                    osc2.frequency.exponentialRampToValueAtTime(freq * 1.65, now + duration * 0.8);
+
+                    const filter = ctx.createBiquadFilter();
+                    filter.type = 'lowpass';
+                    filter.frequency.setValueAtTime(750, now);
+                    filter.frequency.exponentialRampToValueAtTime(180, now + duration * 0.9);
+                    filter.Q.value = 0.9;
+
+                    const envGain = ctx.createGain();
+                    envGain.gain.setValueAtTime(0.0001, now);
+                    envGain.gain.exponentialRampToValueAtTime(0.65, now + 0.045);
+                    envGain.gain.exponentialRampToValueAtTime(0.28, now + 0.35);
+                    envGain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+
+                    const panner = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
+
+                    osc1.connect(filter);
+                    osc2.connect(filter);
+                    filter.connect(envGain);
+                    if (panner) {
+                        panner.pan.value = panValue;
+                        envGain.connect(panner);
+                        panner.connect(this.masterGain);
+                    } else {
+                        envGain.connect(this.masterGain);
+                    }
+
+                    osc1.start(now);
+                    osc2.start(now);
+                    osc1.stop(now + duration);
+                    osc2.stop(now + duration);
+
+                    setTimeout(() => {
+                        osc1.disconnect();
+                        osc2.disconnect();
+                        filter.disconnect();
+                        envGain.disconnect();
+                        if (panner) panner.disconnect();
+                    }, duration * 1000 + 200);
+                }
+                resume() {
+                    if (this.ctx && this.ctx.state === 'suspended') {
+                        this.ctx.resume();
+                    }
+                }
+            }
+
+            // ────────────────────────────────────────────
+            // 主应用
+            // ────────────────────────────────────────────
+            const soundEngine = new BreathSoundEngine();
+            const loadingEl = document.getElementById('loading');
+
+            let mouseX = 0.5,
+                mouseY = 0.5;
+            let mousePrevX = 0.5,
+                mousePrevY = 0.5;
+            let mouseSpeed = 0,
+                mouseSpeedTarget = 0;
+            let lastMouseMoveTime = 0;
+            let ripple = { x: 0.5, y: 0.5, strength: 0, startTime: 0 };
+
+            // 创建 PixiJS 应用（使用传统方式）
+            const app = new PIXI.Application({
+                resizeTo: window,
+                backgroundAlpha: 0,
+                antialias: true,
+                autoDensity: true,
+                resolution: Math.min(window.devicePixelRatio || 1, 2),
+                powerPreference: 'high-performance',
+                clearColor: [0.04, 0.04, 0.09, 1],
+            });
+
+            document.body.appendChild(app.view);
+            app.view.style.position = 'fixed';
+            app.view.style.top = '0';
+            app.view.style.left = '0';
+            app.view.style.width = '100%';
+            app.view.style.height = '100%';
+            app.view.style.zIndex = '1';
+
+            // 全屏精灵
+            const fullscreenSprite = new PIXI.Sprite(PIXI.Texture.WHITE);
+            fullscreenSprite.width = app.screen.width;
+            fullscreenSprite.height = app.screen.height;
+            fullscreenSprite.anchor.set(0);
+
+            // 创建自定义滤镜
+            const filter = new PIXI.Filter(vertexShader, fragmentShader, {
+                uTime: 0,
+                uResolution: [app.screen.width, app.screen.height],
+                uMouse: [0.5, 0.5],
+                uMousePrev: [0.5, 0.5],
+                uMouseSpeed: 0,
+                uBreathe: 0.5,
+                uRipple: [0.5, 0.5, 0, 0], // x,y,strength,startTime
+                uPixelRatio: Math.min(window.devicePixelRatio || 1, 2),
+            });
+
+            fullscreenSprite.filters = [filter];
+            app.stage.addChild(fullscreenSprite);
+
+            // 隐藏加载指示器
+            loadingEl.classList.add('hidden');
+
+            // 窗口大小调整
+            function handleResize() {
+                fullscreenSprite.width = app.screen.width;
+                fullscreenSprite.height = app.screen.height;
+                filter.uniforms.uResolution = [app.screen.width, app.screen.height];
+                filter.uniforms.uPixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+            }
+            window.addEventListener('resize', handleResize);
+
+            // 指针处理
+            function getCanvasCoords(e) {
+                const rect = app.view.getBoundingClientRect();
+                const x = (e.clientX - rect.left) / rect.width;
+                const y = (e.clientY - rect.top) / rect.height;
+                return { x: Math.max(0, Math.min(1, x)), y: Math.max(0, Math.min(1, y)) };
+            }
+
+            function handlePointerMove(x, y) {
+                mousePrevX = mouseX;
+                mousePrevY = mouseY;
+                mouseX = x;
+                mouseY = y;
+                const now = performance.now();
+                const dt = Math.max(1, now - lastMouseMoveTime);
+                lastMouseMoveTime = now;
+                const dx = mouseX - mousePrevX;
+                const dy = mouseY - mousePrevY;
+                const dist = Math.sqrt(dx * dx + dy * dy) / dt;
+                mouseSpeedTarget = Math.min(1.0, dist * 4.5);
+            }
+
+            function handlePointerDown(x, y) {
+                soundEngine.init();
+                soundEngine.resume();
+
+                // 更新波纹（仅保留最新一个）
+                ripple = {
+                    x: x,
+                    y: y,
+                    strength: 0.7 + Math.random() * 0.5,
+                    startTime: performance.now() / 1000,
+                };
+
+                // 音效
+                const panValue = (x - 0.5) * 1.4;
+                const freqBase = 180 + (1.0 - y) * 90 + Math.random() * 15;
+                soundEngine.playBreath(panValue, freqBase);
+
+                mouseSpeedTarget = Math.min(1.0, mouseSpeedTarget + 0.3);
+            }
+
+            app.view.addEventListener('mousemove', (e) => {
+                const pos = getCanvasCoords(e);
+                handlePointerMove(pos.x, pos.y);
+            });
+            app.view.addEventListener('mousedown', (e) => {
+                const pos = getCanvasCoords(e);
+                handlePointerDown(pos.x, pos.y);
+            });
+
+            app.view.addEventListener('touchmove', (e) => {
+                e.preventDefault();
+                if (e.touches.length > 0) {
+                    const pos = getCanvasCoords(e.touches[0]);
+                    handlePointerMove(pos.x, pos.y);
+                }
+            }, { passive: false });
+            app.view.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                if (e.touches.length > 0) {
+                    const pos = getCanvasCoords(e.touches[0]);
+                    handlePointerDown(pos.x, pos.y);
+                }
+            }, { passive: false });
+
+            // 动画循环
+            const startTime = performance.now();
+            app.ticker.add(() => {
+                const elapsed = (performance.now() - startTime) / 1000;
+
+                mouseSpeed += (mouseSpeedTarget - mouseSpeed) * 0.08;
+                mouseSpeedTarget *= 0.94;
+
+                filter.uniforms.uTime = elapsed;
+                filter.uniforms.uMouse = [mouseX, mouseY];
+                filter.uniforms.uMousePrev = [mousePrevX, mousePrevY];
+                filter.uniforms.uMouseSpeed = mouseSpeed;
+
+                const breathePhase = Math.sin(elapsed * 1.7) * 0.5 + 0.5;
+                const breathePhase2 = Math.sin(elapsed * 2.3 + 1.2) * 0.3 + 0.35;
+                filter.uniforms.uBreathe = breathePhase * 0.6 + breathePhase2 * 0.4;
+
+                // 更新波纹强度（随时间衰减）
+                if (ripple.strength > 0.01) {
+                    const age = elapsed - ripple.startTime;
+                    if (age > 2.5) {
+                        ripple.strength = 0;
+                    } else {
+                        const decayed = ripple.strength * Math.exp(-age * 1.15);
+                        filter.uniforms.uRipple = [ripple.x, ripple.y, decayed, ripple.startTime];
+                    }
+                } else {
+                    filter.uniforms.uRipple = [0.5, 0.5, 0, 0];
+                }
+            });
+        })();
+    </script>
+</body>
+</html>

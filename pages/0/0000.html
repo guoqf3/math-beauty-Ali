@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>耦合振子编织 · 三维van der Pol网</title>
+    <style>
+        :root {
+            --bg: #06060c;
+            --gold: #d4a843;
+            --cyan: #45b7aa;
+            --magenta: #d4708a;
+        }
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body {
+            background: var(--bg);
+            width: 100vw; height: 100vh; overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'SimSun', serif;
+            -webkit-font-smoothing: antialiased; user-select: none; -webkit-user-select: none;
+        }
+        #canvas-container { position:fixed; top:0; left:0; width:100vw; height:100vh; z-index:1; }
+        canvas { display:block; }
+        .overlay-title {
+            position:fixed; top:0; left:0; right:0; z-index:10; pointer-events:none;
+            padding:22px 20px 8px; text-align:center;
+            background: linear-gradient(180deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.8) 55%, rgba(6,6,12,0) 100%);
+        }
+        .overlay-title h2 {
+            font-size: clamp(1.1rem, 2.2vw, 1.8rem); font-weight:400; letter-spacing:0.13em;
+            color:#e8d5b0; text-shadow: 0 0 30px rgba(212,168,67,0.45), 0 0 60px rgba(212,168,67,0.18);
+            margin:0 0 2px; line-height:1.3;
+        }
+        .overlay-title .sub {
+            font-size: clamp(0.65rem, 1.1vw, 0.85rem); letter-spacing:0.22em; color:rgba(200,180,150,0.65);
+        }
+        .overlay-formula {
+            position:fixed; bottom:0; left:0; right:0; z-index:10; pointer-events:none;
+            padding:8px 20px 18px; text-align:center;
+            background: linear-gradient(0deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.82) 55%, rgba(6,6,12,0) 100%);
+        }
+        .formula-text {
+            font-size: clamp(0.6rem, 1.0vw, 0.8rem); color:rgba(210,200,185,0.8); letter-spacing:0.03em; line-height:1.7;
+        }
+        .clr-gold { color:#d4a843; font-weight:bold; }
+        .clr-cyan { color:#45b7aa; font-weight:bold; }
+        .clr-magenta { color:#d4708a; font-weight:bold; }
+        .formula-sep { display:inline-block; margin:0 14px; color:rgba(150,140,130,0.35); }
+    </style>
+</head>
+<body>
+    <div class="overlay-title">
+        <h2>耦合振子编织 · 三维van der Pol网</h2>
+        <div class="sub">Coupled van der Pol oscillators · Chaotic orbits · Irrational couplings</div>
+    </div>
+    <div class="overlay-formula">
+        <div class="formula-text">
+            <span class="clr-gold">ẍ = μ(1−x²)ẋ − x + γ₁(y−x)</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-cyan">ÿ = μ(1−y²)ẏ − y + γ₂(z−y)</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-magenta">z̈ = μ(1−z²)ż − z + γ₃(x−z)</span>
+        </div>
+    </div>
+    <div id="canvas-container"></div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(48, container.clientWidth / container.clientHeight, 0.5, 22);
+        camera.position.set(3.5, 2.5, 7.4);
+        camera.lookAt(0, 0, 0);
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x06060c, 1);
+        container.appendChild(renderer.domElement);
+
+        const clock = new THREE.Clock();
+        const getElapsed = () => clock.getElapsedTime();
+
+        const COLOR_GOLD = 0xd4a843;
+        const COLOR_CYAN = 0x45b7aa;
+        const COLOR_MAGENTA = 0xd4708a;
+        const SCALE = 0.38;
+        const DT = 0.045;
+        const MAX_STEPS = 520;
+        const STEPS_PER_FRAME = 2;
+        const MAX_RADIUS = 7.5;
+        const TOTAL_ORBITS = 66;
+
+        // ---- 耦合van der Pol系统 (三维状态向量) ----
+        function vdpSystem(state, mu, gamma1, gamma2, gamma3) {
+            const [x, y, z, vx, vy, vz] = state;
+            const ax = mu * (1 - x * x) * vx - x + gamma1 * (y - x);
+            const ay = mu * (1 - y * y) * vy - y + gamma2 * (z - y);
+            const az = mu * (1 - z * z) * vz - z + gamma3 * (x - z);
+            return [vx, vy, vz, ax, ay, az];
+        }
+
+        function rk4Step(state, mu, g1, g2, g3, ds) {
+            const f = (s) => vdpSystem(s, mu, g1, g2, g3);
+            const k1 = f(state);
+            const s2 = state.map((v, i) => v + k1[i] * ds * 0.5);
+            const k2 = f(s2);
+            const s3 = state.map((v, i) => v + k2[i] * ds * 0.5);
+            const k3 = f(s3);
+            const s4 = state.map((v, i) => v + k3[i] * ds);
+            const k4 = f(s4);
+            return state.map((v, i) => v + (k1[i] + 2*k2[i] + 2*k3[i] + k4[i]) * ds / 6);
+        }
+
+        // ---- 生成种子 ----
+        function generateSeeds() {
+            const seeds = [];
+            // 三组参数配置
+            const paramsGroups = [
+                { mu: 2.0, g1: 0.35, g2: 0.28, g3: 0.42, color: COLOR_GOLD, count: 24 },
+                { mu: 1.6, g1: 0.42, g2: 0.35, g3: 0.30, color: COLOR_CYAN, count: 22 },
+                { mu: 2.4, g1: 0.30, g2: 0.45, g3: 0.38, color: COLOR_MAGENTA, count: 20 },
+            ];
+            for (const pg of paramsGroups) {
+                for (let i = 0; i < pg.count; i++) {
+                    const range = 0.8;
+                    const state = [
+                        (Math.random() - 0.5) * range,
+                        (Math.random() - 0.5) * range,
+                        (Math.random() - 0.5) * range,
+                        (Math.random() - 0.5) * 0.5,
+                        (Math.random() - 0.5) * 0.5,
+                        (Math.random() - 0.5) * 0.5
+                    ];
+                    seeds.push({ state, mu: pg.mu, g1: pg.g1, g2: pg.g2, g3: pg.g3, color: pg.color });
+                }
+            }
+            return seeds;
+        }
+
+        const seeds = generateSeeds();
+        const orbits = seeds.map(s => ({
+            state: s.state,
+            mu: s.mu,
+            g1: s.g1,
+            g2: s.g2,
+            g3: s.g3,
+            color: s.color,
+            points: [new THREE.Vector3(s.state[0], s.state[1], s.state[2]).multiplyScalar(SCALE)],
+            stepCount: 0,
+        }));
+
+        // 初始化推进
+        orbits.forEach(o => {
+            for (let i = 0; i < 30; i++) {
+                o.state = rk4Step(o.state, o.mu, o.g1, o.g2, o.g3, DT);
+                const pt = new THREE.Vector3(o.state[0], o.state[1], o.state[2]).multiplyScalar(SCALE);
+                if (pt.length() < MAX_RADIUS) {
+                    o.points.push(pt);
+                    o.stepCount++;
+                }
+            }
+        });
+
+        // 创建Line对象
+        const lines = orbits.map(o => {
+            const geom = new THREE.BufferGeometry().setFromPoints(o.points);
+            const mat = new THREE.LineBasicMaterial({
+                color: o.color, transparent: true, opacity: 0.45, depthWrite: true, depthTest: true,
+            });
+            return new THREE.Line(geom, mat);
+        });
+
+        const rootGroup = new THREE.Group();
+        rootGroup.name = 'vdp-weave';
+        lines.forEach(l => rootGroup.add(l));
+        scene.add(rootGroup);
+
+        // 辅助球面参考线
+        const refR = 3.2;
+        const refGeom = new THREE.SphereGeometry(refR, 40, 24);
+        const refWire = new THREE.LineSegments(
+            new THREE.EdgesGeometry(refGeom),
+            new THREE.LineBasicMaterial({ color: 0x403830, transparent: true, opacity: 0.10, depthWrite: true, depthTest: true })
+        );
+        rootGroup.add(refWire);
+
+        // 背景星点
+        const starsGroup = new THREE.Group();
+        const starsGeom = new THREE.BufferGeometry();
+        const sc = 500;
+        const sp = new Float32Array(sc * 3);
+        for (let i = 0; i < sc; i++) {
+            const th = Math.random() * Math.PI * 2, ph = Math.acos(2 * Math.random() - 1), d = 6.5 + Math.random() * 10;
+            sp[i * 3] = d * Math.sin(ph) * Math.cos(th);
+            sp[i * 3 + 1] = d * Math.sin(ph) * Math.sin(th);
+            sp[i * 3 + 2] = d * Math.cos(ph);
+        }
+        starsGeom.setAttribute('position', new THREE.BufferAttribute(sp, 3));
+        starsGroup.add(new THREE.Points(starsGeom, new THREE.PointsMaterial({
+            color: 0x908878, size: 0.018, transparent: true, opacity: 0.55, depthWrite: false
+        })));
+        scene.add(starsGroup);
+
+        console.log('耦合振子轨道数:', orbits.length);
+
+        // ---- 动画循环 ----
+        const UPDATE_MS = 80;
+        let lastUpdate = -10;
+
+        function animate() {
+            const t = getElapsed();
+
+            // 每80ms更新一次轨道
+            if (t - lastUpdate > UPDATE_MS / 1000) {
+                try {
+                    for (let i = 0; i < orbits.length; i++) {
+                        const o = orbits[i];
+                        if (o.stepCount >= MAX_STEPS) continue;
+                        for (let s = 0; s < STEPS_PER_FRAME; s++) {
+                            if (o.stepCount >= MAX_STEPS) break;
+                            o.state = rk4Step(o.state, o.mu, o.g1, o.g2, o.g3, DT);
+                            const pt = new THREE.Vector3(o.state[0], o.state[1], o.state[2]).multiplyScalar(SCALE);
+                            if (pt.length() > MAX_RADIUS) { o.stepCount = MAX_STEPS; break; }
+                            o.points.push(pt);
+                            o.stepCount++;
+                        }
+                        if (o.points.length >= 2) {
+                            lines[i].geometry.dispose();
+                            lines[i].geometry = new THREE.BufferGeometry().setFromPoints(o.points);
+                        }
+                    }
+                    lastUpdate = t;
+                } catch (e) { console.warn('动画更新异常:', e); }
+            }
+
+            rootGroup.rotation.x = t * 0.12;
+            rootGroup.rotation.y = t * 0.17;
+            rootGroup.rotation.z = t * 0.07;
+            starsGroup.rotation.y = t * 0.04;
+            starsGroup.rotation.x = t * 0.025;
+
+            const cr = 7.5, ca = t * 0.08, ch = 2.6 + Math.sin(t * 0.16) * 0.7;
+            camera.position.set(Math.cos(ca) * cr, ch, Math.sin(ca) * cr);
+            camera.lookAt(0, 0, 0);
+            renderer.render(scene, camera);
+        }
+
+        // 预渲染一帧，然后启动循环
+        renderer.render(scene, camera);
+        renderer.setAnimationLoop(animate);
+
+        // 响应式
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth, h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth, h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 120));
+
+        console.log('✅ 耦合van der Pol振子编织动画已稳定运行');
+    </script>
+</body>
+</html>

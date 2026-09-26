@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aizawa吸引子 · 混沌之花</title>
+    <style>
+        :root {
+            --bg: #02010d;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'Noto Serif SC', serif;
+            height: 100vh;
+            width: 100vw;
+            user-select: none;
+            -webkit-user-select: none;
+            cursor: default;
+            -webkit-tap-highlight-color: transparent;
+        }
+        #canvas-container {
+            position: fixed;
+            inset: 0;
+            z-index: 1;
+        }
+        canvas {
+            display: block;
+        }
+
+        #title-overlay {
+            position: fixed;
+            top: clamp(16px, 3.5vh, 42px);
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+            white-space: nowrap;
+        }
+        #title-overlay h1 {
+            color: #e1d0b5;
+            font-size: clamp(1.2rem, 2.3vw, 1.9rem);
+            font-weight: 400;
+            letter-spacing: 0.08em;
+            text-shadow: 0 0 28px rgba(215, 180, 130, 0.55), 0 0 75px rgba(190, 150, 100, 0.25);
+            margin: 0;
+        }
+        #title-overlay .subtitle {
+            color: #bda78c;
+            font-size: clamp(0.68rem, 1.15vw, 0.92rem);
+            letter-spacing: 0.06em;
+            margin-top: 0.28em;
+            text-shadow: 0 0 14px rgba(180, 140, 100, 0.4);
+        }
+
+        #formula-overlay {
+            position: fixed;
+            bottom: clamp(24px, 4.5vh, 54px);
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+            padding: 0 16px;
+        }
+        #formula-overlay .formula-box {
+            display: inline-block;
+            background: rgba(15, 11, 20, 0.72);
+            border: 1px solid rgba(170, 145, 115, 0.28);
+            border-radius: 12px;
+            padding: clamp(10px, 1.4vh, 16px) clamp(16px, 3vw, 28px);
+            backdrop-filter: blur(7px);
+            -webkit-backdrop-filter: blur(7px);
+        }
+        #formula-overlay .formula-main {
+            color: #f2dec5;
+            font-size: clamp(0.72rem, 1.22vw, 1.05rem);
+            letter-spacing: 0.04em;
+            line-height: 1.7;
+        }
+        #formula-overlay .formula-detail {
+            color: #a6947c;
+            font-size: clamp(0.55rem, 0.8vw, 0.72rem);
+            letter-spacing: 0.03em;
+            margin-top: 0.22em;
+            line-height: 1.5;
+        }
+
+        @media (max-width: 600px) {
+            #title-overlay h1 {
+                letter-spacing: 0.05em;
+            }
+            #formula-overlay .formula-box {
+                padding: 10px 16px;
+                border-radius: 10px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+
+    <div id="title-overlay">
+        <h1>Aizawa吸引子 · 混沌之花</h1>
+        <div class="subtitle">Chaos Blossom · Aizawa Attractor</div>
+    </div>
+
+    <div id="formula-overlay">
+        <div class="formula-box">
+            <div class="formula-main">
+                ẋ = (z − b)·x − d·y<br>
+                ẏ = d·x + (z − b)·y<br>
+                ż = c + a·z − z³/3 − (x² + y²)·(1 + e·z)
+            </div>
+            <div class="formula-detail">
+                a=0.95 b=0.7 c=0.6 d=3.5 e=0.25 | 10 trajectories
+            </div>
+        </div>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.157.0/build/three.module.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#02010d');
+        scene.fog = new THREE.Fog('#02010d', 7.5, 24);
+
+        const camera = new THREE.PerspectiveCamera(
+            46,
+            container.clientWidth / Math.max(container.clientHeight, 1),
+            0.3,
+            30
+        );
+        camera.position.set(0, 0.3, 8.8);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.25;
+        container.appendChild(renderer.domElement);
+
+        scene.add(new THREE.AmbientLight('#1e1e3a', 0.4));
+
+        // ==================== 主图案组 ====================
+        const mainGroup = new THREE.Group();
+        scene.add(mainGroup);
+
+        const totalPoints = 2200;    // 每条轨迹的采样点数
+        const trajectoryCount = 10;
+        const allLines = [];
+
+        // Aizawa 系统参数
+        const a = 0.95;
+        const b = 0.7;
+        const c = 0.6;
+        const d = 3.5;
+        const e = 0.25;
+
+        const dt = 0.015;
+        const preSteps = 900; // 预积分消除瞬态
+
+        // ==================== RK4 积分 ====================
+        function aizawaDeriv(x, y, z) {
+            const r2 = x * x + y * y;
+            return [
+                (z - b) * x - d * y,
+                d * x + (z - b) * y,
+                c + a * z - (z * z * z) / 3 - r2 * (1 + e * z),
+            ];
+        }
+
+        function rk4Step(x, y, z, dt) {
+            const [k1x, k1y, k1z] = aizawaDeriv(x, y, z);
+            const [k2x, k2y, k2z] = aizawaDeriv(x + 0.5 * dt * k1x, y + 0.5 * dt * k1y, z + 0.5 * dt * k1z);
+            const [k3x, k3y, k3z] = aizawaDeriv(x + 0.5 * dt * k2x, y + 0.5 * dt * k2y, z + 0.5 * dt * k2z);
+            const [k4x, k4y, k4z] = aizawaDeriv(x + dt * k3x, y + dt * k3y, z + dt * k3z);
+            return [
+                x + (dt / 6) * (k1x + 2 * k2x + 2 * k3x + k4x),
+                y + (dt / 6) * (k1y + 2 * k2y + 2 * k3y + k4y),
+                z + (dt / 6) * (k1z + 2 * k2z + 2 * k3z + k4z),
+            ];
+        }
+
+        // ==================== 生成单条轨迹 ====================
+        function generateTrajectory(initX, initY, initZ) {
+            const rawVerts = new Float32Array(totalPoints * 3);
+            let x = initX, y = initY, z = initZ;
+
+            for (let i = 0; i < preSteps; i++) {
+                [x, y, z] = rk4Step(x, y, z, dt);
+            }
+
+            for (let i = 0; i < totalPoints; i++) {
+                rawVerts[i * 3] = x;
+                rawVerts[i * 3 + 1] = y;
+                rawVerts[i * 3 + 2] = z;
+                [x, y, z] = rk4Step(x, y, z, dt);
+            }
+            return rawVerts;
+        }
+
+        // ==================== 生成所有轨迹原始数据 ====================
+        const allRawVertices = [];
+        // 初始条件围绕典型点 (0.1, 0.1, 0.1) 做极微小扰动
+        for (let j = 0; j < trajectoryCount; j++) {
+            const deltaX = (j - (trajectoryCount - 1) / 2) * 0.0006;
+            const deltaY = Math.sin(j * 1.3) * 0.0004;
+            const deltaZ = Math.cos(j * 0.7) * 0.0005;
+            const initX = 0.1 + deltaX;
+            const initY = 0.1 + deltaY;
+            const initZ = 0.1 + deltaZ;
+            const rawVerts = generateTrajectory(initX, initY, initZ);
+            allRawVertices.push(rawVerts);
+        }
+
+        // ==================== 计算全局包围盒 ====================
+        let minX = Infinity, maxX = -Infinity;
+        let minY = Infinity, maxY = -Infinity;
+        let minZ = Infinity, maxZ = -Infinity;
+
+        for (const rawVerts of allRawVertices) {
+            for (let i = 0; i < rawVerts.length; i += 3) {
+                const vx = rawVerts[i];
+                const vy = rawVerts[i + 1];
+                const vz = rawVerts[i + 2];
+                if (vx < minX) minX = vx;
+                if (vx > maxX) maxX = vx;
+                if (vy < minY) minY = vy;
+                if (vy > maxY) maxY = vy;
+                if (vz < minZ) minZ = vz;
+                if (vz > maxZ) maxZ = vz;
+            }
+        }
+
+        const centerX = (minX + maxX) / 2;
+        const centerY = (minY + maxY) / 2;
+        const centerZ = (minZ + maxZ) / 2;
+        const rangeX = maxX - minX;
+        const rangeY = maxY - minY;
+        const rangeZ = maxZ - minZ;
+        const maxRange = Math.max(rangeX, rangeY, rangeZ, 1);
+        const targetScale = 4.4 / maxRange;
+
+        console.log('📐 包围盒:', { maxRange: maxRange.toFixed(2), targetScale: targetScale.toFixed(4) });
+
+        // ==================== 创建线条 ====================
+        function createLine(scaledVerts, hue, opacity = 0.8) {
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.BufferAttribute(scaledVerts, 3));
+            geometry.setDrawRange(0, 0); // 初始完全不可见
+
+            const material = new THREE.LineBasicMaterial({
+                color: new THREE.Color().setHSL(hue, 0.92, 0.63),
+                transparent: true,
+                opacity: opacity,
+                linewidth: 1,
+                blending: THREE.AdditiveBlending,
+                depthWrite: true,
+                depthTest: true,
+            });
+
+            const line = new THREE.Line(geometry, material);
+            line.visible = false;
+            line.frustumCulled = false;
+            return line;
+        }
+
+        // 缩放并创建所有线条
+        for (let j = 0; j < trajectoryCount; j++) {
+            const rawVerts = allRawVertices[j];
+            const scaledVerts = new Float32Array(totalPoints * 3);
+            for (let i = 0; i < totalPoints; i++) {
+                scaledVerts[i * 3] = (rawVerts[i * 3] - centerX) * targetScale;
+                scaledVerts[i * 3 + 1] = (rawVerts[i * 3 + 1] - centerY) * targetScale;
+                scaledVerts[i * 3 + 2] = (rawVerts[i * 3 + 2] - centerZ) * targetScale;
+            }
+            const hue = (j / trajectoryCount) * 0.82 + 0.06;
+            const line = createLine(scaledVerts, hue, 0.78);
+            mainGroup.add(line);
+            allLines.push(line);
+        }
+
+        console.log(`✅ 已生成 ${trajectoryCount} 条Aizawa轨迹`);
+
+        // ==================== 动画状态机 ====================
+        const APPEAR_TIME = 5.0;
+        const PAUSE_TIME = 1.5;
+        const DISAPPEAR_TIME = 5.0;
+        const CYCLE_TOTAL = APPEAR_TIME + PAUSE_TIME + DISAPPEAR_TIME;
+
+        let animationStartTime = null;
+        let firstFrameDone = false;
+
+        function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+        function easeInCubic(t) { return t * t * t; }
+
+        function getProgress(elapsedSeconds) {
+            const cycle = elapsedSeconds % CYCLE_TOTAL;
+            if (cycle < APPEAR_TIME) {
+                const t = cycle / APPEAR_TIME;
+                return { progress: easeOutCubic(t), phase: 'appear' };
+            } else if (cycle < APPEAR_TIME + PAUSE_TIME) {
+                return { progress: 1.0, phase: 'pause' };
+            } else {
+                const t = (cycle - APPEAR_TIME - PAUSE_TIME) / DISAPPEAR_TIME;
+                return { progress: 1.0 - easeInCubic(t), phase: 'disappear' };
+            }
+        }
+
+        // ==================== 渲染循环 ====================
+        function animate(timestamp) {
+            requestAnimationFrame(animate);
+
+            if (animationStartTime === null) {
+                animationStartTime = timestamp;
+                allLines.forEach(line => {
+                    line.visible = false;
+                    if (line.geometry) line.geometry.setDrawRange(0, 0);
+                });
+                renderer.render(scene, camera);
+                firstFrameDone = true;
+                return;
+            }
+
+            const elapsed = (timestamp - animationStartTime) / 1000;
+            const { progress } = getProgress(elapsed);
+            const drawCount = Math.floor(progress * totalPoints);
+            const shouldBeVisible = drawCount >= 2;
+
+            for (let i = 0; i < allLines.length; i++) {
+                const line = allLines[i];
+                if (!line || !line.geometry) continue;
+                const lineDraw = Math.min(drawCount, totalPoints);
+                if (shouldBeVisible && lineDraw >= 2) {
+                    line.visible = true;
+                    line.geometry.setDrawRange(0, lineDraw);
+                } else {
+                    line.visible = false;
+                    line.geometry.setDrawRange(0, 0);
+                }
+            }
+
+            // 整体缓慢旋转，展现混沌花结构
+            const rotY = elapsed * 0.05;
+            const rotX = Math.sin(elapsed * 0.1) * 0.035;
+            const rotZ = Math.cos(elapsed * 0.13) * 0.028;
+            mainGroup.rotation.set(rotX, rotY, rotZ);
+
+            camera.position.x = Math.sin(elapsed * 0.09) * 0.2;
+            camera.position.y = 0.3 + Math.cos(elapsed * 0.12) * 0.16;
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        // ==================== 响应式处理 ====================
+        function onResize() {
+            const w = container.clientWidth;
+            const h = container.clientHeight;
+            if (h <= 0) return;
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        }
+        window.addEventListener('resize', onResize, { passive: true });
+        window.addEventListener('orientationchange', () => setTimeout(onResize, 150), { passive: true });
+
+        // ==================== 启动 ====================
+        console.log('🚀 Aizawa吸引子·混沌之花动画启动');
+        console.log(`   - 轨迹数量: ${trajectoryCount}`);
+        console.log(`   - 采样点/轨迹: ${totalPoints}`);
+        console.log(`   - 动画周期: ${CYCLE_TOTAL}s (生长${APPEAR_TIME}s + 停顿${PAUSE_TIME}s + 消散${DISAPPEAR_TIME}s)`);
+
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

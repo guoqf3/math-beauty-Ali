@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>海威龙曲线 · 分形蜿蜒</title>
+    <style>
+        :root {
+            --bg: #02010e;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'Noto Serif SC', serif;
+            height: 100vh;
+            width: 100vw;
+            user-select: none;
+            -webkit-user-select: none;
+            cursor: default;
+            -webkit-tap-highlight-color: transparent;
+        }
+        #canvas-container {
+            position: fixed;
+            inset: 0;
+            z-index: 1;
+        }
+        canvas {
+            display: block;
+        }
+
+        #title-overlay {
+            position: fixed;
+            top: clamp(16px, 3.5vh, 42px);
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+            white-space: nowrap;
+        }
+        #title-overlay h1 {
+            color: #e0cfb4;
+            font-size: clamp(1.1rem, 2.1vw, 1.8rem);
+            font-weight: 400;
+            letter-spacing: 0.08em;
+            text-shadow: 0 0 28px rgba(210, 175, 130, 0.55), 0 0 75px rgba(185, 145, 100, 0.25);
+            margin: 0;
+        }
+        #title-overlay .subtitle {
+            color: #bca689;
+            font-size: clamp(0.64rem, 1.1vw, 0.88rem);
+            letter-spacing: 0.06em;
+            margin-top: 0.28em;
+            text-shadow: 0 0 14px rgba(180, 140, 100, 0.4);
+        }
+
+        #formula-overlay {
+            position: fixed;
+            bottom: clamp(24px, 4.5vh, 54px);
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+            padding: 0 16px;
+        }
+        #formula-overlay .formula-box {
+            display: inline-block;
+            background: rgba(14, 10, 20, 0.72);
+            border: 1px solid rgba(165, 140, 110, 0.28);
+            border-radius: 12px;
+            padding: clamp(10px, 1.4vh, 16px) clamp(16px, 3vw, 28px);
+            backdrop-filter: blur(7px);
+            -webkit-backdrop-filter: blur(7px);
+        }
+        #formula-overlay .formula-main {
+            color: #f1ddc3;
+            font-size: clamp(0.68rem, 1.15vw, 1.0rem);
+            letter-spacing: 0.04em;
+            line-height: 1.7;
+        }
+        #formula-overlay .formula-detail {
+            color: #a59279;
+            font-size: clamp(0.52rem, 0.75vw, 0.68rem);
+            letter-spacing: 0.03em;
+            margin-top: 0.22em;
+            line-height: 1.5;
+        }
+
+        @media (max-width: 600px) {
+            #title-overlay h1 {
+                letter-spacing: 0.05em;
+            }
+            #formula-overlay .formula-box {
+                padding: 10px 16px;
+                border-radius: 10px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+
+    <div id="title-overlay">
+        <h1>海威龙曲线 · 分形蜿蜒</h1>
+        <div class="subtitle">Heighway Dragon Curve · L-system Fractal</div>
+    </div>
+
+    <div id="formula-overlay">
+        <div class="formula-box">
+            <div class="formula-main">
+                f₁(z) = (1+i)·z/2 f₂(z) = 1 − (1−i)·z/2
+            </div>
+            <div class="formula-detail">
+                Iterated Function System | N=14 generations | 32768 vertices
+            </div>
+        </div>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.157.0/build/three.module.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#02010e');
+        scene.fog = new THREE.Fog('#02010e', 7, 22);
+
+        const camera = new THREE.PerspectiveCamera(
+            46,
+            container.clientWidth / Math.max(container.clientHeight, 1),
+            0.3,
+            28
+        );
+        camera.position.set(0, 0.25, 7.5);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.2;
+        container.appendChild(renderer.domElement);
+
+        scene.add(new THREE.AmbientLight('#1e1e3a', 0.4));
+
+        // ==================== 主图案组 ====================
+        const mainGroup = new THREE.Group();
+        scene.add(mainGroup);
+
+        // ==================== 生成龙曲线 ====================
+        /**
+         * 使用L-system生成Heighway龙曲线顶点
+         * @param {number} generations 迭代代数
+         * @returns {Array<{x:number, y:number}>} 点数组
+         */
+        function generateDragonCurve(generations) {
+            // L-system: 初始 "FX", 规则 X -> X+YF+, Y -> -FX-Y
+            // 绘图: F 向前移动，+ 左转90°，- 右转90°
+            let str = "FX";
+            const rules = {
+                'X': "X+YF+",
+                'Y': "-FX-Y"
+            };
+            for (let g = 0; g < generations; g++) {
+                let next = "";
+                for (const ch of str) {
+                    next += rules[ch] || ch;
+                }
+                str = next;
+            }
+
+            // 解析字符串生成点
+            const points = [{ x: 0, y: 0 }];
+            let x = 0, y = 0;
+            let angle = 0; // 初始方向为 +x 轴 (0°)
+            const step = 1; // 步长
+
+            for (const ch of str) {
+                if (ch === 'F') {
+                    x += step * Math.cos(angle);
+                    y += step * Math.sin(angle);
+                    points.push({ x, y });
+                } else if (ch === '+') {
+                    angle += Math.PI / 2; // 左转90°
+                } else if (ch === '-') {
+                    angle -= Math.PI / 2; // 右转90°
+                }
+                // 忽略其他字符
+            }
+            return points;
+        }
+
+        const generations = 14; // 生成 2^14 ≈ 16384 条线段，32768个点
+        console.log('🌀 开始生成龙曲线，代数:', generations);
+        const rawPoints = generateDragonCurve(generations);
+        const totalVertices = rawPoints.length; // 应为 2^(14+1)+1 = 32769
+        console.log('   - 顶点数:', totalVertices);
+
+        // ==================== 计算包围盒并缩放 ====================
+        let minX = Infinity, maxX = -Infinity;
+        let minY = Infinity, maxY = -Infinity;
+        for (const p of rawPoints) {
+            if (p.x < minX) minX = p.x;
+            if (p.x > maxX) maxX = p.x;
+            if (p.y < minY) minY = p.y;
+            if (p.y > maxY) maxY = p.y;
+        }
+        const centerX = (minX + maxX) / 2;
+        const centerY = (minY + maxY) / 2;
+        const rangeX = maxX - minX;
+        const rangeY = maxY - minY;
+        const maxRange = Math.max(rangeX, rangeY, 1);
+        const targetScale = 4.8 / maxRange; // 适配视野
+
+        console.log('📐 包围盒:', { rangeX: rangeX.toFixed(1), rangeY: rangeY.toFixed(1), targetScale: targetScale.toFixed(4) });
+
+        // 将点居中、缩放，并转换为三维顶点（平面曲线放置在xz或xy平面，进行三维旋转）
+        // 我们将平面曲线放在原始的 xy 平面，然后对整个 group 应用一个固定的旋转使其倾斜
+        const vertices = new Float32Array(totalVertices * 3);
+        for (let i = 0; i < totalVertices; i++) {
+            const px = (rawPoints[i].x - centerX) * targetScale;
+            const py = (rawPoints[i].y - centerY) * targetScale;
+            vertices[i * 3] = px;
+            vertices[i * 3 + 1] = py;
+            vertices[i * 3 + 2] = 0; // 平面内
+        }
+
+        // 创建线条几何体
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+        geometry.setDrawRange(0, 0); // 初始完全不可见
+
+        const material = new THREE.LineBasicMaterial({
+            color: new THREE.Color().setHSL(0.1, 0.88, 0.63),
+            transparent: true,
+            opacity: 0.82,
+            linewidth: 1,
+            blending: THREE.AdditiveBlending,
+            depthWrite: true,
+            depthTest: true,
+        });
+
+        const dragonLine = new THREE.Line(geometry, material);
+        dragonLine.visible = false;
+        dragonLine.frustumCulled = false;
+        mainGroup.add(dragonLine);
+
+        // 对 group 施加一个固定倾斜，使平面龙曲线看起来更立体
+        mainGroup.rotation.set(Math.PI * 0.18, 0, Math.PI * 0.05);
+
+        console.log('✅ 龙曲线线条已创建');
+
+        // ==================== 动画状态机 ====================
+        const APPEAR_TIME = 8.0;
+        const PAUSE_TIME = 1.5;
+        const DISAPPEAR_TIME = 8.0;
+        const CYCLE_TOTAL = APPEAR_TIME + PAUSE_TIME + DISAPPEAR_TIME; // 17.5秒
+
+        let animationStartTime = null;
+        let firstFrameDone = false;
+
+        function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+        function easeInCubic(t) { return t * t * t; }
+
+        function getProgress(elapsedSeconds) {
+            const cycle = elapsedSeconds % CYCLE_TOTAL;
+            if (cycle < APPEAR_TIME) {
+                const t = cycle / APPEAR_TIME;
+                return { progress: easeOutCubic(t), phase: 'appear' };
+            } else if (cycle < APPEAR_TIME + PAUSE_TIME) {
+                return { progress: 1.0, phase: 'pause' };
+            } else {
+                const t = (cycle - APPEAR_TIME - PAUSE_TIME) / DISAPPEAR_TIME;
+                return { progress: 1.0 - easeInCubic(t), phase: 'disappear' };
+            }
+        }
+
+        // ==================== 渲染循环 ====================
+        function animate(timestamp) {
+            requestAnimationFrame(animate);
+
+            // 第一帧：强制空白
+            if (animationStartTime === null) {
+                animationStartTime = timestamp;
+                dragonLine.visible = false;
+                geometry.setDrawRange(0, 0);
+                renderer.render(scene, camera);
+                firstFrameDone = true;
+                return;
+            }
+
+            const elapsed = (timestamp - animationStartTime) / 1000;
+            const { progress } = getProgress(elapsed);
+            const drawCount = Math.floor(progress * totalVertices);
+            const shouldBeVisible = drawCount >= 2;
+
+            if (shouldBeVisible && drawCount >= 2) {
+                dragonLine.visible = true;
+                geometry.setDrawRange(0, Math.min(drawCount, totalVertices));
+            } else {
+                dragonLine.visible = false;
+                geometry.setDrawRange(0, 0);
+            }
+
+            // 整体缓慢旋转，展示分形蜿蜒
+            const rotY = elapsed * 0.04;
+            const rotX = Math.PI * 0.18 + Math.sin(elapsed * 0.08) * 0.02;
+            const rotZ = Math.PI * 0.05 + Math.cos(elapsed * 0.1) * 0.02;
+            mainGroup.rotation.set(rotX, rotY, rotZ);
+
+            // 相机轻柔晃动
+            camera.position.x = Math.sin(elapsed * 0.06) * 0.2;
+            camera.position.y = 0.25 + Math.cos(elapsed * 0.09) * 0.14;
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        // ==================== 响应式处理 ====================
+        function onResize() {
+            const w = container.clientWidth;
+            const h = container.clientHeight;
+            if (h <= 0) return;
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        }
+        window.addEventListener('resize', onResize, { passive: true });
+        window.addEventListener('orientationchange', () => setTimeout(onResize, 150), { passive: true });
+
+        // ==================== 启动 ====================
+        console.log('🚀 海威龙曲线动画启动');
+        console.log(`   - 总顶点数: ${totalVertices}`);
+        console.log(`   - 动画周期: ${CYCLE_TOTAL}s (生长${APPEAR_TIME}s + 停顿${PAUSE_TIME}s + 消散${DISAPPEAR_TIME}s)`);
+
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

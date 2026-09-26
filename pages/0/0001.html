@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>球面孤子编织 · mKdV演化网</title>
+    <style>
+        :root {
+            --bg: #06060c;
+            --gold: #d4a843;
+            --cyan: #45b7aa;
+            --magenta: #d4708a;
+        }
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body {
+            background: var(--bg);
+            width: 100vw; height: 100vh; overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'SimSun', serif;
+            -webkit-font-smoothing: antialiased; user-select: none; -webkit-user-select: none;
+        }
+        #canvas-container { position:fixed; top:0; left:0; width:100vw; height:100vh; z-index:1; }
+        canvas { display:block; }
+        .overlay-title {
+            position:fixed; top:0; left:0; right:0; z-index:10; pointer-events:none;
+            padding:22px 20px 8px; text-align:center;
+            background: linear-gradient(180deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.8) 55%, rgba(6,6,12,0) 100%);
+        }
+        .overlay-title h2 {
+            font-size: clamp(1.1rem, 2.2vw, 1.8rem); font-weight:400; letter-spacing:0.13em;
+            color:#e8d5b0; text-shadow: 0 0 30px rgba(212,168,67,0.45), 0 0 60px rgba(212,168,67,0.18);
+            margin:0 0 2px; line-height:1.3;
+        }
+        .overlay-title .sub {
+            font-size: clamp(0.65rem, 1.1vw, 0.85rem); letter-spacing:0.22em; color:rgba(200,180,150,0.65);
+        }
+        .overlay-formula {
+            position:fixed; bottom:0; left:0; right:0; z-index:10; pointer-events:none;
+            padding:8px 20px 18px; text-align:center;
+            background: linear-gradient(0deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.82) 55%, rgba(6,6,12,0) 100%);
+        }
+        .formula-text {
+            font-size: clamp(0.6rem, 1.0vw, 0.8rem); color:rgba(210,200,185,0.8); letter-spacing:0.03em; line-height:1.7;
+        }
+        .clr-gold { color:#d4a843; font-weight:bold; }
+        .clr-cyan { color:#45b7aa; font-weight:bold; }
+        .clr-magenta { color:#d4708a; font-weight:bold; }
+        .formula-sep { display:inline-block; margin:0 14px; color:rgba(150,140,130,0.35); }
+    </style>
+</head>
+<body>
+    <div class="overlay-title">
+        <h2>球面孤子编织 · mKdV演化网</h2>
+        <div class="sub">Spherical mKdV soliton knots · Time‑varying curvature braids</div>
+    </div>
+    <div class="overlay-formula">
+        <div class="formula-text">
+            <span class="clr-gold">θ(s)=2arctan(α·sech(α(s−vt)))</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-cyan">κ = θₛ · cos(φ/2)</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-magenta">τ = sin(φ/2)·κ</span>
+        </div>
+    </div>
+    <div id="canvas-container"></div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(46, container.clientWidth / container.clientHeight, 0.5, 22);
+        camera.position.set(3.5, 2.5, 7.4);
+        camera.lookAt(0, 0, 0);
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x06060c, 1);
+        container.appendChild(renderer.domElement);
+
+        const clock = new THREE.Clock();
+        const getElapsed = () => clock.getElapsedTime();
+
+        const COLOR_GOLD = 0xd4a843;
+        const COLOR_CYAN = 0x45b7aa;
+        const COLOR_MAGENTA = 0xd4708a;
+        const RADIUS = 2.7;
+        const CURVE_STEPS = 520;
+        const FAMILIES = 28;
+        const UPDATE_INTERVAL = 0.11;
+
+        // ---- 球面点 ----
+        function spherePoint(theta, phi) {
+            const st = Math.sin(theta);
+            return new THREE.Vector3(
+                RADIUS * st * Math.cos(phi),
+                RADIUS * Math.cos(theta),
+                RADIUS * st * Math.sin(phi)
+            );
+        }
+
+        // ---- mKdV单孤子解在球面上的投影 ----
+        // 给定弧长参数s，返回球面坐标 (θ, φ)
+        function solitonState(s, alpha, velocity, time) {
+            const arg = alpha * (s - velocity * time);
+            const sech = 1 / Math.cosh(arg);
+            const thetaVal = 2 * Math.atan(alpha * sech);
+            // φ随s线性增加，加上孤子相位效应
+            const phiBase = 0.8 * s;
+            const phiExtra = 0.6 * Math.atan(Math.sinh(arg));
+            return { theta: thetaVal + 0.15 * Math.sin(1.4 * s + 0.3 * time), phi: phiBase + phiExtra };
+        }
+
+        // ---- 创建一族孤子曲线 ----
+        function createSolitonFamily(alpha, velocity, color, opacity, numCurves, time) {
+            const group = new THREE.Group();
+            const sRange = 14;
+            const ds = 2 * sRange / CURVE_STEPS;
+            for (let k = 0; k < numCurves; k++) {
+                const sOffset = k * 2 * Math.PI / numCurves;
+                const pts = [];
+                for (let i = 0; i <= CURVE_STEPS; i++) {
+                    const s = -sRange + i * ds + sOffset;
+                    const state = solitonState(s, alpha, velocity, time);
+                    const theta = Math.max(0.02, Math.min(Math.PI - 0.02, state.theta));
+                    const phi = state.phi;
+                    const pt = spherePoint(theta, phi);
+                    if (pt.length() < 9) pts.push(pt);
+                }
+                if (pts.length >= 2) {
+                    const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                    const mat = new THREE.LineBasicMaterial({
+                        color, transparent: true, opacity, depthWrite: true, depthTest: true,
+                    });
+                    group.add(new THREE.Line(geom, mat));
+                }
+            }
+            return group;
+        }
+
+        // ---- 主组 ----
+        const rootGroup = new THREE.Group();
+        rootGroup.name = 'soliton-weave';
+        scene.add(rootGroup);
+
+        let goldGroup, cyanGroup, magentaGroup;
+        function rebuildFamilies(time) {
+            if (goldGroup) rootGroup.remove(goldGroup);
+            if (cyanGroup) rootGroup.remove(cyanGroup);
+            if (magentaGroup) rootGroup.remove(magentaGroup);
+
+            // 金色：α小(温和孤子)，不同速度
+            goldGroup = new THREE.Group();
+            goldGroup.add(createSolitonFamily(0.55, 0.32 * Math.sqrt(2), COLOR_GOLD, 0.62, FAMILIES, time));
+            goldGroup.add(createSolitonFamily(0.48, 0.28 * Math.sqrt(3), COLOR_GOLD, 0.42, Math.floor(FAMILIES * 0.6), time));
+            rootGroup.add(goldGroup);
+
+            // 青色：α中等，速度较慢
+            cyanGroup = new THREE.Group();
+            cyanGroup.add(createSolitonFamily(0.82, 0.25 * Math.sqrt(5), COLOR_CYAN, 0.62, FAMILIES, time));
+            cyanGroup.add(createSolitonFamily(0.72, 0.22 * Math.PI, COLOR_CYAN, 0.42, Math.floor(FAMILIES * 0.6), time));
+            rootGroup.add(cyanGroup);
+
+            // 品红：α较大(尖锐孤子)，速度快
+            magentaGroup = new THREE.Group();
+            magentaGroup.add(createSolitonFamily(1.15, 0.35 * Math.E, COLOR_MAGENTA, 0.60, FAMILIES, time));
+            magentaGroup.add(createSolitonFamily(1.02, 0.30 * (1 + Math.sqrt(5)) / 2, COLOR_MAGENTA, 0.40, Math.floor(FAMILIES * 0.6), time));
+            rootGroup.add(magentaGroup);
+        }
+        rebuildFamilies(0);
+
+        // 辅助球面参考网格（极淡）
+        for (let i = 0; i < 9; i++) {
+            const lat = (i + 0.5) * Math.PI / 9;
+            const r = RADIUS * Math.sin(lat);
+            const z = RADIUS * Math.cos(lat);
+            const pts = [];
+            for (let j = 0; j <= 200; j++) {
+                const phi = j * 2 * Math.PI / 200;
+                pts.push(new THREE.Vector3(r * Math.cos(phi), z, r * Math.sin(phi)));
+            }
+            const geom = new THREE.BufferGeometry().setFromPoints(pts);
+            rootGroup.add(new THREE.Line(geom, new THREE.LineBasicMaterial({
+                color: 0x403830, transparent: true, opacity: 0.07, depthWrite: true, depthTest: true
+            })));
+        }
+        for (let k = 0; k < 6; k++) {
+            const phi = k * Math.PI / 3;
+            const pts = [];
+            for (let j = 0; j <= 200; j++) {
+                const theta = 0.02 + j * Math.PI / 200;
+                const st = Math.sin(theta);
+                pts.push(new THREE.Vector3(RADIUS * st * Math.cos(phi), RADIUS * Math.cos(theta), RADIUS * st * Math.sin(phi)));
+            }
+            const geom = new THREE.BufferGeometry().setFromPoints(pts);
+            rootGroup.add(new THREE.Line(geom, new THREE.LineBasicMaterial({
+                color: 0x303840, transparent: true, opacity: 0.05, depthWrite: true, depthTest: true
+            })));
+        }
+
+        // 背景星点
+        const starsGroup = new THREE.Group();
+        const starsGeom = new THREE.BufferGeometry();
+        const sc = 550;
+        const sp = new Float32Array(sc * 3);
+        for (let i = 0; i < sc; i++) {
+            const th = Math.random() * Math.PI * 2, ph = Math.acos(2 * Math.random() - 1), d = 6.5 + Math.random() * 10;
+            sp[i * 3] = d * Math.sin(ph) * Math.cos(th);
+            sp[i * 3 + 1] = d * Math.sin(ph) * Math.sin(th);
+            sp[i * 3 + 2] = d * Math.cos(ph);
+        }
+        starsGeom.setAttribute('position', new THREE.BufferAttribute(sp, 3));
+        starsGroup.add(new THREE.Points(starsGeom, new THREE.PointsMaterial({
+            color: 0x908878, size: 0.018, transparent: true, opacity: 0.55, depthWrite: false
+        })));
+        scene.add(starsGroup);
+
+        console.log('球面孤子编织已就绪');
+
+        // ---- 动画循环 ----
+        let lastRebuild = -10, rebuildInterval = 1.3;
+
+        function animate() {
+            const t = getElapsed();
+
+            // 定期重建所有曲线以反映时间演化
+            if (t - lastRebuild > rebuildInterval) {
+                try { rebuildFamilies(t); lastRebuild = t; } catch (e) { console.warn(e); }
+            }
+
+            rootGroup.rotation.x = t * 0.13;
+            rootGroup.rotation.y = t * 0.22;
+            rootGroup.rotation.z = t * 0.08;
+            starsGroup.rotation.y = t * 0.04;
+            starsGroup.rotation.x = t * 0.025;
+
+            const cr = 7.5, ca = t * 0.08, ch = 2.6 + Math.sin(t * 0.16) * 0.7;
+            camera.position.set(Math.cos(ca) * cr, ch, Math.sin(ca) * cr);
+            camera.lookAt(0, 0, 0);
+            renderer.render(scene, camera);
+        }
+
+        // 预渲染首帧确保立即显示
+        renderer.render(scene, camera);
+        renderer.setAnimationLoop(animate);
+
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth, h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth, h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 120));
+        console.log('✅ 球面mKdV孤子编织动画已稳定运行');
+    </script>
+</body>
+</html>

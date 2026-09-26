@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>指数积分极坐标花簇 · Ei(x)调制</title>
+    <style>
+        :root { --bg: #02010e; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'Noto Serif SC', serif;
+            height: 100vh; width: 100vw;
+            user-select: none; -webkit-user-select: none;
+            cursor: default; -webkit-tap-highlight-color: transparent;
+        }
+        #canvas-container { position: fixed; inset: 0; z-index: 1; }
+        canvas { display: block; }
+
+        #title-overlay {
+            position: fixed; top: clamp(16px, 3.5vh, 42px); left: 50%;
+            transform: translateX(-50%); z-index: 10; pointer-events: none;
+            text-align: center; white-space: nowrap;
+        }
+        #title-overlay h1 {
+            color: #e0cfb4; font-size: clamp(1.1rem, 2.1vw, 1.8rem); font-weight: 400;
+            letter-spacing: 0.08em;
+            text-shadow: 0 0 28px rgba(210,175,130,0.55), 0 0 75px rgba(185,145,100,0.25);
+            margin: 0;
+        }
+        #title-overlay .subtitle {
+            color: #bca689; font-size: clamp(0.64rem, 1.1vw, 0.88rem); letter-spacing: 0.06em;
+            margin-top: 0.28em; text-shadow: 0 0 14px rgba(180,140,100,0.4);
+        }
+
+        #formula-overlay {
+            position: fixed; bottom: clamp(24px, 4.5vh, 54px); left: 50%;
+            transform: translateX(-50%); z-index: 10; pointer-events: none;
+            text-align: center; padding: 0 16px;
+        }
+        #formula-overlay .formula-box {
+            display: inline-block; background: rgba(14,10,20,0.72);
+            border: 1px solid rgba(165,140,110,0.28); border-radius: 12px;
+            padding: clamp(10px,1.4vh,16px) clamp(16px,3vw,28px);
+            backdrop-filter: blur(7px); -webkit-backdrop-filter: blur(7px);
+        }
+        #formula-overlay .formula-main {
+            color: #f1ddc3; font-size: clamp(0.68rem, 1.15vw, 1.0rem);
+            letter-spacing: 0.04em; line-height: 1.7;
+        }
+        #formula-overlay .formula-detail {
+            color: #a59279; font-size: clamp(0.52rem, 0.75vw, 0.68rem);
+            letter-spacing: 0.03em; margin-top: 0.22em; line-height: 1.5;
+        }
+
+        @media (max-width:600px) {
+            #title-overlay h1 { letter-spacing: 0.05em; }
+            #formula-overlay .formula-box { padding: 10px 16px; border-radius: 10px; }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+
+    <div id="title-overlay">
+        <h1>指数积分花簇 · 复杂函数调制</h1>
+        <div class="subtitle">Exponential Integral Petals · Ei(x) Modulation</div>
+    </div>
+
+    <div id="formula-overlay">
+        <div class="formula-box">
+            <div class="formula-main">
+                Ei(x) = −∫<sub>−x</sub><sup>∞</sup> e<sup>−t</sup>/t dt<br>
+                r(θ) = R₀·(1 + α·Ei(β(1+cos(pθ+φ₁)))·sin(qθ+φ₂))
+            </div>
+            <div class="formula-detail">
+                p,q∈ℕ α>0 β∈[0.5, 2.0] | θ∈[0,2π] | 18条闭合曲线
+            </div>
+        </div>
+    </div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.157.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#02010e');
+        scene.fog = new THREE.Fog('#02010e', 7, 22);
+
+        const camera = new THREE.PerspectiveCamera(
+            46,
+            container.clientWidth / Math.max(container.clientHeight, 1),
+            0.3, 28
+        );
+        camera.position.set(0, 0.3, 8.0);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.2;
+        container.appendChild(renderer.domElement);
+
+        scene.add(new THREE.AmbientLight('#1e1e3a', 0.4));
+
+        // ==================== 主图案组 ====================
+        const mainGroup = new THREE.Group();
+        scene.add(mainGroup);
+
+        const segmentCount = 2000;
+        const vertexCountPerCurve = segmentCount + 1; // 首尾重合确保闭合
+        const curveCount = 18;
+        const allLines = [];
+
+        const R0 = 1.55;
+        const zEpsilon = 0.1;
+        const zOmegaBase = 4.5;
+
+        // ==================== 指数积分 Ei(x) 计算 ====================
+        function eiFunction(x) {
+            if (x <= 0) return -1.0; // 避免负参数奇点，实际Ei在负值时取柯西主值，这里简单处理
+            if (x < 1e-8) return Math.log(x) + 0.5772156649; // 欧拉常数
+            if (x > 30) return Math.exp(x) * (1/x + 1/(x*x) + 2/(x*x*x)); // 渐近展开
+            // 泰勒级数：Ei(x) = γ + ln|x| + Σ xⁿ/(n·n!)
+            const gamma = 0.57721566490153286;
+            let sum = gamma + Math.log(x);
+            let term = 1.0; // n=0初始
+            let factorial = 1.0;
+            for (let n = 1; n <= 50; n++) {
+                term *= x / n;
+                sum += term / n;
+                if (Math.abs(term / n) < 1e-16) break;
+            }
+            return sum;
+        }
+
+        // ==================== Ei调制极坐标曲线生成 ====================
+        function generateEiCurve(p, q, alpha, beta, phi1, phi2, omegaZ, zPhase, rotation) {
+            const rotMatrix = new THREE.Matrix4().makeRotationFromEuler(rotation);
+            const rawVerts = new Float32Array(vertexCountPerCurve * 3);
+
+            // 首顶点 (θ=0)
+            const t0 = 0;
+            const arg0 = beta * (1.0 + Math.cos(p * t0 + phi1));
+            const ei0 = eiFunction(arg0);
+            const r0 = R0 * (1.0 + alpha * ei0 * Math.sin(q * t0 + phi2));
+            const x0 = r0 * Math.cos(t0);
+            const y0 = r0 * Math.sin(t0);
+            const z0 = zEpsilon * Math.sin(omegaZ * t0 + zPhase);
+            const vec0 = new THREE.Vector3(x0, y0, z0);
+            vec0.applyMatrix4(rotMatrix);
+            rawVerts[0] = vec0.x; rawVerts[1] = vec0.y; rawVerts[2] = vec0.z;
+
+            // 中间顶点
+            for (let i = 1; i < segmentCount; i++) {
+                const theta = (i / segmentCount) * Math.PI * 2;
+                const arg = beta * (1.0 + Math.cos(p * theta + phi1));
+                const ei = eiFunction(arg);
+                const r = R0 * (1.0 + alpha * ei * Math.sin(q * theta + phi2));
+                const x2d = r * Math.cos(theta);
+                const y2d = r * Math.sin(theta);
+                const z2d = zEpsilon * Math.sin(omegaZ * theta + zPhase);
+                const vec = new THREE.Vector3(x2d, y2d, z2d);
+                vec.applyMatrix4(rotMatrix);
+                rawVerts[i * 3] = vec.x; rawVerts[i * 3 + 1] = vec.y; rawVerts[i * 3 + 2] = vec.z;
+            }
+
+            // 末顶点显式复制首顶点，几何完美闭合
+            const lastIdx = segmentCount * 3;
+            rawVerts[lastIdx] = rawVerts[0];
+            rawVerts[lastIdx + 1] = rawVerts[1];
+            rawVerts[lastIdx + 2] = rawVerts[2];
+
+            return rawVerts;
+        }
+
+        function createLine(scaledVerts, hue, opacity = 0.78) {
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.BufferAttribute(scaledVerts, 3));
+            geometry.setDrawRange(0, 0);
+
+            const material = new THREE.LineBasicMaterial({
+                color: new THREE.Color().setHSL(hue, 0.88, 0.62),
+                transparent: true, opacity: opacity,
+                linewidth: 1, blending: THREE.AdditiveBlending,
+                depthWrite: true, depthTest: true,
+            });
+
+            const line = new THREE.Line(geometry, material);
+            line.visible = false;
+            line.frustumCulled = false;
+            return line;
+        }
+
+        // ==================== 18条曲线的参数配置 ====================
+        const pValues = [2,3,4,5,3,4,2,5,4,3,6,5,2,4,3,5,7,4];
+        const qValues = [3,4,5,6,2,5,4,3,7,5,6,4,7,3,5,6,4,8];
+        const alphaValues = [0.18,0.22,0.16,0.28,0.20,0.32,0.24,0.26,0.35,0.15,0.30,0.22,0.13,0.34,0.28,0.19,0.31,0.17];
+        const betaValues  = [0.55,0.68,0.48,0.82,0.62,0.95,0.58,0.72,0.88,0.50,0.92,0.66,0.45,1.05,0.75,0.85,1.12,0.60];
+        const phi1Values = [0.0,0.42,0.84,1.26,1.68,2.1,2.52,2.94,3.36,3.78,4.2,4.62,5.04,5.46,5.88,0.3,0.7,1.1];
+        const phi2Values = [0.0,0.48,0.96,1.44,1.92,2.4,2.88,3.36,3.84,4.32,4.8,0.24,0.72,1.2,1.68,2.16,2.64,3.12];
+
+        const allRawVertices = [];
+        for (let j = 0; j < curveCount; j++) {
+            const rawVerts = generateEiCurve(
+                pValues[j], qValues[j], alphaValues[j], betaValues[j],
+                phi1Values[j], phi2Values[j],
+                zOmegaBase + (j % 4), j * 0.42,
+                new THREE.Euler(
+                    (j * 0.65) % Math.PI,
+                    (j / curveCount) * Math.PI * 2,
+                    (j * 0.32) % (Math.PI * 0.4)
+                )
+            );
+            allRawVertices.push(rawVerts);
+        }
+
+        // ==================== 计算全局包围盒 ====================
+        let minX = Infinity, maxX = -Infinity;
+        let minY = Infinity, maxY = -Infinity;
+        let minZ = Infinity, maxZ = -Infinity;
+
+        for (const rawVerts of allRawVertices) {
+            for (let i = 0; i < rawVerts.length; i += 3) {
+                const vx = rawVerts[i], vy = rawVerts[i+1], vz = rawVerts[i+2];
+                if (vx < minX) minX = vx; if (vx > maxX) maxX = vx;
+                if (vy < minY) minY = vy; if (vy > maxY) maxY = vy;
+                if (vz < minZ) minZ = vz; if (vz > maxZ) maxZ = vz;
+            }
+        }
+
+        const centerX = (minX + maxX) / 2;
+        const centerY = (minY + maxY) / 2;
+        const centerZ = (minZ + maxZ) / 2;
+        const rangeX = maxX - minX, rangeY = maxY - minY, rangeZ = maxZ - minZ;
+        const maxRange = Math.max(rangeX, rangeY, rangeZ, 0.1);
+        const targetScale = 5.0 / maxRange;
+
+        // ==================== 缩放并创建线条 ====================
+        for (let j = 0; j < curveCount; j++) {
+            const rawVerts = allRawVertices[j];
+            const scaledVerts = new Float32Array(vertexCountPerCurve * 3);
+            for (let i = 0; i < vertexCountPerCurve; i++) {
+                const idx = i * 3;
+                scaledVerts[idx] = (rawVerts[idx] - centerX) * targetScale;
+                scaledVerts[idx+1] = (rawVerts[idx+1] - centerY) * targetScale;
+                scaledVerts[idx+2] = (rawVerts[idx+2] - centerZ) * targetScale;
+            }
+            const hue = (j / curveCount) * 0.82 + 0.06;
+            const line = createLine(scaledVerts, hue % 1.0, 0.75);
+            mainGroup.add(line);
+            allLines.push(line);
+        }
+
+        console.log(`✅ 已生成 ${curveCount} 条指数积分调制闭合曲线`);
+
+        // ==================== 动画状态机 ====================
+        const APPEAR_TIME = 15.0, PAUSE_TIME = 1.5, DISAPPEAR_TIME = 15.0;
+        const CYCLE_TOTAL = APPEAR_TIME + PAUSE_TIME + DISAPPEAR_TIME;
+
+        let animationStartTime = null, firstFrameDone = false;
+
+        function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+        function easeInCubic(t) { return t * t * t; }
+
+        function getProgress(elapsedSeconds) {
+            const cycle = elapsedSeconds % CYCLE_TOTAL;
+            if (cycle < APPEAR_TIME) {
+                return { progress: easeOutCubic(cycle / APPEAR_TIME), phase: 'appear' };
+            } else if (cycle < APPEAR_TIME + PAUSE_TIME) {
+                return { progress: 1.0, phase: 'pause' };
+            } else {
+                const t = (cycle - APPEAR_TIME - PAUSE_TIME) / DISAPPEAR_TIME;
+                return { progress: 1.0 - easeInCubic(t), phase: 'disappear' };
+            }
+        }
+
+        // ==================== 渲染循环 ====================
+        function animate(timestamp) {
+            requestAnimationFrame(animate);
+
+            if (animationStartTime === null) {
+                animationStartTime = timestamp;
+                allLines.forEach(line => { line.visible = false; if (line.geometry) line.geometry.setDrawRange(0, 0); });
+                renderer.render(scene, camera);
+                firstFrameDone = true;
+                return;
+            }
+
+            const elapsed = (timestamp - animationStartTime) / 1000;
+            const { progress } = getProgress(elapsed);
+            const drawCount = Math.floor(progress * vertexCountPerCurve);
+            const shouldBeVisible = drawCount >= 2;
+
+            for (let i = 0; i < allLines.length; i++) {
+                const line = allLines[i];
+                if (!line || !line.geometry) continue;
+                const maxPts = line.geometry.attributes.position.count;
+                const lineDraw = Math.min(drawCount, maxPts);
+                if (shouldBeVisible && lineDraw >= 2) {
+                    line.visible = true;
+                    line.geometry.setDrawRange(0, lineDraw);
+                } else {
+                    line.visible = false;
+                    line.geometry.setDrawRange(0, 0);
+                }
+            }
+
+            const rotY = elapsed * 0.03;
+            const rotX = Math.sin(elapsed * 0.055) * 0.028;
+            const rotZ = Math.cos(elapsed * 0.075) * 0.02;
+            mainGroup.rotation.set(rotX, rotY, rotZ);
+
+            camera.position.x = Math.sin(elapsed * 0.045) * 0.2;
+            camera.position.y = 0.3 + Math.cos(elapsed * 0.065) * 0.15;
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        function onResize() {
+            const w = container.clientWidth, h = container.clientHeight;
+            if (h <= 0) return;
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        }
+        window.addEventListener('resize', onResize, { passive: true });
+        window.addEventListener('orientationchange', () => setTimeout(onResize, 150), { passive: true });
+
+        console.log('🚀 指数积分花簇动画启动');
+        console.log(`   - 曲线数量: ${curveCount}, 顶点数/曲线: ${vertexCountPerCurve}`);
+        console.log(`   - 动画周期: ${CYCLE_TOTAL}s`);
+
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Menger海绵分形 · 三维立方体线网</title>
+    <style>
+        :root { --bg: #02040a; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'STSong', 'Songti SC', 'Noto Serif SC', 'SimSun', 'Times New Roman', serif;
+            -webkit-font-smoothing: antialiased;
+            height: 100vh; width: 100vw;
+            user-select: none; -webkit-user-select: none; cursor: default;
+        }
+        #canvas-container { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+        canvas { display: block; }
+        #title-overlay {
+            position: fixed; top: 24px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+        }
+        #title-overlay .title {
+            font-size: clamp(1.0rem, 2.2vw, 1.5rem); font-weight: 400; letter-spacing: 0.08em;
+            color: #cfc7b5; text-shadow: 0 0 42px rgba(200,180,150,0.5), 0 0 70px rgba(170,150,130,0.2);
+            line-height: 1.4; white-space: nowrap;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.48rem, 0.85vw, 0.64rem); font-weight: 300; letter-spacing: 0.12em;
+            color: #a09888; text-shadow: 0 0 14px rgba(155,145,125,0.3);
+            margin-top: 2px; white-space: nowrap;
+        }
+        #formula-overlay {
+            position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%);
+            z-index: 10; pointer-events: none; text-align: center;
+            background: rgba(2,4,10,0.7); padding: 10px 20px; border-radius: 32px;
+            border: 1px solid rgba(175,155,135,0.16);
+            backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); max-width: 95vw;
+        }
+        #formula-overlay .formula {
+            font-size: clamp(0.36rem, 0.68vw, 0.54rem); font-weight: 300; letter-spacing: 0.04em;
+            color: #c5bdaa; text-shadow: 0 0 13px rgba(185,170,145,0.25);
+            line-height: 1.5; white-space: nowrap;
+        }
+        #formula-overlay .formula .c1 { color: #d4885c; }
+        #formula-overlay .formula .c2 { color: #5d9ec6; }
+        #formula-overlay .formula .c3 { color: #c77d9f; }
+        @media (max-width: 600px) {
+            #title-overlay { top: 14px; }
+            #formula-overlay { bottom: 10px; padding: 7px 12px; border-radius: 24px; }
+            #formula-overlay .formula { font-size: 0.32rem; white-space: normal; line-height: 1.3; }
+            #title-overlay .title { font-size: 0.68rem; }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="title-overlay">
+        <div class="title">Menger海绵分形 · 三维立方体线网</div>
+        <div class="subtitle">MENGER SPONGE &nbsp;·&nbsp; RECURSIVE CUBIC FRAME</div>
+    </div>
+    <div id="formula-overlay">
+        <div class="formula">
+            <span class="c1">深度0:</span> 整体立方体边 &nbsp;
+            <span class="c2">深度1:</span> 20个子立方体边 &nbsp;
+            <span class="c3">深度2:</span> 400个子立方体边
+            <br>
+            <span style="color:#9aa8b8;">规则：每级删除7个子立方体 &nbsp;|&nbsp; 保留20个 &nbsp;|&nbsp; 边去重 &nbsp;|&nbsp; 绝对时间驱动</span>
+        </div>
+    </div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#02040a');
+        scene.fog = new THREE.Fog('#02040a', 9, 20);
+
+        const camera = new THREE.PerspectiveCamera(
+            50,
+            container.clientWidth / Math.max(container.clientHeight, 1),
+            0.3,
+            23
+        );
+        camera.position.set(1.2, 0.7, 7.0);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = false;
+        container.appendChild(renderer.domElement);
+
+        // ==================== 颜色 ====================
+        const C1 = '#d4885c'; // 暖金 – 深度0边
+        const C2 = '#5d9ec6'; // 冰蓝 – 深度1边
+        const C3 = '#c77d9f'; // 玫瑰粉 – 深度2边
+        const C_SPHERE = '#3a4a5c';
+        const C_GLINT = '#8898aa';
+        const VIEW_R = 2.7;
+        const SCALE = VIEW_R / 1.6; // 将Menger坐标缩放到球体内
+
+        // ==================== Menger海绵递推生成 ====================
+        function generateMengerSponge(maxDepth) {
+            // 生成边长2的立方体，中心在原点
+            const cubes = [{ center: new THREE.Vector3(0, 0, 0), size: 2, depth: 0 }];
+            const edgesByDepth = { 0: new Set(), 1: new Set(), 2: new Set() };
+
+            for (let d = 0; d < maxDepth; d++) {
+                const newCubes = [];
+                for (const cube of cubes) {
+                    if (cube.depth !== d) continue;
+                    const newSize = cube.size / 3;
+                    // 遍历27个子位置，跳过中间7个（面心6个+体心1个）
+                    for (let x = -1; x <= 1; x++) {
+                        for (let y = -1; y <= 1; y++) {
+                            for (let z = -1; z <= 1; z++) {
+                                const nonZero = (x !== 0 ? 1 : 0) + (y !== 0 ? 1 : 0) + (z !== 0 ? 1 : 0);
+                                if (nonZero <= 1) continue; // 删除面中心和体心
+                                const cx = cube.center.x + x * newSize;
+                                const cy = cube.center.y + y * newSize;
+                                const cz = cube.center.z + z * newSize;
+                                newCubes.push({
+                                    center: new THREE.Vector3(cx, cy, cz),
+                                    size: newSize,
+                                    depth: d + 1
+                                });
+                            }
+                        }
+                    }
+                    // 同时记录当前立方体的边到对应深度集合
+                    recordEdges(cube.center, cube.size, cube.depth, edgesByDepth);
+                }
+                cubes.push(...newCubes);
+            }
+            // 记录最后一批立方体的边（深度maxDepth）
+            for (const cube of cubes) {
+                if (cube.depth === maxDepth) {
+                    recordEdges(cube.center, cube.size, cube.depth, edgesByDepth);
+                }
+            }
+            return edgesByDepth;
+        }
+
+        function recordEdges(center, size, depth, edgesByDepth) {
+            const h = size / 2;
+            const corners = [
+                new THREE.Vector3(-h, -h, -h).add(center),
+                new THREE.Vector3( h, -h, -h).add(center),
+                new THREE.Vector3( h,  h, -h).add(center),
+                new THREE.Vector3(-h,  h, -h).add(center),
+                new THREE.Vector3(-h, -h,  h).add(center),
+                new THREE.Vector3( h, -h,  h).add(center),
+                new THREE.Vector3( h,  h,  h).add(center),
+                new THREE.Vector3(-h,  h,  h).add(center)
+            ];
+            const edgeIndices = [
+                [0,1],[1,2],[2,3],[3,0],
+                [4,5],[5,6],[6,7],[7,4],
+                [0,4],[1,5],[2,6],[3,7]
+            ];
+            const targetSet = edgesByDepth[Math.min(depth, 2)]; // 深度>2都归到2
+            for (const [i, j] of edgeIndices) {
+                const a = corners[i], b = corners[j];
+                const key = edgeKey(a, b);
+                targetSet.add(key);
+            }
+        }
+
+        function edgeKey(a, b) {
+            const toFix = (v) => `${v.x.toFixed(6)},${v.y.toFixed(6)},${v.z.toFixed(6)}`;
+            const ka = toFix(a), kb = toFix(b);
+            return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+        }
+
+        function setToVerticesArray(edgeSet) {
+            const verts = [];
+            for (const key of edgeSet) {
+                const [aStr, bStr] = key.split('|');
+                const [ax, ay, az] = aStr.split(',').map(Number);
+                const [bx, by, bz] = bStr.split(',').map(Number);
+                verts.push(ax * SCALE, ay * SCALE, az * SCALE, bx * SCALE, by * SCALE, bz * SCALE);
+            }
+            return verts;
+        }
+
+        const edgesByDepth = generateMengerSponge(2);
+        console.log('深度0边数:', edgesByDepth[0].size);
+        console.log('深度1边数:', edgesByDepth[1].size);
+        console.log('深度2边数:', edgesByDepth[2].size);
+
+        // ==================== 创建线段 ====================
+        function createLineSegments(edgeSet, colorHex, opacity) {
+            const verts = setToVerticesArray(edgeSet);
+            if (verts.length === 0) return new THREE.Group();
+            const geom = new THREE.BufferGeometry();
+            geom.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+            const mat = new THREE.LineBasicMaterial({
+                color: new THREE.Color(colorHex),
+                transparent: true,
+                opacity: opacity,
+                depthWrite: true,
+            });
+            return new THREE.LineSegments(geom, mat);
+        }
+
+        const lines0 = createLineSegments(edgesByDepth[0], C1, 0.75);
+        const lines1 = createLineSegments(edgesByDepth[1], C2, 0.68);
+        const lines2 = createLineSegments(edgesByDepth[2], C3, 0.65);
+
+        const mainGroup = new THREE.Group();
+        mainGroup.add(lines0);
+        mainGroup.add(lines1);
+        mainGroup.add(lines2);
+        scene.add(mainGroup);
+
+        // ==================== 参考球面线框 ====================
+        function createSphereWireframe(radius, colorHex, opacity) {
+            const group = new THREE.Group();
+            const segs = 170;
+            const circles = [
+                (a) => new THREE.Vector3(Math.cos(a) * radius, Math.sin(a) * radius, 0),
+                (a) => new THREE.Vector3(Math.cos(a) * radius, 0, Math.sin(a) * radius),
+                (a) => new THREE.Vector3(0, Math.cos(a) * radius, Math.sin(a) * radius),
+            ];
+            for (const gen of circles) {
+                const pts = [];
+                for (let i = 0; i <= segs; i++) pts.push(gen((i / segs) * Math.PI * 2));
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                const mat = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(colorHex),
+                    transparent: true,
+                    opacity: opacity,
+                    depthWrite: true,
+                });
+                group.add(new THREE.Line(geom, mat));
+            }
+            return group;
+        }
+        const sphereRef = createSphereWireframe(VIEW_R, C_SPHERE, 0.22);
+        scene.add(sphereRef);
+
+        // ==================== 原点光点 ====================
+        function originGlint() {
+            const group = new THREE.Group();
+            const sz = 0.08;
+            const pairs = [
+                [new THREE.Vector3(-sz, 0, 0), new THREE.Vector3(sz, 0, 0)],
+                [new THREE.Vector3(0, -sz, 0), new THREE.Vector3(0, sz, 0)],
+                [new THREE.Vector3(0, 0, -sz), new THREE.Vector3(0, 0, sz)],
+            ];
+            for (const [a, b] of pairs) {
+                const g = new THREE.BufferGeometry().setFromPoints([a, b]);
+                const m = new THREE.LineBasicMaterial({
+                    color: new THREE.Color(C_GLINT),
+                    transparent: true,
+                    opacity: 0.7,
+                    depthWrite: true,
+                });
+                group.add(new THREE.Line(g, m));
+            }
+            return group;
+        }
+        scene.add(originGlint());
+
+        // ==================== 立方体角点光点 ====================
+        function createCornerGlints(radius, colorHex, sz) {
+            const group = new THREE.Group();
+            const signs = [
+                [-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1],
+                [-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]
+            ];
+            for (const [sx, sy, sz2] of signs) {
+                const r = radius * 0.85;
+                const pt = new THREE.Vector3(sx * r, sy * r, sz2 * r);
+                const pairs = [
+                    [pt.clone().add(new THREE.Vector3(-sz, 0, 0)), pt.clone().add(new THREE.Vector3(sz, 0, 0))],
+                    [pt.clone().add(new THREE.Vector3(0, -sz, 0)), pt.clone().add(new THREE.Vector3(0, sz, 0))],
+                    [pt.clone().add(new THREE.Vector3(0, 0, -sz)), pt.clone().add(new THREE.Vector3(0, 0, sz))],
+                ];
+                for (const [a, b] of pairs) {
+                    const g = new THREE.BufferGeometry().setFromPoints([a, b]);
+                    const m = new THREE.LineBasicMaterial({
+                        color: new THREE.Color(colorHex),
+                        transparent: true,
+                        opacity: 0.55,
+                        depthWrite: true,
+                    });
+                    group.add(new THREE.Line(g, m));
+                }
+            }
+            return group;
+        }
+        const cornerGlints = createCornerGlints(VIEW_R, C_GLINT, 0.06);
+        mainGroup.add(cornerGlints);
+
+        // ==================== 动画循环（绝对时间） ====================
+        let time = 0;
+        let lastTime = performance.now();
+        let frameCount = 0;
+        let logTime = 0;
+
+        function animate(now) {
+            requestAnimationFrame(animate);
+            let delta = (now - lastTime) / 1000;
+            if (delta <= 0 || delta > 0.5) delta = 0.016;
+            lastTime = now;
+            time += delta;
+            frameCount++;
+            if (now - logTime > 4000) {
+                console.log(`[动画运行中] 帧:${frameCount} 时间:${time.toFixed(2)}s`);
+                logTime = now;
+            }
+
+            mainGroup.rotation.y = time * 0.28;
+            mainGroup.rotation.x = time * 0.16 + Math.sin(time * 0.24) * 0.2;
+            mainGroup.rotation.z = Math.cos(time * 0.2) * 0.14;
+            sphereRef.rotation.copy(mainGroup.rotation);
+
+            const camX = 1.2 + Math.sin(time * 0.15) * 0.55;
+            const camY = 0.7 + Math.cos(time * 0.18) * 0.5;
+            camera.position.set(camX, camY, 7.0);
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth, h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth, h = Math.max(container.clientHeight, 1);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 100));
+
+        console.log('=== Menger海绵分形 · 三维立方体线网 ===');
+        console.log('总边数 (去重):', edgesByDepth[0].size + edgesByDepth[1].size + edgesByDepth[2].size);
+        console.log('✅ 初始帧渲染完成，启动绝对时间动画循环...');
+
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

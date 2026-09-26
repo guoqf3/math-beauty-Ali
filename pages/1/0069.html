@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>三叶结簇 · 数学纽结花园</title>
+    <style>
+        :root {
+            --bg: #02010e;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'Noto Serif SC', serif;
+            height: 100vh;
+            width: 100vw;
+            user-select: none;
+            -webkit-user-select: none;
+            cursor: default;
+            -webkit-tap-highlight-color: transparent;
+        }
+        #canvas-container {
+            position: fixed;
+            inset: 0;
+            z-index: 1;
+        }
+        canvas {
+            display: block;
+        }
+
+        #title-overlay {
+            position: fixed;
+            top: clamp(16px, 3.5vh, 42px);
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+            white-space: nowrap;
+        }
+        #title-overlay h1 {
+            color: #e0cfb4;
+            font-size: clamp(1.1rem, 2.1vw, 1.8rem);
+            font-weight: 400;
+            letter-spacing: 0.08em;
+            text-shadow: 0 0 28px rgba(210, 175, 130, 0.55), 0 0 75px rgba(185, 145, 100, 0.25);
+            margin: 0;
+        }
+        #title-overlay .subtitle {
+            color: #bca689;
+            font-size: clamp(0.64rem, 1.1vw, 0.88rem);
+            letter-spacing: 0.06em;
+            margin-top: 0.28em;
+            text-shadow: 0 0 14px rgba(180, 140, 100, 0.4);
+        }
+
+        #formula-overlay {
+            position: fixed;
+            bottom: clamp(24px, 4.5vh, 54px);
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+            padding: 0 16px;
+        }
+        #formula-overlay .formula-box {
+            display: inline-block;
+            background: rgba(14, 10, 20, 0.72);
+            border: 1px solid rgba(165, 140, 110, 0.28);
+            border-radius: 12px;
+            padding: clamp(10px, 1.4vh, 16px) clamp(16px, 3vw, 28px);
+            backdrop-filter: blur(7px);
+            -webkit-backdrop-filter: blur(7px);
+        }
+        #formula-overlay .formula-main {
+            color: #f1ddc3;
+            font-size: clamp(0.68rem, 1.15vw, 1.0rem);
+            letter-spacing: 0.04em;
+            line-height: 1.7;
+        }
+        #formula-overlay .formula-detail {
+            color: #a59279;
+            font-size: clamp(0.52rem, 0.75vw, 0.68rem);
+            letter-spacing: 0.03em;
+            margin-top: 0.22em;
+            line-height: 1.5;
+        }
+
+        @media (max-width: 600px) {
+            #title-overlay h1 {
+                letter-spacing: 0.05em;
+            }
+            #formula-overlay .formula-box {
+                padding: 10px 16px;
+                border-radius: 10px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+
+    <div id="title-overlay">
+        <h1>三叶结簇 · 数学纽结花园</h1>
+        <div class="subtitle">Trefoil Knot Cluster · Closed Spital Loops</div>
+    </div>
+
+    <div id="formula-overlay">
+        <div class="formula-box">
+            <div class="formula-main">
+                x = (2 + cos 3t)·cos 2t<br>
+                y = (2 + cos 3t)·sin 2t<br>
+                z = sin 3t + ε·sin(ωt + δ)
+            </div>
+            <div class="formula-detail">
+                t ∈ [0, 2π] | ε=0.15 | ω∈ℕ | 20 条闭路纽结
+            </div>
+        </div>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.157.0/build/three.module.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#02010e');
+        scene.fog = new THREE.Fog('#02010e', 7, 22);
+
+        const camera = new THREE.PerspectiveCamera(
+            46,
+            container.clientWidth / Math.max(container.clientHeight, 1),
+            0.3,
+            28
+        );
+        camera.position.set(0, 0.25, 8.0);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.2;
+        container.appendChild(renderer.domElement);
+
+        scene.add(new THREE.AmbientLight('#1e1e3a', 0.4));
+
+        // ==================== 主图案组 ====================
+        const mainGroup = new THREE.Group();
+        scene.add(mainGroup);
+
+        const segmentCount = 2000;
+        const vertexCountPerCurve = segmentCount + 1; // 首尾重合确保完美闭合
+        const curveCount = 20; // 20条三叶结，丰富视觉
+        const allLines = [];
+
+        // 调制参数
+        const epsilon = 0.15;
+        const omegaBase = 5;
+
+        // ==================== 三叶结生成（管状投影形式） ====================
+        /**
+         * 生成参数三叶结：x = (2 + cos 3t) cos 2t, y = (2 + cos 3t) sin 2t, z = sin 3t
+         * 加上 z 轴调制 epsilon * sin(omega * t + delta)
+         * @param {number} scale 缩放因子
+         * @param {number} omega 调制频率（整数）
+         * @param {number} delta 调制相位
+         * @param {THREE.Euler} rotation 空间旋转
+         */
+        function generateTrefoil(scale, omega, delta, rotation) {
+            const rotMatrix = new THREE.Matrix4().makeRotationFromEuler(rotation);
+            const rawVerts = new Float32Array(vertexCountPerCurve * 3);
+
+            // 首顶点 (t=0)
+            const t0 = 0;
+            const cos3t0 = Math.cos(3 * t0);
+            const sin3t0 = Math.sin(3 * t0);
+            const cos2t0 = Math.cos(2 * t0);
+            const sin2t0 = Math.sin(2 * t0);
+            const x0 = scale * (2 + cos3t0) * cos2t0;
+            const y0 = scale * (2 + cos3t0) * sin2t0;
+            const z0 = scale * (sin3t0 + epsilon * Math.sin(omega * t0 + delta));
+            const vec0 = new THREE.Vector3(x0, y0, z0);
+            vec0.applyMatrix4(rotMatrix);
+            rawVerts[0] = vec0.x;
+            rawVerts[1] = vec0.y;
+            rawVerts[2] = vec0.z;
+
+            // 中间顶点
+            for (let i = 1; i < segmentCount; i++) {
+                const t = (i / segmentCount) * Math.PI * 2;
+                const cos3t = Math.cos(3 * t);
+                const sin3t = Math.sin(3 * t);
+                const cos2t = Math.cos(2 * t);
+                const sin2t = Math.sin(2 * t);
+                const x = scale * (2 + cos3t) * cos2t;
+                const y = scale * (2 + cos3t) * sin2t;
+                const z = scale * (sin3t + epsilon * Math.sin(omega * t + delta));
+                const vec = new THREE.Vector3(x, y, z);
+                vec.applyMatrix4(rotMatrix);
+                rawVerts[i * 3] = vec.x;
+                rawVerts[i * 3 + 1] = vec.y;
+                rawVerts[i * 3 + 2] = vec.z;
+            }
+
+            // 末顶点显式复制首顶点，严格闭合
+            const lastIdx = segmentCount * 3;
+            rawVerts[lastIdx] = rawVerts[0];
+            rawVerts[lastIdx + 1] = rawVerts[1];
+            rawVerts[lastIdx + 2] = rawVerts[2];
+
+            return rawVerts;
+        }
+
+        function createLine(scaledVerts, hue, opacity = 0.78) {
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.BufferAttribute(scaledVerts, 3));
+            geometry.setDrawRange(0, 0); // 初始不可见
+
+            const material = new THREE.LineBasicMaterial({
+                color: new THREE.Color().setHSL(hue, 0.88, 0.62),
+                transparent: true,
+                opacity: opacity,
+                linewidth: 1,
+                blending: THREE.AdditiveBlending,
+                depthWrite: true,
+                depthTest: true,
+            });
+
+            const line = new THREE.Line(geometry, material);
+            line.visible = false;
+            line.frustumCulled = false;
+            return line;
+        }
+
+        // ==================== 20条结的配置 ====================
+        const allRawVertices = [];
+        // 缩放从0.9到1.35，产生大小变化
+        const scales = Array.from({ length: curveCount }, (_, j) => 0.9 + (j / (curveCount - 1)) * 0.45);
+
+        for (let j = 0; j < curveCount; j++) {
+            const scl = scales[j];
+            const omega = omegaBase + (j % 4);       // 5,6,7,8
+            const delta = j * 0.38;
+            const rotY = (j / curveCount) * Math.PI * 2;
+            const rotX = (j * 0.72) % Math.PI;
+            const rotZ = (j * 0.4) % (Math.PI * 0.5);
+            const rotation = new THREE.Euler(rotX, rotY, rotZ);
+            const rawVerts = generateTrefoil(scl, omega, delta, rotation);
+            allRawVertices.push(rawVerts);
+        }
+
+        // ==================== 计算全局包围盒 ====================
+        let minX = Infinity, maxX = -Infinity;
+        let minY = Infinity, maxY = -Infinity;
+        let minZ = Infinity, maxZ = -Infinity;
+
+        for (const rawVerts of allRawVertices) {
+            for (let i = 0; i < rawVerts.length; i += 3) {
+                const vx = rawVerts[i];
+                const vy = rawVerts[i + 1];
+                const vz = rawVerts[i + 2];
+                if (vx < minX) minX = vx;
+                if (vx > maxX) maxX = vx;
+                if (vy < minY) minY = vy;
+                if (vy > maxY) maxY = vy;
+                if (vz < minZ) minZ = vz;
+                if (vz > maxZ) maxZ = vz;
+            }
+        }
+
+        const centerX = (minX + maxX) / 2;
+        const centerY = (minY + maxY) / 2;
+        const centerZ = (minZ + maxZ) / 2;
+        const rangeX = maxX - minX;
+        const rangeY = maxY - minY;
+        const rangeZ = maxZ - minZ;
+        const maxRange = Math.max(rangeX, rangeY, rangeZ, 0.1);
+        const targetScale = 4.8 / maxRange;
+
+        console.log('📐 包围盒:', { maxRange: maxRange.toFixed(3), targetScale: targetScale.toFixed(4) });
+
+        // ==================== 缩放并创建线条 ====================
+        for (let j = 0; j < curveCount; j++) {
+            const rawVerts = allRawVertices[j];
+            const scaledVerts = new Float32Array(vertexCountPerCurve * 3);
+            for (let i = 0; i < vertexCountPerCurve; i++) {
+                const idx = i * 3;
+                scaledVerts[idx] = (rawVerts[idx] - centerX) * targetScale;
+                scaledVerts[idx + 1] = (rawVerts[idx + 1] - centerY) * targetScale;
+                scaledVerts[idx + 2] = (rawVerts[idx + 2] - centerZ) * targetScale;
+            }
+            const hue = (j / curveCount) * 0.82 + 0.06;
+            const line = createLine(scaledVerts, hue % 1.0, 0.75);
+            mainGroup.add(line);
+            allLines.push(line);
+        }
+
+        console.log(`✅ 已生成 ${curveCount} 条三叶结闭合曲线`);
+
+        // ==================== 动画状态机 ====================
+        const APPEAR_TIME = 8.0;
+        const PAUSE_TIME = 1.5;
+        const DISAPPEAR_TIME = 8.0;
+        const CYCLE_TOTAL = APPEAR_TIME + PAUSE_TIME + DISAPPEAR_TIME; // 17.5秒
+
+        let animationStartTime = null;
+        let firstFrameDone = false;
+
+        function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+        function easeInCubic(t) { return t * t * t; }
+
+        function getProgress(elapsedSeconds) {
+            const cycle = elapsedSeconds % CYCLE_TOTAL;
+            if (cycle < APPEAR_TIME) {
+                const t = cycle / APPEAR_TIME;
+                return { progress: easeOutCubic(t), phase: 'appear' };
+            } else if (cycle < APPEAR_TIME + PAUSE_TIME) {
+                return { progress: 1.0, phase: 'pause' };
+            } else {
+                const t = (cycle - APPEAR_TIME - PAUSE_TIME) / DISAPPEAR_TIME;
+                return { progress: 1.0 - easeInCubic(t), phase: 'disappear' };
+            }
+        }
+
+        // ==================== 渲染循环 ====================
+        function animate(timestamp) {
+            requestAnimationFrame(animate);
+
+            // 第一帧：强制空白，避免任何残留
+            if (animationStartTime === null) {
+                animationStartTime = timestamp;
+                allLines.forEach(line => {
+                    line.visible = false;
+                    if (line.geometry) line.geometry.setDrawRange(0, 0);
+                });
+                renderer.render(scene, camera);
+                firstFrameDone = true;
+                return;
+            }
+
+            const elapsed = (timestamp - animationStartTime) / 1000;
+            const { progress } = getProgress(elapsed);
+            const drawCount = Math.floor(progress * vertexCountPerCurve);
+            const shouldBeVisible = drawCount >= 2;
+
+            for (let i = 0; i < allLines.length; i++) {
+                const line = allLines[i];
+                if (!line || !line.geometry) continue;
+                const maxPts = line.geometry.attributes.position.count;
+                const lineDraw = Math.min(drawCount, maxPts);
+                if (shouldBeVisible && lineDraw >= 2) {
+                    line.visible = true;
+                    line.geometry.setDrawRange(0, lineDraw);
+                } else {
+                    line.visible = false;
+                    line.geometry.setDrawRange(0, 0);
+                }
+            }
+
+            // 整体缓慢旋转，展现三叶结的空间形态
+            const rotY = elapsed * 0.05;
+            const rotX = Math.sin(elapsed * 0.09) * 0.04;
+            const rotZ = Math.cos(elapsed * 0.12) * 0.03;
+            mainGroup.rotation.set(rotX, rotY, rotZ);
+
+            // 相机轻柔晃动
+            camera.position.x = Math.sin(elapsed * 0.08) * 0.24;
+            camera.position.y = 0.25 + Math.cos(elapsed * 0.11) * 0.18;
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        // ==================== 响应式处理 ====================
+        function onResize() {
+            const w = container.clientWidth;
+            const h = container.clientHeight;
+            if (h <= 0) return;
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        }
+        window.addEventListener('resize', onResize, { passive: true });
+        window.addEventListener('orientationchange', () => setTimeout(onResize, 150), { passive: true });
+
+        // ==================== 启动 ====================
+        console.log('🚀 三叶结簇动画启动');
+        console.log(`   - 结数量: ${curveCount}`);
+        console.log(`   - 顶点数/结: ${vertexCountPerCurve}`);
+        console.log(`   - 动画周期: ${CYCLE_TOTAL}s`);
+
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

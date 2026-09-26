@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>环面斜驶线 · 恒方位角之美</title>
+    <style>
+        :root {
+            --bg: #050513;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'Noto Serif SC', 'STSong', 'KaiTi', '楷体', '华文楷体', '宋体', serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            height: 100vh;
+            width: 100vw;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+        #canvas-container {
+            position: fixed;
+            inset: 0;
+            z-index: 1;
+        }
+        canvas {
+            display: block;
+        }
+        .overlay {
+            position: fixed;
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+        #title-overlay {
+            top: clamp(12px, 3.5vh, 36px);
+        }
+        #title-overlay .title {
+            font-size: clamp(1.0rem, 2.0vw, 1.45rem);
+            font-weight: 400;
+            letter-spacing: 0.10em;
+            color: rgba(235, 228, 220, 0.92);
+            text-shadow: 0 0 24px rgba(190, 165, 140, 0.5), 0 0 6px rgba(170, 148, 125, 0.35);
+            line-height: 1.4;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.60rem, 1.10vw, 0.76rem);
+            font-weight: 300;
+            letter-spacing: 0.06em;
+            color: rgba(200, 192, 180, 0.7);
+            margin-top: 0.2em;
+            text-shadow: 0 0 13px rgba(155, 140, 120, 0.3);
+        }
+        #formula-overlay {
+            bottom: clamp(14px, 3.5vh, 40px);
+        }
+        #formula-overlay .formula {
+            font-size: clamp(0.50rem, 0.85vw, 0.68rem);
+            font-style: italic;
+            letter-spacing: 0.03em;
+            color: rgba(222, 214, 204, 0.84);
+            text-shadow: 0 0 20px rgba(155, 140, 125, 0.42), 0 0 5px rgba(165, 148, 130, 0.28);
+            line-height: 1.55;
+            background: rgba(10, 9, 16, 0.46);
+            padding: 0.34em 1.1em;
+            border-radius: 2em;
+            backdrop-filter: blur(5px);
+            -webkit-backdrop-filter: blur(5px);
+            border: 1px solid rgba(145, 125, 105, 0.20);
+        }
+        @media (max-width: 600px) {
+            #formula-overlay .formula {
+                padding: 0.22em 0.55em;
+                letter-spacing: 0.02em;
+                font-size: 0.40rem;
+            }
+            #title-overlay .title {
+                letter-spacing: 0.06em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+
+    <div class="overlay" id="title-overlay">
+        <div class="title">环面斜驶线 · 恒方位角之美</div>
+        <div class="subtitle">Loxodromes on the Torus</div>
+    </div>
+
+    <div class="overlay" id="formula-overlay">
+        <div class="formula">
+            v = (p/q)·u + φ₀ &emsp;|&emsp; u ∈ [0, 2πq]
+            &emsp;|&emsp; p,q ∈ ℕ, gcd=1
+        </div>
+    </div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 时间配置 ====================
+        const DRAW_DURATION = 15.0;
+        const HOLD_DURATION = 1.5;
+        const ERASE_DURATION = 15.0;
+        const CYCLE_DURATION = DRAW_DURATION + HOLD_DURATION + ERASE_DURATION;
+        const DRAW_END = DRAW_DURATION;
+        const ERASE_START = DRAW_END + HOLD_DURATION;
+        const FADE_IN_DURATION = 2.5;
+        const FADE_OUT_START = CYCLE_DURATION - 3.0;
+
+        // 环面参数
+        const TORUS_R = 2.15;
+        const TORUS_r = 0.78;
+
+        // ==================== 三种颜色 ====================
+        const COLOR_WARM_GOLD = new THREE.Color('#e8b86d');
+        const COLOR_ROSE = new THREE.Color('#e8a0b8');
+        const COLOR_CYAN = new THREE.Color('#7ec8e3');
+        const THREE_COLORS = [COLOR_WARM_GOLD, COLOR_ROSE, COLOR_CYAN];
+
+        // 环面上点计算
+        function torusPoint(u, v) {
+            const Rr = TORUS_R + TORUS_r * Math.cos(v);
+            const x = Rr * Math.cos(u);
+            const y = Rr * Math.sin(u);
+            const z = TORUS_r * Math.sin(v);
+            return [x, y, z];
+        }
+
+        function gcd(a, b) {
+            while (b) {
+                const t = b;
+                b = a % b;
+                a = t;
+            }
+            return a;
+        }
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x050513, 0.00007);
+
+        const camera = new THREE.PerspectiveCamera(46, container.clientWidth / container.clientHeight, 0.35, 17);
+        camera.position.set(1.0, 1.1, 4.6);
+        camera.lookAt(0, 0.05, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.16;
+        renderer.outputColorSpace = THREE.SRGBColorSpace;
+        container.appendChild(renderer.domElement);
+
+        // ==================== 主旋转组 ====================
+        const mainGroup = new THREE.Group();
+        scene.add(mainGroup);
+
+        // ==================== 星空背景粒子 ====================
+        const starsGroup = new THREE.Group();
+        mainGroup.add(starsGroup);
+        const starCount = 200;
+        const starPosArr = new Float32Array(starCount * 3);
+        for (let i = 0; i < starCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const r = 4.0 + Math.random() * 5.0;
+            starPosArr[i * 3] = Math.sin(phi) * Math.cos(theta) * r;
+            starPosArr[i * 3 + 1] = Math.sin(phi) * Math.sin(theta) * r;
+            starPosArr[i * 3 + 2] = Math.cos(phi) * r;
+        }
+        const starGeom = new THREE.BufferGeometry();
+        starGeom.setAttribute('position', new THREE.BufferAttribute(starPosArr, 3));
+        const starMat = new THREE.PointsMaterial({
+            color: 0xb5aec5,
+            size: 0.010,
+            transparent: true,
+            opacity: 0.26,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending,
+        });
+        const starPts = new THREE.Points(starGeom, starMat);
+        starsGroup.add(starPts);
+
+        // 环面附近漂浮光点
+        const glowGroup = new THREE.Group();
+        mainGroup.add(glowGroup);
+        const glowCount = 80;
+        const glowArr = new Float32Array(glowCount * 3);
+        for (let i = 0; i < glowCount; i++) {
+            const u = Math.random() * Math.PI * 2;
+            const v = Math.random() * Math.PI * 2;
+            const [x, y, z] = torusPoint(u, v);
+            glowArr[i * 3] = x + (Math.random() - 0.5) * 0.45;
+            glowArr[i * 3 + 1] = y + (Math.random() - 0.5) * 0.45;
+            glowArr[i * 3 + 2] = z + (Math.random() - 0.5) * 0.45;
+        }
+        const glowGeom = new THREE.BufferGeometry();
+        glowGeom.setAttribute('position', new THREE.BufferAttribute(glowArr, 3));
+        const glowMat = new THREE.PointsMaterial({
+            color: 0xf0e4cc,
+            size: 0.021,
+            transparent: true,
+            opacity: 0.40,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending,
+        });
+        const glowPts = new THREE.Points(glowGeom, glowMat);
+        glowGroup.add(glowPts);
+
+        // ==================== 环面参考线框 ====================
+        const torusWireGroup = new THREE.Group();
+        mainGroup.add(torusWireGroup);
+        const bgWireMats = [];
+
+        function createTorusLat(vFixed, steps = 280) {
+            const pts = [];
+            for (let i = 0; i <= steps; i++) {
+                const u = (i / steps) * Math.PI * 2;
+                const [x, y, z] = torusPoint(u, vFixed);
+                pts.push(new THREE.Vector3(x, y, z));
+            }
+            const geom = new THREE.BufferGeometry().setFromPoints(pts);
+            const mat = new THREE.LineBasicMaterial({
+                color: 0x3a3650,
+                transparent: true,
+                opacity: 0.12,
+                depthWrite: false,
+            });
+            bgWireMats.push(mat);
+            return new THREE.Line(geom, mat);
+        }
+
+        function createTorusLong(uFixed, steps = 200) {
+            const pts = [];
+            for (let i = 0; i <= steps; i++) {
+                const v = (i / steps) * Math.PI * 2;
+                const [x, y, z] = torusPoint(uFixed, v);
+                pts.push(new THREE.Vector3(x, y, z));
+            }
+            const geom = new THREE.BufferGeometry().setFromPoints(pts);
+            const mat = new THREE.LineBasicMaterial({
+                color: 0x3a3650,
+                transparent: true,
+                opacity: 0.12,
+                depthWrite: false,
+            });
+            bgWireMats.push(mat);
+            return new THREE.Line(geom, mat);
+        }
+
+        const V_STEPS = 10;
+        const U_STEPS = 22;
+        for (let j = 0; j < V_STEPS; j++) {
+            const v = (j / V_STEPS) * Math.PI * 2;
+            torusWireGroup.add(createTorusLat(v));
+        }
+        for (let j = 0; j < U_STEPS; j++) {
+            const u = (j / U_STEPS) * Math.PI * 2;
+            torusWireGroup.add(createTorusLong(u));
+        }
+        {
+            const outer = createTorusLat(0);
+            const inner = createTorusLat(Math.PI);
+            [outer, inner].forEach(l => {
+                l.material.color.setHex(0x5a5478);
+                l.material.opacity = 0.17;
+                torusWireGroup.add(l);
+            });
+        }
+
+        // ==================== 环面斜驶线生成 ====================
+        const curvesGroup = new THREE.Group();
+        mainGroup.add(curvesGroup);
+        const allCurveData = [];
+
+        /**
+         * 创建环面斜驶线
+         * @param {number} p - 分子
+         * @param {number} q - 分母 (gcd(p,q)=1)
+         * @param {number} phi0 - 初始相位偏移
+         * @param {THREE.Color} color
+         * @param {number} numPoints - 采样点数
+         */
+        function createLoxodrome(p, q, phi0, color, numPoints = 900) {
+            const c = p / q;
+            const uMax = 2 * Math.PI * q;
+            const totalVerts = numPoints + 1;
+            const positions = new Float32Array(totalVerts * 3);
+
+            for (let i = 0; i <= numPoints; i++) {
+                const u = (i / numPoints) * uMax;
+                const v = c * u + phi0;
+                const [x, y, z] = torusPoint(u, v);
+                positions[i * 3] = x;
+                positions[i * 3 + 1] = y;
+                positions[i * 3 + 2] = z;
+            }
+
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            geometry.setDrawRange(0, 0);
+
+            const material = new THREE.LineBasicMaterial({
+                color: color,
+                transparent: true,
+                opacity: 0.84,
+                depthWrite: false,
+            });
+            const line = new THREE.Line(geometry, material);
+            allCurveData.push({ geometry, totalVertices: totalVerts, line });
+            return line;
+        }
+
+        // 6组(p,q)对，均为最简分数，gcd=1
+        const pqPairs = [
+            [1, 2],
+            [2, 3],
+            [3, 4],
+            [4, 5],
+            [1, 3],
+            [3, 5],
+        ];
+
+        // 三组相位偏移
+        const phiGold = 0;
+        const phiRose = (2 * Math.PI) / 3;
+        const phiCyan = (4 * Math.PI) / 3;
+
+        // 为每种颜色各创建6条斜驶线
+        pqPairs.forEach(([p, q]) => {
+            curvesGroup.add(createLoxodrome(p, q, phiGold, COLOR_WARM_GOLD));
+        });
+        pqPairs.forEach(([p, q]) => {
+            curvesGroup.add(createLoxodrome(p, q, phiRose, COLOR_ROSE));
+        });
+        pqPairs.forEach(([p, q]) => {
+            curvesGroup.add(createLoxodrome(p, q, phiCyan, COLOR_CYAN));
+        });
+
+        const totalCurves = allCurveData.length;
+
+        // ==================== 动画循环 ====================
+        const clock = new THREE.Clock();
+        let animationStartTime = performance.now() / 1000;
+        clock.getDelta();
+
+        function getCycleTime() {
+            const now = performance.now() / 1000;
+            return (now - animationStartTime) % CYCLE_DURATION;
+        }
+
+        function easeInOutCubic(t) {
+            return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const cycleTime = getCycleTime();
+            const dt = Math.min(clock.getDelta(), 0.1);
+
+            mainGroup.rotation.y += 0.21 * dt;
+            mainGroup.rotation.x += 0.058 * dt;
+            mainGroup.rotation.z += 0.013 * Math.sin(cycleTime * 0.52) * dt;
+
+            const sway = 0.09 * Math.sin(cycleTime * (Math.PI * 2 / 34));
+            camera.position.y = 1.1 + sway;
+            camera.lookAt(0, 0.05, 0);
+
+            let fraction;
+            if (cycleTime < DRAW_END) {
+                fraction = easeInOutCubic(cycleTime / DRAW_DURATION);
+            } else if (cycleTime < ERASE_START) {
+                fraction = 1.0;
+            } else if (cycleTime < CYCLE_DURATION) {
+                const elapsed = cycleTime - ERASE_START;
+                fraction = 1.0 - easeInOutCubic(elapsed / ERASE_DURATION);
+                fraction = Math.max(0, fraction);
+            } else {
+                fraction = 0;
+            }
+
+            for (const data of allCurveData) {
+                const count = Math.round(fraction * data.totalVertices);
+                data.geometry.setDrawRange(0, Math.max(0, Math.min(data.totalVertices, count)));
+            }
+
+            let bgOp;
+            if (cycleTime < FADE_IN_DURATION) {
+                bgOp = cycleTime / FADE_IN_DURATION;
+            } else if (cycleTime < FADE_OUT_START) {
+                bgOp = 1.0;
+            } else if (cycleTime < CYCLE_DURATION) {
+                bgOp = 1.0 - (cycleTime - FADE_OUT_START) / (CYCLE_DURATION - FADE_OUT_START);
+            } else {
+                bgOp = 0;
+            }
+            bgOp = Math.max(0, Math.min(1, bgOp));
+
+            starMat.opacity = 0.26 * bgOp;
+            glowMat.opacity = 0.40 * bgOp;
+            for (const mat of bgWireMats) {
+                mat.opacity = (mat.opacity ?? 0.12) * bgOp;
+            }
+
+            glowGroup.rotation.y += dt * 0.07;
+            glowGroup.rotation.x += dt * 0.035;
+            starsGroup.rotation.y += dt * 0.018;
+            starsGroup.rotation.x += dt * 0.012;
+
+            renderer.render(scene, camera);
+        }
+
+        // ==================== 响应式处理 ====================
+        window.addEventListener('resize', () => {
+            camera.aspect = container.clientWidth / container.clientHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        });
+
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'r' || e.key === 'R') {
+                animationStartTime = performance.now() / 1000;
+                for (const data of allCurveData) {
+                    data.geometry.setDrawRange(0, 0);
+                }
+                mainGroup.rotation.set(0, 0, 0);
+            }
+        });
+
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+
+        console.log('🌀 环面斜驶线动画已启动');
+        console.log(`   - ${totalCurves} 条闭合斜驶线，3种颜色各${totalCurves / 3}条`);
+        console.log('   - 斜驶线方程：v = (p/q)·u + φ₀, u∈[0,2πq]');
+        console.log(`   - (p,q)对：${JSON.stringify(pqPairs)}`);
+        console.log(`   - 周期：${CYCLE_DURATION.toFixed(1)}秒`);
+        console.log('   - 按 R 键可重置');
+    </script>
+</body>
+</html>

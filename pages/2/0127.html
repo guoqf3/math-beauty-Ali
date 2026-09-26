@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WEB · 弹性蛛网</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #0e0a08;
+            overflow: hidden;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            height: 100vh;
+            width: 100vw;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2;
+            text-align: center;
+            pointer-events: none;
+            opacity: 0.55;
+            transition: opacity 0.6s ease;
+        }
+
+        .overlay:hover {
+            opacity: 0.85;
+        }
+
+        .title {
+            color: rgba(255, 220, 180, 0.8);
+            font-size: 11px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 6px;
+            text-shadow: 0 0 20px rgba(255, 180, 120, 0.4);
+        }
+
+        .hint {
+            color: rgba(220, 190, 160, 0.45);
+            font-size: 8px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+
+        @media (max-width: 768px) {
+            .overlay {
+                bottom: 20px;
+            }
+            .title {
+                font-size: 9px;
+                letter-spacing: 0.5em;
+            }
+            .hint {
+                font-size: 7px;
+                letter-spacing: 0.25em;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="canvas"></canvas>
+
+    <div class="overlay">
+        <div class="title">Web</div>
+        <div class="hint">move &nbsp;·&nbsp; click</div>
+    </div>
+
+    <script>
+        (function() {
+            // ─── 画布初始化 ───────────────────────────────────────────────
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            let nodes = [];
+            let mouse = { x: -9999, y: -9999, active: false, px: 0, py: 0 };
+            let colorBase = 35;        // 基础色相（暖橙）
+            let colorShift = 0;        // 点击色相偏移
+            let shockwaves = [];       // 冲击波数组
+            let time = 0;
+            let lastTime = 0;
+
+            // ─── 性能参数 ───────────────────────────────────────────────
+            const SPRING_CONSTANT = 0.012;   // 弹簧力系数
+            const DAMPING = 0.92;            // 阻尼系数
+            const MOUSE_RADIUS = 180;        // 鼠标作用半径
+            const CONNECT_DIST = 110;        // 连线距离阈值
+            const MAX_NODES = 180;           // 最大节点数
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                // 深色背景，避免白页
+                ctx.fillStyle = '#0e0a08';
+                ctx.fillRect(0, 0, W, H);
+            }
+
+            // ─── 节点类 ───────────────────────────────────────────────
+            class Node {
+                constructor(x, y) {
+                    this.homeX = x;            // 弹簧锚点位置
+                    this.homeY = y;
+                    this.x = x;
+                    this.y = y;
+                    this.vx = 0;
+                    this.vy = 0;
+                    this.radius = 2.5 + Math.random() * 3.5;
+                    this.baseRadius = this.radius;
+                    // 颜色：暖色范围 20-60 为主，加入少许粉红和金黄
+                    this.hue = 20 + Math.random() * 40;
+                    this.saturation = 65 + Math.random() * 25;
+                    this.lightness = 60 + Math.random() * 20;
+                    this.mass = 0.8 + Math.random() * 0.5;
+                }
+
+                update(dt, time) {
+                    // 弹簧力：拉回锚点
+                    const springX = (this.homeX - this.x) * SPRING_CONSTANT * this.mass;
+                    const springY = (this.homeY - this.y) * SPRING_CONSTANT * this.mass;
+
+                    // 鼠标影响力（吸引或排斥，这里使用吸引）
+                    let mouseForceX = 0;
+                    let mouseForceY = 0;
+                    if (mouse.active) {
+                        const dx = mouse.x - this.x;
+                        const dy = mouse.y - this.y;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        if (dist < MOUSE_RADIUS && dist > 0.01) {
+                            const strength = (1 - dist / MOUSE_RADIUS) * 0.35 * this.mass;
+                            mouseForceX = (dx / dist) * strength;
+                            mouseForceY = (dy / dist) * strength;
+                        }
+                    }
+
+                    // 冲击波影响
+                    let waveForceX = 0;
+                    let waveForceY = 0;
+                    for (let i = shockwaves.length - 1; i >= 0; i--) {
+                        const wave = shockwaves[i];
+                        const dx = this.x - wave.x;
+                        const dy = this.y - wave.y;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        const outerR = wave.radius;
+                        const innerR = Math.max(0, outerR - 80);
+                        if (dist > innerR && dist < outerR && dist > 0.01) {
+                            const force = wave.strength * (1 - Math.abs(dist - outerR) / 40) * this.mass;
+                            waveForceX += (dx / dist) * force;
+                            waveForceY += (dy / dist) * force;
+                        }
+                    }
+
+                    // 合外力
+                    const ax = springX + mouseForceX + waveForceX;
+                    const ay = springY + mouseForceY + waveForceY;
+
+                    this.vx += ax * dt;
+                    this.vy += ay * dt;
+
+                    // 阻尼
+                    this.vx *= DAMPING;
+                    this.vy *= DAMPING;
+
+                    // 速度限制
+                    const maxSpeed = 6;
+                    const speedSq = this.vx * this.vx + this.vy * this.vy;
+                    if (speedSq > maxSpeed * maxSpeed) {
+                        const speed = Math.sqrt(speedSq);
+                        this.vx = (this.vx / speed) * maxSpeed;
+                        this.vy = (this.vy / speed) * maxSpeed;
+                    }
+
+                    this.x += this.vx * dt;
+                    this.y += this.vy * dt;
+
+                    // 边界环绕
+                    if (this.x < -20) this.x = W + 20;
+                    if (this.x > W + 20) this.x = -20;
+                    if (this.y < -20) this.y = H + 20;
+                    if (this.y > H + 20) this.y = -20;
+                }
+
+                draw(ctx, time) {
+                    const pulse = Math.sin(time * 2 + this.x * 0.05) * 0.2 + 1;
+                    const currentRadius = this.radius * pulse;
+                    const hue = this.hue + colorShift;
+                    ctx.fillStyle = `hsla(${hue}, ${this.saturation}%, ${this.lightness}%, 0.9)`;
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, currentRadius, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // 节点高光
+                    ctx.fillStyle = `hsla(${hue}, ${this.saturation}%, ${Math.min(90, this.lightness + 25)}%, 0.7)`;
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, currentRadius * 0.45, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            // ─── 初始化节点 ───────────────────────────────────────────────
+            function initNodes() {
+                const area = W * H;
+                const count = Math.min(MAX_NODES, Math.max(60, Math.floor(area / 12000)));
+                nodes = [];
+                // 使用网格加随机扰动，使分布更均匀
+                const cols = Math.ceil(Math.sqrt(count * W / H));
+                const rows = Math.ceil(count / cols);
+                const cellW = W / cols;
+                const cellH = H / rows;
+                for (let r = 0; r < rows; r++) {
+                    for (let c = 0; c < cols; c++) {
+                        if (nodes.length >= count) break;
+                        const x = (c + 0.5) * cellW + (Math.random() - 0.5) * cellW * 0.8;
+                        const y = (r + 0.5) * cellH + (Math.random() - 0.5) * cellH * 0.8;
+                        nodes.push(new Node(x, y));
+                    }
+                    if (nodes.length >= count) break;
+                }
+                // 确保数量正确
+                while (nodes.length < count) {
+                    nodes.push(new Node(Math.random() * W, Math.random() * H));
+                }
+            }
+
+            // ─── 冲击波系统 ───────────────────────────────────────────────
+            function createShockwave(x, y) {
+                shockwaves.push({
+                    x: x,
+                    y: y,
+                    radius: 10,
+                    maxRadius: Math.max(W, H) * 0.5,
+                    strength: 4.5,
+                    life: 1.0,
+                    decay: 0.02,
+                    growth: 5.5,
+                });
+                if (shockwaves.length > 3) shockwaves.shift();
+            }
+
+            function updateShockwaves(dt) {
+                for (let i = shockwaves.length - 1; i >= 0; i--) {
+                    const wave = shockwaves[i];
+                    wave.radius += wave.growth * dt;
+                    wave.life -= wave.decay * dt;
+                    wave.strength *= 0.985;
+                    if (wave.life <= 0 || wave.radius > wave.maxRadius || wave.strength < 0.01) {
+                        shockwaves.splice(i, 1);
+                    }
+                }
+            }
+
+            function drawShockwaves(ctx) {
+                for (const wave of shockwaves) {
+                    const alpha = wave.life * 0.35;
+                    const lineWidth = 1.5 + wave.life * 2.5;
+                    ctx.strokeStyle = `hsla(${colorBase + colorShift}, 85%, 70%, ${alpha})`;
+                    ctx.lineWidth = lineWidth;
+                    ctx.lineCap = 'round';
+                    ctx.beginPath();
+                    ctx.arc(wave.x, wave.y, wave.radius, 0, Math.PI * 2);
+                    ctx.stroke();
+
+                    // 内环
+                    if (wave.radius > 25) {
+                        const innerAlpha = wave.life * 0.18;
+                        const innerRadius = wave.radius * 0.85;
+                        ctx.strokeStyle = `hsla(${colorBase + colorShift + 20}, 75%, 80%, ${innerAlpha})`;
+                        ctx.lineWidth = lineWidth * 0.5;
+                        ctx.beginPath();
+                        ctx.arc(wave.x, wave.y, innerRadius, 0, Math.PI * 2);
+                        ctx.stroke();
+                    }
+                }
+            }
+
+            // ─── 节点连接线 ───────────────────────────────────────────────
+            function drawConnections(ctx) {
+                const maxDistSq = CONNECT_DIST * CONNECT_DIST;
+                let drawnLines = 0;
+                const maxLines = 1200;
+                for (let i = 0; i < nodes.length; i++) {
+                    const n1 = nodes[i];
+                    for (let j = i + 1; j < nodes.length; j++) {
+                        if (drawnLines > maxLines) return;
+                        const n2 = nodes[j];
+                        const dx = n1.x - n2.x;
+                        const dy = n1.y - n2.y;
+                        if (Math.abs(dx) > CONNECT_DIST || Math.abs(dy) > CONNECT_DIST) continue;
+                        const distSq = dx * dx + dy * dy;
+                        if (distSq < maxDistSq) {
+                            const dist = Math.sqrt(distSq);
+                            const alpha = (1 - dist / CONNECT_DIST) * 0.4;
+                            if (alpha < 0.015) continue;
+                            const hue = (n1.hue + n2.hue) * 0.5 + colorShift;
+                            const sat = (n1.saturation + n2.saturation) * 0.5;
+                            const light = (n1.lightness + n2.lightness) * 0.5;
+                            ctx.strokeStyle = `hsla(${hue}, ${sat}%, ${light}%, ${alpha})`;
+                            ctx.lineWidth = 0.6;
+                            ctx.beginPath();
+                            ctx.moveTo(n1.x, n1.y);
+                            ctx.lineTo(n2.x, n2.y);
+                            ctx.stroke();
+                            drawnLines++;
+                        }
+                    }
+                }
+            }
+
+            // ─── 鼠标光晕 ───────────────────────────────────────────────
+            function drawMouseGlow(ctx) {
+                if (!mouse.active) return;
+                const radius = 70;
+                const grad = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                grad.addColorStop(0, `hsla(${colorBase + colorShift}, 70%, 75%, 0.1)`);
+                grad.addColorStop(0.5, `hsla(${colorBase + colorShift}, 65%, 65%, 0.04)`);
+                grad.addColorStop(1, 'transparent');
+                ctx.fillStyle = grad;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+
+                // 小十字准星
+                ctx.strokeStyle = `hsla(${colorBase + colorShift}, 80%, 85%, 0.6)`;
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(mouse.x - 8, mouse.y);
+                ctx.lineTo(mouse.x - 4, mouse.y);
+                ctx.moveTo(mouse.x + 4, mouse.y);
+                ctx.lineTo(mouse.x + 8, mouse.y);
+                ctx.moveTo(mouse.x, mouse.y - 8);
+                ctx.lineTo(mouse.x, mouse.y - 4);
+                ctx.moveTo(mouse.x, mouse.y + 4);
+                ctx.lineTo(mouse.x, mouse.y + 8);
+                ctx.stroke();
+            }
+
+            // ─── 主渲染循环 ───────────────────────────────────────────────
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+                const dtNorm = dt / 16.667; // 归一化到约60fps
+
+                time += dt * 0.001 * 60;
+
+                // 更新节点
+                for (const node of nodes) {
+                    node.update(dtNorm, time);
+                }
+
+                // 更新冲击波
+                updateShockwaves(dtNorm);
+
+                // 绘制背景拖尾
+                ctx.fillStyle = 'rgba(14, 10, 8, 0.12)';
+                ctx.fillRect(0, 0, W, H);
+
+                // 绘制连接线
+                drawConnections(ctx);
+
+                // 绘制冲击波（在节点下方）
+                drawShockwaves(ctx);
+
+                // 绘制节点
+                for (const node of nodes) {
+                    node.draw(ctx, time);
+                }
+
+                // 绘制鼠标光晕
+                drawMouseGlow(ctx);
+
+                requestAnimationFrame(animate);
+            }
+
+            // ─── 交互事件 ───────────────────────────────────────────────
+            function onMouseMove(e) {
+                mouse.px = mouse.x;
+                mouse.py = mouse.y;
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                createShockwave(mouse.x, mouse.y);
+                // 颜色主题偏移
+                colorShift += 40 + Math.random() * 30;
+                if (colorShift > 160) colorShift = -40;
+                // 同时施加一个瞬间推力给附近节点
+                for (const node of nodes) {
+                    const dx = node.x - mouse.x;
+                    const dy = node.y - mouse.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    if (dist < 120 && dist > 0.01) {
+                        const force = 8 * (1 - dist / 120);
+                        node.vx += (dx / dist) * force;
+                        node.vy += (dy / dist) * force;
+                    }
+                }
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.px = mouse.x;
+                    mouse.py = mouse.y;
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    createShockwave(mouse.x, mouse.y);
+                    colorShift += 40 + Math.random() * 30;
+                    if (colorShift > 160) colorShift = -40;
+                    for (const node of nodes) {
+                        const dx = node.x - mouse.x;
+                        const dy = node.y - mouse.y;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        if (dist < 120 && dist > 0.01) {
+                            const force = 8 * (1 - dist / 120);
+                            node.vx += (dx / dist) * force;
+                            node.vy += (dy / dist) * force;
+                        }
+                    }
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onResize() {
+                const oldW = W;
+                const oldH = H;
+                setupCanvas();
+                // 调整节点锚点位置比例
+                for (const node of nodes) {
+                    const ratioX = node.homeX / oldW;
+                    const ratioY = node.homeY / oldH;
+                    node.homeX = ratioX * W;
+                    node.homeY = ratioY * H;
+                    // 节点当前位置也按比例调整
+                    node.x = ratioX * W;
+                    node.y = ratioY * H;
+                }
+                // 重新初始化可能更简单，但保留锚点比例更平滑
+                // 若节点数不足，补充节点
+                const targetCount = Math.min(MAX_NODES, Math.max(60, Math.floor((W * H) / 12000)));
+                if (targetCount !== nodes.length) {
+                    initNodes(); // 简单起见重新初始化
+                }
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+                initNodes();
+
+                // 事件监听
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                // 启动动画循环
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            // 确保背景立即填充
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#0e0a08';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+
+        })();
+    </script>
+</body>
+</html>

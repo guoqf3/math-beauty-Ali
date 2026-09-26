@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HOLOGRAM · 全息几何</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #0a0a14;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2;
+            text-align: center;
+            pointer-events: none;
+            opacity: 0.55;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+
+        .overlay:hover {
+            opacity: 0.9;
+        }
+
+        .title {
+            color: rgba(220, 230, 255, 0.8);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 20px rgba(120, 160, 240, 0.5);
+        }
+
+        .hint {
+            color: rgba(170, 185, 220, 0.5);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+
+        @media (max-width: 768px) {
+            .overlay {
+                bottom: 18px;
+            }
+            .title {
+                font-size: 8px;
+                letter-spacing: 0.45em;
+            }
+            .hint {
+                font-size: 6px;
+                letter-spacing: 0.22em;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="canvas"></canvas>
+
+    <div class="overlay">
+        <div class="title">Hologram</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script>
+        (function() {
+            // ─── 画布初始化 ───────────────────────────────────────────────
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            let mouse = { x: -9999, y: -9999, active: false };
+            let time = 0;
+            let colorShift = 0;          // 色相偏移
+            let targetRotX = 0.3;        // 目标旋转角度（受鼠标影响）
+            let targetRotY = 0.5;
+            let currentRotX = 0.3;       // 当前平滑旋转角度
+            let currentRotY = 0.5;
+            let autoRotSpeed = 0.003;    // 自动旋转速度
+            let knotParams = { p: 2, q: 3 };  // 环面扭结参数
+
+            // ─── 几何体数据 ─────────────────────────────────────────────
+            let vertices = [];
+            let edgePairs = [];  // 存储相邻点索引对
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                // 深色背景，避免白屏
+                ctx.fillStyle = '#0a0a14';
+                ctx.fillRect(0, 0, W, H);
+            }
+
+            // ─── 生成环面扭结顶点与边 ───────────────────────────────────
+            function generateTorusKnot(p, q) {
+                vertices = [];
+                edgePairs = [];
+                const steps = 320;  // 点数
+                const R = Math.min(W, H) * 0.28;  // 主半径
+                const r = R * 0.35;               // 次半径
+
+                for (let i = 0; i <= steps; i++) {
+                    const t = (i / steps) * Math.PI * 2;
+                    // 环面扭结参数方程 (使用常见公式)
+                    const x = (R + r * Math.cos(q * t)) * Math.cos(p * t);
+                    const y = (R + r * Math.cos(q * t)) * Math.sin(p * t);
+                    const z = r * Math.sin(q * t);
+                    vertices.push({ x, y, z });
+                }
+
+                // 边连接相邻顶点（闭合曲线）
+                for (let i = 0; i < steps; i++) {
+                    edgePairs.push([i, i + 1]);
+                }
+                // 闭合首尾
+                edgePairs.push([steps, 0]);
+            }
+
+            // ─── 3D旋转矩阵 ─────────────────────────────────────────────
+            function rotatePoint(p, rotX, rotY) {
+                // 绕X轴旋转
+                let x1 = p.x;
+                let y1 = p.y * Math.cos(rotX) - p.z * Math.sin(rotX);
+                let z1 = p.y * Math.sin(rotX) + p.z * Math.cos(rotX);
+                // 绕Y轴旋转
+                let x2 = x1 * Math.cos(rotY) + z1 * Math.sin(rotY);
+                let y2 = y1;
+                let z2 = -x1 * Math.sin(rotY) + z1 * Math.cos(rotY);
+                return { x: x2, y: y2, z: z2 };
+            }
+
+            // ─── 透视投影 ───────────────────────────────────────────────
+            function projectPoint(p) {
+                const scale = Math.min(W, H) * 0.9;
+                const cameraDistance = Math.min(W, H) * 1.8;
+                const perspective = cameraDistance / (cameraDistance + p.z);
+                const sx = W / 2 + p.x * perspective * scale / cameraDistance * 2;
+                const sy = H / 2 + p.y * perspective * scale / cameraDistance * 2;
+                return { sx, sy, perspective };
+            }
+
+            // ─── 绘制几何体 ─────────────────────────────────────────────
+            function drawGeometry(ctx) {
+                // 先旋转所有顶点，存储屏幕坐标
+                const projected = [];
+                for (let i = 0; i < vertices.length; i++) {
+                    const rotated = rotatePoint(vertices[i], currentRotX, currentRotY);
+                    const projectedPoint = projectPoint(rotated);
+                    projected.push({
+                        sx: projectedPoint.sx,
+                        sy: projectedPoint.sy,
+                        z: rotated.z,
+                        perspective: projectedPoint.perspective
+                    });
+                }
+
+                // 绘制线段
+                ctx.lineCap = 'round';
+                ctx.lineWidth = 1.2;
+                for (let i = 0; i < edgePairs.length; i++) {
+                    const [idx1, idx2] = edgePairs[i];
+                    const p1 = projected[idx1];
+                    const p2 = projected[idx2];
+                    if (!p1 || !p2) continue;
+                    // 跳过屏幕外的线段
+                    if (p1.sx < -50 || p1.sx > W + 50 || p1.sy < -50 || p1.sy > H + 50 ||
+                        p2.sx < -50 || p2.sx > W + 50 || p2.sy < -50 || p2.sy > H + 50) continue;
+
+                    // 颜色基于Z深度和透视因子
+                    const depth = (p1.z + p2.z) / 2;
+                    const normalizedDepth = (depth / (Math.min(W, H) * 0.4) + 1) / 2; // 0~1
+                    const hue = (190 + colorShift + normalizedDepth * 80) % 360;
+                    const sat = 75;
+                    const light = 50 + normalizedDepth * 30;
+                    const alpha = 0.25 + (p1.perspective + p2.perspective) / 2 * 0.5;
+
+                    ctx.strokeStyle = `hsla(${hue}, ${sat}%, ${light}%, ${alpha})`;
+                    ctx.beginPath();
+                    ctx.moveTo(p1.sx, p1.sy);
+                    ctx.lineTo(p2.sx, p2.sy);
+                    ctx.stroke();
+                }
+
+                // 绘制顶点（小光点）
+                for (let i = 0; i < projected.length; i += 2) {  // 每两个点取一个，减少绘制量
+                    const p = projected[i];
+                    if (p.sx < -20 || p.sx > W + 20 || p.sy < -20 || p.sy > H + 20) continue;
+                    const size = 1.5 + p.perspective * 2.5;
+                    const hue = (190 + colorShift + (p.z / (Math.min(W, H) * 0.4)) * 60) % 360;
+                    ctx.fillStyle = `hsla(${hue}, 80%, 75%, 0.8)`;
+                    ctx.beginPath();
+                    ctx.arc(p.sx, p.sy, size, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            // ─── 鼠标光晕 ───────────────────────────────────────────────
+            function drawCursorGlow(ctx) {
+                if (!mouse.active) return;
+                const radius = 70;
+                const hue = 200 + colorShift;
+                const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                gradient.addColorStop(0, `hsla(${hue}, 60%, 75%, 0.05)`);
+                gradient.addColorStop(0.7, `hsla(${hue}, 50%, 70%, 0.02)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // ─── 更新旋转角度 ───────────────────────────────────────────
+            function updateRotation() {
+                // 自动旋转
+                currentRotY += autoRotSpeed;
+                currentRotX += autoRotSpeed * 0.4;
+
+                // 鼠标影响目标角度
+                if (mouse.active) {
+                    targetRotX = (mouse.y / H - 0.5) * 1.2;
+                    targetRotY = (mouse.x / W - 0.5) * 1.5;
+                } else {
+                    targetRotX = 0.3;
+                    targetRotY = 0.5;
+                }
+
+                // 平滑过渡
+                const lerpFactor = 0.06;
+                currentRotX += (targetRotX - currentRotX) * lerpFactor;
+                currentRotY += (targetRotY - currentRotY) * lerpFactor;
+
+                // 限制自动旋转累积，保持角度范围
+                currentRotX = currentRotX % (Math.PI * 2);
+                currentRotY = currentRotY % (Math.PI * 2);
+            }
+
+            // ─── 主循环 ─────────────────────────────────────────────────
+            let lastTime = 0;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                const dt = Math.min(timestamp - lastTime, 50);
+                lastTime = timestamp;
+
+                time += dt * 0.001;
+                updateRotation();
+
+                // 清除画布（半透明拖尾，形成轻微的残影效果）
+                ctx.fillStyle = 'rgba(10, 10, 20, 0.12)';
+                ctx.fillRect(0, 0, W, H);
+
+                // 绘制几何体
+                drawGeometry(ctx);
+
+                // 鼠标光晕
+                drawCursorGlow(ctx);
+
+                requestAnimationFrame(animate);
+            }
+
+            // ─── 切换扭结参数 ───────────────────────────────────────────
+            function cycleKnotParams() {
+                const presets = [
+                    { p: 2, q: 3 },
+                    { p: 3, q: 4 },
+                    { p: 4, q: 5 },
+                    { p: 2, q: 5 },
+                    { p: 3, q: 5 },
+                ];
+                const currentIndex = presets.findIndex(k => k.p === knotParams.p && k.q === knotParams.q);
+                const nextIndex = (currentIndex + 1) % presets.length;
+                knotParams = presets[nextIndex];
+                generateTorusKnot(knotParams.p, knotParams.q);
+            }
+
+            // ─── 交互事件 ───────────────────────────────────────────────
+            function onMouseMove(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                cycleKnotParams();
+                // 切换颜色主题
+                colorShift += 30 + Math.random() * 30;
+                if (colorShift > 160) colorShift = -30;
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    cycleKnotParams();
+                    colorShift += 30 + Math.random() * 30;
+                    if (colorShift > 160) colorShift = -30;
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onResize() {
+                setupCanvas();
+                generateTorusKnot(knotParams.p, knotParams.q);
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+                generateTorusKnot(knotParams.p, knotParams.q);
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            // 确保初始背景填充
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#0a0a14';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+
+        })();
+    </script>
+</body>
+</html>

@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>旋转外摆线编织 · 空间摆线簇</title>
+    <style>
+        :root {
+            --bg: #02010d;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'Noto Serif SC', serif;
+            height: 100vh;
+            width: 100vw;
+            user-select: none;
+            -webkit-user-select: none;
+            cursor: default;
+        }
+        #canvas-container {
+            position: fixed;
+            inset: 0;
+            z-index: 1;
+        }
+        canvas {
+            display: block;
+        }
+
+        #title-overlay {
+            position: fixed;
+            top: clamp(16px, 3.5vh, 42px);
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+            white-space: nowrap;
+        }
+        #title-overlay h1 {
+            color: #e1d0b6;
+            font-size: clamp(1.2rem, 2.4vw, 2.0rem);
+            font-weight: 400;
+            letter-spacing: 0.08em;
+            text-shadow: 0 0 28px rgba(215, 180, 130, 0.55), 0 0 75px rgba(190, 150, 100, 0.25);
+            margin: 0;
+        }
+        #title-overlay .subtitle {
+            color: #bda78c;
+            font-size: clamp(0.7rem, 1.2vw, 0.95rem);
+            letter-spacing: 0.06em;
+            margin-top: 0.3em;
+            text-shadow: 0 0 14px rgba(180, 140, 100, 0.4);
+        }
+
+        #formula-overlay {
+            position: fixed;
+            bottom: clamp(24px, 4.5vh, 54px);
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+            padding: 0 16px;
+        }
+        #formula-overlay .formula-box {
+            display: inline-block;
+            background: rgba(15, 11, 20, 0.72);
+            border: 1px solid rgba(170, 145, 115, 0.28);
+            border-radius: 12px;
+            padding: clamp(10px, 1.4vh, 16px) clamp(16px, 3vw, 28px);
+            backdrop-filter: blur(7px);
+            -webkit-backdrop-filter: blur(7px);
+        }
+        #formula-overlay .formula-main {
+            color: #f2dec5;
+            font-size: clamp(0.8rem, 1.35vw, 1.15rem);
+            letter-spacing: 0.04em;
+            line-height: 1.7;
+        }
+        #formula-overlay .formula-detail {
+            color: #a6947c;
+            font-size: clamp(0.62rem, 0.95vw, 0.82rem);
+            letter-spacing: 0.03em;
+            margin-top: 0.25em;
+            line-height: 1.5;
+        }
+
+        @media (max-width: 600px) {
+            #title-overlay h1 {
+                letter-spacing: 0.05em;
+            }
+            #formula-overlay .formula-box {
+                padding: 10px 16px;
+                border-radius: 10px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+
+    <div id="title-overlay">
+        <h1>旋转外摆线编织</h1>
+        <div class="subtitle">Epitrochoid Weave · Spinning Spatial Loops</div>
+    </div>
+
+    <div id="formula-overlay">
+        <div class="formula-box">
+            <div class="formula-main">
+                x = (R+r) cos t − d cos((1+R/r)t)<br>
+                y = (R+r) sin t − d sin((1+R/r)t)<br>
+                (x, y, z) = R<sub>φ,ψ</sub> · (x, y, 0)
+            </div>
+            <div class="formula-detail">
+                t ∈ [0, 2π·r′] | R, r, d ∈ ℝ | 封闭当 r′ = r/gcd(R,r)
+            </div>
+        </div>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.157.0/build/three.module.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#02010d');
+        scene.fog = new THREE.Fog('#02010d', 5.5, 18);
+
+        const camera = new THREE.PerspectiveCamera(
+            46,
+            container.clientWidth / container.clientHeight,
+            0.3,
+            26
+        );
+        camera.position.set(0, 0.35, 7.2);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.2;
+        container.appendChild(renderer.domElement);
+
+        scene.add(new THREE.AmbientLight('#202040', 0.4));
+
+        const mainGroup = new THREE.Group();
+        scene.add(mainGroup);
+
+        const totalPoints = 1800;
+        const allLines = [];
+
+        // 全局缩放因子，确保所有曲线不超出画面
+        const curveScale = 0.6;
+
+        function generateEpitrochoid(R, r, d) {
+            const vertices = new Float32Array(totalPoints * 3);
+            const gcd = (a, b) => b === 0 ? a : gcd(b, a % b);
+            const g = gcd(Math.round(R * 10), Math.round(r * 10)) / 10;
+            const periods = r / g;
+            const tMax = Math.PI * 2 * periods;
+            for (let i = 0; i < totalPoints; i++) {
+                const t = (i / (totalPoints - 1)) * tMax;
+                const bigRPlusR = R + r;
+                const ratio = bigRPlusR / r;
+                const x = bigRPlusR * Math.cos(t) - d * Math.cos(ratio * t);
+                const y = bigRPlusR * Math.sin(t) - d * Math.sin(ratio * t);
+                vertices[i * 3] = x;
+                vertices[i * 3 + 1] = y;
+                vertices[i * 3 + 2] = 0;
+            }
+            return vertices;
+        }
+
+        function createLine(vertices, hue, opacity = 0.75) {
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+            geometry.setDrawRange(0, 0);
+
+            const material = new THREE.LineBasicMaterial({
+                color: new THREE.Color().setHSL(hue, 0.90, 0.63),
+                transparent: true,
+                opacity: opacity,
+                linewidth: 1,
+                blending: THREE.AdditiveBlending,
+                depthWrite: true,
+                depthTest: true,
+            });
+
+            const line = new THREE.Line(geometry, material);
+            line.visible = false;
+            line.frustumCulled = false;
+            return line;
+        }
+
+        const curveCount = 18;
+        const configs = [];
+        for (let j = 0; j < curveCount; j++) {
+            const R = 1.8 + (j % 3) * 0.3;
+            const r = 0.6 + Math.floor(j / 3) * 0.2;
+            const d = r * (0.7 + (j % 2) * 0.5);
+            const rotY = (j / curveCount) * Math.PI * 2;
+            const rotX = (j * 0.5) % (Math.PI);
+            const rotation = new THREE.Euler(rotX, rotY, 0);
+            configs.push({ R, r, d, rotation });
+        }
+
+        configs.forEach((cfg, idx) => {
+            const verts2D = generateEpitrochoid(cfg.R, cfg.r, cfg.d);
+            const rotMatrix = new THREE.Matrix4().makeRotationFromEuler(cfg.rotation);
+            const vec = new THREE.Vector3();
+            const rotatedVerts = new Float32Array(totalPoints * 3);
+            for (let i = 0; i < totalPoints; i++) {
+                vec.set(verts2D[i * 3], verts2D[i * 3 + 1], 0);
+                vec.applyMatrix4(rotMatrix);
+                // 应用全局缩放，保证不超出可视范围
+                vec.multiplyScalar(curveScale);
+                rotatedVerts[i * 3] = vec.x;
+                rotatedVerts[i * 3 + 1] = vec.y;
+                rotatedVerts[i * 3 + 2] = vec.z;
+            }
+            const hue = (idx / curveCount) * 0.88;
+            const line = createLine(rotatedVerts, hue, 0.75);
+            mainGroup.add(line);
+            allLines.push(line);
+        });
+
+        console.log('✅ 已生成缩放后的空间外摆线，缩放因子:', curveScale);
+
+        // ==================== 动画状态机 ====================
+        const CYCLE_TOTAL = 7.0;
+        const APPEAR_TIME = 3.0;
+        const PAUSE_TIME = 1.0;
+        const DISAPPEAR_TIME = 3.0;
+
+        let animationStartTime = null;
+        let firstFrameDone = false;
+
+        function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+        function easeInCubic(t) { return t * t * t; }
+
+        function getProgress(elapsedSeconds) {
+            const cycle = elapsedSeconds % CYCLE_TOTAL;
+            if (cycle < APPEAR_TIME) {
+                const t = cycle / APPEAR_TIME;
+                return { progress: easeOutCubic(t), phase: 'appear' };
+            } else if (cycle < APPEAR_TIME + PAUSE_TIME) {
+                return { progress: 1.0, phase: 'pause' };
+            } else {
+                const t = (cycle - APPEAR_TIME - PAUSE_TIME) / DISAPPEAR_TIME;
+                return { progress: 1.0 - easeInCubic(t), phase: 'disappear' };
+            }
+        }
+
+        // ==================== 渲染循环 ====================
+        function animate(timestamp) {
+            requestAnimationFrame(animate);
+
+            if (animationStartTime === null) {
+                animationStartTime = timestamp;
+                allLines.forEach(line => {
+                    line.visible = false;
+                    if (line.geometry) line.geometry.setDrawRange(0, 0);
+                });
+                renderer.render(scene, camera);
+                firstFrameDone = true;
+                return;
+            }
+
+            const elapsed = (timestamp - animationStartTime) / 1000;
+            const { progress } = getProgress(elapsed);
+            const drawCount = Math.floor(progress * totalPoints);
+            const shouldBeVisible = drawCount >= 2;
+
+            for (let i = 0; i < allLines.length; i++) {
+                const line = allLines[i];
+                if (!line || !line.geometry) continue;
+                const maxPts = line.geometry.attributes.position.count;
+                const lineDraw = Math.min(drawCount, maxPts);
+                if (shouldBeVisible && lineDraw >= 2) {
+                    line.visible = true;
+                    line.geometry.setDrawRange(0, lineDraw);
+                } else {
+                    line.visible = false;
+                    line.geometry.setDrawRange(0, 0);
+                }
+            }
+
+            const rotY = elapsed * 0.09;
+            const rotX = Math.sin(elapsed * 0.19) * 0.06;
+            const rotZ = Math.cos(elapsed * 0.24) * 0.05;
+            mainGroup.rotation.set(rotX, rotY, rotZ);
+
+            camera.position.x = Math.sin(elapsed * 0.15) * 0.25;
+            camera.position.y = 0.35 + Math.cos(elapsed * 0.21) * 0.22;
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        // ==================== 响应式处理 ====================
+        function onResize() {
+            const w = container.clientWidth;
+            const h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        }
+        window.addEventListener('resize', onResize, { passive: true });
+        window.addEventListener('orientationchange', () => setTimeout(onResize, 150), { passive: true });
+
+        console.log('🚀 旋转外摆线编织动画启动');
+        console.log(`   - 曲线数量: ${curveCount}`);
+        console.log(`   - 采样点/曲线: ${totalPoints}`);
+        console.log(`   - 动画周期: ${CYCLE_TOTAL}s`);
+
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

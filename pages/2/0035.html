@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>星轨织网 · 光点轨迹</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #050510;
+            font-family: system-ui, -apple-system, sans-serif;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            user-select: none;
+            cursor: crosshair;
+        }
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+        #hint {
+            position: fixed;
+            bottom: 22px;
+            right: 26px;
+            color: rgba(255, 255, 255, 0.28);
+            font-size: 12px;
+            letter-spacing: 0.6px;
+            pointer-events: none;
+            z-index: 10;
+            transition: opacity 1.5s ease;
+            font-weight: 300;
+        }
+        #fps-badge {
+            position: fixed;
+            top: 18px;
+            left: 20px;
+            color: rgba(255, 255, 255, 0.25);
+            font-size: 11px;
+            pointer-events: none;
+            z-index: 10;
+            font-weight: 300;
+            letter-spacing: 0.5px;
+        }
+        .error-message {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #ffffff;
+            font-size: 16px;
+            text-align: center;
+            background: rgba(0, 0, 0, 0.6);
+            padding: 20px 30px;
+            border-radius: 8px;
+            display: none;
+            z-index: 100;
+        }
+    </style>
+</head>
+<body>
+    <div id="fps-badge"></div>
+    <div id="hint">移动旋转视角 · 点击激发波纹</div>
+    <div id="error-message" class="error-message">
+        无法初始化WebGL，请检查浏览器设置或更换设备。
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/pixi.js@7.4.2/dist/pixi.min.js">
+    </script>
+    <script>
+        (function() {
+            'use strict';
+
+            // ─── 环境检查与初始化保护 ───
+            const errorEl = document.getElementById('error-message');
+
+            function showError(msg) {
+                if (errorEl) {
+                    errorEl.textContent = msg || '初始化失败，请检查浏览器WebGL支持。';
+                    errorEl.style.display = 'block';
+                }
+                console.error(msg);
+            }
+
+            if (!window.PIXI) {
+                showError('PixiJS 库加载失败，请检查网络连接。');
+                return;
+            }
+
+            // 强制使用WebGL，若不可用则显示提示（不自动降级到Canvas，因为Canvas对混合模式支持不佳可能导致显示异常）
+            function isWebGLAvailable() {
+                try {
+                    const c = document.createElement('canvas');
+                    return !!(window.WebGLRenderingContext &&
+                        (c.getContext('webgl') || c.getContext('experimental-webgl')));
+                } catch (e) { return false; }
+            }
+
+            if (!isWebGLAvailable()) {
+                showError('您的浏览器不支持WebGL，无法运行此交互页面。请更换现代浏览器或开启硬件加速。');
+                return;
+            }
+
+            // ─── 常量定义 ───
+            const FOCAL_LENGTH = 950;
+            const PARTICLE_COUNT = 650;          // 轨迹粒子数
+            const STAR_COUNT = 180;              // 背景星点
+            const PULSE_MAX_PARTICLES = 50;      // 脉冲粒子数
+            const AUTO_ROTATE_SPEED = 0.2;       // 自动旋转速度
+            const TRAIL_FADE = 0.96;             // 拖尾淡出系数（视觉上模拟轨迹）
+            const MAX_CONNECTION_DIST = 120;     // 粒子间连线距离阈值
+            const CONNECTION_ALPHA = 0.25;       // 连线基础透明度
+
+            // ─── DOM 元素 ───
+            const fpsBadge = document.getElementById('fps-badge');
+            const hintEl = document.getElementById('hint');
+
+            // ─── PixiJS 应用初始化 ───
+            let app;
+            try {
+                app = new PIXI.Application({
+                    width: window.innerWidth,
+                    height: window.innerHeight,
+                    backgroundColor: 0x050510,
+                    antialias: false,
+                    autoDensity: true,
+                    resolution: Math.min(window.devicePixelRatio || 1, 2),
+                    powerPreference: 'high-performance',
+                    forceCanvas: false,
+                });
+            } catch (err) {
+                showError('PixiJS 初始化异常：' + err.message);
+                return;
+            }
+
+            // 监听渲染器错误
+            app.renderer.on('error', (err) => {
+                showError('渲染错误：' + err.message);
+            });
+
+            document.body.appendChild(app.view);
+            app.view.style.position = 'fixed';
+            app.view.style.top = '0';
+            app.view.style.left = '0';
+            app.view.style.width = '100%';
+            app.view.style.height = '100%';
+            app.view.style.display = 'block';
+
+            // ─── 发光纹理生成 ───
+            function createGlowTexture(size) {
+                const c = document.createElement('canvas');
+                c.width = size;
+                c.height = size;
+                const ctx = c.getContext('2d');
+                const half = size / 2;
+                const gradient = ctx.createRadialGradient(half, half, 0, half, half, half);
+                gradient.addColorStop(0.0, 'rgba(255,255,255,1)');
+                gradient.addColorStop(0.2, 'rgba(255,255,255,0.85)');
+                gradient.addColorStop(0.5, 'rgba(255,255,255,0.4)');
+                gradient.addColorStop(0.8, 'rgba(255,255,255,0.1)');
+                gradient.addColorStop(1.0, 'rgba(255,255,255,0)');
+                ctx.fillStyle = gradient;
+                ctx.fillRect(0, 0, size, size);
+                return PIXI.Texture.from(c);
+            }
+
+            let glowTex, smallGlowTex;
+            try {
+                glowTex = createGlowTexture(64);
+                smallGlowTex = createGlowTexture(32);
+                // 设置线性缩放模式
+                glowTex.baseTexture.scaleMode = PIXI.SCALE_MODES.LINEAR;
+                smallGlowTex.baseTexture.scaleMode = PIXI.SCALE_MODES.LINEAR;
+            } catch (err) {
+                showError('纹理创建失败：' + err.message);
+                return;
+            }
+
+            // ─── 主容器与图形元素 ───
+            const rootContainer = new PIXI.Container();
+            app.stage.addChild(rootContainer);
+
+            // 连线层（使用 Graphics 绘制，效率较高）
+            const linesGraphics = new PIXI.Graphics();
+            linesGraphics.blendMode = PIXI.BLEND_MODES.ADD;
+            rootContainer.addChild(linesGraphics);
+
+            // 轨迹粒子层（普通Container，每个精灵单独设置混合模式）
+            const particlesLayer = new PIXI.Container();
+            particlesLayer.blendMode = PIXI.BLEND_MODES.ADD;
+            rootContainer.addChild(particlesLayer);
+
+            // 背景星点层
+            const starsLayer = new PIXI.Container();
+            starsLayer.blendMode = PIXI.BLEND_MODES.ADD;
+            rootContainer.addChild(starsLayer);
+
+            // 脉冲粒子层
+            const pulseLayer = new PIXI.Container();
+            pulseLayer.blendMode = PIXI.BLEND_MODES.ADD;
+            rootContainer.addChild(pulseLayer);
+
+            // 中心光晕
+            const centerGlow = new PIXI.Sprite(glowTex);
+            centerGlow.anchor.set(0.5);
+            centerGlow.tint = 0xCCDDFF;
+            centerGlow.alpha = 0.25;
+            centerGlow.scale.set(2.0);
+            centerGlow.blendMode = PIXI.BLEND_MODES.ADD;
+            rootContainer.addChild(centerGlow);
+
+            // ─── 数据结构 ───
+            const particles = [];    // {sprite, x, y, z, vx, vy, vz, hue, baseX, baseY, baseZ, ...}
+            const starParticles = []; // {sprite, x, y, vx, vy, depth, phase, speed}
+            const pulseParticles = []; // {sprite, x, y, vx, vy, life, decay, size}
+            const pulseContainer = new PIXI.Container();
+            pulseLayer.addChild(pulseContainer);
+
+            let mouseX = window.innerWidth / 2;
+            let mouseY = window.innerHeight / 2;
+            let smoothMouseX = mouseX;
+            let smoothMouseY = mouseY;
+            let autoRotateY = 0;
+            let time = 0;
+            let frameCount = 0;
+            let fpsLastTime = 0;
+            let pulseActive = false;
+            let pulseTimer = 0;
+
+            // ─── 颜色工具 ───
+            function hslToHex(h, s, l) {
+                h = ((h % 360) + 360) % 360;
+                s = Math.max(0, Math.min(100, s)) / 100;
+                l = Math.max(0, Math.min(100, l)) / 100;
+                const c = (1 - Math.abs(2 * l - 1)) * s;
+                const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+                const m = l - c / 2;
+                let r = 0,
+                    g = 0,
+                    b = 0;
+                if (h < 60) { r = c;
+                    g = x;
+                    b = 0; } else if (h < 120) { r = x;
+                    g = c;
+                    b = 0; } else if (h < 180) { r = 0;
+                    g = c;
+                    b = x; } else if (h < 240) { r = 0;
+                    g = x;
+                    b = c; } else if (h < 300) { r = x;
+                    g = 0;
+                    b = c; } else { r = c;
+                    g = 0;
+                    b = x; }
+                const ri = Math.round((r + m) * 255);
+                const gi = Math.round((g + m) * 255);
+                const bi = Math.round((b + m) * 255);
+                return (ri << 16) | (gi << 8) | bi;
+            }
+
+            // ─── 初始化轨迹粒子 ───
+            function initParticles() {
+                for (let i = 0; i < PARTICLE_COUNT; i++) {
+                    const sprite = new PIXI.Sprite(smallGlowTex);
+                    sprite.anchor.set(0.5);
+                    sprite.blendMode = PIXI.BLEND_MODES.ADD;
+
+                    // 初始随机分布在三维球壳内
+                    const theta = Math.random() * Math.PI * 2;
+                    const phi = Math.acos(2 * Math.random() - 1);
+                    const radius = 180 + Math.random() * 220;
+                    const x = radius * Math.sin(phi) * Math.cos(theta);
+                    const y = radius * Math.sin(phi) * Math.sin(theta);
+                    const z = radius * Math.cos(phi) - 100; // 偏移使中心居中
+
+                    const hue = Math.random() * 360;
+                    const data = {
+                        sprite: sprite,
+                        x: x,
+                        y: y,
+                        z: z,
+                        baseX: x,
+                        baseY: y,
+                        baseZ: z,
+                        vx: (Math.random() - 0.5) * 0.15,
+                        vy: (Math.random() - 0.5) * 0.15,
+                        vz: (Math.random() - 0.5) * 0.1,
+                        hue: hue,
+                        phase: Math.random() * Math.PI * 2,
+                        wobbleSpeed: 0.5 + Math.random() * 1.2,
+                        wobbleAmp: 10 + Math.random() * 25,
+                    };
+                    sprite.tint = hslToHex(hue, 80, 60);
+                    sprite.alpha = 0.6 + Math.random() * 0.3;
+                    particles.push(data);
+                    particlesLayer.addChild(sprite);
+                }
+            }
+
+            // ─── 初始化背景星点 ───
+            function initStars() {
+                const w = window.innerWidth;
+                const h = window.innerHeight;
+                for (let i = 0; i < STAR_COUNT; i++) {
+                    const sprite = new PIXI.Sprite(glowTex);
+                    sprite.anchor.set(0.5);
+                    sprite.blendMode = PIXI.BLEND_MODES.ADD;
+                    const depth = 0.3 + Math.random() * 0.7;
+                    const tintRoll = Math.random();
+                    if (tintRoll < 0.7) sprite.tint = 0xCCDDFF;
+                    else if (tintRoll < 0.9) sprite.tint = 0xFFEEDD;
+                    else sprite.tint = 0xCCFFCC;
+                    sprite.alpha = 0.1 + Math.random() * 0.3;
+                    sprite.scale.set(0.03 + depth * 0.05);
+                    const data = {
+                        sprite: sprite,
+                        x: Math.random() * w,
+                        y: Math.random() * h,
+                        vx: (Math.random() - 0.5) * 0.04,
+                        vy: (Math.random() - 0.5) * 0.03,
+                        depth: depth,
+                        phase: Math.random() * Math.PI * 2,
+                        speed: 0.4 + Math.random() * 1.2,
+                    };
+                    sprite.position.set(data.x, data.y);
+                    starParticles.push(data);
+                    starsLayer.addChild(sprite);
+                }
+            }
+
+            // ─── 脉冲粒子生成 ───
+            function spawnPulse(screenX, screenY) {
+                const count = 30;
+                for (let i = 0; i < count; i++) {
+                    const sprite = new PIXI.Sprite(smallGlowTex);
+                    sprite.anchor.set(0.5);
+                    sprite.blendMode = PIXI.BLEND_MODES.ADD;
+                    const hue = Math.random() * 360;
+                    sprite.tint = hslToHex(hue, 85, 65);
+                    sprite.alpha = 0.9;
+                    const angle = Math.random() * Math.PI * 2;
+                    const dist = 5 + Math.random() * 30;
+                    const speed = 100 + Math.random() * 250;
+                    const data = {
+                        sprite: sprite,
+                        x: screenX,
+                        y: screenY,
+                        vx: Math.cos(angle) * speed,
+                        vy: Math.sin(angle) * speed,
+                        life: 1.0,
+                        decay: 1.0 + Math.random() * 1.0,
+                    };
+                    sprite.position.set(screenX, screenY);
+                    sprite.scale.set(0.05 + Math.random() * 0.06);
+                    pulseParticles.push(data);
+                    pulseContainer.addChild(sprite);
+                }
+                pulseActive = true;
+                pulseTimer = 0;
+            }
+
+            // ─── 3D 投影函数 ───
+            function project3D(x, y, z, viewX, viewY, centerX, centerY) {
+                // 绕Y轴旋转
+                const cosY = Math.cos(viewY);
+                const sinY = Math.sin(viewY);
+                const x1 = x * cosY + z * sinY;
+                const z1 = -x * sinY + z * cosY;
+                const y1 = y;
+                // 绕X轴旋转
+                const cosX = Math.cos(viewX);
+                const sinX = Math.sin(viewX);
+                const y2 = y1 * cosX - z1 * sinX;
+                const z2 = y1 * sinX + z1 * cosX;
+                const x2 = x1;
+                const scale = FOCAL_LENGTH / (FOCAL_LENGTH + z2);
+                const sx = x2 * scale + centerX;
+                const sy = y2 * scale + centerY;
+                return { sx, sy, scale, z: z2 };
+            }
+
+            // ─── 更新粒子与连线 ───
+            function updateParticlesAndLines(dt, viewX, viewY, centerX, centerY) {
+                // 更新粒子位置
+                for (const p of particles) {
+                    // 微小随机漂移
+                    p.vx += (Math.random() - 0.5) * 0.01;
+                    p.vy += (Math.random() - 0.5) * 0.01;
+                    p.vz += (Math.random() - 0.5) * 0.01;
+                    // 阻尼
+                    p.vx *= 0.995;
+                    p.vy *= 0.995;
+                    p.vz *= 0.995;
+
+                    p.x += p.vx * dt * 30;
+                    p.y += p.vy * dt * 30;
+                    p.z += p.vz * dt * 30;
+
+                    // 边界反弹（球壳区域约束）
+                    const dist = Math.sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
+                    const minDist = 120;
+                    const maxDist = 450;
+                    if (dist < minDist) {
+                        const factor = minDist / dist;
+                        p.x *= factor;
+                        p.y *= factor;
+                        p.z *= factor;
+                        p.vx *= -0.5;
+                        p.vy *= -0.5;
+                        p.vz *= -0.5;
+                    } else if (dist > maxDist) {
+                        const factor = maxDist / dist;
+                        p.x *= factor;
+                        p.y *= factor;
+                        p.z *= factor;
+                        p.vx *= -0.5;
+                        p.vy *= -0.5;
+                        p.vz *= -0.5;
+                    }
+
+                    // 投影
+                    const proj = project3D(p.x, p.y, p.z, viewX, viewY, centerX, centerY);
+                    p.sprite.position.set(proj.sx, proj.sy);
+                    const scale = proj.scale * 0.08;
+                    p.sprite.scale.set(scale);
+                    p.sprite.alpha = Math.max(0.1, 0.7 * proj.scale);
+                    // 颜色随位置和时间变化
+                    const hue = (p.hue + time * 20) % 360;
+                    p.sprite.tint = hslToHex(hue, 75, 55);
+                }
+
+                // 绘制连线（基于投影后的2D距离）
+                linesGraphics.clear();
+                linesGraphics.lineStyle(1, 0xFFFFFF, 0);
+                // 使用粒子2D屏幕坐标
+                const screenPositions = particles.map(p => ({
+                    x: p.sprite.x,
+                    y: p.sprite.y,
+                    alpha: p.sprite.alpha
+                }));
+                for (let i = 0; i < screenPositions.length; i++) {
+                    for (let j = i + 1; j < screenPositions.length; j++) {
+                        const dx = screenPositions[i].x - screenPositions[j].x;
+                        const dy = screenPositions[i].y - screenPositions[j].y;
+                        const distSq = dx * dx + dy * dy;
+                        if (distSq < MAX_CONNECTION_DIST * MAX_CONNECTION_DIST) {
+                            const dist = Math.sqrt(distSq);
+                            const alpha = CONNECTION_ALPHA * (1 - dist / MAX_CONNECTION_DIST) *
+                                Math.min(screenPositions[i].alpha, screenPositions[j].alpha);
+                            if (alpha > 0.02) {
+                                // 根据两端平均颜色设置线条颜色
+                                const color1 = particles[i].sprite.tint;
+                                const color2 = particles[j].sprite.tint;
+                                const avgColor = (((color1 & 0xFF0000) + (color2 & 0xFF0000)) >> 1) & 0xFF0000 |
+                                    ((((color1 & 0x00FF00) + (color2 & 0x00FF00)) >> 1) & 0x00FF00) |
+                                    ((((color1 & 0x0000FF) + (color2 & 0x0000FF)) >> 1) & 0x0000FF);
+                                linesGraphics.lineStyle(1, avgColor, alpha);
+                                linesGraphics.moveTo(screenPositions[i].x, screenPositions[i].y);
+                                linesGraphics.lineTo(screenPositions[j].x, screenPositions[j].y);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ─── 更新背景星点 ───
+            function updateStars(dt, w, h) {
+                for (const p of starParticles) {
+                    p.x += p.vx * dt * 8;
+                    p.y += p.vy * dt * 8;
+                    if (p.x < -20) p.x = w + 20;
+                    if (p.x > w + 20) p.x = -20;
+                    if (p.y < -20) p.y = h + 20;
+                    if (p.y > h + 20) p.y = -20;
+                    const twinkle = 0.6 + 0.4 * Math.sin(p.phase + time * p.speed);
+                    p.sprite.position.set(p.x, p.y);
+                    p.sprite.alpha = (0.1 + 0.2 * p.depth) * twinkle;
+                    p.sprite.scale.set((0.02 + 0.03 * p.depth) * twinkle);
+                }
+            }
+
+            // ─── 更新脉冲粒子 ───
+            function updatePulse(dt) {
+                for (let i = pulseParticles.length - 1; i >= 0; i--) {
+                    const p = pulseParticles[i];
+                    p.life -= p.decay * dt;
+                    if (p.life <= 0) {
+                        pulseContainer.removeChild(p.sprite);
+                        p.sprite.destroy({ texture: false, children: false });
+                        pulseParticles.splice(i, 1);
+                        continue;
+                    }
+                    p.x += p.vx * dt;
+                    p.y += p.vy * dt;
+                    p.vx *= 0.98;
+                    p.vy *= 0.98;
+                    p.sprite.position.set(p.x, p.y);
+                    p.sprite.alpha = Math.max(0, p.life) * 0.8;
+                    p.sprite.scale.set(0.05 + 0.05 * p.life);
+                }
+                if (pulseActive) {
+                    pulseTimer += dt;
+                    if (pulseTimer > 0.8) {
+                        pulseActive = false;
+                        pulseTimer = 0;
+                    }
+                }
+            }
+
+            // ─── 中心光晕更新 ───
+            function updateCenterGlow(centerX, centerY) {
+                const pulse = 0.2 + 0.07 * Math.sin(time * 1.5) + 0.04 * Math.sin(time * 3.2);
+                centerGlow.position.set(centerX, centerY);
+                centerGlow.alpha = Math.max(0.1, Math.min(0.35, pulse));
+                centerGlow.scale.set(1.8 + 0.3 * Math.sin(time * 0.8));
+            }
+
+            // ─── 主循环 ───
+            app.ticker.add((delta) => {
+                const dt = Math.min(delta / 60, 0.05);
+                time += dt;
+                frameCount++;
+
+                const w = window.innerWidth;
+                const h = window.innerHeight;
+                const cx = w / 2;
+                const cy = h / 2;
+
+                // 平滑鼠标
+                smoothMouseX += (mouseX - smoothMouseX) * 0.06;
+                smoothMouseY += (mouseY - smoothMouseY) * 0.06;
+
+                // 自动旋转
+                autoRotateY += AUTO_ROTATE_SPEED * dt;
+
+                // 视角
+                const normX = (smoothMouseX / w) * 2 - 1;
+                const normY = (smoothMouseY / h) * 2 - 1;
+                const viewY = autoRotateY + normX * 0.8;
+                const viewX = normY * 0.5;
+
+                // 更新
+                updateParticlesAndLines(dt, viewX, viewY, cx, cy);
+                updateStars(dt, w, h);
+                updatePulse(dt);
+                updateCenterGlow(cx, cy);
+
+                // FPS
+                if (time - fpsLastTime > 0.5) {
+                    const fps = Math.round(frameCount / (time - fpsLastTime));
+                    fpsBadge.textContent = fps + ' fps';
+                    frameCount = 0;
+                    fpsLastTime = time;
+                }
+            });
+
+            // ─── 交互事件 ───
+            function getCanvasCoords(e) {
+                const rect = app.view.getBoundingClientRect();
+                let clientX, clientY;
+                if (e.touches && e.touches.length > 0) {
+                    clientX = e.touches[0].clientX;
+                    clientY = e.touches[0].clientY;
+                } else {
+                    clientX = e.clientX;
+                    clientY = e.clientY;
+                }
+                return {
+                    x: clientX - rect.left,
+                    y: clientY - rect.top,
+                };
+            }
+
+            function onPointerMove(e) {
+                const coords = getCanvasCoords(e);
+                mouseX = coords.x;
+                mouseY = coords.y;
+            }
+
+            function onPointerDown(e) {
+                e.preventDefault();
+                const coords = getCanvasCoords(e);
+                mouseX = coords.x;
+                mouseY = coords.y;
+                spawnPulse(coords.x, coords.y);
+            }
+
+            function onPointerLeave() {
+                mouseX = window.innerWidth / 2;
+                mouseY = window.innerHeight / 2;
+            }
+
+            app.view.addEventListener('mousemove', onPointerMove);
+            app.view.addEventListener('mousedown', onPointerDown);
+            document.addEventListener('mouseleave', onPointerLeave);
+            app.view.addEventListener('touchmove', onPointerMove, { passive: true });
+            app.view.addEventListener('touchstart', onPointerDown, { passive: false });
+
+            // 键盘空格触发脉冲
+            window.addEventListener('keydown', (e) => {
+                if (e.key === ' ' || e.key === 'Space') {
+                    e.preventDefault();
+                    spawnPulse(window.innerWidth / 2, window.innerHeight / 2);
+                }
+            });
+
+            // ─── 窗口大小调整 ───
+            function handleResize() {
+                const w = window.innerWidth;
+                const h = window.innerHeight;
+                app.renderer.resize(w, h);
+                // 重新分布星点位置
+                for (const p of starParticles) {
+                    if (p.x > w) p.x = Math.random() * w;
+                    if (p.y > h) p.y = Math.random() * h;
+                }
+            }
+            window.addEventListener('resize', handleResize);
+            window.addEventListener('orientationchange', () => setTimeout(handleResize, 300));
+
+            // ─── 启动 ───
+            try {
+                initParticles();
+                initStars();
+            } catch (err) {
+                showError('初始化粒子失败：' + err.message);
+                return;
+            }
+
+            mouseX = window.innerWidth / 2;
+            mouseY = window.innerHeight / 2;
+            smoothMouseX = mouseX;
+            smoothMouseY = mouseY;
+
+            // 隐藏提示
+            setTimeout(() => {
+                if (hintEl) {
+                    hintEl.style.opacity = '0';
+                    setTimeout(() => { if (hintEl) hintEl.style.display = 'none'; }, 1500);
+                }
+            }, 4000);
+
+            handleResize();
+
+            console.log(`✨ 星轨织网已启动 — 粒子总数: ${PARTICLE_COUNT + STAR_COUNT + PULSE_MAX_PARTICLES}`);
+        })();
+    </script>
+</body>
+</html>

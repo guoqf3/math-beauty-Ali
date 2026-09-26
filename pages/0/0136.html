@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fuchsian编织 · 双曲测地流 · 庞加莱圆盘投影</title>
+    <style>
+        :root {
+            --bg: #050510;
+            --gold: #d6a745;
+            --cyan: #3cbca4;
+            --rose: #d94050;
+            --text: #cebc8a;
+            --text-dim: #887a58;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'SimSun', 'Noto Serif SC', 'Songti SC', serif;
+            -webkit-font-smoothing: antialiased;
+            height: 100vh;
+            width: 100vw;
+            cursor: default;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        #canvas-container {
+            position: fixed;
+            inset: 0;
+            z-index: 1;
+        }
+
+        canvas {
+            display: block;
+        }
+
+        #title-overlay {
+            position: fixed;
+            top: 1.6vh;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+        }
+
+        #title-overlay h1 {
+            font-size: clamp(1rem, 2.1vw, 1.55rem);
+            font-weight: 400;
+            letter-spacing: 0.15em;
+            color: #e2cf9c;
+            text-shadow: 0 0 38px rgba(214, 167, 69, 0.45), 0 0 78px rgba(214, 167, 69, 0.14);
+            margin: 0;
+            line-height: 1.35;
+        }
+
+        #title-overlay .subtitle {
+            font-size: clamp(0.46rem, 0.92vw, 0.65rem);
+            letter-spacing: 0.22em;
+            color: #a08d6a;
+            opacity: 0.6;
+            margin-top: 0.3vh;
+            font-style: italic;
+        }
+
+        #formula-overlay {
+            position: fixed;
+            bottom: 2.0vh;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+            background: rgba(5, 5, 16, 0.64);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            border: 1px solid rgba(140, 118, 84, 0.18);
+            border-radius: 16px;
+            padding: 1vh 2.4vw;
+            max-width: 95vw;
+        }
+
+        #formula-overlay .formula-main {
+            font-size: clamp(0.6rem, 1.3vw, 0.9rem);
+            color: #cdb886;
+            letter-spacing: 0.07em;
+            line-height: 1.6;
+            font-style: italic;
+        }
+
+        #formula-overlay .formula-detail {
+            font-size: clamp(0.4rem, 0.78vw, 0.56rem);
+            color: #8a7a58;
+            letter-spacing: 0.1em;
+            margin-top: 0.25vh;
+            opacity: 0.7;
+        }
+
+        .accent-gold {
+            color: #d6a745;
+        }
+        .accent-cyan {
+            color: #3cbca4;
+        }
+        .accent-rose {
+            color: #d94050;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateX(-50%) translateY(7px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(-50%) translateY(0);
+            }
+        }
+        #title-overlay,
+        #formula-overlay {
+            animation: fadeIn 1.5s ease-out 0.3s both;
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+
+    <div id="title-overlay">
+        <h1>Fuchsian编织 · 双曲测地流 · 庞加莱圆盘投影</h1>
+        <div class="subtitle">ℍ²测地线族 &nbsp;·&nbsp; 边界点无理旋转 &nbsp;·&nbsp; 逆球极投影至S²</div>
+    </div>
+
+    <div id="formula-overlay">
+        <div class="formula-main">
+            <span class="accent-gold">ds² = 4(dx²+dy²)/(1−r²)²</span>
+            &nbsp;⊗&nbsp;
+            <span class="accent-cyan">C: 正交∂D的圆弧</span>
+            &nbsp;⊗&nbsp;
+            <span class="accent-rose">π⁻¹: D→S²</span>
+        </div>
+        <div class="formula-detail">
+            庞加莱度量 &nbsp;·&nbsp; 测地线即与单位圆正交的圆弧 &nbsp;·&nbsp; 球极逆投影 &nbsp;·&nbsp; 双曲平面上的编织网络
+        </div>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== 场景初始化 ====================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setClearColor(0x050510, 1);
+        container.appendChild(renderer.domElement);
+
+        const camera = new THREE.PerspectiveCamera(54, window.innerWidth / window.innerHeight, 0.5, 30);
+        camera.position.set(2.5, 1.5, 7.5);
+        camera.lookAt(0, 0, 0);
+
+        // 颜色
+        const colorGold = new THREE.Color('#d6a745');
+        const colorCyan = new THREE.Color('#3cbca4');
+        const colorRose = new THREE.Color('#d94050');
+
+        const CLAMP_RADIUS = 2.8;
+        const DISK_RADIUS = 0.98; // 圆盘半径略小于1避免奇异
+
+        // ==================== 背景星点 ====================
+        const starsGeom = new THREE.BufferGeometry();
+        const starCount = 190;
+        const starPos = new Float32Array(starCount * 3);
+        const starSizes = new Float32Array(starCount);
+        for (let i = 0; i < starCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const rad = 5.5 + Math.random() * 8.5;
+            starPos[i * 3] = rad * Math.sin(phi) * Math.cos(theta);
+            starPos[i * 3 + 1] = rad * Math.sin(phi) * Math.sin(theta);
+            starPos[i * 3 + 2] = rad * Math.cos(phi);
+            starSizes[i] = Math.random() * 1.8 + 0.25;
+        }
+        starsGeom.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+        starsGeom.setAttribute('size', new THREE.BufferAttribute(starSizes, 1));
+        const starsMat = new THREE.PointsMaterial({
+            color: 0x2e2618,
+            size: 0.019,
+            transparent: true,
+            opacity: 0.48,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            sizeAttenuation: true,
+        });
+        const stars = new THREE.Points(starsGeom, starsMat);
+        scene.add(stars);
+
+        // 极淡参考球壳
+        const refSphereGeom = new THREE.SphereGeometry(2.7, 52, 36);
+        const refSphereWire = new THREE.LineSegments(
+            new THREE.WireframeGeometry(refSphereGeom),
+            new THREE.LineBasicMaterial({ color: 0x17120c, transparent: true, opacity: 0.08, depthWrite: false })
+        );
+        scene.add(refSphereWire);
+
+        // 极淡参考环面
+        const refTorusGeom = new THREE.TorusGeometry(2.05, 0.6, 12, 30);
+        const refTorusWire = new THREE.LineSegments(
+            new THREE.WireframeGeometry(refTorusGeom),
+            new THREE.LineBasicMaterial({ color: 0x0f1517, transparent: true, opacity: 0.07, depthWrite: false })
+        );
+        refTorusWire.rotation.x = Math.PI / 2;
+        scene.add(refTorusWire);
+
+        // ==================== 双曲测地线工具 ====================
+        // 给定单位圆上两点角度θ1, θ2，返回庞加莱圆盘内测地线圆弧上的一组点
+        function generateGeodesicPoints(theta1, theta2, numPoints) {
+            const points = [];
+            // 确保角度差不超过π (测地线取较短弧)
+            let dTheta = theta2 - theta1;
+            while (dTheta > Math.PI) dTheta -= 2 * Math.PI;
+            while (dTheta < -Math.PI) dTheta += 2 * Math.PI;
+            if (Math.abs(dTheta) < 1e-9) {
+                // 退化为点
+                const x = Math.cos(theta1);
+                const y = Math.sin(theta1);
+                for (let i = 0; i < numPoints; i++) points.push([x, y]);
+                return points;
+            }
+            // 确定圆心和半径：与单位圆正交的圆，圆心在连线的垂直平分线上，距离单位圆圆心为 Rc = 1/cos(α/2?)
+            // 使用几何公式：给定两个边界点p1, p2，圆的半径 R = 1 / |sin( dTheta/2 )|？
+            // 实际上与单位圆正交的圆，圆心C在单位圆外，满足 |C| = sqrt(1 + r^2)
+            const p1 = [Math.cos(theta1), Math.sin(theta1)];
+            const p2 = [Math.cos(theta2), Math.sin(theta2)];
+            const mid = [(p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2];
+            // 弦的垂直方向
+            const chordX = p2[0] - p1[0];
+            const chordY = p2[1] - p1[1];
+            const chordLen = Math.sqrt(chordX * chordX + chordY * chordY);
+            const perpX = -chordY / chordLen;
+            const perpY = chordX / chordLen;
+            // 圆心到弦中点的距离 d = sqrt(1 + r^2 - (chordLen/2)^2) ??? 使用正交条件
+            // 设圆心C = mid + t * perp, 则 |C|^2 = 1 + (t^2 + (chordLen/2)^2)???
+            const halfChord = chordLen / 2;
+            // 正交条件：C到原点的距离的平方 = 1 + (C到p1的距离的平方) = 1 + r^2
+            // 同时 C到p1的距离 = sqrt(t^2 + halfChord^2)
+            // 原点距离平方 = (midX + t*perpX)^2 + (midY + t*perpY)^2 = mid^2 + t^2 + 2t*(mid·perp)
+            // 由|C|^2 = 1 + (t^2 + halfChord^2)
+            // mid^2 + t^2 + 2t*dot = 1 + t^2 + halfChord^2  => 2t*dot = 1 + halfChord^2 - mid^2
+            const dotMidPerp = mid[0] * perpX + mid[1] * perpY;
+            const midNormSq = mid[0] * mid[0] + mid[1] * mid[1];
+            const rhs = 1 + halfChord * halfChord - midNormSq;
+            let t;
+            if (Math.abs(dotMidPerp) > 1e-9) {
+                t = rhs / (2 * dotMidPerp);
+            } else {
+                t = 0; // 直径情况
+            }
+            const cX = mid[0] + t * perpX;
+            const cY = mid[1] + t * perpY;
+            const radius = Math.sqrt(t * t + halfChord * halfChord);
+            // 参数化角度范围
+            const angleStart = Math.atan2(p1[1] - cY, p1[0] - cX);
+            let angleEnd = Math.atan2(p2[1] - cY, p2[0] - cX);
+            // 确保短弧
+            let sweep = angleEnd - angleStart;
+            while (sweep > Math.PI) sweep -= 2 * Math.PI;
+            while (sweep < -Math.PI) sweep += 2 * Math.PI;
+            for (let i = 0; i < numPoints; i++) {
+                const a = angleStart + sweep * (i / (numPoints - 1));
+                const x = cX + radius * Math.cos(a);
+                const y = cY + radius * Math.sin(a);
+                // 限制在单位圆盘内
+                const r2 = x * x + y * y;
+                if (r2 > DISK_RADIUS * DISK_RADIUS) {
+                    const sc = DISK_RADIUS / Math.sqrt(r2);
+                    points.push([x * sc, y * sc]);
+                } else {
+                    points.push([x, y]);
+                }
+            }
+            return points;
+        }
+
+        // 庞加莱圆盘到单位球面(南极)的逆球极投影
+        function inverseStereographic(x, y) {
+            const r2 = x * x + y * y;
+            const denom = 1 + r2;
+            const sx = (2 * x) / denom;
+            const sy = (2 * y) / denom;
+            const sz = (1 - r2) / denom;
+            return [sx, sy, sz];
+        }
+
+        function clampToSphere(pt, maxR = CLAMP_RADIUS) {
+            const r = Math.sqrt(pt[0] ** 2 + pt[1] ** 2 + pt[2] ** 2);
+            if (r > maxR && r > 0.001) {
+                const sc = maxR / r;
+                return [pt[0] * sc, pt[1] * sc, pt[2] * sc];
+            }
+            return pt;
+        }
+
+        // ==================== 曲线系统 ====================
+        const allCurves = [];
+        const POINTS_PER_CURVE = 140;
+
+        function createCurve(color) {
+            const geom = new THREE.BufferGeometry();
+            const positions = new Float32Array(POINTS_PER_CURVE * 3);
+            for (let i = 0; i < POINTS_PER_CURVE; i++) {
+                positions[i * 3] = (Math.random() - 0.5) * 0.38;
+                positions[i * 3 + 1] = (Math.random() - 0.5) * 0.38;
+                positions[i * 3 + 2] = (Math.random() - 0.5) * 0.38;
+            }
+            geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            const material = new THREE.LineBasicMaterial({
+                color: color,
+                linewidth: 1,
+                transparent: true,
+                opacity: 0.84,
+                depthTest: true,
+                depthWrite: true,
+            });
+            const line = new THREE.Line(geom, material);
+            scene.add(line);
+            const obj = { line, geometry: geom, positions };
+            allCurves.push(obj);
+            return obj;
+        }
+
+        // 构建测地线族
+        function buildGeodesicFamily(count, colorKey) {
+            const color = colorKey === 'gold' ? colorGold : colorKey === 'cyan' ? colorCyan : colorRose;
+            for (let k = 0; k < count; k++) {
+                // 每条测地线有两个端点角度θ1, θ2，它们随时间以无理频率旋转
+                const baseFreq1 = (k + 1) * 0.41;
+                const baseFreq2 = (k + 1) * 0.73;
+                const phaseOffset = Math.random() * Math.PI * 2;
+                const curve = createCurve(color);
+                curve.theta1Base = Math.random() * Math.PI * 2;
+                curve.theta2Base = curve.theta1Base + Math.PI * (0.3 + Math.random() * 0.7); // 初始差
+                curve.freq1 = baseFreq1;
+                curve.freq2 = baseFreq2;
+                curve.phaseOffset = phaseOffset;
+                curve.isGeodesic = true;
+            }
+        }
+
+        buildGeodesicFamily(22, 'gold');
+        buildGeodesicFamily(22, 'cyan');
+        buildGeodesicFamily(22, 'rose');
+
+        // 额外点缀：三叶结
+        for (let e = 0; e < 6; e++) {
+            const c = [colorCyan, colorRose, colorGold, colorCyan, colorRose, colorGold][e];
+            const curve = createCurve(c);
+            curve.isExtra = true;
+            curve.amp = 1.2 + e * 0.18;
+            curve.freq = 1.7 + e * 0.22;
+            curve.ph = e * 1.2;
+        }
+
+        console.log(`✅ 曲线总数: ${allCurves.length} (金22, 青22, 玫红22, 点缀6)`);
+
+        // 更新全部曲线
+        function updateAllCurves(t) {
+            for (let c = 0; c < allCurves.length; c++) {
+                try {
+                    const curve = allCurves[c];
+                    const positions = curve.positions;
+                    if (curve.isExtra) {
+                        const amp = curve.amp;
+                        const freq = curve.freq;
+                        const ph = curve.ph;
+                        for (let i = 0; i < POINTS_PER_CURVE; i++) {
+                            const s = (i / POINTS_PER_CURVE) * Math.PI * 2;
+                            const inner = s * freq + t * 0.5 + ph;
+                            let x = amp * (Math.sin(inner) + 0.5 * Math.sin(3 * inner)) * 0.82;
+                            let y = amp * (Math.cos(inner) - 0.4 * Math.cos(2 * inner)) * 0.82;
+                            let z = amp * 0.6 * Math.sin(2 * inner + t * 0.32);
+                            positions[i * 3] = x;
+                            positions[i * 3 + 1] = y;
+                            positions[i * 3 + 2] = z;
+                        }
+                    } else if (curve.isGeodesic) {
+                        const theta1 = curve.theta1Base + curve.freq1 * t + curve.phaseOffset;
+                        const theta2 = curve.theta2Base + curve.freq2 * t + curve.phaseOffset;
+                        const diskPoints = generateGeodesicPoints(theta1, theta2, POINTS_PER_CURVE);
+                        for (let i = 0; i < POINTS_PER_CURVE; i++) {
+                            const dx = diskPoints[i][0];
+                            const dy = diskPoints[i][1];
+                            const s3 = inverseStereographic(dx, dy);
+                            const p = clampToSphere([s3[0] * 2.6, s3[1] * 2.6, s3[2] * 2.6], CLAMP_RADIUS);
+                            positions[i * 3] = p[0];
+                            positions[i * 3 + 1] = p[1];
+                            positions[i * 3 + 2] = p[2];
+                        }
+                    }
+                    curve.geometry.attributes.position.needsUpdate = true;
+                } catch (e) {
+                    console.warn(`曲线${c}更新异常, 已跳过`, e);
+                }
+            }
+        }
+
+        // ==================== 流动粒子 ====================
+        const particleCount = 22;
+        const particlesGeom = new THREE.BufferGeometry();
+        const particlePosArr = new Float32Array(particleCount * 3);
+        const particleColArr = new Float32Array(particleCount * 3);
+        const particleData = [];
+        for (let i = 0; i < particleCount; i++) {
+            const ci = i % allCurves.length;
+            particleData.push({
+                curveIndex: ci,
+                progress: Math.random(),
+                speed: 0.00055 + Math.random() * 0.0022,
+            });
+            let col;
+            if (i < 8) col = colorGold.clone();
+            else if (i < 15) col = colorCyan.clone();
+            else col = colorRose.clone();
+            particleColArr[i * 3] = col.r;
+            particleColArr[i * 3 + 1] = col.g;
+            particleColArr[i * 3 + 2] = col.b;
+            particlePosArr[i * 3] = (Math.random() - 0.5) * 0.3;
+            particlePosArr[i * 3 + 1] = (Math.random() - 0.5) * 0.3;
+            particlePosArr[i * 3 + 2] = (Math.random() - 0.5) * 0.3;
+        }
+        particlesGeom.setAttribute('position', new THREE.BufferAttribute(particlePosArr, 3));
+        particlesGeom.setAttribute('color', new THREE.BufferAttribute(particleColArr, 3));
+        const particlesMat = new THREE.PointsMaterial({
+            size: 0.05,
+            vertexColors: true,
+            transparent: true,
+            opacity: 0.85,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            sizeAttenuation: true,
+        });
+        const particlesMesh = new THREE.Points(particlesGeom, particlesMat);
+        scene.add(particlesMesh);
+
+        function updateParticles() {
+            try {
+                for (let p = 0; p < particleCount; p++) {
+                    const pd = particleData[p];
+                    pd.progress += pd.speed;
+                    if (pd.progress >= 1.0) pd.progress -= 1.0;
+                    if (pd.progress < 0) pd.progress += 1.0;
+                    const curveObj = allCurves[pd.curveIndex];
+                    if (!curveObj || !curveObj.positions) continue;
+                    const posArr = curveObj.positions;
+                    const floatIdx = pd.progress * (POINTS_PER_CURVE - 1);
+                    const idx0 = Math.floor(floatIdx);
+                    const idx1 = Math.min(idx0 + 1, POINTS_PER_CURVE - 1);
+                    const frac = Math.max(0, Math.min(1, floatIdx - idx0));
+                    const i0 = idx0 * 3,
+                        i1 = idx1 * 3;
+                    particlePosArr[p * 3] = posArr[i0] + (posArr[i1] - posArr[i0]) * frac;
+                    particlePosArr[p * 3 + 1] = posArr[i0 + 1] + (posArr[i1 + 1] - posArr[i0 + 1]) * frac;
+                    particlePosArr[p * 3 + 2] = posArr[i0 + 2] + (posArr[i1 + 2] - posArr[i0 + 2]) * frac;
+                }
+                particlesGeom.attributes.position.needsUpdate = true;
+            } catch (e) {
+                console.warn('粒子更新异常, 已跳过', e);
+            }
+        }
+
+        // ==================== 极度健壮的动画循环 ====================
+        const clock = new THREE.Clock();
+        let animationTime = 0;
+        let frameCount = 0;
+        let lastLogTime = performance.now();
+
+        function animate() {
+            requestAnimationFrame(animate);
+            try {
+                let dt = clock.getDelta();
+                if (dt <= 0 || dt > 0.25 || !isFinite(dt)) dt = 0.016;
+                animationTime += dt;
+                frameCount++;
+
+                const now = performance.now();
+                if (now - lastLogTime > 5000) {
+                    const elapsed = (now - lastLogTime) / 1000;
+                    const fps = Math.round(frameCount / elapsed);
+                    console.log(
+                        `🔄 运行中 | FPS: ${fps} | 时间: ${animationTime.toFixed(1)}s | dt: ${(dt * 1000).toFixed(1)}ms`
+                    );
+                    frameCount = 0;
+                    lastLogTime = now;
+                }
+
+                updateAllCurves(animationTime);
+                updateParticles();
+
+                const breathe = 1 + 0.05 * Math.sin(animationTime * 0.4) * Math.cos(animationTime * 0.3);
+                refSphereWire.scale.setScalar(breathe);
+                refSphereWire.rotation.x += dt * 0.06;
+                refSphereWire.rotation.y += dt * 0.05;
+
+                refTorusWire.rotation.z += dt * 0.06;
+                const torBreathe = 1 + 0.06 * Math.sin(animationTime * 0.43) * Math.cos(animationTime * 0.32);
+                refTorusWire.scale.setScalar(torBreathe);
+
+                const camH = animationTime * 0.1;
+                const camV = 0.34 + 0.18 * Math.sin(animationTime * 0.15);
+                const camD = 7.3 + 0.65 * Math.sin(animationTime * 0.2) * Math.cos(animationTime * 0.26);
+                camera.position.set(
+                    camD * Math.cos(camV) * Math.sin(camH),
+                    camD * Math.sin(camV),
+                    camD * Math.cos(camV) * Math.cos(camH)
+                );
+                camera.lookAt(0.06 * Math.sin(animationTime * 0.1), 0.03 * Math.cos(animationTime * 0.13), 0);
+
+                stars.rotation.y += dt * 0.014;
+                stars.rotation.x += dt * 0.01;
+
+                renderer.render(scene, camera);
+            } catch (e) {
+                console.error('动画主循环异常, 循环仍继续:', e);
+            }
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }, { passive: true });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }, 150), { passive: true });
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') {
+                clock.getDelta();
+            }
+        });
+
+        // ==================== 启动 ====================
+        console.log('🚀 Fuchsian编织动画初始化... 预渲染第一帧');
+        updateAllCurves(0);
+        updateParticles();
+        renderer.render(scene, camera);
+        clock.start();
+        animationTime = 0;
+        requestAnimationFrame(animate);
+        console.log('✅ 动画循环已启动，72条双曲测地线在球面上持续编织');
+    </script>
+</body>
+</html>

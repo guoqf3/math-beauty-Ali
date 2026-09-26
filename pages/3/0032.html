@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>分形珊瑚 · 递归生长与无限细节</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    background: #000103; overflow: hidden; touch-action: none;
+  }
+  canvas { display: block; position: fixed; inset: 0; }
+
+  .hud {
+    position: fixed; left: 22px; bottom: 20px;
+    font: 11.5px/1.9 ui-monospace, Menlo, Consolas, monospace;
+    color: rgba(255, 170, 210, 0.32);
+    letter-spacing: 0.10em;
+    pointer-events: none; user-select: none;
+  }
+  .hud b { color: rgba(255, 205, 235, 0.88); font-weight: 500; letter-spacing: 0.20em; }
+  .hud i { color: rgba(255, 185, 215, 0.55); font-style: normal; }
+  .hud .dim { color: rgba(255, 160, 200, 0.28); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud">
+  <div><b>FRACTAL CORAL</b></div>
+  <div><i>递归深度</i> 8 &nbsp;·&nbsp; <i>长度比</i> 0.745 &nbsp;·&nbsp; <i>宽度比</i> 0.72</div>
+  <div><i>仿射变换</i> &nbsp;z<sub>n+1</sub> = s·R(θ)·z<sub>n</sub> + t &nbsp; <span class="dim">s = 0.745</span></div>
+  <div class="dim">自相似 · 约 900 个分支节点</div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ================= 画布 ================= */
+  const cvs = document.getElementById('c');
+  const ctx = cvs.getContext('2d', { alpha: false });
+
+  let W = 0, H = 0, DPR = 1, cx = 0, cy = 0, S = 0;
+  let bgGrad = null;
+
+  /* ================= 分形参数 ================= */
+  const MAX_DEPTH  = 8;
+  const LEN_BASE   = 0.118;   // 主干长度（相对 S）
+  const LEN_RATIO  = 0.745;   // 子分支长度比 —— 自相似缩放因子
+  const WID_BASE   = 0.017;   // 主干宽度（相对 S）
+  const WID_RATIO  = 0.720;   // 子分支宽度比
+
+  const GROW_DUR   = 0.40;    // 每个分支生长时长（秒）
+  const HOLD_TIME  = 2.60;    // 完全绽放停留
+  const FADE_TIME  = 1.40;    // 淡出重置
+
+  let GROW_END = 0;
+  let CYCLE    = 0;
+
+  /* ================= 数据结构 ================= */
+  let branches    = [];   // 所有分支段
+  let depthStyles = [];   // 每个深度的颜色 {h,s,l}
+  let depthWidths = [];   // 每个深度的线宽
+
+  /* ================= 发光精灵（末端光点） ================= */
+  const glowSprite = document.createElement('canvas');
+  (function () {
+    const gs = 64;
+    glowSprite.width = glowSprite.height = gs;
+    const g = glowSprite.getContext('2d');
+    const rg = g.createRadialGradient(gs / 2, gs / 2, 0, gs / 2, gs / 2, gs / 2);
+    rg.addColorStop(0.00, 'rgba(255, 240, 200, 1.0)');
+    rg.addColorStop(0.18, 'rgba(255, 200, 120, 0.70)');
+    rg.addColorStop(0.45, 'rgba(255, 150, 70, 0.22)');
+    rg.addColorStop(0.75, 'rgba(255, 110, 50, 0.06)');
+    rg.addColorStop(1.00, 'rgba(255, 90, 40, 0)');
+    g.fillStyle = rg;
+    g.fillRect(0, 0, gs, gs);
+  })();
+
+  /* ================= 环境粒子 ================= */
+  const particles = [];
+  (function () {
+    for (let i = 0; i < 130; i++) {
+      particles.push({
+        x: Math.random(),
+        y: Math.random(),
+        r: Math.random() * 1.4 + 0.30,
+        ph: Math.random() * Math.PI * 2,
+        sp: 0.10 + Math.random() * 0.32,
+        hue: 275 + Math.random() * 95
+      });
+    }
+  })();
+
+  /* ================= 伪随机（确定性） ================= */
+  function rnd(seed) {
+    const v = Math.sin(seed * 12.9898 + 78.233) * 43758.5453;
+    return v - Math.floor(v);
+  }
+
+  /* ================= 构建分形树 ================= */
+  function buildAll() {
+    branches = [];
+
+    /* --- 逐深度配色：紫红 → 品红 → 红 → 橙 --- */
+    depthStyles = [];
+    depthWidths = [];
+    for (let d = 0; d <= MAX_DEPTH; d++) {
+      const f = d / MAX_DEPTH;
+      depthStyles.push({
+        h: (320 + f * 80) % 360,      // 320° → 40°（经 360 回绕）
+        s: 68 + f * 27,               // 68% → 95%
+        l: 30 + f * 40                // 30% → 70%
+      });
+      depthWidths.push(
+        Math.max(0.70, S * WID_BASE * Math.pow(WID_RATIO, d))
+      );
+    }
+
+    /* --- 递归生成 --- */
+    const rootLen = S * LEN_BASE;
+
+    function recurse(x, y, angle, length, depth, startT, id) {
+      if (depth > MAX_DEPTH) return;
+      if (branches.length > 2200) return;   // 安全上限
+
+      const ex = x + Math.cos(angle) * length;
+      const ey = y + Math.sin(angle) * length;
+
+      branches.push({
+        x1: x, y1: y, x2: ex, y2: ey,
+        depth: depth,
+        start: startT
+      });
+
+      if (depth === MAX_DEPTH) return;
+
+      const childStart = startT + GROW_DUR;     // 父分支完成后子分支开始
+      const childLen   = length * LEN_RATIO;
+      const childId    = id * 4.31 + 1.0;
+
+      /* 分支数量：浅层 2，深层可 3 */
+      const r0 = rnd(id * 3.71 + depth * 1.23);
+      let nB;
+      if (depth <= 2)      nB = 2;
+      else if (depth <= 4) nB = (r0 < 0.30) ? 3 : 2;
+      else                 nB = (r0 < 0.42) ? 3 : 2;
+
+      /* 扩散角随深度增大 —— 模拟珊瑚向光展开 */
+      const spread = 0.285 + depth * 0.038;
+
+      for (let i = 0; i < nB; i++) {
+        const frac = (nB === 1) ? 0 : (i / (nB - 1)) * 2 - 1;   // -1 .. 1
+        const rj   = rnd(id * 7.13 + i * 3.77 + depth * 1.91) - 0.5;
+
+        const childAngle = angle + frac * spread + rj * 0.26;
+        const childSeed  = childId + i * 11.7 + depth * 2.3;
+
+        recurse(ex, ey, childAngle, childLen, depth + 1, childStart, childSeed);
+      }
+    }
+
+    // 根：画面下方居中，向上生长
+    const rootX = cx;
+    const rootY = cy + S * 0.27;
+
+    recurse(rootX, rootY, -Math.PI / 2, rootLen, 0, 0, 1);
+
+    /* --- 时间线 --- */
+    GROW_END = MAX_DEPTH * GROW_DUR + GROW_DUR;
+    CYCLE    = GROW_END + HOLD_TIME + FADE_TIME;
+  }
+
+  /* ================= 尺寸 ================= */
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth;
+    H = window.innerHeight;
+
+    cvs.width  = Math.round(W * DPR);
+    cvs.height = Math.round(H * DPR);
+    cvs.style.width  = W + 'px';
+    cvs.style.height = H + 'px';
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+    cx = W * 0.5;
+    cy = H * 0.5;
+    S  = Math.min(W, H);
+
+    bgGrad = ctx.createRadialGradient(cx, cy + S * 0.10, 0, cx, cy, S * 0.98);
+    bgGrad.addColorStop(0.00, '#130a22');
+    bgGrad.addColorStop(0.32, '#0a0414');
+    bgGrad.addColorStop(0.68, '#030109');
+    bgGrad.addColorStop(1.00, '#000001');
+
+    buildAll();
+  }
+  window.addEventListener('resize', resize);
+
+  /* ================= 环境粒子绘制 ================= */
+  function drawParticles(time, alpha) {
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < particles.length; i++) {
+      const p  = particles[i];
+      const px = p.x * W + Math.sin(time * p.sp + p.ph) * 24;
+      const py = p.y * H + Math.cos(time * p.sp * 0.68 + p.ph * 1.35) * 28;
+      const a  = (0.045 + 0.16 * (0.5 + 0.5 * Math.sin(time * 0.72 + p.ph * 2.1))) * alpha;
+
+      ctx.fillStyle = 'hsla(' + p.hue + ', 88%, 76%, ' + a + ')';
+      ctx.beginPath();
+      ctx.arc(px, py, p.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  /* ================= 主循环 ================= */
+  function frame(now) {
+    const time  = now * 0.001;
+    const cycle = time % CYCLE;
+
+    let gt, alpha;
+    if (cycle < GROW_END) {
+      gt = cycle;  alpha = 1;
+    } else if (cycle < GROW_END + HOLD_TIME) {
+      gt = GROW_END; alpha = 1;
+    } else {
+      gt = GROW_END;
+      alpha = 1 - (cycle - GROW_END - HOLD_TIME) / FADE_TIME;
+      if (alpha < 0) alpha = 0;
+    }
+
+    /* ---------- 背景 ---------- */
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = bgGrad;
+    ctx.fillRect(0, 0, W, H);
+
+    /* ---------- 粒子 ---------- */
+    drawParticles(time, alpha);
+
+    /* ---------- 构建 Path2D（按深度分组，批量描边） ---------- */
+    const paths = new Array(MAX_DEPTH + 1);
+    for (let d = 0; d <= MAX_DEPTH; d++) paths[d] = new Path2D();
+
+    const tips = [];
+
+    for (let i = 0; i < branches.length; i++) {
+      const b = branches[i];
+
+      let p = (gt - b.start) / GROW_DUR;
+      if (p <= 0) continue;
+      if (p > 1) p = 1;
+
+      // easeOutQuad —— 快速舒展，优雅收尾
+      const pe = 1 - (1 - p) * (1 - p);
+
+      const ex = b.x1 + (b.x2 - b.x1) * pe;
+      const ey = b.y1 + (b.y2 - b.y1) * pe;
+
+      const path = paths[b.depth];
+      path.moveTo(b.x1, b.y1);
+      path.lineTo(ex, ey);
+
+      if (b.depth === MAX_DEPTH && p > 0.88) {
+        tips.push(ex, ey, (p - 0.88) / 0.12);
+      }
+    }
+
+    ctx.globalAlpha = alpha;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    /* ---------- Pass 1：生物荧光光晕（加色） ---------- */
+    ctx.globalCompositeOperation = 'lighter';
+    for (let d = 0; d <= MAX_DEPTH; d++) {
+      const st = depthStyles[d];
+      ctx.strokeStyle = 'hsla(' + st.h.toFixed(1) + ', ' + st.s.toFixed(0) + '%, '
+                      + Math.min(92, st.l + 20).toFixed(0) + '%, 0.085)';
+      ctx.lineWidth = depthWidths[d] * 3.6;
+      ctx.stroke(paths[d]);
+    }
+
+    /* ---------- Pass 2：实体枝杈 ---------- */
+    ctx.globalCompositeOperation = 'source-over';
+    for (let d = 0; d <= MAX_DEPTH; d++) {
+      const st = depthStyles[d];
+      ctx.strokeStyle = 'hsl(' + st.h.toFixed(1) + ', ' + st.s.toFixed(0) + '%, '
+                      + st.l.toFixed(0) + '%)';
+      ctx.lineWidth = depthWidths[d];
+      ctx.stroke(paths[d]);
+    }
+
+    /* ---------- Pass 3：末端水螅体光点 ---------- */
+    if (tips.length > 0) {
+      ctx.globalCompositeOperation = 'lighter';
+      const spriteSize = S * 0.026;
+      const half = spriteSize * 0.5;
+
+      for (let i = 0; i < tips.length; i += 3) {
+        const tx = tips[i];
+        const ty = tips[i + 1];
+        const tp = tips[i + 2];
+
+        const pulse = 0.62 + 0.38 * Math.sin(time * 2.3 + tx * 0.055 + ty * 0.048);
+        const sz = spriteSize * tp * pulse;
+
+        ctx.drawImage(glowSprite, tx - sz * 0.5, ty - sz * 0.5, sz, sz);
+      }
+    }
+
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+
+    requestAnimationFrame(frame);
+  }
+
+  /* ================= 启动 ================= */
+  resize();
+  requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

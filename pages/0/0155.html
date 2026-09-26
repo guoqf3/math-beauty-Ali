@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>伪球面测地线 · 负曲率几何动画</title>
+    <style>
+        :root {
+            --bg: #060a14;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'Noto Serif SC', serif;
+            width: 100vw;
+            height: 100vh;
+            height: 100dvh;
+            -webkit-tap-highlight-color: transparent;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        #canvas-container {
+            position: fixed;
+            inset: 0;
+            z-index: 1;
+        }
+        canvas {
+            display: block;
+        }
+        #title-overlay {
+            position: fixed;
+            top: 2.5vh;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+        }
+        #title-overlay .title {
+            font-size: clamp(1.1rem, 2.5vw, 1.8rem);
+            font-weight: 400;
+            letter-spacing: 0.07em;
+            color: rgba(215, 225, 245, 0.93);
+            text-shadow: 0 0 45px rgba(160, 200, 255, 0.55), 0 0 85px rgba(130, 170, 240, 0.3);
+            line-height: 1.3;
+        }
+        #title-overlay .subtitle {
+            font-size: clamp(0.6rem, 1.3vw, 0.85rem);
+            letter-spacing: 0.12em;
+            color: rgba(180, 195, 220, 0.72);
+            text-shadow: 0 0 20px rgba(140, 180, 220, 0.35);
+            margin-top: 0.3vh;
+            font-style: italic;
+        }
+        #formula-overlay {
+            position: fixed;
+            bottom: 3vh;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            pointer-events: none;
+            text-align: center;
+        }
+        #formula-overlay .formula {
+            font-size: clamp(0.65rem, 1.4vw, 0.88rem);
+            letter-spacing: 0.04em;
+            color: rgba(190, 200, 225, 0.78);
+            text-shadow: 0 0 30px rgba(150, 180, 220, 0.4);
+            font-style: italic;
+            background: rgba(8, 14, 26, 0.55);
+            padding: 0.5vh 2.2vw;
+            border-radius: 2rem;
+            border: 1px solid rgba(120, 150, 200, 0.22);
+            backdrop-filter: blur(5px);
+            -webkit-backdrop-filter: blur(5px);
+        }
+        #formula-overlay .formula .highlight {
+            color: rgba(255, 175, 95, 0.9);
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="title-overlay">
+        <div class="title">伪球面测地线</div>
+        <div class="subtitle">Tractroid · 负曲率空间的几何舞蹈</div>
+    </div>
+    <div id="formula-overlay">
+        <div class="formula">
+            <span class="highlight">K</span> = −1&emsp;|&emsp;
+            X(u,v) = (sech u cos v, sech u sin v, u − tanh u)
+        </div>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.157.0/build/three.module.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ==================== DOM ====================
+        const container = document.getElementById('canvas-container');
+
+        // ==================== 场景初始化 ====================
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(50, container.clientWidth / container.clientHeight, 0.1, 20);
+        camera.position.set(4.2, 1.5, 4.5);
+        camera.lookAt(0, 0.5, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x060a14, 1);
+        renderer.outputColorSpace = THREE.SRGBColorSpace;
+        container.appendChild(renderer.domElement);
+
+        // ==================== 星空背景 ====================
+        const starCount = 700;
+        const starGeom = new THREE.BufferGeometry();
+        const starPositionsArray = new Float32Array(starCount * 3);
+        const starSizesArray = new Float32Array(starCount);
+        for (let i = 0; i < starCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const r = 7.5 + Math.random() * 10;
+            starPositionsArray[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+            starPositionsArray[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+            starPositionsArray[i * 3 + 2] = r * Math.cos(phi);
+            starSizesArray[i] = Math.random() * 1.5 + 0.1;
+        }
+        starGeom.setAttribute('position', new THREE.BufferAttribute(starPositionsArray, 3));
+        starGeom.setAttribute('size', new THREE.BufferAttribute(starSizesArray, 1));
+        const starMat = new THREE.PointsMaterial({
+            color: 0x7d8eb5,
+            size: 0.009,
+            transparent: true,
+            opacity: 0.55,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            sizeAttenuation: true,
+        });
+        const stars = new THREE.Points(starGeom, starMat);
+        scene.add(stars);
+
+        // ==================== 伪球面参考点云 ====================
+        const refCount = 3200;
+        const refGeom = new THREE.BufferGeometry();
+        const refPositions = new Float32Array(refCount * 3);
+        for (let i = 0; i < refCount; i++) {
+            const u = 0.05 + Math.random() * 2.8;
+            const v = Math.random() * Math.PI * 2;
+            const coshU = Math.cosh(u);
+            const sechU = 1 / coshU;
+            const tanhU = Math.tanh(u);
+            const x = sechU * Math.cos(v);
+            const y = sechU * Math.sin(v);
+            const z = u - tanhU;
+            refPositions[i * 3] = x;
+            refPositions[i * 3 + 1] = y;
+            refPositions[i * 3 + 2] = z;
+        }
+        refGeom.setAttribute('position', new THREE.BufferAttribute(refPositions, 3));
+        const refMat = new THREE.PointsMaterial({
+            color: 0x4b5e85,
+            size: 0.018,
+            transparent: true,
+            opacity: 0.2,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            sizeAttenuation: true,
+        });
+        const pseudoSphereRef = new THREE.Points(refGeom, refMat);
+        pseudoSphereRef.frustumCulled = false;
+        scene.add(pseudoSphereRef);
+
+        // ==================== 测地线参数 ====================
+        const NUM_LINES = 84;              // 线条总数
+        const POINTS_PER_LINE = 210;       // 每条线点数
+        const S_STEP = 0.04;               // 弧长步长
+        const S_MAX = (POINTS_PER_LINE - 1) * S_STEP;  // 约8.36
+
+        // 颜色定义
+        const COLOR_CYAN = new THREE.Color('#00c8f0');
+        const COLOR_GOLD = new THREE.Color('#f0a040');
+        const COLOR_MAGENTA = new THREE.Color('#f05078');
+
+        // 每条线的元数据
+        const lineMetas = [];
+        for (let i = 0; i < NUM_LINES; i++) {
+            const u0 = 0.35 + Math.random() * 2.2;
+            const v0 = Math.random() * Math.PI * 2;
+            const baseTheta = Math.random() * Math.PI * 2; // 初始方向参数
+            const amp = 0.15 + Math.random() * 0.45;
+            const freq = 0.2 + Math.random() * 0.55;
+            const phase = Math.random() * Math.PI * 2;
+            // 颜色分组基于初始方向
+            let colorGroup;
+            if (baseTheta < Math.PI * 2 / 3) {
+                colorGroup = 0;
+            } else if (baseTheta < Math.PI * 4 / 3) {
+                colorGroup = 1;
+            } else {
+                colorGroup = 2;
+            }
+            lineMetas.push({
+                u0, v0, baseTheta, amp, freq, phase, colorGroup, index: i
+            });
+        }
+        console.log('线条数量:', NUM_LINES);
+
+        // ==================== 创建线条对象 ====================
+        const lineGeometries = [];
+        const linePositionArrays = [];
+        const lineObjects = [];
+        for (let i = 0; i < NUM_LINES; i++) {
+            const geom = new THREE.BufferGeometry();
+            const positions = new Float32Array(POINTS_PER_LINE * 3);
+            geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            geom.setDrawRange(0, 0); // 初始不绘制任何点
+            const meta = lineMetas[i];
+            let color;
+            if (meta.colorGroup === 0) color = COLOR_CYAN;
+            else if (meta.colorGroup === 1) color = COLOR_GOLD;
+            else color = COLOR_MAGENTA;
+            const mat = new THREE.LineBasicMaterial({
+                color: color,
+                linewidth: 1,
+                transparent: true,
+                opacity: 0.8,
+                depthTest: true,
+                depthWrite: true,
+                blending: THREE.NormalBlending,
+            });
+            const line = new THREE.Line(geom, mat);
+            line.frustumCulled = false;
+            scene.add(line);
+            lineGeometries.push(geom);
+            linePositionArrays.push(positions);
+            lineObjects.push(line);
+        }
+
+        // ==================== RK4 测地线积分器 ====================
+        function geodesicRK4(u0, v0, up0, vp0, steps, stepSize) {
+            // 返回数组 [{u,v,x,y,z}, ...]，以及有效点数
+            const points = [];
+            let u = u0, v = v0, up = up0, vp = vp0;
+            let validCount = 0;
+            const MIN_U = 0.02;
+            for (let i = 0; i < steps; i++) {
+                if (u < MIN_U) break;
+                // 记录当前点
+                const coshU = Math.cosh(u);
+                const sechU = 1 / coshU;
+                const tanhU = Math.tanh(u);
+                const x = sechU * Math.cos(v);
+                const y = sechU * Math.sin(v);
+                const z = u - tanhU;
+                points.push({ u, v, x, y, z, valid: true });
+                validCount++;
+
+                // RK4 步进
+                const f = (s, state) => {
+                    const [uu, vv, upp, vpp] = state;
+                    const sin2u = Math.sinh(2 * uu);
+                    const tanhu = Math.tanh(uu);
+                    const uSecond = -(2 / sin2u) * (upp * upp + vpp * vpp);
+                    const vSecond = 2 * tanhu * upp * vpp;
+                    return [upp, vpp, uSecond, vSecond];
+                };
+
+                let state = [u, v, up, vp];
+                const h = stepSize;
+                // k1
+                const k1 = f(0, state);
+                // k2
+                const s2 = [state[0] + 0.5*h*k1[0], state[1] + 0.5*h*k1[1], state[2] + 0.5*h*k1[2], state[3] + 0.5*h*k1[3]];
+                const k2 = f(0, s2);
+                // k3
+                const s3 = [state[0] + 0.5*h*k2[0], state[1] + 0.5*h*k2[1], state[2] + 0.5*h*k2[2], state[3] + 0.5*h*k2[3]];
+                const k3 = f(0, s3);
+                // k4
+                const s4 = [state[0] + h*k3[0], state[1] + h*k3[1], state[2] + h*k3[2], state[3] + h*k3[3]];
+                const k4 = f(0, s4);
+
+                u += (h/6) * (k1[0] + 2*k2[0] + 2*k3[0] + k4[0]);
+                v += (h/6) * (k1[1] + 2*k2[1] + 2*k3[1] + k4[1]);
+                up += (h/6) * (k1[2] + 2*k2[2] + 2*k3[2] + k4[2]);
+                vp += (h/6) * (k1[3] + 2*k2[3] + 2*k3[3] + k4[3]);
+
+                // 保持角度在0~2π
+                if (v > Math.PI * 2) v -= Math.PI * 2;
+                if (v < 0) v += Math.PI * 2;
+            }
+            return { points, validCount };
+        }
+
+        // ==================== 更新所有线条 ====================
+        function updateAllLines(time) {
+            for (let i = 0; i < NUM_LINES; i++) {
+                const meta = lineMetas[i];
+                // 当前初始方向角 θ(t) = baseTheta + ampl * sin(freq * t + phase)
+                const theta = meta.baseTheta + meta.amp * Math.sin(meta.freq * time + meta.phase);
+                const cosT = Math.cos(theta);
+                const sinT = Math.sin(theta);
+                
+                // 计算度量系数
+                const tanhU0 = Math.tanh(meta.u0);
+                const sechU0 = 1 / Math.cosh(meta.u0);
+                const E = tanhU0 * tanhU0;
+                const G = sechU0 * sechU0;
+                const len = Math.sqrt(E * cosT * cosT + G * sinT * sinT);
+                const up0 = cosT / len;
+                const vp0 = sinT / len;
+                
+                // 积分
+                const { points, validCount } = geodesicRK4(
+                    meta.u0, meta.v0, up0, vp0, POINTS_PER_LINE, S_STEP
+                );
+                
+                const positions = linePositionArrays[i];
+                // 填充位置
+                for (let j = 0; j < POINTS_PER_LINE; j++) {
+                    const idx = j * 3;
+                    if (j < validCount) {
+                        const pt = points[j];
+                        positions[idx] = pt.x;
+                        positions[idx + 1] = pt.y;
+                        positions[idx + 2] = pt.z;
+                    } else {
+                        // 不绘制部分设置为零点（但不会被绘制，因为 drawRange）
+                        positions[idx] = 0;
+                        positions[idx + 1] = 0;
+                        positions[idx + 2] = 0;
+                    }
+                }
+                lineGeometries[i].attributes.position.needsUpdate = true;
+                lineGeometries[i].setDrawRange(0, validCount);
+            }
+        }
+
+        // ==================== 动画状态 ====================
+        let lastTime = performance.now();
+        let timeAccum = 0;
+        let frameCount = 0;
+        let firstFrameDone = false;
+
+        // 相机自动旋转
+        let camAngle = 0.3;
+        const camRadius = 5.2;
+        const camHeightBase = 1.6;
+        const camHeightAmp = 0.6;
+        const camHeightFreq = 0.22;
+
+        // ==================== 渲染循环 ====================
+        function animate(timestamp) {
+            requestAnimationFrame(animate);
+
+            let dt = (timestamp - lastTime) / 1000;
+            if (dt <= 0) dt = 0.016;
+            if (dt > 0.2) dt = 0.2;
+            lastTime = timestamp;
+            timeAccum += dt;
+
+            // 更新测地线
+            updateAllLines(timeAccum);
+
+            // 缓慢旋转相机
+            camAngle += dt * 0.16;
+            const camX = camRadius * Math.sin(camAngle);
+            const camZ = camRadius * Math.cos(camAngle);
+            const camY = camHeightBase + camHeightAmp * Math.sin(camHeightFreq * timeAccum + 1.8);
+            camera.position.set(camX, camY, camZ);
+            camera.lookAt(0, 0.45, 0);
+
+            // 星空旋转
+            stars.rotation.y += dt * 0.028;
+            stars.rotation.x += dt * 0.012;
+
+            renderer.render(scene, camera);
+            frameCount++;
+
+            if (!firstFrameDone && frameCount >= 3) {
+                firstFrameDone = true;
+                console.log('动画已稳定运行');
+            }
+        }
+
+        // ==================== 初始帧渲染 ====================
+        function renderInitialFrame() {
+            updateAllLines(0);
+            camera.position.set(4.2, 1.5, 4.5);
+            camera.lookAt(0, 0.5, 0);
+            renderer.render(scene, camera);
+            console.log('初始帧已绘制');
+        }
+
+        // ==================== 窗口大小响应 ====================
+        function onResize() {
+            const w = container.clientWidth;
+            const h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        }
+        window.addEventListener('resize', onResize);
+        window.addEventListener('orientationchange', () => setTimeout(onResize, 150));
+
+        // ==================== 看门狗：防画面停滞 ====================
+        let watchdogFrameCount = frameCount;
+        let watchdogLastCheck = performance.now();
+        setInterval(() => {
+            const now = performance.now();
+            const elapsed = now - watchdogLastCheck;
+            if (elapsed > 1800 && watchdogFrameCount === frameCount && frameCount > 8) {
+                console.warn('检测到可能停滞，尝试恢复...');
+                timeAccum += 0.05;
+                updateAllLines(timeAccum);
+                camAngle += 0.03;
+                const camX = camRadius * Math.sin(camAngle);
+                const camZ = camRadius * Math.cos(camAngle);
+                const camY = camHeightBase + camHeightAmp * Math.sin(camHeightFreq * timeAccum + 1.8);
+                camera.position.set(camX, camY, camZ);
+                camera.lookAt(0, 0.45, 0);
+                renderer.render(scene, camera);
+            }
+            watchdogFrameCount = frameCount;
+            watchdogLastCheck = now;
+        }, 2500);
+
+        // ==================== 启动 ====================
+        renderInitialFrame();
+        setTimeout(() => {
+            lastTime = performance.now();
+            requestAnimationFrame(animate);
+            console.log('动画循环启动');
+        }, 120);
+
+        console.log('伪球面测地线动画初始化完成');
+        console.log('线条数量:', NUM_LINES, ' 每条点数:', POINTS_PER_LINE);
+    </script>
+</body>
+</html>

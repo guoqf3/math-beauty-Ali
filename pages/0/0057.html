@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>三轴椭球 · 测地线混沌编织</title>
+    <style>
+        :root {
+            --bg: #06060c;
+            --gold: #d4a843;
+            --cyan: #45b7aa;
+            --magenta: #d4708a;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'SimSun', serif;
+            -webkit-font-smoothing: antialiased;
+            user-select: none;
+        }
+        #canvas-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+        }
+        canvas { display: block; }
+        .overlay-title {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 22px 20px 8px;
+            text-align: center;
+            background: linear-gradient(180deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.8) 55%, rgba(6,6,12,0) 100%);
+        }
+        .overlay-title h2 {
+            font-size: clamp(1.1rem, 2.2vw, 1.8rem);
+            font-weight: 400;
+            letter-spacing: 0.13em;
+            color: #e8d5b0;
+            text-shadow: 0 0 30px rgba(212,168,67,0.45), 0 0 60px rgba(212,168,67,0.18);
+            margin: 0 0 2px;
+            line-height: 1.3;
+        }
+        .overlay-title .sub {
+            font-size: clamp(0.65rem, 1.1vw, 0.85rem);
+            letter-spacing: 0.22em;
+            color: rgba(200,180,150,0.65);
+        }
+        .overlay-formula {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 8px 20px 18px;
+            text-align: center;
+            background: linear-gradient(0deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.82) 55%, rgba(6,6,12,0) 100%);
+        }
+        .formula-text {
+            font-size: clamp(0.6rem, 1.0vw, 0.8rem);
+            color: rgba(210,200,185,0.8);
+            letter-spacing: 0.03em;
+            line-height: 1.7;
+        }
+        .clr-gold { color: #d4a843; font-weight: bold; }
+        .clr-cyan { color: #45b7aa; font-weight: bold; }
+        .clr-magenta { color: #d4708a; font-weight: bold; }
+        .formula-sep {
+            display: inline-block;
+            margin: 0 14px;
+            color: rgba(150,140,130,0.35);
+        }
+    </style>
+</head>
+<body>
+    <div class="overlay-title">
+        <h2>三轴椭球 · 测地线混沌编织</h2>
+        <div class="sub">Triaxial ellipsoid geodesics · Jacobi metric · Numerical integration</div>
+    </div>
+    <div class="overlay-formula">
+        <div class="formula-text">
+            <span class="clr-gold">x²/a²+y²/b²+z²/c²=1</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-cyan">a=2.2 , b=1.5 , c=0.9</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-magenta">Γⁱⱼₖ · ẋⁱẋⁱ = 0</span>
+        </div>
+    </div>
+    <div id="canvas-container"></div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(46, container.clientWidth / container.clientHeight, 0.5, 22);
+        camera.position.set(3.5, 2.4, 7.5);
+        camera.lookAt(0, 0, 0);
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x06060c, 1);
+        container.appendChild(renderer.domElement);
+
+        let startTime = performance.now();
+        const getElapsed = () => (performance.now() - startTime) * 0.001;
+
+        const COLOR_GOLD = 0xd4a843;
+        const COLOR_CYAN = 0x45b7aa;
+        const COLOR_MAGENTA = 0xd4708a;
+
+        // 三轴椭球参数 (a > b > c)
+        const A = 2.2, B = 1.5, C = 0.9;
+        const A2 = A * A, B2 = B * B, C2 = C * C;
+
+        // 椭球面点
+        function ellipsoidPoint(theta, phi) {
+            const st = Math.sin(theta);
+            return new THREE.Vector3(
+                A * st * Math.cos(phi),
+                B * st * Math.sin(phi),
+                C * Math.cos(theta)
+            );
+        }
+
+        // 椭球面法向量
+        function ellipsoidNormal(theta, phi) {
+            const st = Math.sin(theta);
+            const ct = Math.cos(theta);
+            const cp = Math.cos(phi);
+            const sp = Math.sin(phi);
+            return new THREE.Vector3(
+                cp * st / A,
+                sp * st / B,
+                ct / C
+            ).normalize();
+        }
+
+        // 椭球面第一基本形式系数
+        function metricCoefficients(theta) {
+            const st = Math.sin(theta);
+            const ct = Math.cos(theta);
+            const E = A2 * ct * ct * Math.cos(phi_g) + B2 * ct * ct * Math.sin(phi_g); // 近似
+            // 使用数值方法计算E, F, G
+        }
+
+        // 参数空间中的测地线方程RK4积分
+        function integrateGeodesic(theta0, phi0, dTheta0, dPhi0, steps, ds) {
+            const pts = [];
+            let theta = theta0;
+            let phi = phi0;
+            let dTheta = dTheta0;
+            let dPhi = dPhi0;
+
+            for (let i = 0; i < steps; i++) {
+                const p = ellipsoidPoint(theta, phi);
+                if (p.length() > 10) break;
+                pts.push(p);
+
+                const st = Math.sin(theta);
+                const ct = Math.cos(theta);
+                const st2 = st * st;
+                const ct2 = ct * ct;
+                const A2st = A2 * st2;
+                const B2st = B2 * st2;
+                const C2ct = C2 * ct2;
+
+                // 第一基本形式系数
+                const E = A2st * Math.cos(phi) * Math.cos(phi) + B2st * Math.sin(phi) * Math.sin(phi) + C2ct;
+                // 简化：使用椭球坐标下的度规
+                // 重新计算椭球面上的度规张量
+                const xSt = A * ct * Math.cos(phi);
+                const ySt = B * ct * Math.sin(phi);
+                const zSt = -C * st;
+                const xPhi = -A * st * Math.sin(phi);
+                const yPhi = B * st * Math.cos(phi);
+                const zPhi = 0;
+
+                const E_val = xSt * xSt + ySt * ySt + zSt * zSt;
+                const F_val = xSt * xPhi + ySt * yPhi + zSt * zPhi;
+                const G_val = xPhi * xPhi + yPhi * yPhi + zPhi * zPhi;
+
+                // Christoffel符号
+                const dE_dtheta = 2 * (A2 * ct * st * Math.cos(phi) * Math.cos(phi) + B2 * ct * st * Math.sin(phi) * Math.sin(
+                    phi) - C2 * st * ct);
+                const dE_dphi = 2 * (B2st - A2st) * Math.sin(phi) * Math.cos(phi);
+                const dF_dtheta = (B2 - A2) * ct * st * Math.sin(phi) * Math.cos(phi);
+                const dF_dphi = (B2 - A2) * st2 * (Math.cos(phi) * Math.cos(phi) - Math.sin(phi) * Math.sin(phi));
+                const dG_dtheta = 2 * st * ct * (A2 * Math.sin(phi) * Math.sin(phi) + B2 * Math.cos(phi) * Math.cos(phi));
+                const dG_dphi = 2 * (-A2st + B2st) * Math.sin(phi) * Math.cos(phi);
+
+                const det = E_val * G_val - F_val * F_val;
+                if (Math.abs(det) < 1e-10) break;
+
+                const invE = G_val / det;
+                const invF = -F_val / det;
+                const invG = E_val / det;
+
+                // Γ¹₁₁
+                const Gamma111 = invE * 0.5 * dE_dtheta + invF * (dF_dtheta - 0.5 * dE_dphi);
+                const Gamma112 = invE * 0.5 * dE_dphi + invF * 0.5 * dG_dtheta;
+                const Gamma122 = invE * (dF_dphi - 0.5 * dG_dtheta) + invF * 0.5 * dG_dphi;
+                const Gamma211 = invF * 0.5 * dE_dtheta + invG * (dF_dtheta - 0.5 * dE_dphi);
+                const Gamma212 = invF * 0.5 * dE_dphi + invG * 0.5 * dG_dtheta;
+                const Gamma222 = invF * (dF_dphi - 0.5 * dG_dtheta) + invG * 0.5 * dG_dphi;
+
+                const ddTheta = -(Gamma111 * dTheta * dTheta + 2 * Gamma112 * dTheta * dPhi + Gamma122 * dPhi * dPhi);
+                const ddPhi = -(Gamma211 * dTheta * dTheta + 2 * Gamma212 * dTheta * dPhi + Gamma222 * dPhi * dPhi);
+
+                dTheta += ddTheta * ds;
+                dPhi += ddPhi * ds;
+                theta += dTheta * ds;
+                phi += dPhi * ds;
+
+                if (theta < 0.02) theta = 0.02;
+                if (theta > Math.PI - 0.02) theta = Math.PI - 0.02;
+                if (pts.length > steps) break;
+            }
+            return pts;
+        }
+
+        // 生成测地线族
+        function createGeodesicFamily(thetaSeeds, phi0Values, color, opacity, steps, ds) {
+            const group = new THREE.Group();
+
+            for (const theta0 of thetaSeeds) {
+                for (const phi0 of phi0Values) {
+                    // 初始方向：沿φ方向为主，沿θ方向为次
+                    const dTheta0 = 0.12 + Math.random() * 0.18;
+                    const dPhi0 = 0.35 + Math.random() * 0.45;
+                    const norm0 = Math.sqrt(dTheta0 * dTheta0 + dPhi0 * dPhi0);
+                    const pts = integrateGeodesic(theta0, phi0, dTheta0 / norm0 * 0.6, dPhi0 / norm0 * 0.6, steps, ds);
+
+                    if (pts.length >= 2) {
+                        const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                        const mat = new THREE.LineBasicMaterial({
+                            color, transparent: true, opacity,
+                            depthWrite: true, depthTest: true,
+                        });
+                        group.add(new THREE.Line(geom, mat));
+                    }
+
+                    // 反向积分
+                    const ptsRev = integrateGeodesic(theta0, phi0, -dTheta0 / norm0 * 0.6, -dPhi0 / norm0 * 0.6, steps, ds);
+                    if (ptsRev.length >= 2) {
+                        const geom2 = new THREE.BufferGeometry().setFromPoints(ptsRev);
+                        const mat2 = new THREE.LineBasicMaterial({
+                            color, transparent: true, opacity: opacity * 0.7,
+                            depthWrite: true, depthTest: true,
+                        });
+                        group.add(new THREE.Line(geom2, mat2));
+                    }
+                }
+            }
+            return group;
+        }
+
+        const rootGroup = new THREE.Group();
+        rootGroup.name = 'triaxial-geodesic-weave';
+        scene.add(rootGroup);
+
+        const steps = 200;
+        const ds = 0.045;
+
+        // 金色族：赤道附近出发
+        const goldThetaSeeds = [0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 2.0, 2.1, 2.2, 2.3, 2.4, 2.5];
+        const goldPhis = [0, 0.45, 0.9, 1.35, 1.8, 2.25, 2.7, 3.15, 3.6, 4.05, 4.5, 4.95, 5.4, 5.85];
+        rootGroup.add(createGeodesicFamily(goldThetaSeeds, goldPhis, COLOR_GOLD, 0.58, steps, ds));
+
+        // 青色族：中高纬度出发
+        const cyanThetaSeeds = [0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85, 0.95, 1.05, 1.15, 1.25, 1.35, 1.45, 1.55, 1.65, 1.75, 1.85, 1.95, 2.05, 2.15, 2.25, 2.35, 2.45, 2.55, 2.65, 2.75, 2.85];
+        const cyanPhis = [0.2, 0.7, 1.2, 1.7, 2.2, 2.7, 3.2, 3.7, 4.2, 4.7, 5.2, 5.7];
+        rootGroup.add(createGeodesicFamily(cyanThetaSeeds, cyanPhis, COLOR_CYAN, 0.58, steps, ds));
+
+        // 品红族：极地附近出发
+        const magentaThetaSeeds = [0.08, 0.12, 0.16, 0.20, 0.24, 0.28, 0.32, 0.36, 0.40, 0.44, 0.48, 0.52, 0.56, 2.60, 2.64, 2.68, 2.72, 2.76, 2.80, 2.84, 2.88, 2.92, 2.96, 3.00, 3.04, 3.08];
+        const magentaPhis = [0.1, 0.6, 1.1, 1.6, 2.1, 2.6, 3.1, 3.6, 4.1, 4.6, 5.1, 5.6];
+        rootGroup.add(createGeodesicFamily(magentaThetaSeeds, magentaPhis, COLOR_MAGENTA, 0.58, steps, ds));
+
+        // 辅助椭球网格参考
+        function createEllipsoidGrid(color, opacity) {
+            const group = new THREE.Group();
+            for (let i = 0; i < 16; i++) {
+                const phi = i * Math.PI / 8;
+                const pts = [];
+                for (let j = 0; j <= 240; j++) {
+                    const theta = 0.04 + j * (Math.PI - 0.08) / 240;
+                    pts.push(ellipsoidPoint(theta, phi));
+                }
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                group.add(new THREE.Line(geom, new THREE.LineBasicMaterial({
+                    color, transparent: true, opacity, depthWrite: true, depthTest: true
+                })));
+            }
+            for (let i = 0; i < 12; i++) {
+                const theta = 0.06 + i * (Math.PI - 0.12) / 11;
+                const pts = [];
+                for (let j = 0; j <= 280; j++) {
+                    const phi = j * 2 * Math.PI / 280;
+                    pts.push(ellipsoidPoint(theta, phi));
+                }
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                group.add(new THREE.Line(geom, new THREE.LineBasicMaterial({
+                    color, transparent: true, opacity, depthWrite: true, depthTest: true
+                })));
+            }
+            return group;
+        }
+        rootGroup.add(createEllipsoidGrid(0x403830, 0.065));
+
+        console.log('三轴椭球测地线总数:', rootGroup.children.length);
+
+        // 背景星点
+        const starsGroup = new THREE.Group();
+        const starsGeom = new THREE.BufferGeometry();
+        const starsCount = 550;
+        const starsPos = new Float32Array(starsCount * 3);
+        for (let i = 0; i < starsCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const dist = 6.5 + Math.random() * 10;
+            starsPos[i * 3] = dist * Math.sin(phi) * Math.cos(theta);
+            starsPos[i * 3 + 1] = dist * Math.sin(phi) * Math.sin(theta);
+            starsPos[i * 3 + 2] = dist * Math.cos(phi);
+        }
+        starsGeom.setAttribute('position', new THREE.BufferAttribute(starsPos, 3));
+        const starsMat = new THREE.PointsMaterial({
+            color: 0x908878, size: 0.018, transparent: true, opacity: 0.55, depthWrite: false,
+        });
+        starsGroup.add(new THREE.Points(starsGeom, starsMat));
+        scene.add(starsGroup);
+
+        // ---- 双保险动画循环 ----
+        let animFrameId;
+        function mainLoop() {
+            const t = getElapsed();
+            rootGroup.rotation.x = t * 0.15;
+            rootGroup.rotation.y = t * 0.26;
+            rootGroup.rotation.z = t * 0.11;
+            starsGroup.rotation.y = t * 0.04;
+            starsGroup.rotation.x = t * 0.025;
+
+            const camRadius = 7.5;
+            const camAngle = t * 0.08;
+            const camHeight = 2.5 + Math.sin(t * 0.16) * 0.7;
+            camera.position.x = Math.cos(camAngle) * camRadius;
+            camera.position.z = Math.sin(camAngle) * camRadius;
+            camera.position.y = camHeight;
+            camera.lookAt(0, 0, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        function scheduleFrame() {
+            animFrameId = requestAnimationFrame(() => {
+                try { mainLoop(); } catch (e) { console.warn('动画异常:', e); }
+                scheduleFrame();
+            });
+        }
+
+        const backupTimer = setInterval(() => {
+            if (animFrameId !== undefined) {
+                cancelAnimationFrame(animFrameId);
+                scheduleFrame();
+            }
+        }, 3000);
+
+        renderer.render(scene, camera);
+        scheduleFrame();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = container.clientWidth / Math.max(container.clientHeight, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            camera.aspect = container.clientWidth / Math.max(container.clientHeight, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        }, 120));
+
+        console.log('✅ 三轴椭球测地线混沌编织动画已稳定运行');
+    </script>
+</body>
+</html>

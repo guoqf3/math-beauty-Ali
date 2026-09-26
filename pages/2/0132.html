@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>风纹沙画</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #1a1512;
+            font-family: sans-serif;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="sandCanvas"></canvas>
+    <script>
+        (function() {
+            'use strict';
+
+            const canvas = document.getElementById('sandCanvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            const CONFIG = {
+                layers: 7,                   // 沙丘层数
+                pointsPerLayer: 70,          // 每层采样点数
+                baseAmplitude: 30,           // 基础振幅
+                frequency: 0.012,            // 波纹频率
+                waveSpeed: 0.0008,           // 波纹流动速度
+                mouseDisturbRadius: 180,     // 鼠标扰乱半径
+                mouseDisturbStrength: 40,    // 扰乱强度
+                clickRippleRadius: 260,      // 点击波纹半径
+                clickRippleDuration: 800,    // 波纹持续时间(ms)
+                clickRippleStrength: 55,     // 波纹强度
+                maxRipples: 5,               // 最大波纹数
+                dustCount: 50,               // 沙尘粒子数量
+                dustSpeed: 0.4,              // 沙尘飘动速度
+                returnForce: 0.04,           // 回弹力
+                damping: 0.92,               // 阻尼
+                backgroundFade: 0.15,        // 背景拖尾强度
+                colorBase: [210, 160, 110],  // 沙色基调 RGB
+                colorVariation: 40,          // 颜色变化范围
+            };
+
+            let width = 0;
+            let height = 0;
+            let dpr = 1;
+            let layers = [];
+            let dusts = [];
+            let ripples = [];
+            let mouseX = -9999;
+            let mouseY = -9999;
+            let mouseActive = false;
+            let targetMouseX = -9999;
+            let targetMouseY = -9999;
+            let smoothMouseX = -9999;
+            let smoothMouseY = -9999;
+            let animationId = null;
+            let lastTime = 0;
+            let time = 0;
+
+            // ---------- 波纹类 ----------
+            class Ripple {
+                constructor(x, y, startTime) {
+                    this.x = x;
+                    this.y = y;
+                    this.startTime = startTime;
+                    this.duration = CONFIG.clickRippleDuration;
+                    this.maxRadius = CONFIG.clickRippleRadius;
+                    this.strength = CONFIG.clickRippleStrength;
+                }
+                getProgress(now) {
+                    return Math.min(1, (now - this.startTime) / this.duration);
+                }
+                getDisplacement(px, py, now) {
+                    const progress = this.getProgress(now);
+                    if (progress >= 1) return { dx: 0, dy: 0 };
+                    const dx = px - this.x;
+                    const dy = py - this.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    const radius = this.maxRadius * (0.2 + 0.8 * progress);
+                    if (dist > radius || dist < 0.01) return { dx: 0, dy: 0 };
+                    const envelope = Math.max(0, 1 - progress) * (1 - dist / radius);
+                    const wave = Math.sin((dist / radius) * Math.PI * 4 - progress * 10);
+                    const magnitude = this.strength * envelope * wave;
+                    return { dx: (dx / dist) * magnitude, dy: (dy / dist) * magnitude * 0.5 };
+                }
+            }
+
+            // ---------- 沙丘层 ----------
+            class SandLayer {
+                constructor(index, baseY) {
+                    this.index = index;
+                    this.baseY = baseY;
+                    this.points = [];
+                    const count = CONFIG.pointsPerLayer;
+                    for (let i = 0; i < count; i++) {
+                        const t = i / (count - 1);
+                        const x = t * width;
+                        const y = baseY;
+                        this.points.push({
+                            x: x, y: y,
+                            baseX: x, baseY: y,
+                            offsetX: 0, offsetY: 0,
+                            vx: 0, vy: 0,
+                            t: t,
+                        });
+                    }
+                    this.phaseOffset = index * 0.7;
+                    this.amplitude = CONFIG.baseAmplitude * (0.6 + index * 0.25);
+                    this.frequency = CONFIG.frequency * (0.7 + index * 0.18);
+                    this.colorShift = index * 12;
+                }
+
+                update(dt, now, time) {
+                    const wavePhase = time * CONFIG.waveSpeed * 1000;
+                    for (const pt of this.points) {
+                        let targetOffY = 0;
+                        // 沙丘波纹：多层正弦叠加
+                        targetOffY += Math.sin(pt.baseX * this.frequency + wavePhase + this.phaseOffset) * this.amplitude;
+                        targetOffY += Math.sin(pt.baseX * this.frequency * 2.6 + wavePhase * 1.3 + this.phaseOffset * 1.4) * this.amplitude * 0.4;
+                        targetOffY += Math.cos(pt.baseX * this.frequency * 0.5 - wavePhase * 0.7 + this.phaseOffset * 0.8) * this.amplitude * 0.35;
+
+                        // 鼠标扰乱
+                        if (mouseActive && smoothMouseX > -1000) {
+                            const dx = smoothMouseX - pt.x;
+                            const dy = smoothMouseY - pt.y;
+                            const dist = Math.sqrt(dx * dx + dy * dy);
+                            if (dist < CONFIG.mouseDisturbRadius && dist > 0.01) {
+                                const influence = (1 - dist / CONFIG.mouseDisturbRadius);
+                                targetOffY += (dy > 0 ? 1 : -1) * CONFIG.mouseDisturbStrength * influence * influence * 2;
+                            }
+                        }
+
+                        // 波纹影响
+                        for (const ripple of ripples) {
+                            const disp = ripple.getDisplacement(pt.baseX, pt.baseY, now);
+                            targetOffY += disp.dy;
+                        }
+
+                        // 弹性回弹
+                        const returnY = (targetOffY - pt.offsetY) * CONFIG.returnForce;
+                        pt.vy += returnY * dt;
+                        pt.vy *= CONFIG.damping;
+                        pt.offsetY += pt.vy * dt;
+
+                        // 限制偏移
+                        const maxOffset = 140;
+                        if (pt.offsetY > maxOffset) pt.offsetY = maxOffset;
+                        if (pt.offsetY < -maxOffset) pt.offsetY = -maxOffset;
+
+                        pt.y = pt.baseY + pt.offsetY;
+                    }
+                }
+
+                draw() {
+                    const pts = this.points;
+                    if (pts.length < 2) return;
+                    const r = Math.max(0, Math.min(255, CONFIG.colorBase[0] - this.colorShift));
+                    const g = Math.max(0, Math.min(255, CONFIG.colorBase[1] - this.colorShift * 0.7));
+                    const b = Math.max(0, Math.min(255, CONFIG.colorBase[2] - this.colorShift * 0.4));
+
+                    // 填充路径
+                    ctx.beginPath();
+                    ctx.moveTo(pts[0].x, pts[0].y);
+                    for (let i = 1; i < pts.length; i++) {
+                        const prev = pts[i - 1];
+                        const curr = pts[i];
+                        const midX = (prev.x + curr.x) / 2;
+                        const midY = (prev.y + curr.y) / 2;
+                        ctx.quadraticCurveTo(prev.x, prev.y, midX, midY);
+                    }
+                    ctx.lineTo(pts[pts.length - 1].x, pts[pts.length - 1].y);
+                    ctx.lineTo(width, height);
+                    ctx.lineTo(0, height);
+                    ctx.closePath();
+                    ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.3)`;
+                    ctx.fill();
+
+                    // 顶部高光线
+                    ctx.beginPath();
+                    ctx.moveTo(pts[0].x, pts[0].y);
+                    for (let i = 1; i < pts.length; i++) {
+                        const prev = pts[i - 1];
+                        const curr = pts[i];
+                        const midX = (prev.x + curr.x) / 2;
+                        const midY = (prev.y + curr.y) / 2;
+                        ctx.quadraticCurveTo(prev.x, prev.y, midX, midY);
+                    }
+                    ctx.strokeStyle = `rgba(${Math.min(255, r + 35)}, ${Math.min(255, g + 30)}, ${Math.min(255, b + 25)}, 0.5)`;
+                    ctx.lineWidth = 1.2;
+                    ctx.stroke();
+                }
+            }
+
+            // ---------- 沙尘粒子 ----------
+            class DustParticle {
+                constructor() {
+                    this.x = Math.random() * width;
+                    this.y = Math.random() * height;
+                    this.vx = (Math.random() - 0.5) * CONFIG.dustSpeed * 0.5;
+                    this.vy = -Math.random() * CONFIG.dustSpeed * 0.3;
+                    this.size = Math.random() * 1.2 + 0.3;
+                    this.alpha = Math.random() * 0.3 + 0.1;
+                    this.pulsePhase = Math.random() * Math.PI * 2;
+                }
+
+                update(dt, time) {
+                    this.x += this.vx * dt;
+                    this.y += this.vy * dt;
+                    // 鼠标轻微推动
+                    if (mouseActive && smoothMouseX > -1000) {
+                        const dx = this.x - smoothMouseX;
+                        const dy = this.y - smoothMouseY;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        if (dist < 100 && dist > 0.1) {
+                            const force = (1 - dist / 100) * 0.06;
+                            this.vx += (dx / dist) * force * dt;
+                            this.vy += (dy / dist) * force * dt;
+                        }
+                    }
+                    this.vx *= 0.98;
+                    this.vy *= 0.98;
+                    // 边界循环
+                    if (this.x < -10) this.x = width + 10;
+                    if (this.x > width + 10) this.x = -10;
+                    if (this.y < -10) this.y = height + 10;
+                    if (this.y > height + 10) this.y = -10;
+                }
+
+                draw() {
+                    const pulse = Math.sin(time * 1.5 + this.pulsePhase) * 0.15;
+                    ctx.fillStyle = `rgba(230, 200, 160, ${this.alpha + pulse})`;
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            // ---------- 初始化 ----------
+            function initScene() {
+                layers = [];
+                const baseYStep = height * 0.08;
+                for (let i = 0; i < CONFIG.layers; i++) {
+                    const baseY = height * 0.18 + i * (height / CONFIG.layers) * 0.55;
+                    layers.push(new SandLayer(i, baseY));
+                }
+                dusts = [];
+                for (let i = 0; i < CONFIG.dustCount; i++) {
+                    dusts.push(new DustParticle());
+                }
+            }
+
+            function resizeCanvas() {
+                dpr = Math.min(window.devicePixelRatio || 1, 2);
+                width = window.innerWidth;
+                height = window.innerHeight;
+                canvas.width = Math.floor(width * dpr);
+                canvas.height = Math.floor(height * dpr);
+                canvas.style.width = width + 'px';
+                canvas.style.height = height + 'px';
+                ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                ctx.fillStyle = '#1a1512';
+                ctx.fillRect(0, 0, width, height);
+                initScene();
+                drawScene(performance.now());
+            }
+
+            // ---------- 绘制 ----------
+            function drawScene(now) {
+                ctx.fillStyle = 'rgba(26, 21, 18, ' + CONFIG.backgroundFade + ')';
+                ctx.fillRect(0, 0, width, height);
+
+                if (mouseActive) {
+                    smoothMouseX += (targetMouseX - smoothMouseX) * 0.18;
+                    smoothMouseY += (targetMouseY - smoothMouseY) * 0.18;
+                }
+
+                // 绘制鼠标光晕
+                if (mouseActive && smoothMouseX > -1000) {
+                    const glow = ctx.createRadialGradient(smoothMouseX, smoothMouseY, 0, smoothMouseX, smoothMouseY, 130);
+                    glow.addColorStop(0, 'rgba(220, 190, 140, 0.08)');
+                    glow.addColorStop(1, 'rgba(0,0,0,0)');
+                    ctx.fillStyle = glow;
+                    ctx.beginPath();
+                    ctx.arc(smoothMouseX, smoothMouseY, 130, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+
+                // 绘制沙尘粒子
+                for (const dust of dusts) {
+                    dust.draw();
+                }
+
+                // 绘制沙丘层
+                for (const layer of layers) {
+                    layer.draw();
+                }
+
+                // 移除过期波纹
+                ripples = ripples.filter(r => r.getProgress(now) < 1);
+                if (ripples.length > CONFIG.maxRipples) {
+                    ripples = ripples.slice(-CONFIG.maxRipples);
+                }
+            }
+
+            // ---------- 更新 ----------
+            function updateScene(now) {
+                const dt = Math.min(2, (now - lastTime) / 16.67) || 1;
+                time = now * 0.001;
+
+                for (const layer of layers) {
+                    layer.update(dt, now, time);
+                }
+                for (const dust of dusts) {
+                    dust.update(dt, time);
+                }
+            }
+
+            // ---------- 动画循环 ----------
+            function animate(timestamp) {
+                const now = performance.now();
+                if (lastTime === 0) lastTime = now;
+                const dt = now - lastTime;
+                if (dt > 100) lastTime = now - 16;
+                else lastTime = now;
+
+                updateScene(now);
+                drawScene(now);
+                animationId = requestAnimationFrame(animate);
+            }
+
+            // ---------- 交互 ----------
+            function updateMousePosition(cx, cy) {
+                targetMouseX = cx;
+                targetMouseY = cy;
+                if (!mouseActive) {
+                    mouseActive = true;
+                    smoothMouseX = cx;
+                    smoothMouseY = cy;
+                }
+            }
+
+            function handleClick(cx, cy) {
+                ripples.push(new Ripple(cx, cy, performance.now()));
+                if (ripples.length > CONFIG.maxRipples) {
+                    ripples = ripples.slice(-CONFIG.maxRipples);
+                }
+            }
+
+            function setupEvents() {
+                window.addEventListener('mousemove', (e) => {
+                    updateMousePosition(e.clientX, e.clientY);
+                }, { passive: true });
+                window.addEventListener('mouseleave', () => {
+                    mouseActive = false;
+                    smoothMouseX = -9999;
+                    smoothMouseY = -9999;
+                });
+                window.addEventListener('mousedown', (e) => {
+                    handleClick(e.clientX, e.clientY);
+                });
+                window.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) {
+                        updateMousePosition(touch.clientX, touch.clientY);
+                        handleClick(touch.clientX, touch.clientY);
+                    }
+                }, { passive: false });
+                window.addEventListener('touchmove', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    if (touch) updateMousePosition(touch.clientX, touch.clientY);
+                }, { passive: false });
+                window.addEventListener('touchend', () => {
+                    mouseActive = false;
+                    smoothMouseX = -9999;
+                    smoothMouseY = -9999;
+                });
+                window.addEventListener('resize', () => resizeCanvas());
+                document.addEventListener('visibilitychange', () => {
+                    if (document.hidden) {
+                        if (animationId) { cancelAnimationFrame(animationId); animationId = null; }
+                        lastTime = 0;
+                    } else {
+                        if (!animationId) { lastTime = 0; animationId = requestAnimationFrame(animate); }
+                    }
+                });
+            }
+
+            function init() {
+                resizeCanvas();
+                setupEvents();
+                lastTime = 0;
+                animationId = requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.__sandArt = { config: CONFIG, layers, dusts, ripples };
+        })();
+    </script>
+</body>
+</html>

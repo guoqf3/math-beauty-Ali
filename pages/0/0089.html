@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>正交环面 · 双环测地交织</title>
+    <style>
+        :root {
+            --bg: #06060c;
+            --gold: #d4a843;
+            --cyan: #45b7aa;
+            --magenta: #d4708a;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'SimSun', serif;
+            -webkit-font-smoothing: antialiased;
+            user-select: none;
+        }
+        #canvas-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+        }
+        canvas {
+            display: block;
+        }
+        .overlay-title {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 22px 20px 8px;
+            text-align: center;
+            background: linear-gradient(180deg, rgba(6, 6, 12, 0.95) 0%, rgba(6, 6, 12, 0.8) 55%, rgba(6, 6, 12, 0) 100%);
+        }
+        .overlay-title h2 {
+            font-size: clamp(1.1rem, 2.2vw, 1.8rem);
+            font-weight: 400;
+            letter-spacing: 0.13em;
+            color: #e8d5b0;
+            text-shadow: 0 0 30px rgba(212, 168, 67, 0.45), 0 0 60px rgba(212, 168, 67, 0.18);
+            margin: 0 0 2px;
+            line-height: 1.3;
+        }
+        .overlay-title .sub {
+            font-size: clamp(0.65rem, 1.1vw, 0.85rem);
+            letter-spacing: 0.22em;
+            color: rgba(200, 180, 150, 0.65);
+        }
+        .overlay-formula {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            pointer-events: none;
+            padding: 8px 20px 18px;
+            text-align: center;
+            background: linear-gradient(0deg, rgba(6, 6, 12, 0.95) 0%, rgba(6, 6, 12, 0.82) 55%, rgba(6, 6, 12, 0) 100%);
+        }
+        .formula-text {
+            font-size: clamp(0.6rem, 1.0vw, 0.8rem);
+            color: rgba(210, 200, 185, 0.8);
+            letter-spacing: 0.03em;
+            line-height: 1.7;
+            font-style: italic;
+        }
+        .clr-gold {
+            color: #d4a843;
+            font-style: normal;
+            font-weight: bold;
+        }
+        .clr-cyan {
+            color: #45b7aa;
+            font-style: normal;
+            font-weight: bold;
+        }
+        .clr-magenta {
+            color: #d4708a;
+            font-style: normal;
+            font-weight: bold;
+        }
+        .formula-sep {
+            display: inline-block;
+            margin: 0 14px;
+            color: rgba(150, 140, 130, 0.35);
+            font-style: normal;
+        }
+    </style>
+</head>
+<body>
+    <div class="overlay-title">
+        <h2>正交环面 · 双环测地交织</h2>
+        <div class="sub">Orthogonal tori · Geodesic foliations · Double torus weaving</div>
+    </div>
+    <div class="overlay-formula">
+        <div class="formula-text">
+            <span class="clr-gold">T₁ (z轴): u = ωt, v = αu + φ</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-cyan">T₂ (x轴): u' = βt, v' = γu' + ψ</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-magenta">α,β,γ ∈ ℚ ∪ {√2,√3,φ}</span>
+        </div>
+    </div>
+    <div id="canvas-container"></div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ---------- 场景初始化 ----------
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(46, container.clientWidth / container.clientHeight, 0.5, 22);
+        camera.position.set(3.8, 2.6, 7.8);
+        camera.lookAt(0, 0, 0);
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x06060c, 1);
+        container.appendChild(renderer.domElement);
+
+        // 手动时钟——杜绝暂停
+        let startTime = performance.now();
+        let elapsed = 0;
+        function tick() { elapsed = (performance.now() - startTime) * 0.001; return elapsed; }
+
+        const COLOR_GOLD = 0xd4a943;
+        const COLOR_CYAN = 0x45b7aa;
+        const COLOR_MAGENTA = 0xd4708a;
+
+        // 环面参数
+        const R = 2.5;
+        const r = 0.75;
+
+        // 环面1：z轴
+        function torus1Point(u, v) {
+            const rho = R + r * Math.cos(v);
+            return new THREE.Vector3(rho * Math.cos(u), rho * Math.sin(u), r * Math.sin(v));
+        }
+        // 环面2：x轴
+        function torus2Point(u, v) {
+            const rho = R + r * Math.cos(v);
+            return new THREE.Vector3(r * Math.sin(v), rho * Math.cos(u), rho * Math.sin(u));
+        }
+
+        // 生成环面测地线：参数空间中直线 v = k*u + phi
+        function torusGeodesic(torusFn, uRange, k, phi, numPoints) {
+            const pts = [];
+            const du = uRange / numPoints;
+            for (let i = 0; i <= numPoints; i++) {
+                const u = i * du;
+                const v = k * u + phi;
+                pts.push(torusFn(u, v));
+            }
+            return pts;
+        }
+
+        // 生成一族测地线
+        function createGeodesicFamily(torusFn, uRange, kValues, phiCount, color, opacity, numPoints) {
+            const group = new THREE.Group();
+            for (const k of kValues) {
+                for (let p = 0; p < phiCount; p++) {
+                    const phi = p * 2 * Math.PI / phiCount;
+                    const pts = torusGeodesic(torusFn, uRange, k, phi, numPoints);
+                    if (pts.length < 2) continue;
+                    const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                    group.add(new THREE.Line(geom, new THREE.LineBasicMaterial({
+                        color, transparent: true, opacity, depthWrite: true, depthTest: true
+                    })));
+                }
+            }
+            return group;
+        }
+
+        // 主组
+        const rootGroup = new THREE.Group();
+        rootGroup.name = 'orthogonal-tori';
+        scene.add(rootGroup);
+
+        const uRange = 12 * Math.PI;
+        const phiCount = 5;
+        const numPoints = 500;
+
+        // 金色：环面1上有理斜率测地线 + 无理斜率
+        const goldSlopes = [
+            1/2, 2/3, 3/4, 1/3, 2/5, 4/5, 1, 1.5, 2,
+            Math.sqrt(2), Math.sqrt(3), (1+Math.sqrt(5))/2, Math.PI
+        ];
+        rootGroup.add(createGeodesicFamily(torus1Point, uRange, goldSlopes, phiCount, COLOR_GOLD, 0.72, numPoints));
+
+        // 青色：环面2上有理+无理斜率测地线
+        const cyanSlopes = [
+            1/2, 2/3, 3/5, 3/4, 1/4, 5/3, 1, 1.8, 2.2,
+            Math.sqrt(2), Math.sqrt(5), Math.E, 1.618
+        ];
+        rootGroup.add(createGeodesicFamily(torus2Point, uRange, cyanSlopes, phiCount, COLOR_CYAN, 0.72, numPoints));
+
+        // 品红：两个环面上额外的无理斜率和交叉斜率
+        const magentaSlopes1 = [Math.sqrt(7), 2.718, 0.618, 1.414];
+        const magentaSlopes2 = [Math.sqrt(6), 3.14159, 1.732, 0.707];
+        rootGroup.add(createGeodesicFamily(torus1Point, uRange, magentaSlopes1, 4, COLOR_MAGENTA, 0.65, numPoints));
+        rootGroup.add(createGeodesicFamily(torus2Point, uRange, magentaSlopes2, 4, COLOR_MAGENTA, 0.65, numPoints));
+
+        // 额外：经线（沿管截面）和纬线
+        function createMeridians(torusFn, count, color, opacity, numPoints) {
+            const group = new THREE.Group();
+            for (let i = 0; i < count; i++) {
+                const u0 = i * 2 * Math.PI / count;
+                const pts = [];
+                const dv = 2 * Math.PI / numPoints;
+                for (let j = 0; j <= numPoints; j++) pts.push(torusFn(u0, j * dv));
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                group.add(new THREE.Line(geom, new THREE.LineBasicMaterial({
+                    color, transparent: true, opacity, depthWrite: true, depthTest: true
+                })));
+            }
+            return group;
+        }
+        function createParallels(torusFn, count, color, opacity, numPoints) {
+            const group = new THREE.Group();
+            for (let i = 0; i < count; i++) {
+                const v0 = i * 2 * Math.PI / count;
+                const pts = [];
+                const du = 2 * Math.PI / numPoints;
+                for (let j = 0; j <= numPoints; j++) pts.push(torusFn(j * du, v0));
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                group.add(new THREE.Line(geom, new THREE.LineBasicMaterial({
+                    color, transparent: true, opacity, depthWrite: true, depthTest: true
+                })));
+            }
+            return group;
+        }
+
+        rootGroup.add(createMeridians(torus1Point, 22, COLOR_GOLD, 0.35, 140));
+        rootGroup.add(createParallels(torus1Point, 22, COLOR_GOLD, 0.30, 180));
+        rootGroup.add(createMeridians(torus2Point, 22, COLOR_CYAN, 0.35, 140));
+        rootGroup.add(createParallels(torus2Point, 22, COLOR_CYAN, 0.30, 180));
+
+        console.log('正交环面线条总数:', rootGroup.children.length);
+
+        // 背景星点
+        const starsGroup = new THREE.Group();
+        const starsGeom = new THREE.BufferGeometry();
+        const starsCount = 600;
+        const starsPos = new Float32Array(starsCount * 3);
+        for (let i = 0; i < starsCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const dist = 7 + Math.random() * 10;
+            starsPos[i * 3] = dist * Math.sin(phi) * Math.cos(theta);
+            starsPos[i * 3 + 1] = dist * Math.sin(phi) * Math.sin(theta);
+            starsPos[i * 3 + 2] = dist * Math.cos(phi);
+        }
+        starsGeom.setAttribute('position', new THREE.BufferAttribute(starsPos, 3));
+        const starsMat = new THREE.PointsMaterial({
+            color: 0x908878,
+            size: 0.018,
+            transparent: true,
+            opacity: 0.55,
+            depthWrite: false,
+        });
+        starsGroup.add(new THREE.Points(starsGeom, starsMat));
+        scene.add(starsGroup);
+
+        // 动画循环
+        function animate() {
+            tick();
+            const t = elapsed;
+            rootGroup.rotation.x = t * 0.16;
+            rootGroup.rotation.y = t * 0.28;
+            rootGroup.rotation.z = t * 0.12;
+            starsGroup.rotation.y = t * 0.03;
+            starsGroup.rotation.x = t * 0.02;
+
+            const camRadius = 7.8;
+            const camAngle = t * 0.09;
+            const camHeight = 2.7 + Math.sin(t * 0.17) * 0.8;
+            camera.position.x = Math.cos(camAngle) * camRadius;
+            camera.position.z = Math.sin(camAngle) * camRadius;
+            camera.position.y = camHeight;
+            camera.lookAt(0, 0, 0);
+            renderer.render(scene, camera);
+            requestAnimationFrame(animate);
+        }
+
+        // 预渲染首帧确保画面立即出现
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+
+        // 响应式
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth,
+                h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            const w = container.clientWidth,
+                h = container.clientHeight;
+            camera.aspect = w / Math.max(h, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }, 120));
+
+        console.log('✅ 正交环面双环测地交织动画已稳定运行');
+    </script>
+</body>
+</html>

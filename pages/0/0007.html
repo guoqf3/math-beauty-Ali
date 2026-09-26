@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fibonacci‑Voronoi编织 · 球面邻近网</title>
+    <style>
+        :root {
+            --bg: #06060c;
+            --gold: #d4a843;
+            --cyan: #45b7aa;
+            --magenta: #d4708a;
+        }
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body {
+            background: var(--bg);
+            width: 100vw; height: 100vh; overflow: hidden;
+            font-family: 'Georgia', 'Times New Roman', 'STSong', 'Songti SC', 'SimSun', serif;
+            -webkit-font-smoothing: antialiased; user-select: none; -webkit-user-select: none;
+        }
+        #canvas-container { position:fixed; top:0; left:0; width:100vw; height:100vh; z-index:1; }
+        canvas { display:block; }
+        .overlay-title {
+            position:fixed; top:0; left:0; right:0; z-index:10; pointer-events:none;
+            padding:22px 20px 8px; text-align:center;
+            background: linear-gradient(180deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.8) 55%, rgba(6,6,12,0) 100%);
+        }
+        .overlay-title h2 {
+            font-size: clamp(1.1rem, 2.2vw, 1.8rem); font-weight:400; letter-spacing:0.13em;
+            color:#e8d5b0; text-shadow: 0 0 30px rgba(212,168,67,0.45), 0 0 60px rgba(212,168,67,0.18);
+            margin:0 0 2px; line-height:1.3;
+        }
+        .overlay-title .sub {
+            font-size: clamp(0.65rem, 1.1vw, 0.85rem); letter-spacing:0.22em; color:rgba(200,180,150,0.65);
+        }
+        .overlay-formula {
+            position:fixed; bottom:0; left:0; right:0; z-index:10; pointer-events:none;
+            padding:8px 20px 18px; text-align:center;
+            background: linear-gradient(0deg, rgba(6,6,12,0.95) 0%, rgba(6,6,12,0.82) 55%, rgba(6,6,12,0) 100%);
+        }
+        .formula-text {
+            font-size: clamp(0.6rem, 1.0vw, 0.8rem); color:rgba(210,200,185,0.8); letter-spacing:0.03em; line-height:1.7;
+        }
+        .clr-gold { color:#d4a843; font-weight:bold; }
+        .clr-cyan { color:#45b7aa; font-weight:bold; }
+        .clr-magenta { color:#d4708a; font-weight:bold; }
+        .formula-sep { display:inline-block; margin:0 14px; color:rgba(150,140,130,0.35); }
+    </style>
+</head>
+<body>
+    <div class="overlay-title">
+        <h2>Fibonacci‑Voronoi编织 · 球面邻近网</h2>
+        <div class="sub">Fibonacci sphere lattice · K‑nearest neighbor edges · Three rotating shells</div>
+    </div>
+    <div class="overlay-formula">
+        <div class="formula-text">
+            <span class="clr-gold">R₁=2.30, N₁=80, K₀ₗd=4</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-cyan">R₂=2.58, N₂=90, Kcyₐn=5</span>
+            <span class="formula-sep">‖</span>
+            <span class="clr-magenta">R₃=2.78, N₃=100, Kmag=6</span>
+        </div>
+    </div>
+    <div id="canvas-container"></div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(46, container.clientWidth / container.clientHeight, 0.5, 22);
+        camera.position.set(3.5, 2.4, 7.5);
+        camera.lookAt(0, 0, 0);
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x06060c, 1);
+        container.appendChild(renderer.domElement);
+
+        const clock = new THREE.Clock();
+        const getElapsed = () => clock.getElapsedTime();
+
+        const COLOR_GOLD = 0xd4a843;
+        const COLOR_CYAN = 0x45b7aa;
+        const COLOR_MAGENTA = 0xd4708a;
+        const ARC_STEPS = 72;
+
+        // ---- Fibonacci球面点生成 ----
+        function fibonacciSphere(N, radius) {
+            const pts = [];
+            const phi = Math.PI * (3 - Math.sqrt(5));
+            for (let i = 0; i < N; i++) {
+                const y = 1 - (2 * i + 1) / N;
+                const rAtY = Math.sqrt(1 - y * y);
+                const theta = phi * i;
+                pts.push(new THREE.Vector3(
+                    radius * rAtY * Math.cos(theta),
+                    radius * y,
+                    radius * rAtY * Math.sin(theta)
+                ));
+            }
+            return pts;
+        }
+
+        // ---- 大圆弧采样 ----
+        function greatArcPoints(p1, p2, radius, steps) {
+            const a = p1.clone().normalize();
+            const b = p2.clone().normalize();
+            const dot = Math.max(-1, Math.min(1, a.dot(b)));
+            const omega = Math.acos(dot);
+            if (omega < 1e-6) return [p1.clone(), p2.clone()];
+            const sinO = Math.sin(omega);
+            const pts = [];
+            for (let i = 0; i <= steps; i++) {
+                const t = i / steps;
+                const w1 = Math.sin((1 - t) * omega) / sinO;
+                const w2 = Math.sin(t * omega) / sinO;
+                pts.push(a.clone().multiplyScalar(w1).add(b.clone().multiplyScalar(w2)).multiplyScalar(radius));
+            }
+            return pts;
+        }
+
+        // ---- 构建K近邻边 ----
+        function buildKNNEdges(points, K) {
+            const N = points.length;
+            const edgeSet = new Set();
+            const edges = [];
+            for (let i = 0; i < N; i++) {
+                const dists = [];
+                for (let j = 0; j < N; j++) {
+                    if (i === j) continue;
+                    dists.push({ j, d2: points[i].distanceToSquared(points[j]) });
+                }
+                dists.sort((a, b) => a.d2 - b.d2);
+                for (let k = 0; k < Math.min(K, dists.length); k++) {
+                    const j = dists[k].j;
+                    const key = Math.min(i, j) + '_' + Math.max(i, j);
+                    if (!edgeSet.has(key)) {
+                        edgeSet.add(key);
+                        edges.push([points[i].clone(), points[j].clone()]);
+                    }
+                }
+            }
+            return edges;
+        }
+
+        // ---- 创建球壳的LineSegments ----
+        function createShellSegments(points, K, radius, color, opacity) {
+            const edges = buildKNNEdges(points, K);
+            const totalVerts = edges.length * (ARC_STEPS + 1);
+            const posArray = new Float32Array(totalVerts * 2 * 3);
+            const geom = new THREE.BufferGeometry();
+            geom.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
+            let idx = 0;
+            for (const [a, b] of edges) {
+                const arcPts = greatArcPoints(a, b, radius, ARC_STEPS);
+                for (let s = 0; s < arcPts.length - 1; s++) {
+                    posArray[idx++] = arcPts[s].x; posArray[idx++] = arcPts[s].y; posArray[idx++] = arcPts[s].z;
+                    posArray[idx++] = arcPts[s+1].x; posArray[idx++] = arcPts[s+1].y; posArray[idx++] = arcPts[s+1].z;
+                }
+            }
+            geom.setDrawRange(0, idx / 3);
+            geom.attributes.position.needsUpdate = true;
+            const mat = new THREE.LineBasicMaterial({
+                color, transparent: true, opacity, depthWrite: true, depthTest: true,
+            });
+            return new THREE.LineSegments(geom, mat);
+        }
+
+        // ---- 生成三个球壳的点 ----
+        const goldPts = fibonacciSphere(80, 2.30);
+        const cyanPts = fibonacciSphere(90, 2.58);
+        const magentaPts = fibonacciSphere(100, 2.78);
+
+        // ---- 三个独立旋转的组 ----
+        const goldShell = new THREE.Group(); goldShell.name = 'gold-shell';
+        const cyanShell = new THREE.Group(); cyanShell.name = 'cyan-shell';
+        const magentaShell = new THREE.Group(); magentaShell.name = 'magenta-shell';
+
+        goldShell.add(createShellSegments(goldPts, 4, 2.30, COLOR_GOLD, 0.58));
+        cyanShell.add(createShellSegments(cyanPts, 5, 2.58, COLOR_CYAN, 0.58));
+        magentaShell.add(createShellSegments(magentaPts, 6, 2.78, COLOR_MAGENTA, 0.58));
+
+        // 额外稀疏层
+        goldShell.add(createShellSegments(goldPts, 3, 2.30, COLOR_GOLD, 0.32));
+        cyanShell.add(createShellSegments(cyanPts, 3, 2.58, COLOR_CYAN, 0.32));
+        magentaShell.add(createShellSegments(magentaPts, 4, 2.78, COLOR_MAGENTA, 0.32));
+
+        const rootGroup = new THREE.Group();
+        rootGroup.name = 'fib-voronoi-weave';
+        rootGroup.add(goldShell);
+        rootGroup.add(cyanShell);
+        rootGroup.add(magentaShell);
+        scene.add(rootGroup);
+
+        // 辅助球面参考环
+        [2.30, 2.58, 2.78].forEach((R, idx) => {
+            const refCol = [0x504030, 0x405040, 0x403050][idx];
+            for (let i = 0; i < 6; i++) {
+                const lat = (i + 0.5) * Math.PI / 6;
+                const r = R * Math.sin(lat);
+                const z = R * Math.cos(lat);
+                const pts = [];
+                for (let j = 0; j <= 160; j++) {
+                    const phi = j * 2 * Math.PI / 160;
+                    pts.push(new THREE.Vector3(r * Math.cos(phi), z, r * Math.sin(phi)));
+                }
+                const geom = new THREE.BufferGeometry().setFromPoints(pts);
+                rootGroup.add(new THREE.Line(geom, new THREE.LineBasicMaterial({
+                    color: refCol, transparent: true, opacity: 0.06, depthWrite: true, depthTest: true
+                })));
+            }
+        });
+
+        console.log('Fibonacci-Voronoi编织已就绪');
+
+        // 背景星点
+        const starsGroup = new THREE.Group();
+        const starsGeom = new THREE.BufferGeometry();
+        const sc = 500;
+        const sp = new Float32Array(sc * 3);
+        for (let i = 0; i < sc; i++) {
+            const th = Math.random() * Math.PI * 2, ph = Math.acos(2*Math.random()-1), d = 6.5 + Math.random()*10;
+            sp[i*3] = d * Math.sin(ph) * Math.cos(th);
+            sp[i*3+1] = d * Math.sin(ph) * Math.sin(th);
+            sp[i*3+2] = d * Math.cos(ph);
+        }
+        starsGeom.setAttribute('position', new THREE.BufferAttribute(sp, 3));
+        starsGroup.add(new THREE.Points(starsGeom, new THREE.PointsMaterial({
+            color: 0x908878, size: 0.018, transparent: true, opacity: 0.55, depthWrite: false
+        })));
+        scene.add(starsGroup);
+
+        // ---- 稳定动画循环 ----
+        function animate() {
+            const t = getElapsed();
+            // 三个球壳以无理数频率独立旋转
+            goldShell.rotation.set(t * 0.17, t * 0.24, t * 0.10);
+            cyanShell.rotation.set(t * 0.21, t * 0.18, t * 0.13);
+            magentaShell.rotation.set(t * 0.14, t * 0.29, t * 0.08);
+            rootGroup.rotation.set(t * 0.05, t * 0.06, t * 0.03);
+            starsGroup.rotation.y = t * 0.04;
+            starsGroup.rotation.x = t * 0.025;
+
+            const cr = 7.6, ca = t * 0.08, ch = 2.5 + Math.sin(t*0.16)*0.7;
+            camera.position.set(Math.cos(ca)*cr, ch, Math.sin(ca)*cr);
+            camera.lookAt(0, 0, 0);
+            renderer.render(scene, camera);
+        }
+
+        renderer.setAnimationLoop(animate);
+        renderer.render(scene, camera);
+
+        window.addEventListener('resize', () => {
+            camera.aspect = container.clientWidth / Math.max(container.clientHeight, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        });
+        window.addEventListener('orientationchange', () => setTimeout(() => {
+            camera.aspect = container.clientWidth / Math.max(container.clientHeight, 1);
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        }, 120));
+        console.log('✅ Fibonacci-Voronoi球面邻近网编织动画已稳定运行');
+    </script>
+</body>
+</html>

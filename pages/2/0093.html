@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MAGNET · 磁场沙盘</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #0e0e18;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+        .overlay {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2;
+            text-align: center;
+            pointer-events: none;
+            opacity: 0.55;
+            transition: opacity 0.7s ease;
+            mix-blend-mode: screen;
+        }
+        .overlay:hover {
+            opacity: 0.9;
+        }
+        .title {
+            color: rgba(210, 220, 245, 0.8);
+            font-size: 10px;
+            font-weight: 300;
+            letter-spacing: 0.6em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            text-shadow: 0 0 20px rgba(120, 150, 220, 0.4);
+        }
+        .hint {
+            color: rgba(160, 170, 200, 0.5);
+            font-size: 7px;
+            font-weight: 300;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+        }
+        @media (max-width: 768px) {
+            .overlay {
+                bottom: 18px;
+            }
+            .title {
+                font-size: 8px;
+                letter-spacing: 0.45em;
+            }
+            .hint {
+                font-size: 6px;
+                letter-spacing: 0.22em;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="canvas"></canvas>
+    <div class="overlay">
+        <div class="title">Magnet</div>
+        <div class="hint">move · click</div>
+    </div>
+
+    <script>
+        (function() {
+            // ─── 画布初始化 ───────────────────────────────────────────────
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+
+            let W, H, DPR;
+            let particles = [];        // 铁粉粒子
+            let mouse = { x: -9999, y: -9999, active: false, polarity: 1 };
+            let time = 0;
+            let colorShift = 0;
+
+            // ─── 性能参数 ───────────────────────────────────────────────
+            const PARTICLE_COUNT = () => Math.max(350, Math.min(800, Math.floor(W * H / 1500)));
+
+            function setupCanvas() {
+                DPR = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth;
+                H = window.innerHeight;
+                canvas.width = Math.floor(W * DPR);
+                canvas.height = Math.floor(H * DPR);
+                canvas.style.width = W + 'px';
+                canvas.style.height = H + 'px';
+                ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+                ctx.fillStyle = '#0e0e18';
+                ctx.fillRect(0, 0, W, H);
+            }
+
+            // ─── 铁粉粒子类 ─────────────────────────────────────────────
+            class Particle {
+                constructor() {
+                    this.x = Math.random() * W;
+                    this.y = Math.random() * H;
+                    this.size = 0.8 + Math.random() * 1.6;
+                    this.brightness = 0.5 + Math.random() * 0.5;
+                    this.hue = Math.random() * 360;
+                }
+
+                update(mouse) {
+                    // 随机热运动（模拟铁粉的微小振动）
+                    this.x += (Math.random() - 0.5) * 0.25;
+                    this.y += (Math.random() - 0.5) * 0.25;
+
+                    if (mouse.active) {
+                        const dx = this.x - mouse.x;
+                        const dy = this.y - mouse.y;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        const maxDist = 200;
+                        const minDist = 30;
+
+                        if (dist < maxDist && dist > 0.01) {
+                            const magnetForce = (1 - dist / maxDist) * mouse.polarity;
+                            const normX = dx / dist;
+                            const normY = dy / dist;
+
+                            // 靠近磁铁时，沿着磁感线方向偏转（切向力）
+                            const tangentX = -normY;
+                            const tangentY = normX;
+                            const tangentForce = Math.sin(dist * 0.05) * 0.5 * mouse.polarity;
+
+                            // 合成力
+                            const forceX = normX * magnetForce * 0.8 + tangentX * tangentForce;
+                            const forceY = normY * magnetForce * 0.8 + tangentY * tangentForce;
+
+                            this.x += forceX * 1.2;
+                            this.y += forceY * 1.2;
+                        }
+                    }
+
+                    // 边界限制（温和弹回）
+                    const margin = 30;
+                    if (this.x < margin) this.x += 2;
+                    if (this.x > W - margin) this.x -= 2;
+                    if (this.y < margin) this.y += 2;
+                    if (this.y > H - margin) this.y -= 2;
+                }
+
+                draw(ctx, mouse) {
+                    let alpha = 0.5;
+                    let size = this.size;
+                    let light = 45 + this.brightness * 35;
+                    let hue = this.hue + colorShift;
+
+                    if (mouse.active) {
+                        const dx = this.x - mouse.x;
+                        const dy = this.y - mouse.y;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        const proximity = Math.max(0, 1 - dist / 200);
+                        light += proximity * 30;
+                        alpha += proximity * 0.4;
+                        size += proximity * 0.8;
+                    }
+
+                    ctx.fillStyle = `hsla(${hue}, 65%, ${light}%, ${alpha})`;
+                    ctx.fillRect(this.x - size / 2, this.y - size / 2, size, size);
+                }
+            }
+
+            // ─── 初始化粒子 ─────────────────────────────────────────────
+            function initParticles() {
+                const count = PARTICLE_COUNT();
+                particles = [];
+                for (let i = 0; i < count; i++) {
+                    particles.push(new Particle());
+                }
+            }
+
+            // ─── 鼠标光晕 ───────────────────────────────────────────────
+            function drawCursorGlow(ctx) {
+                if (!mouse.active) return;
+                const radius = 120;
+                const hue = 220 + colorShift + (mouse.polarity > 0 ? 20 : 80);
+                const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, radius);
+                gradient.addColorStop(0, `hsla(${hue}, 65%, 75%, 0.08)`);
+                gradient.addColorStop(0.5, `hsla(${hue}, 55%, 68%, 0.03)`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+
+                // 极芯（N/S标识）
+                const coreRadius = 14;
+                const coreGradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, coreRadius);
+                coreGradient.addColorStop(0, `hsla(${hue}, 70%, 85%, 0.5)`);
+                coreGradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = coreGradient;
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, coreRadius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // ─── 主循环 ─────────────────────────────────────────────────
+            let lastTime = 0;
+            let accumulator = 0;
+            const fixedStep = 1000 / 60;
+
+            function animate(timestamp) {
+                if (!lastTime) lastTime = timestamp;
+                let dt = timestamp - lastTime;
+                lastTime = timestamp;
+                if (dt > 50) dt = 50;
+                if (dt < 1) dt = 1;
+
+                accumulator += dt;
+                const steps = Math.min(Math.floor(accumulator / fixedStep), 3);
+                accumulator -= steps * fixedStep;
+
+                for (let s = 0; s < steps; s++) {
+                    time += 0.016;
+                    for (const p of particles) {
+                        p.update(mouse);
+                    }
+                }
+
+                // 半透明覆盖，制造拖尾
+                ctx.fillStyle = 'rgba(14, 14, 24, 0.18)';
+                ctx.fillRect(0, 0, W, H);
+
+                // 绘制粒子
+                for (const p of particles) {
+                    p.draw(ctx, mouse);
+                }
+
+                // 鼠标光晕
+                drawCursorGlow(ctx);
+
+                requestAnimationFrame(animate);
+            }
+
+            // ─── 交互事件 ───────────────────────────────────────────────
+            function onMouseMove(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+            }
+
+            function onMouseLeave() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onMouseDown(e) {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                mouse.active = true;
+                // 切换磁性极性
+                mouse.polarity *= -1;
+                // 切换色彩偏移
+                colorShift += 35 + Math.random() * 30;
+                if (colorShift > 160) colorShift = -30;
+            }
+
+            function onTouchMove(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                }
+            }
+
+            function onTouchStart(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (touch) {
+                    mouse.x = touch.clientX;
+                    mouse.y = touch.clientY;
+                    mouse.active = true;
+                    mouse.polarity *= -1;
+                    colorShift += 35 + Math.random() * 30;
+                    if (colorShift > 160) colorShift = -30;
+                }
+            }
+
+            function onTouchEnd() {
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            function onResize() {
+                setupCanvas();
+                initParticles();
+                mouse.active = false;
+                mouse.x = -9999;
+                mouse.y = -9999;
+            }
+
+            // ─── 启动 ───────────────────────────────────────────────────
+            function init() {
+                setupCanvas();
+                initParticles();
+
+                canvas.addEventListener('mousemove', onMouseMove, { passive: true });
+                canvas.addEventListener('mousedown', onMouseDown);
+                canvas.addEventListener('mouseleave', onMouseLeave);
+                canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+                canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+                canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+                canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+                window.addEventListener('resize', onResize);
+
+                requestAnimationFrame(animate);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            window.addEventListener('load', () => {
+                if (ctx) {
+                    ctx.fillStyle = '#0e0e18';
+                    ctx.fillRect(0, 0, W, H);
+                }
+            });
+
+        })();
+    </script>
+</body>
+</html>
