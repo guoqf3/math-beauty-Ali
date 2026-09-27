@@ -1,0 +1,1183 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>热传导 · 温度扩散</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{
+    height:100%;overflow:hidden;background:#04060d;color:#fff;
+    font-family:"Helvetica Neue",Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif;
+    -webkit-font-smoothing:antialiased;
+    -webkit-tap-highlight-color:transparent;user-select:none;
+  }
+  /* canvas 提升 z-index，确保接收所有指针事件 */
+  canvas{
+    display:block;position:fixed;inset:0;
+    z-index:1;
+    touch-action:none;cursor:crosshair;
+  }
+
+  #ui{position:fixed;inset:0;pointer-events:none;z-index:10;}
+
+  #title{
+    position:absolute;top:0;left:0;
+    padding:30px 38px;opacity:0;
+    animation:fade 1.6s 0.2s ease forwards;
+  }
+  #title .en{
+    font-size:9px;letter-spacing:.52em;text-indent:.52em;
+    color:rgba(255,160,110,.36);font-weight:300;margin-bottom:10px;
+  }
+  #title h1{
+    font-size:clamp(20px,3vw,36px);
+    font-weight:200;letter-spacing:.32em;text-indent:.32em;
+    background:linear-gradient(96deg,#ff9a55 0%,#ff6a8a 38%,#7ab8ff 72%,#5ee0ff 100%);
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+    margin-bottom:10px;
+    filter:drop-shadow(0 0 28px rgba(255,140,90,.42));
+  }
+  #title .sub{
+    font-size:10px;letter-spacing:.22em;line-height:1.9;
+    color:rgba(220,190,170,.30);font-weight:300;
+  }
+
+  #stats{
+    position:absolute;top:0;right:0;
+    padding:30px 38px;text-align:right;
+    font-family:"SF Mono",Consolas,Monaco,"Courier New",monospace;
+    font-size:9.5px;letter-spacing:.12em;line-height:2.0;
+    color:rgba(220,190,175,.34);
+    opacity:0;animation:fade 1.6s 1.0s ease forwards;
+  }
+  #stats .k{color:rgba(240,200,180,.52);}
+  #stats .v{color:rgba(255,225,170,.86);}
+  #stats .hot{color:rgba(255,170,90,.92);}
+  #stats .cold{color:rgba(120,210,255,.92);}
+  #stats .lab{
+    display:block;font-size:7.5px;letter-spacing:.42em;text-indent:.42em;
+    color:rgba(220,170,140,.26);margin-bottom:6px;
+  }
+  #audioDot{
+    display:inline-block;width:6px;height:6px;border-radius:50%;
+    background:rgba(200,180,255,.22);
+    margin-left:6px;vertical-align:middle;
+    transition:background .4s;
+  }
+  #audioDot.on{
+    background:rgba(150,240,180,.9);
+    box-shadow:0 0 8px rgba(150,240,180,.8);
+  }
+
+  #legend{
+    position:absolute;bottom:0;left:0;
+    padding:0 38px 26px;
+    font-family:"SF Mono",Consolas,Monaco,"Courier New",monospace;
+    font-size:9.5px;letter-spacing:.12em;line-height:2.0;
+    color:rgba(220,190,175,.34);
+    opacity:0;animation:fade 1.6s 1.3s ease forwards;
+  }
+  #legend .big{
+    display:block;font-size:clamp(16px,2vw,22px);
+    font-weight:200;letter-spacing:.20em;
+    color:rgba(255,210,170,.86);
+    margin-bottom:5px;transition:color .6s;
+  }
+  #legend .en{
+    font-size:8.5px;letter-spacing:.36em;text-indent:.36em;
+    color:rgba(230,190,170,.40);
+    margin-bottom:10px;
+  }
+  #legend .item{
+    display:flex;align-items:center;gap:8px;
+    margin-bottom:4px;
+    color:rgba(220,195,180,.52);
+  }
+  #legend .swatch{
+    display:inline-block;width:12px;height:3px;border-radius:2px;
+  }
+
+  #btns{
+    position:absolute;bottom:0;right:0;
+    padding:0 38px 26px;
+    display:flex;gap:8px;
+    opacity:0;animation:fade 1.6s 1.5s ease forwards;
+    pointer-events:auto;
+  }
+  .btn{
+    font-family:inherit;
+    font-size:9px;letter-spacing:.20em;text-indent:.20em;
+    color:rgba(230,215,215,.86);
+    background:rgba(45,25,25,.50);
+    border:1px solid rgba(220,150,120,.26);
+    border-radius:999px;
+    padding:8px 16px;cursor:pointer;
+    transition:.3s cubic-bezier(.4,0,.2,1);
+    backdrop-filter:blur(8px);
+    -webkit-backdrop-filter:blur(8px);
+    white-space:nowrap;
+    pointer-events:auto;
+  }
+  .btn:hover{
+    border-color:rgba(255,200,160,.85);
+    box-shadow:0 0 20px rgba(255,150,100,.36);
+    background:rgba(120,60,45,.28);
+  }
+  .btn:active{transform:translateY(1px);}
+  .btn.cool{
+    border-color:rgba(120,180,240,.26);
+    color:rgba(210,230,255,.86);
+    background:rgba(20,35,55,.50);
+  }
+  .btn.cool:hover{
+    border-color:rgba(180,220,255,.85);
+    box-shadow:0 0 20px rgba(120,180,255,.36);
+    background:rgba(40,70,120,.28);
+  }
+
+  #hint{
+    position:absolute;bottom:0;left:50%;transform:translateX(-50%);
+    padding-bottom:16px;white-space:nowrap;
+    font-size:9px;letter-spacing:.24em;
+    color:rgba(220,190,175,.30);
+    opacity:0;animation:fade 1.6s 1.7s ease forwards;
+  }
+
+  @keyframes fade{to{opacity:1;}}
+
+  @media (max-width:720px){
+    #title{padding:14px 16px;}
+    #title .sub{font-size:8.5px;}
+    #stats{padding:14px 16px;font-size:8px;}
+    #legend{padding:0 16px 16px;font-size:8px;}
+    #btns{padding:0 16px 16px;gap:5px;}
+    .btn{padding:5px 10px;font-size:8px;letter-spacing:.12em;}
+    #hint{display:none;}
+  }
+</style>
+</head>
+<body>
+
+<canvas id="c"></canvas>
+
+<div id="ui">
+  <div id="title">
+    <div class="en">HEAT EQUATION · TEMPERATURE DIFFUSION</div>
+    <h1>热传导</h1>
+    <div class="sub">
+      ∂T/∂t = α∇²T · 温度场实时扩散<br>
+      点击添加热源 / 冷源 · 观察等温线
+    </div>
+  </div>
+
+  <div id="stats">
+    <span class="lab">FIELD METRICS</span>
+    <div><span class="k">平均温度 </span><span class="v" id="avgVal">0.000</span></div>
+    <div><span class="k">极值 </span><span class="hot" id="maxVal">0.00</span> / <span class="cold" id="minVal">0.00</span></div>
+    <div><span class="k">热区面积 </span><span class="hot" id="hotVal">0.0%</span></div>
+    <div><span class="k">冷区面积 </span><span class="cold" id="coldVal">0.0%</span></div>
+    <div><span class="k">时间 </span><span class="v" id="tVal">0.0</span></div>
+    <div style="margin-top:3px;"><span class="k">音频 </span><span class="v">火焰 + 冰融</span><span id="audioDot"></span></div>
+  </div>
+
+  <div id="legend">
+    <span class="big" id="stateBig">冷 却</span>
+    <div class="en" id="stateEn">COOLING</div>
+    <div class="item">
+      <span class="swatch" style="background:rgba(255,190,110,.85)"></span>
+      <span>热等温线 +0.25 / +0.60</span>
+    </div>
+    <div class="item">
+      <span class="swatch" style="background:rgba(120,200,255,.85)"></span>
+      <span>冷等温线 −0.25 / −0.60</span>
+    </div>
+    <div class="item" style="margin-top:6px;">
+      <span style="color:rgba(255,170,90,.85)">●</span><span>左键 / 拖动 · 加热</span>
+    </div>
+    <div class="item">
+      <span style="color:rgba(120,210,255,.85)">●</span><span>右键 / Shift · 制冷</span>
+    </div>
+  </div>
+
+  <div id="btns">
+    <button class="btn cool" id="btnCool">制 冷 模 式</button>
+    <button class="btn" id="btnReset">清 空</button>
+  </div>
+
+  <div id="hint">点击画布 · 添加热源或冷源</div>
+</div>
+
+<script>
+(function(){
+'use strict';
+
+/* =========================================================
+   画布与网格
+   ========================================================= */
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha: false });
+
+let W = 0, H = 0, DPR = 1;
+let GW = 0, GH = 0, CELL = 10;
+
+let grid, nextGrid;
+
+let offCanvas = null;
+let offCtx = null;
+let offImage = null;
+
+/* =========================================================
+   状态（提前声明，避免 TDZ 问题）
+   ========================================================= */
+let mouseX = 0, mouseY = 0;
+let mouseOver = false;
+let isPainting = false;
+let paintMode = 1;
+let forceCoolMode = false;
+let simTime = 0;
+
+let avgT = 0, maxT = 0, minT = 0;
+let hotRatio = 0, coldRatio = 0;
+
+/* =========================================================
+   初始化
+   ========================================================= */
+function init(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width  = Math.round(W * DPR);
+  canvas.height = Math.round(H * DPR);
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  CELL = Math.max(7, Math.min(14, Math.round(Math.min(W, H) / 96)));
+  GW = Math.ceil(W / CELL);
+  GH = Math.ceil(H / CELL);
+
+  grid     = new Float32Array(GW * GH);
+  nextGrid = new Float32Array(GW * GH);
+
+  offCanvas = document.createElement('canvas');
+  offCanvas.width  = GW;
+  offCanvas.height = GH;
+  offCtx = offCanvas.getContext('2d');
+  offImage = offCtx.createImageData(GW, GH);
+
+  /* 初始：中心一小团热源，方便用户点击时有对比 */
+  addSpot(GW * 0.5, GH * 0.5, Math.min(GW, GH) * 0.05, 0.6);
+}
+
+window.addEventListener('resize', function(){
+  init();
+  simTime = 0;
+});
+
+/* =========================================================
+   有限差分：显式欧拉法
+   ========================================================= */
+function diffuse(r){
+  const g = grid;
+  const n = nextGrid;
+  const w = GW, h = GH;
+
+  for (let j = 0; j < h; j++){
+    const row = j * w;
+    const rowU = (j > 0) ? row - w : row;
+    const rowD = (j < h - 1) ? row + w : row;
+
+    for (let i = 0; i < w; i++){
+      const idx = row + i;
+      const c = g[idx];
+
+      const l  = (i > 0)     ? g[idx - 1] : c;
+      const rt = (i < w - 1) ? g[idx + 1] : c;
+      const u  = g[rowU + i];
+      const d  = g[rowD + i];
+
+      let v = c + r * (l + rt + u + d - 4 * c);
+      if (v >  1) v =  1;
+      if (v < -1) v = -1;
+      n[idx] = v;
+    }
+  }
+
+  const tmp = grid;
+  grid = nextGrid;
+  nextGrid = tmp;
+}
+
+/* =========================================================
+   温度 → 颜色
+   ========================================================= */
+function tempToRGB(t){
+  if (t >  1) t =  1;
+  if (t < -1) t = -1;
+
+  let r, g, b;
+
+  if (t >= 0){
+    if (t < 0.5){
+      const u = t / 0.5;
+      r =  8 + (235 -   8) * u;
+      g = 11 + (115 -  11) * u;
+      b = 22 + ( 45 -  22) * u;
+    } else {
+      const u = (t - 0.5) / 0.5;
+      r = 235 + (255 - 235) * u;
+      g = 115 + (240 - 115) * u;
+      b =  45 + (215 -  45) * u;
+    }
+  } else {
+    const a = -t;
+    if (a < 0.5){
+      const u = a / 0.5;
+      r =  8 + ( 55 -   8) * u;
+      g = 11 + (150 -  11) * u;
+      b = 22 + (215 -  22) * u;
+    } else {
+      const u = (a - 0.5) / 0.5;
+      r =  55 + (215 -  55) * u;
+      g = 150 + (240 - 150) * u;
+      b = 215 + (255 - 215) * u;
+    }
+  }
+
+  return [r|0, g|0, b|0];
+}
+
+/* =========================================================
+   渲染温度场
+   ========================================================= */
+function renderField(){
+  const data = offImage.data;
+  const g = grid;
+  const n = GW * GH;
+
+  for (let k = 0; k < n; k++){
+    const col = tempToRGB(g[k]);
+    const o = k * 4;
+    data[o]     = col[0];
+    data[o + 1] = col[1];
+    data[o + 2] = col[2];
+    data[o + 3] = 255;
+  }
+
+  offCtx.putImageData(offImage, 0, 0);
+
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(offCanvas, 0, 0, W, H);
+}
+
+/* =========================================================
+   Marching Squares 等温线
+   ========================================================= */
+const MS_TABLE = [
+  [],
+  [[0, 3]],
+  [[0, 1]],
+  [[3, 1]],
+  [[1, 2]],
+  null,
+  [[0, 2]],
+  [[3, 2]],
+  [[2, 3]],
+  [[0, 2]],
+  null,
+  [[1, 2]],
+  [[1, 3]],
+  [[0, 1]],
+  [[0, 3]],
+  []
+];
+
+function edgePoint(edge, i, j, tl, tr, br, bl, thr){
+  let x, y;
+  if (edge === 0){
+    const d = tr - tl;
+    const t = Math.abs(d) < 1e-9 ? 0.5 : (thr - tl) / d;
+    x = i + t; y = j;
+  } else if (edge === 1){
+    const d = br - tr;
+    const t = Math.abs(d) < 1e-9 ? 0.5 : (thr - tr) / d;
+    x = i + 1; y = j + t;
+  } else if (edge === 2){
+    const d = br - bl;
+    const t = Math.abs(d) < 1e-9 ? 0.5 : (thr - bl) / d;
+    x = i + t; y = j + 1;
+  } else {
+    const d = bl - tl;
+    const t = Math.abs(d) < 1e-9 ? 0.5 : (thr - tl) / d;
+    x = i; y = j + t;
+  }
+  return { x: x, y: y };
+}
+
+const CONTOUR_THRESHOLDS = [-0.60, -0.25, 0.25, 0.60];
+
+function drawContours(){
+  const g = grid;
+  const sx = W / GW;
+  const sy = H / GH;
+  const w = GW, h = GH;
+
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  for (let ti = 0; ti < CONTOUR_THRESHOLDS.length; ti++){
+    const thr = CONTOUR_THRESHOLDS[ti];
+    const isHot = thr > 0;
+    const mag = Math.abs(thr);
+    const alpha = 0.20 + 0.45 * mag;
+
+    ctx.strokeStyle = isHot
+      ? 'rgba(255, 195, 110, ' + alpha + ')'
+      : 'rgba(125, 205, 255, ' + alpha + ')';
+    ctx.lineWidth = 1.0 + mag * 1.0;
+
+    ctx.beginPath();
+
+    for (let j = 0; j < h - 1; j++){
+      const row = j * w;
+      const rowD = row + w;
+
+      for (let i = 0; i < w - 1; i++){
+        const tl = g[row + i];
+        const tr = g[row + i + 1];
+        const bl = g[rowD + i];
+        const br = g[rowD + i + 1];
+
+        let idx = 0;
+        if (tl > thr) idx |= 1;
+        if (tr > thr) idx |= 2;
+        if (br > thr) idx |= 4;
+        if (bl > thr) idx |= 8;
+
+        if (idx === 0 || idx === 15) continue;
+
+        let segs;
+        if (idx === 5 || idx === 10){
+          const center = (tl + tr + br + bl) * 0.25;
+          if (idx === 5){
+            segs = (center > thr) ? [[0, 1], [2, 3]] : [[0, 3], [1, 2]];
+          } else {
+            segs = (center > thr) ? [[0, 3], [1, 2]] : [[0, 1], [2, 3]];
+          }
+        } else {
+          segs = MS_TABLE[idx];
+        }
+
+        if (!segs) continue;
+
+        for (let s = 0; s < segs.length; s++){
+          const e1 = segs[s][0];
+          const e2 = segs[s][1];
+
+          const p1 = edgePoint(e1, i, j, tl, tr, br, bl, thr);
+          const p2 = edgePoint(e2, i, j, tl, tr, br, bl, thr);
+
+          ctx.moveTo(p1.x * sx, p1.y * sy);
+          ctx.lineTo(p2.x * sx, p2.y * sy);
+        }
+      }
+    }
+
+    ctx.stroke();
+  }
+}
+
+/* =========================================================
+   添加热源 / 冷源
+   ========================================================= */
+function addSpot(gx, gy, R, amp){
+  if (!grid) return;
+  const R2 = R * R;
+  const i0 = Math.max(0, Math.floor(gx - R));
+  const i1 = Math.min(GW - 1, Math.ceil(gx + R));
+  const j0 = Math.max(0, Math.floor(gy - R));
+  const j1 = Math.min(GH - 1, Math.ceil(gy + R));
+
+  for (let j = j0; j <= j1; j++){
+    for (let i = i0; i <= i1; i++){
+      const dx = i - gx;
+      const dy = j - gy;
+      const d2 = dx * dx + dy * dy;
+      if (d2 > R2) continue;
+
+      const f = 1 - d2 / R2;
+      const idx = j * GW + i;
+      let v = grid[idx] + amp * f * f;
+      if (v >  1) v =  1;
+      if (v < -1) v = -1;
+      grid[idx] = v;
+    }
+  }
+}
+
+/* 画笔半径（网格单位）—— 放大，让效果更明显 */
+function brushRadius(){
+  const base = Math.min(GW, GH) * 0.10;
+  return Math.max(4, Math.min(12, Math.round(base)));
+}
+
+function paintAt(sx, sy){
+  const gx = sx / CELL;
+  const gy = sy / CELL;
+  const R = brushRadius();
+
+  const mode = forceCoolMode ? -1 : paintMode;
+  const amp = (mode > 0) ? 0.50 : -0.50;   // 加大注入强度
+
+  addSpot(gx, gy, R, amp);
+
+  /* 视觉火花 */
+  spawnSparks(sx, sy, mode, 5);
+  /* 点击涟漪 */
+  spawnRipple(sx, sy, mode);
+}
+
+/* =========================================================
+   光标指示
+   ========================================================= */
+function drawCursor(){
+  if (!mouseOver) return;
+
+  const mode = forceCoolMode ? -1 : paintMode;
+  const R = brushRadius() * CELL;
+  const hue1 = mode > 0 ? '255, 150, 70' : '110, 200, 255';
+
+  /* 外圈 */
+  ctx.beginPath();
+  ctx.arc(mouseX, mouseY, R, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(' + hue1 + ', 0.55)';
+  ctx.lineWidth = 1.3;
+  ctx.setLineDash([4, 5]);
+  ctx.lineDashOffset = (simTime * 22) % 9;
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  /* 内圈柔光 */
+  const g = ctx.createRadialGradient(mouseX, mouseY, 0, mouseX, mouseY, R * 0.9);
+  g.addColorStop(0.00, 'rgba(' + hue1 + ', ' + (isPainting ? 0.38 : 0.16) + ')');
+  g.addColorStop(0.60, 'rgba(' + hue1 + ', ' + (isPainting ? 0.12 : 0.05) + ')');
+  g.addColorStop(1.00, 'rgba(' + hue1 + ', 0)');
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(mouseX, mouseY, R * 0.9, 0, Math.PI * 2);
+  ctx.fill();
+
+  /* 中心点 */
+  ctx.beginPath();
+  ctx.arc(mouseX, mouseY, 3, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(' + hue1 + ', 0.92)';
+  ctx.fill();
+}
+
+/* =========================================================
+   火花粒子
+   ========================================================= */
+const sparks = [];
+
+function spawnSparks(x, y, mode, count){
+  for (let i = 0; i < count; i++){
+    const a = Math.random() * Math.PI * 2;
+    const sp = 30 + Math.random() * 90;
+    sparks.push({
+      x: x, y: y,
+      vx: Math.cos(a) * sp,
+      vy: Math.sin(a) * sp,
+      life: 1,
+      decay: 1.8 + Math.random() * 2.0,
+      size: 1.2 + Math.random() * 2.4,
+      mode: mode
+    });
+  }
+}
+
+function updateSparks(dt){
+  for (let i = sparks.length - 1; i >= 0; i--){
+    const s = sparks[i];
+    s.life -= s.decay * dt;
+    if (s.life <= 0){ sparks.splice(i, 1); continue; }
+    s.x += s.vx * dt;
+    s.y += s.vy * dt;
+    s.vx *= 0.94;
+    s.vy *= 0.94;
+  }
+}
+
+function drawSparks(){
+  if (sparks.length === 0) return;
+
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < sparks.length; i++){
+    const s = sparks[i];
+    const a = s.life * s.life * 0.90;
+    const r = s.size * s.life;
+    const rgb = s.mode > 0 ? '255, 175, 95' : '135, 215, 255';
+
+    const g = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, r * 4.5);
+    g.addColorStop(0.00, 'rgba(' + rgb + ', ' + a + ')');
+    g.addColorStop(0.42, 'rgba(' + rgb + ', ' + (a * 0.30) + ')');
+    g.addColorStop(1.00, 'rgba(' + rgb + ', 0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, r * 4.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* =========================================================
+   点击涟漪
+   ========================================================= */
+const ripples = [];
+
+function spawnRipple(x, y, mode){
+  ripples.push({
+    x: x, y: y,
+    life: 1,
+    decay: 1.5,
+    mode: mode,
+    maxR: brushRadius() * CELL * 2.6
+  });
+}
+
+function updateRipples(dt){
+  for (let i = ripples.length - 1; i >= 0; i--){
+    ripples[i].life -= ripples[i].decay * dt;
+    if (ripples[i].life <= 0) ripples.splice(i, 1);
+  }
+}
+
+function drawRipples(){
+  if (ripples.length === 0) return;
+
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < ripples.length; i++){
+    const rp = ripples[i];
+    const u = 1 - rp.life;
+    const radius = rp.maxR * (0.15 + u * 0.95);
+    const a = rp.life * rp.life * 0.55;
+
+    const rgb = rp.mode > 0 ? '255, 180, 100' : '130, 210, 255';
+
+    ctx.beginPath();
+    ctx.arc(rp.x, rp.y, radius, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(' + rgb + ', ' + a + ')';
+    ctx.lineWidth = 2.5 * rp.life + 0.5;
+    ctx.stroke();
+
+    /* 第二圈 */
+    if (u > 0.25){
+      const a2 = (1 - u) * 0.32;
+      ctx.beginPath();
+      ctx.arc(rp.x, rp.y, radius * 0.65, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(' + rgb + ', ' + a2 + ')';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* =========================================================
+   音频 —— 火焰燃烧 + 冰融滴答
+   ========================================================= */
+let ac = null;
+let masterGain = null;
+let audioReady = false;
+let ambientStarted = false;
+let crackleTimer = null;
+let dripTimer = null;
+
+let heatLevel = 0;
+let coldLevel = 0;
+
+function setAudioDot(on){
+  const d = document.getElementById('audioDot');
+  if (d) d.classList.toggle('on', on);
+}
+
+function initAudio(){
+  if (audioReady){
+    if (ac && ac.state === 'suspended'){
+      ac.resume().then(function(){ setAudioDot(true); }).catch(function(){});
+    }
+    return;
+  }
+
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+
+  try { ac = new AC(); } catch(err){ return; }
+  audioReady = true;
+
+  masterGain = ac.createGain();
+  masterGain.gain.value = 0;
+  masterGain.connect(ac.destination);
+  masterGain.gain.setTargetAtTime(0.62, ac.currentTime, 1.8);
+
+  const kick = function(){
+    setAudioDot(true);
+    startAmbient();
+    scheduleCrackle();
+    scheduleDrip();
+  };
+
+  if (ac.state === 'suspended'){
+    ac.resume().then(kick).catch(function(){ audioReady = false; });
+  } else {
+    kick();
+  }
+}
+
+function startAmbient(){
+  if (ambientStarted) return;
+  ambientStarted = true;
+
+  const now = ac.currentTime;
+
+  const o1 = ac.createOscillator();
+  o1.type = 'sine';
+  o1.frequency.value = 44;
+  const g1 = ac.createGain();
+  g1.gain.value = 0.040;
+  o1.connect(g1);
+  g1.connect(masterGain);
+  o1.start(now);
+
+  const lfo1 = ac.createOscillator();
+  lfo1.frequency.value = 0.06;
+  const lg1 = ac.createGain();
+  lg1.gain.value = 0.018;
+  lfo1.connect(lg1);
+  lg1.connect(g1.gain);
+  lfo1.start(now);
+
+  const len = ac.sampleRate * 3;
+  const buf = ac.createBuffer(1, len, ac.sampleRate);
+  const d = buf.getChannelData(0);
+  let last = 0;
+  for (let i = 0; i < len; i++){
+    const w = Math.random() * 2 - 1;
+    last = (last + 0.020 * w) / 1.020;
+    d[i] = last * 3.0;
+  }
+
+  const src = ac.createBufferSource();
+  src.buffer = buf;
+  src.loop = true;
+
+  const lp = ac.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.frequency.value = 320;
+  lp.Q.value = 0.6;
+
+  const g2 = ac.createGain();
+  g2.gain.value = 0.026;
+
+  src.connect(lp);
+  lp.connect(g2);
+  g2.connect(masterGain);
+  src.start(now);
+
+  const lfo2 = ac.createOscillator();
+  lfo2.frequency.value = 0.085;
+  const lg2 = ac.createGain();
+  lg2.gain.value = 0.013;
+  lfo2.connect(lg2);
+  lg2.connect(g2.gain);
+  lfo2.start(now);
+
+  const src2 = ac.createBufferSource();
+  src2.buffer = buf;
+  src2.loop = true;
+
+  const bp2 = ac.createBiquadFilter();
+  bp2.type = 'bandpass';
+  bp2.frequency.value = 2400;
+  bp2.Q.value = 1.4;
+
+  const g3 = ac.createGain();
+  g3.gain.value = 0.0045;
+
+  src2.connect(bp2);
+  bp2.connect(g3);
+  g3.connect(masterGain);
+  src2.start(now);
+
+  const lfo3 = ac.createOscillator();
+  lfo3.frequency.value = 0.12;
+  const lg3 = ac.createGain();
+  lg3.gain.value = 620;
+  lfo3.connect(lg3);
+  lg3.connect(bp2.frequency);
+  lfo3.start(now);
+}
+
+function playCrackle(){
+  if (!ac || ac.state !== 'running') return;
+  const now = ac.currentTime;
+
+  const dur = 0.015 + Math.random() * 0.055;
+  const n = Math.max(1, Math.ceil(ac.sampleRate * dur));
+  const buf = ac.createBuffer(1, n, ac.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < n; i++){
+    const e = 1 - i / n;
+    d[i] = (Math.random() * 2 - 1) * Math.pow(e, 2.8);
+  }
+
+  const src = ac.createBufferSource();
+  src.buffer = buf;
+
+  const bp = ac.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.frequency.value = 800 + Math.random() * 2600;
+  bp.Q.value = 1.4 + Math.random() * 2.6;
+
+  const g = ac.createGain();
+  g.gain.value = 0.045 + Math.random() * 0.075;
+
+  src.connect(bp);
+  bp.connect(g);
+  g.connect(masterGain);
+  src.start(now);
+}
+
+function scheduleCrackle(){
+  if (crackleTimer) clearTimeout(crackleTimer);
+
+  const base = 1600 - heatLevel * 1380;
+  const wait = Math.max(90, base + (Math.random() - 0.5) * 900);
+
+  crackleTimer = setTimeout(function(){
+    if (Math.random() < 0.42 + heatLevel * 0.55) playCrackle();
+    if (heatLevel > 0.42 && Math.random() < 0.35){
+      setTimeout(playCrackle, 35 + Math.random() * 70);
+    }
+    scheduleCrackle();
+  }, wait);
+}
+
+function playDrip(){
+  if (!ac || ac.state !== 'running') return;
+  const now = ac.currentTime;
+
+  const osc = ac.createOscillator();
+  osc.type = 'sine';
+  const f0 = 1600 + Math.random() * 1400;
+  osc.frequency.setValueAtTime(f0, now);
+  osc.frequency.exponentialRampToValueAtTime(f0 * 0.38, now + 0.055);
+
+  const g = ac.createGain();
+  g.gain.setValueAtTime(0, now);
+  g.gain.linearRampToValueAtTime(0.032, now + 0.003);
+  g.gain.exponentialRampToValueAtTime(0.0003, now + 0.10);
+
+  osc.connect(g);
+  g.connect(masterGain);
+  osc.start(now);
+  osc.stop(now + 0.12);
+
+  const osc2 = ac.createOscillator();
+  osc2.type = 'sine';
+  osc2.frequency.setValueAtTime(f0 * 2.1, now);
+  osc2.frequency.exponentialRampToValueAtTime(f0 * 0.95, now + 0.055);
+
+  const g2 = ac.createGain();
+  g2.gain.setValueAtTime(0, now);
+  g2.gain.linearRampToValueAtTime(0.011, now + 0.003);
+  g2.gain.exponentialRampToValueAtTime(0.0002, now + 0.08);
+
+  osc2.connect(g2);
+  g2.connect(masterGain);
+  osc2.start(now);
+  osc2.stop(now + 0.10);
+}
+
+function scheduleDrip(){
+  if (dripTimer) clearTimeout(dripTimer);
+
+  const base = 2200 - coldLevel * 1850;
+  const wait = Math.max(160, base + (Math.random() - 0.5) * 1200);
+
+  dripTimer = setTimeout(function(){
+    if (Math.random() < 0.38 + coldLevel * 0.55) playDrip();
+    if (coldLevel > 0.40 && Math.random() < 0.30){
+      setTimeout(playDrip, 70 + Math.random() * 120);
+    }
+    scheduleDrip();
+  }, wait);
+}
+
+/* =========================================================
+   场分析
+   ========================================================= */
+function analyzeField(){
+  const g = grid;
+  const n = g.length;
+
+  let sum = 0;
+  let mx = -2, mn = 2;
+  let hot = 0, cold = 0;
+
+  for (let i = 0; i < n; i++){
+    const v = g[i];
+    sum += v;
+    if (v > mx) mx = v;
+    if (v < mn) mn = v;
+    if (v >  0.25) hot++;
+    else if (v < -0.25) cold++;
+  }
+
+  avgT  = sum / n;
+  maxT  = mx;
+  minT  = mn;
+  hotRatio  = Math.min(1, (hot / n) * 5);
+  coldRatio = Math.min(1, (cold / n) * 5);
+
+  heatLevel = hotRatio;
+  coldLevel = coldRatio;
+}
+
+/* =========================================================
+   交互事件 —— 更稳健的绑定
+   ========================================================= */
+function eventPos(e){
+  const rect = canvas.getBoundingClientRect();
+  let cx0, cy0;
+  if (e.touches && e.touches.length > 0){
+    cx0 = e.touches[0].clientX;
+    cy0 = e.touches[0].clientY;
+  } else {
+    cx0 = e.clientX;
+    cy0 = e.clientY;
+  }
+  return { x: cx0 - rect.left, y: cy0 - rect.top };
+}
+
+/* ---- pointerdown ---- */
+canvas.addEventListener('pointerdown', function(e){
+  try { initAudio(); } catch(err){}
+  if (e.cancelable) e.preventDefault();
+
+  const p = eventPos(e);
+  mouseX = p.x; mouseY = p.y;
+  mouseOver = true;
+  isPainting = true;
+
+  const wantCool = (e.button === 2) || e.shiftKey;
+  paintMode = wantCool ? -1 : 1;
+
+  paintAt(mouseX, mouseY);
+
+  try { canvas.setPointerCapture(e.pointerId); } catch(err){}
+});
+
+/* ---- pointermove ---- */
+canvas.addEventListener('pointermove', function(e){
+  const p = eventPos(e);
+  mouseX = p.x; mouseY = p.y;
+  mouseOver = true;
+
+  if (isPainting){
+    paintAt(mouseX, mouseY);
+  }
+});
+
+/* ---- pointerup ---- */
+function endPaint(e){
+  isPainting = false;
+  if (e && e.pointerId !== undefined){
+    try { canvas.releasePointerCapture(e.pointerId); } catch(err){}
+  }
+}
+canvas.addEventListener('pointerup', endPaint);
+canvas.addEventListener('pointercancel', endPaint);
+
+/* ---- 全局 pointerup 兜底 ---- */
+window.addEventListener('pointerup', function(e){
+  isPainting = false;
+});
+
+/* ---- 指针离开画布：不要重置 isPainting，让 pointerup 处理 ---- */
+canvas.addEventListener('pointerleave', function(){
+  mouseOver = false;
+});
+
+/* ---- 右键菜单屏蔽 ---- */
+canvas.addEventListener('contextmenu', function(e){
+  e.preventDefault();
+});
+
+/* ---- 键盘 ---- */
+window.addEventListener('keydown', function(e){
+  if (e.key === ' ' || e.key === 'Enter'){
+    e.preventDefault();
+    initAudio();
+    addSpot(GW * 0.5, GH * 0.5, Math.min(GW, GH) * 0.08, 0.9);
+    spawnSparks(W * 0.5, H * 0.5, 1, 14);
+    spawnRipple(W * 0.5, H * 0.5, 1);
+  } else if (e.key === 'r' || e.key === 'R'){
+    initAudio();
+    clearField();
+  } else if (e.key === 'c' || e.key === 'C'){
+    initAudio();
+    addSpot(GW * 0.5, GH * 0.5, Math.min(GW, GH) * 0.08, -0.9);
+    spawnSparks(W * 0.5, H * 0.5, -1, 14);
+    spawnRipple(W * 0.5, H * 0.5, -1);
+  }
+});
+
+/* =========================================================
+   按钮
+   ========================================================= */
+const btnCool = document.getElementById('btnCool');
+btnCool.addEventListener('click', function(e){
+  e.stopPropagation();
+  initAudio();
+  forceCoolMode = !forceCoolMode;
+  btnCool.classList.toggle('cool', true);
+  btnCool.textContent = forceCoolMode ? '加 热 模 式' : '制 冷 模 式';
+});
+
+document.getElementById('btnReset').addEventListener('click', function(e){
+  e.stopPropagation();
+  initAudio();
+  clearField();
+});
+
+function clearField(){
+  if (grid) grid.fill(0);
+  if (nextGrid) nextGrid.fill(0);
+  sparks.length = 0;
+  ripples.length = 0;
+  simTime = 0;
+}
+
+/* =========================================================
+   主循环
+   ========================================================= */
+const PHYS_DT = 1 / 120;
+const DIFFUSE_R = 0.17;
+let accumulator = 0;
+let lastT = 0;
+let hudTick = 0;
+
+function loop(now){
+  requestAnimationFrame(loop);
+
+  if (!lastT) lastT = now;
+  let dt = (now - lastT) / 1000;
+  lastT = now;
+  if (dt > 0.08) dt = 0.08;
+  if (dt < 0) dt = 0;
+
+  /* ---- 物理步进 ---- */
+  accumulator += dt;
+  let steps = 0;
+  while (accumulator >= PHYS_DT && steps < 8){
+    diffuse(DIFFUSE_R);
+    simTime += PHYS_DT;
+    accumulator -= PHYS_DT;
+    steps++;
+  }
+  if (steps >= 8) accumulator = 0;
+
+  /* ---- 场分析 ---- */
+  if ((hudTick & 3) === 0) analyzeField();
+
+  /* ---- 渲染 ---- */
+  ctx.fillStyle = '#04060d';
+  ctx.fillRect(0, 0, W, H);
+
+  renderField();
+  drawContours();
+
+  updateSparks(dt);
+  drawSparks();
+
+  updateRipples(dt);
+  drawRipples();
+
+  drawCursor();
+
+  /* 暗角 */
+  const vg = ctx.createRadialGradient(
+    W * 0.5, H * 0.5, Math.min(W, H) * 0.34,
+    W * 0.5, H * 0.5, Math.max(W, H) * 0.78
+  );
+  vg.addColorStop(0.00, 'rgba(0,0,0,0)');
+  vg.addColorStop(0.62, 'rgba(2, 3, 8, 0.24)');
+  vg.addColorStop(1.00, 'rgba(0, 0, 2, 0.82)');
+  ctx.fillStyle = vg;
+  ctx.fillRect(0, 0, W, H);
+
+  /* ---- HUD ---- */
+  updateHUD();
+
+  hudTick++;
+}
+
+/* =========================================================
+   HUD
+   ========================================================= */
+function updateHUD(){
+  if (hudTick % 6 !== 0) return;
+
+  const avgEl  = document.getElementById('avgVal');
+  const maxEl  = document.getElementById('maxVal');
+  const minEl  = document.getElementById('minVal');
+  const hotEl  = document.getElementById('hotVal');
+  const coldEl = document.getElementById('coldVal');
+  const tEl    = document.getElementById('tVal');
+
+  if (avgEl)  avgEl.textContent  = avgT.toFixed(3);
+  if (maxEl)  maxEl.textContent  = maxT.toFixed(2);
+  if (minEl)  minEl.textContent  = minT.toFixed(2);
+  if (hotEl)  hotEl.textContent  = (hotRatio * 100).toFixed(1) + '%';
+  if (coldEl) coldEl.textContent = (coldRatio * 100).toFixed(1) + '%';
+  if (tEl)    tEl.textContent    = simTime.toFixed(1);
+
+  const bigEl = document.getElementById('stateBig');
+  const enEl  = document.getElementById('stateEn');
+  if (bigEl && enEl){
+    if (hotRatio > 0.45 && coldRatio > 0.45){
+      bigEl.textContent = '对 峙';
+      enEl.textContent  = 'CLASH';
+      bigEl.style.color = 'rgba(230, 200, 255, .88)';
+    } else if (hotRatio > 0.32){
+      bigEl.textContent = '炽 热';
+      enEl.textContent  = 'HEATING';
+      bigEl.style.color = 'rgba(255, 190, 120, .90)';
+    } else if (coldRatio > 0.32){
+      bigEl.textContent = '凝 结';
+      enEl.textContent  = 'FREEZING';
+      bigEl.style.color = 'rgba(160, 220, 255, .92)';
+    } else if (hotRatio < 0.05 && coldRatio < 0.05){
+      bigEl.textContent = '冷 却';
+      enEl.textContent  = 'COOLING';
+      bigEl.style.color = 'rgba(255, 210, 170, .86)';
+    } else {
+      bigEl.textContent = '扩 散';
+      enEl.textContent  = 'DIFFUSING';
+      bigEl.style.color = 'rgba(255, 210, 170, .86)';
+    }
+  }
+}
+
+/* =========================================================
+   启动
+   ========================================================= */
+init();
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>
