@@ -1,0 +1,974 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>黄金分割扇面 · 山水</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{width:100%;height:100%;overflow:hidden;background:#efe9dd;}
+  canvas{display:block;width:100%;height:100%;cursor:crosshair;touch-action:none;}
+
+  .panel{
+    position:fixed;left:26px;bottom:24px;
+    font-family:"Songti SC","STSong","SimSun",serif;
+    color:#4a4438;user-select:none;pointer-events:none;
+    letter-spacing:.08em;
+  }
+  .panel h1{
+    font-size:16px;font-weight:600;letter-spacing:.34em;
+    color:#2e2921;margin-bottom:7px;
+  }
+  .panel .formula{
+    font-family:"Times New Roman",Georgia,serif;
+    font-size:13px;color:#8a8172;letter-spacing:.06em;
+    margin-bottom:9px;
+  }
+  .panel .formula i{color:#a05a3c;font-style:italic;}
+  .panel .hint{
+    font-size:11.5px;color:#9a917f;line-height:1.9;opacity:.9;
+  }
+  .panel .hint b{color:#7a7263;font-weight:500;}
+
+  .sound-btn{
+    position:fixed;right:22px;top:20px;
+    width:42px;height:42px;border-radius:50%;
+    border:1px solid rgba(90,84,72,.28);
+    background:rgba(252,250,244,.55);
+    backdrop-filter:blur(6px);
+    color:#5c5648;font-size:17px;line-height:1;
+    cursor:pointer;user-select:none;
+    display:flex;align-items:center;justify-content:center;
+    transition:all .28s ease;
+    font-family:"Songti SC",serif;
+  }
+  .sound-btn:hover{background:rgba(255,253,248,.9);transform:scale(1.06);}
+  .sound-btn.off{opacity:.4;}
+
+  .fade-in{animation:fi 1.8s ease both;}
+  @keyframes fi{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:none;}}
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+
+<div class="panel fade-in">
+  <h1>黄金分割 · 扇面</h1>
+  <p class="formula">φ = 1.618…  ·  <i>a</i>/<i>b</i> = 0.618</p>
+  <p class="hint">
+    <b>移动</b> · 显现 φ 分割线，靠近成峰<br>
+    <b>点击</b> · 重开一扇，笔落云生
+  </p>
+</div>
+
+<button class="sound-btn" id="sndBtn" title="声音开关">♪</button>
+
+<script>
+(() => {
+"use strict";
+
+/* ============================================================
+   黄金比例
+   ============================================================ */
+const PHI     = 0.6180339887;
+const PHI_INV = 1 - PHI;          // 0.3819660113
+
+/* ============================================================
+   基础环境
+   ============================================================ */
+const cv  = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+
+let W = 0, H = 0, DPR = 1;
+let paperCanvas = null;
+
+let time = 0, prevT = performance.now();
+
+/* ============================================================
+   扇面几何
+   ============================================================ */
+const fan = { cx:0, cy:0, r0:0, r1:0, a0:0, a1:0, span:0, halfA:1.02 };
+
+function computeFan(){
+  const halfA = 1.02;
+  fan.halfA = halfA;
+  fan.cx = W * 0.5;
+  fan.cy = H * 0.96;
+
+  // 扇面宽度占屏宽 86%
+  const targetW = W * 0.86;
+  let r1 = targetW / (2 * Math.sin(halfA));
+
+  // 顶部不超出屏幕
+  const topLimit = H * 0.07;
+  const maxR = fan.cy - topLimit;
+  if (r1 > maxR) r1 = maxR;
+
+  fan.r1 = r1;
+  fan.r0 = r1 * 0.42;               // 内缘半径
+  fan.a0 = -Math.PI / 2 - halfA;
+  fan.a1 = -Math.PI / 2 + halfA;
+  fan.span = fan.a1 - fan.a0;
+}
+
+function fanPoint(a, r){
+  return {
+    x: fan.cx + Math.cos(a) * r,
+    y: fan.cy + Math.sin(a) * r
+  };
+}
+
+/* ============================================================
+   音频 —— 古琴拨弦 + 山谷回响
+   ============================================================ */
+let actx = null, master = null, delayNode = null;
+let audioOn = true;
+let lastNoteTime = 0;
+
+const PENTA = [0, 2, 4, 7, 9];
+const BASE_FREQ = 196.00;            // G3
+
+function noteFreq(step){
+  const oct = Math.floor(step / 5);
+  const deg = ((step % 5) + 5) % 5;
+  return BASE_FREQ * Math.pow(2, (PENTA[deg] + oct * 12) / 12);
+}
+
+function initAudio(){
+  if (actx) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  actx = new AC();
+
+  master = actx.createGain();
+  master.gain.setValueAtTime(0, actx.currentTime);
+  master.gain.linearRampToValueAtTime(audioOn ? 0.85 : 0, actx.currentTime + 1.4);
+  master.connect(actx.destination);
+
+  const delay = actx.createDelay(2.5);
+  delay.delayTime.value = 0.30;
+
+  const fb = actx.createGain();
+  fb.gain.value = 0.40;
+
+  const damp = actx.createBiquadFilter();
+  damp.type = 'lowpass';
+  damp.frequency.value = 1900;
+
+  const wet = actx.createGain();
+  wet.gain.value = 0.36;
+
+  delay.connect(damp);
+  damp.connect(fb);
+  fb.connect(delay);
+  damp.connect(wet);
+  wet.connect(master);
+
+  delayNode = delay;
+}
+
+function resumeAudio(){
+  if (!actx) initAudio();
+  if (actx && actx.state === 'suspended') actx.resume();
+}
+
+function pluck(freq, vel = 0.2, dur = 2.6){
+  if (!actx || !audioOn) return;
+  const now = actx.currentTime;
+  if (now - lastNoteTime < 0.03) return;
+  lastNoteTime = now;
+
+  const out = actx.createGain();
+  out.gain.value = vel;
+
+  const filt = actx.createBiquadFilter();
+  filt.type = 'lowpass';
+  filt.Q.value = 0.6;
+  filt.frequency.setValueAtTime(5400, now);
+  filt.frequency.exponentialRampToValueAtTime(760, now + dur * 0.9);
+
+  const env = actx.createGain();
+  env.gain.setValueAtTime(0.0001, now);
+  env.gain.exponentialRampToValueAtTime(1, now + 0.007);
+  env.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+
+  filt.connect(env);
+  env.connect(out);
+  out.connect(master);
+  if (delayNode) out.connect(delayNode);
+
+  const partials = [
+    [1.00, 1.00], [2.00, 0.40], [3.01, 0.17], [4.20, 0.085],
+    [5.40, 0.042], [6.80, 0.021], [8.10, 0.010], [10.0, 0.005]
+  ];
+
+  for (const [m, a] of partials){
+    const o = actx.createOscillator();
+    o.type = 'sine';
+    o.frequency.value = freq * m;
+    o.detune.value = (Math.random() - 0.5) * 6;
+    const og = actx.createGain();
+    og.gain.value = a;
+    o.connect(og);
+    og.connect(filt);
+    o.start(now);
+    o.stop(now + dur + 0.25);
+  }
+}
+
+/* ============================================================
+   宣纸纹理
+   ============================================================ */
+function makePaper(){
+  paperCanvas = document.createElement('canvas');
+  paperCanvas.width  = Math.max(1, Math.round(W));
+  paperCanvas.height = Math.max(1, Math.round(H));
+  const p = paperCanvas.getContext('2d');
+
+  const g = p.createRadialGradient(
+    W * 0.5, H * 0.40, Math.min(W, H) * 0.05,
+    W * 0.5, H * 0.55, Math.max(W, H) * 0.90
+  );
+  g.addColorStop(0.00, '#fdfcf8');
+  g.addColorStop(0.55, '#f7f2e8');
+  g.addColorStop(1.00, '#e7dfce');
+  p.fillStyle = g;
+  p.fillRect(0, 0, W, H);
+
+  const n = Math.floor((W * H) / 820);
+  for (let i = 0; i < n; i++){
+    p.fillStyle = `rgba(120,108,86,${Math.random() * 0.036})`;
+    p.fillRect(
+      Math.random() * W,
+      Math.random() * H,
+      Math.random() * 2 + 0.4,
+      Math.random() * 1.2 + 0.3
+    );
+  }
+
+  for (let i = 0; i < 14; i++){
+    const x = Math.random() * W;
+    const y = Math.random() * H;
+    const r = 90 + Math.random() * 260;
+    const rg = p.createRadialGradient(x, y, 0, x, y, r);
+    rg.addColorStop(0, `rgba(148,138,116,${0.018 + Math.random() * 0.024})`);
+    rg.addColorStop(1, 'rgba(148,138,116,0)');
+    p.fillStyle = rg;
+    p.beginPath();
+    p.arc(x, y, r, 0, Math.PI * 2);
+    p.fill();
+  }
+
+  const v = p.createRadialGradient(
+    W * 0.5, H * 0.5, Math.min(W, H) * 0.34,
+    W * 0.5, H * 0.5, Math.max(W, H) * 0.82
+  );
+  v.addColorStop(0, 'rgba(0,0,0,0)');
+  v.addColorStop(1, 'rgba(92,80,60,0.15)');
+  p.fillStyle = v;
+  p.fillRect(0, 0, W, H);
+}
+
+/* ============================================================
+   随机数
+   ============================================================ */
+let rngState = 20240601;
+function rnd(){
+  rngState = (rngState * 1664525 + 1013904223) >>> 0;
+  return rngState / 4294967296;
+}
+function rr(a, b){ return a + rnd() * (b - a); }
+
+/* ============================================================
+   山脊轮廓
+   ============================================================ */
+function ridgeProfile(u, sharp){
+  const x = Math.abs(u);
+  if (x >= 1) return 0;
+  const cosPart = Math.pow(Math.cos(x * Math.PI * 0.5), 0.70);
+  const triPart = 1 - x;
+  return cosPart * (1 - sharp) + triPart * sharp;
+}
+
+/* ============================================================
+   构建山水 —— 黄金比例布局
+   ============================================================ */
+const GOLDEN_POS = [
+  0.618,   // 主峰
+  0.382,   // 次峰
+  0.236,
+  0.854,
+  0.146,
+  0.764,
+  0.500,
+  0.090,
+  0.910
+];
+
+let peaks = [];
+let landscape = { goldenA:0, goldenB:0 };
+
+function buildLandscape(){
+  rngState = 20240601 + Math.floor(Math.random() * 99999);
+  peaks = [];
+
+  const span   = fan.span;
+  const rSpan  = fan.r1 - fan.r0;
+
+  landscape.goldenA = fan.a0 + span * PHI;        // 主峰黄金角
+  landscape.goldenB = fan.a0 + span * PHI_INV;    // 次峰黄金角
+
+  // —— 三层山 ——
+  const layers = [
+    { name:'far',  rFoot: fan.r0 + rSpan * 0.30, hMin:0.20, hMax:0.38, ink:0.115, wMin:0.100, wMax:0.175, sharp:[0.45,0.70] },
+    { name:'mid',  rFoot: fan.r0 + rSpan * 0.15, hMin:0.24, hMax:0.46, ink:0.225, wMin:0.085, wMax:0.155, sharp:[0.50,0.78] },
+    { name:'near', rFoot: fan.r0 + rSpan * 0.02, hMin:0.26, hMax:0.44, ink:0.395, wMin:0.072, wMax:0.132, sharp:[0.55,0.85] }
+  ];
+
+  // 每层使用不同的黄金位置子集，避免完全重叠
+  const layerPosIdx = [
+    [0, 3, 6, 8, 4],     // 远
+    [1, 5, 2, 7, 0, 4],  // 中
+    [0, 2, 6, 3, 5]      // 近
+  ];
+
+  layers.forEach((L, li) => {
+    const idxs = layerPosIdx[li];
+
+    idxs.forEach((gi, k) => {
+      const basePos = GOLDEN_POS[gi % GOLDEN_POS.length];
+      // 微扰，但保留黄金位置的骨架
+      const jitter = (rnd() - 0.5) * 0.045;
+      const posT = Math.max(0.03, Math.min(0.97, basePos + jitter));
+
+      const a = fan.a0 + span * posT;
+      const hFrac = rr(L.hMin, L.hMax);
+      const h = rSpan * hFrac;
+      const hw = span * rr(L.wMin, L.wMax);
+      const sharp = rr(L.sharp[0], L.sharp[1]);
+
+      // 是否是黄金位主峰？
+      const isGolden =
+        (li === 2 && gi === 0) ||
+        (li === 1 && gi === 0) ||
+        (li === 0 && gi === 0);
+
+      peaks.push({
+        a, hw, h, sharp,
+        rFoot: L.rFoot,
+        ink: L.ink,
+        layer: li,
+        isGolden,
+        phase: rnd() * Math.PI * 2,
+        delay: 0
+      });
+    });
+  });
+
+  // —— 生长时序：按角度从左到右 ——
+  peaks.forEach(pk => {
+    const posT = (pk.a - fan.a0) / span;
+    pk.delay = posT * 0.55 + pk.layer * 0.06 + rnd() * 0.08;
+  });
+
+  // 主峰强化：金色主峰最高最浓
+  const goldenPeak = peaks.find(p => p.isGolden && p.layer === 2);
+  if (goldenPeak){
+    goldenPeak.h *= 1.28;
+    goldenPeak.hw *= 1.12;
+  }
+}
+
+/* ============================================================
+   生长动画
+   ============================================================ */
+let growth = 0;
+let growStart = 0;
+let growToken = 0;
+const GROW_DURATION = 4600;
+
+function startGrowth(){
+  growStart = performance.now();
+  growth = 0;
+}
+
+function easeOutCubic(t){ return 1 - Math.pow(1 - t, 3); }
+
+/* ============================================================
+   悬停检测
+   ============================================================ */
+const hover = { peak:null, amount:0, target:0 };
+const mouse = { x:0, y:0, active:false, lastMove:0 };
+
+function updateHover(){
+  if (!mouse.active){
+    hover.target = 0;
+    hover.peak = null;
+    return;
+  }
+
+  const dx = mouse.x - fan.cx;
+  const dy = mouse.y - fan.cy;
+  const ma = Math.atan2(dy, dx);
+  const mr = Math.hypot(dx, dy);
+
+  let found = null;
+  let bestInk = -1;
+
+  // 从近景到远景检测
+  for (let li = 2; li >= 0; li--){
+    for (const pk of peaks){
+      if (pk.layer !== li) continue;
+      if (pk.ink <= bestInk) continue;
+
+      const u = (ma - pk.a) / pk.hw;
+      if (u < -1 || u > 1) continue;
+
+      const rTop = pk.rFoot + pk.h * ridgeProfile(u, pk.sharp);
+      if (mr >= pk.rFoot - 2 && mr <= rTop + 2){
+        found = pk;
+        bestInk = pk.ink;
+      }
+    }
+    if (found) break;
+  }
+
+  if (found !== hover.peak){
+    hover.peak = found;
+    hover.target = found ? 1 : 0;
+
+    if (found){
+      const step = Math.round((found.h / (fan.r1 - fan.r0)) * 8) + found.layer;
+      pluck(noteFreq(step), 0.095, 2.2);
+    }
+  }
+}
+
+/* ============================================================
+   绘制：扇面底
+   ============================================================ */
+function fanPath(r0, r1, a0, a1){
+  ctx.beginPath();
+  ctx.arc(fan.cx, fan.cy, r1, a0, a1, false);
+  ctx.arc(fan.cx, fan.cy, r0, a1, a0, true);
+  ctx.closePath();
+}
+
+function drawFanBase(){
+  // 阴影
+  ctx.save();
+  fanPath(fan.r0, fan.r1, fan.a0, fan.a1);
+  ctx.shadowColor = 'rgba(92,80,60,0.22)';
+  ctx.shadowBlur = 26;
+  ctx.shadowOffsetY = 6;
+  ctx.fillStyle = 'rgba(252,249,242,0.96)';
+  ctx.fill();
+  ctx.restore();
+
+  // 纸面
+  ctx.save();
+  fanPath(fan.r0, fan.r1, fan.a0, fan.a1);
+  ctx.clip();
+
+  const g = ctx.createRadialGradient(
+    fan.cx, fan.cy, fan.r0,
+    fan.cx, fan.cy, fan.r1
+  );
+  g.addColorStop(0.00, '#f3ecdd');
+  g.addColorStop(0.45, '#faf6ec');
+  g.addColorStop(0.80, '#fdfbf5');
+  g.addColorStop(1.00, '#f8f3e8');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+
+  // 细微纤维
+  const n = Math.floor(W * H / 2600);
+  for (let i = 0; i < n; i++){
+    const a = fan.a0 + Math.random() * fan.span;
+    const r = fan.r0 + Math.random() * (fan.r1 - fan.r0);
+    const pt = fanPoint(a, r);
+    ctx.fillStyle = `rgba(122,110,88,${Math.random() * 0.032})`;
+    ctx.fillRect(pt.x, pt.y, Math.random() * 1.8 + 0.3, Math.random() * 0.9 + 0.3);
+  }
+  ctx.restore();
+}
+
+/* ============================================================
+   绘制：山峰
+   ============================================================ */
+function drawPeak(pk, t){
+  // 生长进度
+  const localP = growStart > 0
+    ? Math.max(0, Math.min(1, (growth - pk.delay) / 0.34))
+    : 1;
+  if (localP <= 0.001) return;
+
+  const eg = easeOutCubic(localP);
+  const wobble = Math.sin(t * 0.85 + pk.phase) * 0.006;
+  const h = pk.h * eg * (1 + wobble);
+
+  const isHover = (hover.peak === pk) && hover.amount > 0.02;
+  const boost = isHover ? hover.amount * 0.55 : 0;
+
+  const N = 44;
+
+  ctx.beginPath();
+
+  // —— 山脊轮廓 ——
+  for (let i = 0; i <= N; i++){
+    const u = (i / N) * 2 - 1;
+    const a = pk.a + u * pk.hw;
+    const r = pk.rFoot + h * ridgeProfile(u, pk.sharp);
+    const pt = fanPoint(a, r);
+    if (i === 0) ctx.moveTo(pt.x, pt.y);
+    else ctx.lineTo(pt.x, pt.y);
+  }
+
+  // —— 沿底部弧线闭合 ——
+  const BOT = 14;
+  for (let i = 1; i <= BOT; i++){
+    const u = 1 - (i / BOT) * 2;
+    const a = pk.a + u * pk.hw;
+    const pt = fanPoint(a, pk.rFoot);
+    ctx.lineTo(pt.x, pt.y);
+  }
+  ctx.closePath();
+
+  // —— 墨色渐变 ——
+  const ink = pk.ink * (1 + boost);
+  const topY = fan.cy - (pk.rFoot + h);
+  const g = ctx.createLinearGradient(0, pk.rFoot + fan.cy, 0, topY);
+  g.addColorStop(0.00, `rgba(38,44,58,${Math.min(1, ink * 1.05)})`);
+  g.addColorStop(0.35, `rgba(40,46,60,${Math.min(1, ink * 0.92)})`);
+  g.addColorStop(0.72, `rgba(46,52,66,${Math.min(1, ink * 0.70)})`);
+  g.addColorStop(1.00, `rgba(54,60,74,${Math.min(1, ink * 0.45)})`);
+  ctx.fillStyle = g;
+  ctx.fill();
+
+  // —— 轮廓线 ——
+  if (pk.layer >= 1 || pk.isGolden){
+    ctx.strokeStyle = `rgba(28,34,48,${Math.min(1, ink * 0.95 + boost * 0.3)})`;
+    ctx.lineWidth = 0.75 + (2 - pk.layer) * 0.25;
+    ctx.stroke();
+  }
+
+  // —— 黄金主峰朱砂描边 ——
+  if (pk.isGolden && hover.amount > 0.05){
+    ctx.strokeStyle = `rgba(176,84,52,${hover.amount * 0.75})`;
+    ctx.lineWidth = 1.4;
+    ctx.stroke();
+  }
+
+  // —— 悬停内高光 ——
+  if (isHover){
+    ctx.strokeStyle = `rgba(214,176,96,${boost * 0.55})`;
+    ctx.lineWidth = 1.1;
+    ctx.stroke();
+  }
+}
+
+/* ============================================================
+   绘制：云雾留白
+   ============================================================ */
+function drawMist(t){
+  const rSpan = fan.r1 - fan.r0;
+
+  ctx.save();
+  fanPath(fan.r0, fan.r1, fan.a0, fan.a1);
+  ctx.clip();
+
+  for (let i = 0; i < 4; i++){
+    const drift = Math.sin(t * 0.18 + i * 1.9) * 0.045;
+    const aC = fan.a0 + fan.span * (0.24 + i * 0.20) + drift;
+    const rC = fan.r0 + rSpan * (0.42 + i * 0.13);
+    const rw = rSpan * (0.26 + (i % 2) * 0.10);
+    const pt = fanPoint(aC, rC);
+
+    const mg = ctx.createRadialGradient(pt.x, pt.y, 0, pt.x, pt.y, rw);
+    mg.addColorStop(0.00, `rgba(255,253,247,${0.40 - i * 0.06})`);
+    mg.addColorStop(0.55, `rgba(255,253,247,${0.16 - i * 0.028})`);
+    mg.addColorStop(1.00, 'rgba(255,253,247,0)');
+    ctx.fillStyle = mg;
+    ctx.beginPath();
+    ctx.arc(pt.x, pt.y, rw, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+/* ============================================================
+   绘制：黄金分割辅助线
+   ============================================================ */
+function drawGoldenGuides(t){
+  const A = hover.amount;
+  if (A < 0.02) return;
+
+  ctx.save();
+  ctx.globalAlpha = A;
+
+  // —— 两条黄金角径线 ——
+  [ {a: landscape.goldenA, label:'0.618', col:'rgba(176,84,52,' },
+    {a: landscape.goldenB, label:'0.382', col:'rgba(46,110,118,' }
+  ].forEach((G, idx) => {
+    const p0 = fanPoint(G.a, fan.r0);
+    const p1 = fanPoint(G.a, fan.r1);
+
+    ctx.strokeStyle = G.col + (0.42) + ')';
+    ctx.lineWidth = 1.1;
+    ctx.setLineDash([5, 6]);
+    ctx.beginPath();
+    ctx.moveTo(p0.x, p0.y);
+    ctx.lineTo(p1.x, p1.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // 标签
+    const lp = fanPoint(G.a, fan.r0 + (fan.r1 - fan.r0) * 0.90);
+    ctx.save();
+    ctx.translate(lp.x, lp.y);
+    ctx.rotate(G.a + Math.PI / 2);
+    ctx.font = '600 11px "Times New Roman", Georgia, serif';
+    ctx.fillStyle = G.col + '0.85)';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(G.label, 0, 0);
+    ctx.restore();
+  });
+
+  // —— 黄金半径弧线 ——
+  const rG = fan.r0 + (fan.r1 - fan.r0) * PHI;
+  ctx.strokeStyle = 'rgba(176,84,52,0.34)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 7]);
+  ctx.beginPath();
+  ctx.arc(fan.cx, fan.cy, rG, fan.a0, fan.a1);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // 弧线标签
+  const lp2 = fanPoint(fan.a0 + fan.span * 0.035, rG);
+  ctx.font = '600 10.5px "Times New Roman", Georgia, serif';
+  ctx.fillStyle = 'rgba(176,84,52,0.75)';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('0.618', lp2.x + 5, lp2.y);
+
+  ctx.restore();
+}
+
+/* ============================================================
+   绘制：题款（沿弧排列）
+   ============================================================ */
+function drawInscription(t){
+  const chars = '山水清音';
+  const baseA = fan.a0 + fan.span * 0.815;
+  const stepA = 0.098;
+  const r = fan.r0 + (fan.r1 - fan.r0) * 0.235;
+
+  ctx.save();
+  ctx.font = '600 21px "KaiTi","STKaiti","楷体",serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  for (let i = 0; i < chars.length; i++){
+    const a = baseA + i * stepA;
+    const pt = fanPoint(a, r);
+
+    ctx.save();
+    ctx.translate(pt.x, pt.y);
+    ctx.rotate(a + Math.PI / 2);
+
+    // 墨色略有浓淡
+    ctx.fillStyle = `rgba(34,40,54,${0.72 - i * 0.035})`;
+    ctx.fillText(chars[i], 0, 0);
+    ctx.restore();
+  }
+
+  // —— 朱砂小印 ——
+  const sealA = baseA + chars.length * stepA + 0.035;
+  const sealPt = fanPoint(sealA, r);
+  ctx.save();
+  ctx.translate(sealPt.x, sealPt.y);
+  ctx.rotate(sealA + Math.PI / 2);
+
+  const s = 12;
+  ctx.fillStyle = 'rgba(178,62,46,0.82)';
+  ctx.fillRect(-s/2, -s/2, s, s);
+
+  ctx.strokeStyle = 'rgba(255,248,240,0.7)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(-s/2 + 2, -s/2 + 2, s - 4, s - 4);
+  ctx.restore();
+
+  ctx.restore();
+}
+
+/* ============================================================
+   绘制：扇骨
+   ============================================================ */
+function drawRibs(){
+  const n = 14;
+  ctx.save();
+  for (let i = 0; i <= n; i++){
+    const a = fan.a0 + fan.span * (i / n);
+    const p0 = fanPoint(a, fan.r0 * 0.42);
+    const p1 = fanPoint(a, fan.r0);
+
+    ctx.strokeStyle = 'rgba(122,108,84,0.20)';
+    ctx.lineWidth = (i === 0 || i === n) ? 1.4 : 0.85;
+    ctx.beginPath();
+    ctx.moveTo(p0.x, p0.y);
+    ctx.lineTo(p1.x, p1.y);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/* ============================================================
+   绘制：扇面边框
+   ============================================================ */
+function drawFanBorder(){
+  ctx.save();
+
+  // 外缘
+  fanPath(fan.r0, fan.r1, fan.a0, fan.a1);
+  ctx.strokeStyle = 'rgba(96,82,62,0.62)';
+  ctx.lineWidth = 2.0;
+  ctx.stroke();
+
+  // 内缘
+  ctx.beginPath();
+  ctx.arc(fan.cx, fan.cy, fan.r0, fan.a0, fan.a1);
+  ctx.strokeStyle = 'rgba(96,82,62,0.42)';
+  ctx.lineWidth = 1.3;
+  ctx.stroke();
+
+  // 两侧边
+  [fan.a0, fan.a1].forEach(a => {
+    const p0 = fanPoint(a, fan.r0);
+    const p1 = fanPoint(a, fan.r1);
+    ctx.beginPath();
+    ctx.moveTo(p0.x, p0.y);
+    ctx.lineTo(p1.x, p1.y);
+    ctx.strokeStyle = 'rgba(96,82,62,0.52)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  });
+
+  // 内侧细金线
+  ctx.beginPath();
+  ctx.arc(fan.cx, fan.cy, fan.r1 - 6, fan.a0, fan.a1);
+  ctx.strokeStyle = 'rgba(186,148,82,0.28)';
+  ctx.lineWidth = 0.9;
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+/* ============================================================
+   主更新
+   ============================================================ */
+function update(dt, t){
+  const now = performance.now();
+
+  // 生长
+  if (growStart > 0){
+    const p = Math.min(1, (now - growStart) / GROW_DURATION);
+    growth = p;
+  }
+
+  // 悬停
+  updateHover();
+  hover.amount += (hover.target - hover.amount) * Math.min(1, dt * 7);
+
+  // 空闲游移
+  if (!mouse.active || now - mouse.lastMove > 2800){
+    mouse.x = W * 0.5 + Math.sin(t * 0.23) * W * 0.14;
+    mouse.y = H * 0.5 + Math.cos(t * 0.17) * H * 0.10;
+    mouse.active = false;
+  }
+}
+
+/* ============================================================
+   渲染
+   ============================================================ */
+function render(t){
+  ctx.clearRect(0, 0, W, H);
+
+  // 底纸
+  if (paperCanvas) ctx.drawImage(paperCanvas, 0, 0, W, H);
+  else { ctx.fillStyle = '#f6f1e6'; ctx.fillRect(0, 0, W, H); }
+
+  // 扇面
+  drawFanBase();
+
+  // 扇面内的一切
+  ctx.save();
+  fanPath(fan.r0, fan.r1, fan.a0, fan.a1);
+  ctx.clip();
+
+  // 远 → 中 → 近
+  for (let li = 0; li <= 2; li++){
+    for (const pk of peaks){
+      if (pk.layer === li) drawPeak(pk, t);
+    }
+  }
+
+  // 云雾留白
+  drawMist(t);
+
+  // 题款
+  drawInscription(t);
+
+  ctx.restore();
+
+  // 黄金辅助线（在扇面之上）
+  drawGoldenGuides(t);
+
+  // 扇骨 + 边框
+  drawRibs();
+  drawFanBorder();
+
+  // 鼠标柔光
+  if (mouse.active){
+    const mg = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, 110);
+    mg.addColorStop(0, 'rgba(255,250,235,0.16)');
+    mg.addColorStop(1, 'rgba(255,250,235,0)');
+    ctx.fillStyle = mg;
+    ctx.beginPath();
+    ctx.arc(mouse.x, mouse.y, 110, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+/* ============================================================
+   主循环
+   ============================================================ */
+function loop(){
+  const now = performance.now();
+  const dt = Math.min((now - prevT) / 1000, 0.05);
+  prevT = now;
+  time = now / 1000;
+
+  update(dt, time);
+  render(time);
+
+  requestAnimationFrame(loop);
+}
+
+/* ============================================================
+   尺寸
+   ============================================================ */
+function resize(){
+  const nw = window.innerWidth;
+  const nh = window.innerHeight;
+  if (nw === W && nh === H) return;
+
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = nw; H = nh;
+
+  cv.width  = Math.round(W * DPR);
+  cv.height = Math.round(H * DPR);
+  cv.style.width  = W + 'px';
+  cv.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  makePaper();
+  computeFan();
+  buildLandscape();
+
+  mouse.x = W / 2;
+  mouse.y = H / 2;
+}
+
+/* ============================================================
+   交互
+   ============================================================ */
+function pointerPos(e){
+  const r = cv.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+
+cv.addEventListener('pointermove', e => {
+  const p = pointerPos(e);
+  mouse.x = p.x;
+  mouse.y = p.y;
+  mouse.active = true;
+  mouse.lastMove = performance.now();
+  resumeAudio();
+}, { passive: true });
+
+cv.addEventListener('pointerdown', e => {
+  resumeAudio();
+
+  const p = pointerPos(e);
+  mouse.x = p.x;
+  mouse.y = p.y;
+  mouse.active = true;
+  mouse.lastMove = performance.now();
+
+  // 重新生长
+  startGrowth();
+
+  // 伴随生长：黄金比例音序
+  const token = ++growToken;
+  const base = Math.floor(Math.random() * 4);
+  const seq = [0, 2, 3, 5, 7, 8, 10, 12];
+
+  pluck(noteFreq(base + seq[0]), 0.26, 3.0);
+
+  seq.slice(1).forEach((n, i) => {
+    setTimeout(() => {
+      if (token !== growToken) return;
+      pluck(noteFreq(base + n), 0.095 + Math.random() * 0.045, 2.4);
+    }, 420 + i * 390);
+  });
+}, { passive: true });
+
+cv.addEventListener('pointerleave', () => {
+  mouse.active = false;
+});
+
+/* 声音开关 */
+const sndBtn = document.getElementById('sndBtn');
+sndBtn.addEventListener('click', () => {
+  audioOn = !audioOn;
+  sndBtn.classList.toggle('off', !audioOn);
+  sndBtn.textContent = audioOn ? '♪' : '✕';
+
+  if (audioOn){
+    resumeAudio();
+    if (master && actx){
+      master.gain.cancelScheduledValues(actx.currentTime);
+      master.gain.setValueAtTime(master.gain.value, actx.currentTime);
+      master.gain.linearRampToValueAtTime(0.85, actx.currentTime + 0.5);
+    }
+    pluck(noteFreq(4), 0.2, 2.4);
+  } else if (master && actx){
+    master.gain.cancelScheduledValues(actx.currentTime);
+    master.gain.setValueAtTime(master.gain.value, actx.currentTime);
+    master.gain.linearRampToValueAtTime(0, actx.currentTime + 0.35);
+  }
+});
+
+/* 窗口变化 */
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    resize();
+    startGrowth();
+  }, 200);
+});
+
+/* ============================================================
+   启动
+   ============================================================ */
+resize();
+startGrowth();
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>

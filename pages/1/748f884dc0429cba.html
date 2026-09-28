@@ -1,0 +1,739 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>勾股定理山水图 · Pythagorean Landscape</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{width:100%;height:100%;overflow:hidden;background:#efe9dd;}
+  canvas{display:block;width:100%;height:100%;cursor:crosshair;touch-action:none;}
+
+  .panel{
+    position:fixed;left:26px;bottom:24px;
+    font-family:"Songti SC","STSong","SimSun",serif;
+    color:#4a4438;user-select:none;pointer-events:none;
+    letter-spacing:.08em;
+  }
+  .panel h1{
+    font-size:16px;font-weight:600;letter-spacing:.42em;
+    color:#2e2921;margin-bottom:7px;
+  }
+  .panel .sub{
+    font-family:"Times New Roman",Georgia,serif;
+    font-size:13px;color:#8a8172;letter-spacing:.16em;margin-bottom:9px;
+  }
+  .panel .hint{
+    font-size:11.5px;color:#9a917f;line-height:1.9;
+    opacity:.9;
+  }
+  .panel .hint b{color:#7a7263;font-weight:500;}
+
+  .sound-btn{
+    position:fixed;right:22px;top:20px;
+    width:42px;height:42px;border-radius:50%;
+    border:1px solid rgba(90,84,72,.28);
+    background:rgba(252,250,244,.55);
+    backdrop-filter:blur(6px);
+    color:#5c5648;font-size:17px;line-height:1;
+    cursor:pointer;user-select:none;
+    display:flex;align-items:center;justify-content:center;
+    transition:all .28s ease;
+    font-family:"Songti SC",serif;
+  }
+  .sound-btn:hover{background:rgba(255,253,248,.9);transform:scale(1.06);}
+  .sound-btn.off{opacity:.4;}
+
+  .fade-in{animation:fi 1.6s ease both;}
+  @keyframes fi{from{opacity:0;transform:translateY(8px);}to{opacity:1;transform:none;}}
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+
+<div class="panel fade-in">
+  <h1>勾股定理 · 山水图</h1>
+  <p class="sub">a² + b² = c²</p>
+  <p class="hint">
+    <b>移动</b> · 视差游山，悬停成峰<br>
+    <b>点击</b> · 落墨成韵，空谷回响
+  </p>
+</div>
+
+<button class="sound-btn" id="sndBtn" title="声音开关">♪</button>
+
+<script>
+(() => {
+"use strict";
+
+/* ============================================================
+   基础环境
+   ============================================================ */
+const cv  = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+
+let W = 0, H = 0, DPR = 1;
+let layers = [];
+let ripples = [];
+let paperCanvas = null;
+
+const mouse = { x: 0, y: 0, lastMove: -99999, active: false };
+const hover = { layer: -1, peak: null, amount: 0, target: 0 };
+
+let lastHoverSound = 0;
+
+/* ============================================================
+   音频引擎 —— 五声音阶古琴音色
+   ============================================================ */
+let actx = null, masterGain = null, delayNode = null;
+let audioOn = true;
+let lastNoteTime = 0;
+
+const SCALE_RATIOS = [1, 9/8, 5/4, 3/2, 5/3, 2, 9/4, 5/2, 3, 10/3, 4];
+const ROOT_FREQ = 174.61;                 // F3
+
+function noteFreq(step){
+  const n = SCALE_RATIOS.length;
+  const i = ((step % n) + n) % n;
+  return ROOT_FREQ * SCALE_RATIOS[i];
+}
+
+function initAudio(){
+  if (actx) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  actx = new AC();
+
+  masterGain = actx.createGain();
+  masterGain.gain.setValueAtTime(0, actx.currentTime);
+  masterGain.gain.linearRampToValueAtTime(audioOn ? 0.85 : 0, actx.currentTime + 1.4);
+  masterGain.connect(actx.destination);
+
+  // —— 山谷回声：延时 + 阻尼反馈 ——
+  const delay = actx.createDelay(2.0);
+  delay.delayTime.value = 0.27;
+
+  const fb = actx.createGain();
+  fb.gain.value = 0.36;
+
+  const damp = actx.createBiquadFilter();
+  damp.type = 'lowpass';
+  damp.frequency.value = 2100;
+
+  const wet = actx.createGain();
+  wet.gain.value = 0.32;
+
+  delay.connect(damp);
+  damp.connect(fb);
+  fb.connect(delay);
+  damp.connect(wet);
+  wet.connect(masterGain);
+
+  delayNode = delay;
+}
+
+function resumeAudio(){
+  if (!actx) initAudio();
+  if (actx && actx.state === 'suspended') actx.resume();
+}
+
+function playNote(freq, vel = 0.18){
+  if (!actx || !audioOn) return;
+  const now = actx.currentTime;
+  if (now - lastNoteTime < 0.045) return;
+  lastNoteTime = now;
+
+  const out = actx.createGain();
+  out.gain.value = vel;
+
+  const filt = actx.createBiquadFilter();
+  filt.type = 'lowpass';
+  filt.Q.value = 0.7;
+  filt.frequency.setValueAtTime(5200, now);
+  filt.frequency.exponentialRampToValueAtTime(850, now + 1.9);
+
+  const amp = actx.createGain();
+  amp.gain.setValueAtTime(0.0001, now);
+  amp.gain.exponentialRampToValueAtTime(1, now + 0.008);
+  amp.gain.exponentialRampToValueAtTime(0.0001, now + 2.4);
+
+  filt.connect(amp);
+  amp.connect(out);
+  out.connect(masterGain);
+  if (delayNode) out.connect(delayNode);
+
+  // 泛音列 —— 模拟古琴的丝弦共鸣
+  const partials = [
+    [1.00, 1.00], [2.00, 0.34], [3.00, 0.14],
+    [4.00, 0.070], [5.40, 0.035], [7.10, 0.018]
+  ];
+
+  for (const [mult, g] of partials){
+    const osc = actx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.value = freq * mult;
+    if (mult > 1) osc.detune.value = (Math.random() - 0.5) * 9;
+
+    const pg = actx.createGain();
+    pg.gain.value = g;
+
+    osc.connect(pg);
+    pg.connect(filt);
+    osc.start(now);
+    osc.stop(now + 2.6);
+  }
+}
+
+/* ============================================================
+   画布尺寸 / 场景构建
+   ============================================================ */
+const LAYER_CFG = [
+  // baseRatio: 山脚基线在画面高度中的比例
+  { baseRatio:0.40, minH:0.045, maxH:0.105, ink:0.11, par:0.03, detail:0 },
+  { baseRatio:0.50, minH:0.075, maxH:0.160, ink:0.19, par:0.07, detail:1 },
+  { baseRatio:0.61, minH:0.100, maxH:0.235, ink:0.31, par:0.13, detail:1 },
+  { baseRatio:0.73, minH:0.120, maxH:0.290, ink:0.46, par:0.22, detail:2 },
+  { baseRatio:0.88, minH:0.150, maxH:0.350, ink:0.62, par:0.34, detail:2 }
+];
+
+const OVER = 0.35;   // 水平方向额外覆盖比例（防止视差露边）
+
+function resize(){
+  const nw = window.innerWidth;
+  const nh = window.innerHeight;
+  if (nw === W && nh === H) return;
+
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = nw; H = nh;
+
+  cv.width  = Math.round(W * DPR);
+  cv.height = Math.round(H * DPR);
+  cv.style.width  = W + 'px';
+  cv.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  makePaper();
+  buildScene();
+
+  mouse.x = W / 2;
+  mouse.y = H / 2;
+}
+
+function makePaper(){
+  paperCanvas = document.createElement('canvas');
+  paperCanvas.width  = Math.max(1, Math.round(W));
+  paperCanvas.height = Math.max(1, Math.round(H));
+  const p = paperCanvas.getContext('2d');
+
+  // 宣纸底色
+  const g = p.createRadialGradient(
+    W * 0.5, H * 0.42, Math.min(W, H) * 0.08,
+    W * 0.5, H * 0.52, Math.max(W, H) * 0.88
+  );
+  g.addColorStop(0.00, '#fdfbf6');
+  g.addColorStop(0.50, '#f6f1e6');
+  g.addColorStop(1.00, '#e8e0d0');
+  p.fillStyle = g;
+  p.fillRect(0, 0, W, H);
+
+  // 纸纤维颗粒
+  const n = Math.floor((W * H) / 720);
+  for (let i = 0; i < n; i++){
+    const x = Math.random() * W;
+    const y = Math.random() * H;
+    p.fillStyle = `rgba(122,110,88,${Math.random() * 0.042})`;
+    p.fillRect(x, y, Math.random() * 2 + 0.5, Math.random() * 1.1 + 0.35);
+  }
+
+  // 淡淡的陈年墨渍
+  for (let i = 0; i < 14; i++){
+    const x = Math.random() * W;
+    const y = Math.random() * H;
+    const r = 60 + Math.random() * 230;
+    const rg = p.createRadialGradient(x, y, 0, x, y, r);
+    rg.addColorStop(0, `rgba(148,138,116,${0.03 + Math.random() * 0.028})`);
+    rg.addColorStop(1, 'rgba(148,138,116,0)');
+    p.fillStyle = rg;
+    p.beginPath();
+    p.arc(x, y, r, 0, Math.PI * 2);
+    p.fill();
+  }
+}
+
+function buildScene(){
+  layers = LAYER_CFG.map(cfg => {
+    const baseY = H * cfg.baseRatio;
+    const peaks = [];
+    let x = -W * OVER;
+    const endX = W * (1 + OVER);
+
+    while (x < endX){
+      const h = H * (cfg.minH + Math.random() * (cfg.maxH - cfg.minH));
+      const w = h * (0.75 + Math.random() * 1.55);
+      const flip = Math.random() < 0.5;
+      const ratio = h / (H * cfg.maxH);
+
+      peaks.push({
+        x, w, h, flip,
+        phase: Math.random() * Math.PI * 2,
+        step: Math.max(0, Math.min(10, Math.round(ratio * 9)))
+      });
+
+      x += w;
+    }
+
+    return {
+      baseY,
+      peaks,
+      ink: cfg.ink,
+      par: cfg.par,
+      detail: cfg.detail,
+      offsetX: 0
+    };
+  });
+
+  hover.peak = null;
+  hover.layer = -1;
+  hover.amount = 0;
+  hover.target = 0;
+}
+
+/* ============================================================
+   几何工具 —— 每个山峰就是一个直角三角形
+   直角边 a = 竖边，直角边 b = 底边，斜边 c
+   ============================================================ */
+function peakPath(pk, baseY, bottomY){
+  const topY = baseY - pk.h;
+  ctx.beginPath();
+  if (!pk.flip){
+    // 左直角边竖直，斜边向右下
+    ctx.moveTo(pk.x, bottomY);
+    ctx.lineTo(pk.x, topY);
+    ctx.lineTo(pk.x + pk.w, baseY);
+    ctx.lineTo(pk.x + pk.w, bottomY);
+  } else {
+    // 斜边向右上，右直角边竖直
+    ctx.moveTo(pk.x, bottomY);
+    ctx.lineTo(pk.x, baseY);
+    ctx.lineTo(pk.x + pk.w, topY);
+    ctx.lineTo(pk.x + pk.w, bottomY);
+  }
+  ctx.closePath();
+}
+
+/* ============================================================
+   绘制：山体
+   ============================================================ */
+function drawLayer(L){
+  const targetOff = mouse.active ? (mouse.x - W / 2) * L.par : 0;
+  L.offsetX += (targetOff - L.offsetX) * 0.045;
+
+  ctx.save();
+  ctx.translate(L.offsetX, 0);
+
+  const hoverLayer = (hover.layer >= 0 && layers[hover.layer] === L);
+
+  for (const pk of L.peaks){
+    const topY = L.baseY - pk.h;
+    const isHover = hoverLayer && hover.peak === pk;
+    const boost = isHover ? 0.10 : 0;
+
+    peakPath(pk, L.baseY, H + 12);
+
+    const grad = ctx.createLinearGradient(0, topY, 0, H);
+    const ink = L.ink;
+    grad.addColorStop(0.00, `rgba(34,38,48,${Math.min(1, ink * 0.42 + boost)})`);
+    grad.addColorStop(0.30, `rgba(34,38,48,${Math.min(1, ink * 0.80 + boost)})`);
+    grad.addColorStop(1.00, `rgba(34,38,48,${Math.min(1, ink * 1.00 + boost * 0.6)})`);
+    ctx.fillStyle = grad;
+    ctx.fill();
+
+    // 山脊轮廓（勾股线条）
+    if (L.detail > 0){
+      ctx.strokeStyle = `rgba(26,30,40,${Math.min(1, ink * 0.9 + boost)})`;
+      ctx.lineWidth = 0.7 + L.detail * 0.35;
+      ctx.stroke();
+    }
+  }
+
+  ctx.restore();
+}
+
+/* ============================================================
+   绘制：云雾
+   ============================================================ */
+function drawMist(t){
+  ctx.save();
+  for (let i = 0; i < 5; i++){
+    const speed = 0.05 + i * 0.028;
+    const px = W * 0.5 + Math.sin(t * speed + i * 1.7) * W * 0.35;
+    const py = H * (0.32 + i * 0.115) + Math.sin(t * speed * 1.6 + i * 2.3) * 14;
+    const rx = W * (0.30 + (i % 3) * 0.13);
+    const ry = H * (0.042 + (i % 2) * 0.022);
+    const a  = 0.26 - i * 0.032;
+
+    const g = ctx.createRadialGradient(px, py, 0, px, py, Math.max(rx, 1));
+    g.addColorStop(0.00, `rgba(252,250,244,${a})`);
+    g.addColorStop(0.55, `rgba(252,250,244,${a * 0.45})`);
+    g.addColorStop(1.00, 'rgba(252,250,244,0)');
+
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.ellipse(px, py, rx, ry, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+/* ============================================================
+   绘制：点击涟漪（墨韵）
+   ============================================================ */
+function drawRipples(dt){
+  for (let i = ripples.length - 1; i >= 0; i--){
+    const r = ripples[i];
+    r.life -= dt * 0.62;
+    r.r += (r.max - r.r) * Math.min(1, dt * 1.9);
+
+    if (r.life <= 0){ ripples.splice(i, 1); continue; }
+
+    ctx.save();
+    ctx.translate(r.x, r.y);
+    ctx.scale(1, 0.42);
+    ctx.strokeStyle = `rgba(44,50,62,${0.24 * r.life})`;
+    ctx.lineWidth = 1.2;
+
+    ctx.beginPath(); ctx.arc(0, 0, r.r,        0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.arc(0, 0, r.r * 0.62, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.arc(0, 0, r.r * 0.30, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+  }
+}
+
+/* ============================================================
+   绘制：悬停高亮 —— 勾股三边 + 直角标记 + a b c
+   ============================================================ */
+const C_A = '#c4553b';   // 朱砂
+const C_B = '#2f6f73';   // 石青
+const C_C = '#a8792c';   // 赭黄
+
+function drawHighlight(li, pk, alpha){
+  if (li < 0 || !pk) return;
+  const L = layers[li];
+  if (!L) return;
+
+  const baseY = L.baseY;
+  const topY  = baseY - pk.h;
+  const x0 = pk.x;
+  const x1 = pk.x + pk.w;
+  const footX = pk.flip ? x1 : x0;
+  const farX  = pk.flip ? x0 : x1;
+
+  ctx.save();
+  ctx.translate(L.offsetX, 0);
+  ctx.globalAlpha = alpha;
+  ctx.lineCap = 'round';
+
+  // 直角边 a（竖直）
+  ctx.strokeStyle = C_A;
+  ctx.lineWidth = 2.3;
+  ctx.beginPath();
+  ctx.moveTo(footX, baseY);
+  ctx.lineTo(footX, topY);
+  ctx.stroke();
+
+  // 直角边 b（底边，向下偏移 7px 以便看清）
+  ctx.strokeStyle = C_B;
+  ctx.lineWidth = 2.1;
+  ctx.beginPath();
+  ctx.moveTo(footX, baseY + 7);
+  ctx.lineTo(farX, baseY + 7);
+  ctx.stroke();
+
+  // 斜边 c
+  ctx.strokeStyle = C_C;
+  ctx.lineWidth = 2.7;
+  ctx.beginPath();
+  ctx.moveTo(footX, topY);
+  ctx.lineTo(farX, baseY);
+  ctx.stroke();
+
+  // 直角小方块
+  const sgn = farX > footX ? 1 : -1;
+  const s = 15;
+  ctx.strokeStyle = 'rgba(70,64,54,0.72)';
+  ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  ctx.moveTo(footX + sgn * s, baseY);
+  ctx.lineTo(footX + sgn * s, baseY - s);
+  ctx.lineTo(footX,           baseY - s);
+  ctx.stroke();
+
+  // 字母标注
+  ctx.font = '600 15px "Times New Roman", Georgia, serif';
+
+  ctx.fillStyle = C_A;
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('a', footX - sgn * 10, (baseY + topY) / 2);
+
+  ctx.fillStyle = C_B;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  ctx.fillText('b', (footX + farX) / 2, baseY + 12);
+
+  ctx.fillStyle = C_C;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'bottom';
+  ctx.fillText('c', (footX + farX) / 2, (baseY + topY) / 2 - 9);
+
+  ctx.restore();
+}
+
+/* ============================================================
+   绘制：底部公式面板
+   ============================================================ */
+function drawFormulaPanel(){
+  if (!hover.peak || hover.amount < 0.02) return;
+
+  const a = hover.amount;
+  const pk = hover.peak;
+  const c  = Math.hypot(pk.w, pk.h);
+
+  const cx = W / 2;
+  const cy = H - 62;
+
+  ctx.save();
+  ctx.globalAlpha = a;
+
+  // 底色柔光
+  const bg = ctx.createRadialGradient(cx, cy + 10, 0, cx, cy + 10, 190);
+  bg.addColorStop(0, 'rgba(253,251,246,0.85)');
+  bg.addColorStop(1, 'rgba(253,251,246,0)');
+  ctx.fillStyle = bg;
+  ctx.fillRect(cx - 200, cy - 34, 400, 78);
+
+  // 彩色公式
+  const segs = [
+    { t:'a²', c:C_A },
+    { t:' + ', c:'#9c9488' },
+    { t:'b²', c:C_B },
+    { t:' = ', c:'#9c9488' },
+    { t:'c²', c:C_C }
+  ];
+
+  ctx.font = '600 21px "Times New Roman", Georgia, serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+
+  let total = 0;
+  for (const s of segs) total += ctx.measureText(s.t).width;
+
+  let x = cx - total / 2;
+  for (const s of segs){
+    ctx.fillStyle = s.c;
+    ctx.fillText(s.t, x, cy);
+    x += ctx.measureText(s.t).width;
+  }
+
+  // 数值行
+  ctx.font = '300 12px "Songti SC", "SimSun", serif';
+  ctx.fillStyle = 'rgba(96,90,80,0.85)';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  ctx.fillText(
+    `a = ${Math.round(pk.h)}   b = ${Math.round(pk.w)}   c = ${Math.round(c)}`,
+    cx, cy + 16
+  );
+
+  ctx.restore();
+}
+
+/* ============================================================
+   悬停检测
+   ============================================================ */
+function updateHover(){
+  let foundPeak = null;
+  let foundLayerIdx = -1;
+
+  outer:
+  for (let li = layers.length - 1; li >= 0; li--){
+    const L = layers[li];
+    const mx = mouse.x - L.offsetX;
+
+    for (const pk of L.peaks){
+      if (mx < pk.x - 2 || mx > pk.x + pk.w + 2) continue;
+
+      const topY = L.baseY - pk.h;
+      let t = (mx - pk.x) / pk.w;
+      t = Math.max(0, Math.min(1, t));
+
+      // 斜边在 mx 处的高度
+      const hy = pk.flip
+        ? L.baseY - t * pk.h
+        : topY + t * pk.h;
+
+      // 落在斜边之下 → 在山体内部
+      if (mouse.y >= hy && mouse.y <= L.baseY + H * 0.55){
+        foundPeak = pk;
+        foundLayerIdx = li;
+        break outer;
+      }
+    }
+  }
+
+  if (foundPeak !== hover.peak){
+    hover.peak  = foundPeak;
+    hover.layer = foundLayerIdx;
+    hover.target = foundPeak ? 1 : 0;
+
+    const now = performance.now();
+    if (foundPeak &&
+        now - mouse.lastMove < 260 &&
+        now - lastHoverSound > 145){
+      lastHoverSound = now;
+      playNote(noteFreq(foundPeak.step), 0.105);
+    }
+  }
+}
+
+/* ============================================================
+   主循环
+   ============================================================ */
+let prevT = performance.now();
+
+function update(dt, t){
+  // 空闲时自动游山
+  const idle = performance.now() - mouse.lastMove > 3200;
+  if (idle){
+    mouse.x = W * 0.5 + Math.sin(t * 0.17) * W * 0.09;
+    mouse.y = H * 0.5 + Math.cos(t * 0.11) * H * 0.045;
+  }
+
+  updateHover();
+  hover.amount += (hover.target - hover.amount) * Math.min(1, dt * 9);
+}
+
+function render(t, dt){
+  ctx.clearRect(0, 0, W, H);
+
+  // 宣纸
+  if (paperCanvas) ctx.drawImage(paperCanvas, 0, 0, W, H);
+  else { ctx.fillStyle = '#f6f1e6'; ctx.fillRect(0, 0, W, H); }
+
+  // 山峦（远 → 近）
+  for (const L of layers) drawLayer(L);
+
+  // 云雾
+  drawMist(t);
+
+  // 涟漪
+  drawRipples(dt);
+
+  // 悬停高亮
+  if (hover.peak && hover.amount > 0.012){
+    drawHighlight(hover.layer, hover.peak, hover.amount);
+  }
+
+  // 公式面板
+  drawFormulaPanel();
+}
+
+function loop(){
+  const now = performance.now();
+  const dt  = Math.min((now - prevT) / 1000, 0.05);
+  prevT = now;
+  const t = now / 1000;
+
+  update(dt, t);
+  render(t, dt);
+
+  requestAnimationFrame(loop);
+}
+
+/* ============================================================
+   交互
+   ============================================================ */
+function pointerPos(e){
+  const r = cv.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+
+cv.addEventListener('pointermove', e => {
+  const p = pointerPos(e);
+  mouse.x = p.x;
+  mouse.y = p.y;
+  mouse.lastMove = performance.now();
+  mouse.active = true;
+  resumeAudio();
+}, { passive: true });
+
+cv.addEventListener('pointerdown', e => {
+  resumeAudio();
+
+  const p = pointerPos(e);
+  mouse.x = p.x;
+  mouse.y = p.y;
+  mouse.lastMove = performance.now();
+  mouse.active = true;
+
+  // 墨韵涟漪
+  ripples.push({
+    x: p.x,
+    y: p.y,
+    r: 6,
+    max: 150 + Math.random() * 130,
+    life: 1
+  });
+
+  // 音高随高度变化
+  const step = Math.round(10 * (1 - Math.min(1, Math.max(0, p.y / H))));
+  playNote(noteFreq(step), 0.26);
+  setTimeout(() => playNote(noteFreq(step + 3), 0.13), 110);
+}, { passive: true });
+
+cv.addEventListener('pointerleave', () => {
+  mouse.active = false;
+  hover.peak = null;
+  hover.layer = -1;
+  hover.target = 0;
+});
+
+/* 声音开关 */
+const sndBtn = document.getElementById('sndBtn');
+sndBtn.addEventListener('click', () => {
+  audioOn = !audioOn;
+  sndBtn.classList.toggle('off', !audioOn);
+  sndBtn.textContent = audioOn ? '♪' : '✕';
+
+  if (audioOn){
+    resumeAudio();
+    if (masterGain && actx){
+      masterGain.gain.cancelScheduledValues(actx.currentTime);
+      masterGain.gain.setValueAtTime(masterGain.gain.value, actx.currentTime);
+      masterGain.gain.linearRampToValueAtTime(0.85, actx.currentTime + 0.5);
+    }
+    playNote(noteFreq(5), 0.2);
+  } else if (masterGain && actx){
+    masterGain.gain.cancelScheduledValues(actx.currentTime);
+    masterGain.gain.setValueAtTime(masterGain.gain.value, actx.currentTime);
+    masterGain.gain.linearRampToValueAtTime(0, actx.currentTime + 0.35);
+  }
+});
+
+/* 尺寸变化 —— 轻量防抖 */
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(resize, 180);
+});
+
+/* ============================================================
+   启动
+   ============================================================ */
+resize();
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>

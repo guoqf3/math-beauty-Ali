@@ -1,0 +1,666 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>黎曼猜想墨点 · Riemann Zeros</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{width:100%;height:100%;overflow:hidden;background:#efe9dd;}
+  canvas{display:block;width:100%;height:100%;cursor:crosshair;touch-action:none;}
+
+  .panel{
+    position:fixed;left:26px;bottom:24px;
+    font-family:"Songti SC","STSong","SimSun",serif;
+    color:#4a4438;user-select:none;pointer-events:none;
+    letter-spacing:.08em;
+  }
+  .panel h1{
+    font-size:16px;font-weight:600;letter-spacing:.34em;
+    color:#2e2921;margin-bottom:7px;
+  }
+  .panel .formula{
+    font-family:"Times New Roman",Georgia,serif;
+    font-size:13px;color:#8a8172;letter-spacing:.05em;
+    margin-bottom:9px;
+  }
+  .panel .formula i{color:#a05a3c;font-style:italic;}
+  .panel .hint{
+    font-size:11.5px;color:#9a917f;line-height:1.9;opacity:.9;
+  }
+  .panel .hint b{color:#7a7263;font-weight:500;}
+
+  .sound-btn{
+    position:fixed;right:22px;top:20px;
+    width:42px;height:42px;border-radius:50%;
+    border:1px solid rgba(90,84,72,.28);
+    background:rgba(252,250,244,.55);
+    backdrop-filter:blur(6px);
+    color:#5c5648;font-size:17px;line-height:1;
+    cursor:pointer;user-select:none;
+    display:flex;align-items:center;justify-content:center;
+    transition:all .28s ease;
+    font-family:"Songti SC",serif;
+  }
+  .sound-btn:hover{background:rgba(255,253,248,.9);transform:scale(1.06);}
+  .sound-btn.off{opacity:.4;}
+
+  .fade-in{animation:fi 1.8s ease both;}
+  @keyframes fi{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:none;}}
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+
+<div class="panel fade-in">
+  <h1>黎曼 · 墨点</h1>
+  <p class="formula">
+    ζ(<i>s</i>) = 0  →  <i>s</i> = ½ + <i>i</i>γ
+  </p>
+  <p class="hint">
+    <b>移动</b> · 墨随气散，靠近成空<br>
+    <b>点击</b> · 落墨成波，空谷回响
+  </p>
+</div>
+
+<button class="sound-btn" id="sndBtn" title="声音开关">♪</button>
+
+<script>
+(() => {
+"use strict";
+
+/* ============================================================
+   基础环境
+   ============================================================ */
+const cv  = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+
+let W = 0, H = 0, DPR = 1;
+let paperCanvas = null;
+
+let dots = [];          // 墨点（素数分布）
+let zeros = [];         // 非平凡零点（留白）
+let ripples = [];       // 点击涟漪
+
+const mouse = { x:0, y:0, active:false, lastMove:0 };
+let hoverZero = null;
+let time = 0, prevT = performance.now();
+
+/* ============================================================
+   带种子的随机
+   ============================================================ */
+let seed = 99887766;
+function rnd(){
+  seed = (seed * 1664525 + 1013904223) >>> 0;
+  return seed / 4294967296;
+}
+function rr(a, b){ return a + rnd() * (b - a); }
+
+/* ============================================================
+   非平凡零点 γ 值（ζ 函数前 16 个零点虚部）
+   ============================================================ */
+const ZEROS_GAMMA = [
+  14.134725, 21.022040, 25.010858, 30.424876, 32.935062,
+  37.586178, 40.918719, 43.327073, 48.005151, 49.773832,
+  52.970321, 56.446248, 59.347044, 60.831779, 65.112544,
+  67.079811
+];
+
+/* ============================================================
+   音效引擎 —— 古琴泛音 + 山谷回响
+   ============================================================ */
+let actx = null, master = null, delayNode = null;
+let audioOn = true;
+let lastNoteTime = 0;
+
+const PENTA = [0, 2, 4, 7, 9];
+const BASE_FREQ = 196.00;
+
+function noteFreq(step){
+  const oct = Math.floor(step / 5);
+  const deg = ((step % 5) + 5) % 5;
+  return BASE_FREQ * Math.pow(2, (PENTA[deg] + oct * 12) / 12);
+}
+
+function initAudio(){
+  if (actx) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  actx = new AC();
+
+  master = actx.createGain();
+  master.gain.setValueAtTime(0, actx.currentTime);
+  master.gain.linearRampToValueAtTime(audioOn ? 0.85 : 0, actx.currentTime + 1.4);
+  master.connect(actx.destination);
+
+  const delay = actx.createDelay(2.5);
+  delay.delayTime.value = 0.33;
+
+  const fb = actx.createGain();
+  fb.gain.value = 0.42;
+
+  const damp = actx.createBiquadFilter();
+  damp.type = 'lowpass';
+  damp.frequency.value = 1900;
+
+  const wet = actx.createGain();
+  wet.gain.value = 0.36;
+
+  delay.connect(damp);
+  damp.connect(fb);
+  fb.connect(delay);
+  damp.connect(wet);
+  wet.connect(master);
+
+  delayNode = delay;
+}
+
+function resumeAudio(){
+  if (!actx) initAudio();
+  if (actx && actx.state === 'suspended') actx.resume();
+}
+
+function playNote(freq, vel = 0.2, dur = 2.8){
+  if (!actx || !audioOn) return;
+  const now = actx.currentTime;
+  if (now - lastNoteTime < 0.035) return;
+  lastNoteTime = now;
+
+  const out = actx.createGain();
+  out.gain.value = vel;
+
+  const filt = actx.createBiquadFilter();
+  filt.type = 'lowpass';
+  filt.Q.value = 0.65;
+  filt.frequency.setValueAtTime(5600, now);
+  filt.frequency.exponentialRampToValueAtTime(780, now + dur * 0.9);
+
+  const env = actx.createGain();
+  env.gain.setValueAtTime(0.0001, now);
+  env.gain.exponentialRampToValueAtTime(1, now + 0.008);
+  env.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+
+  filt.connect(env);
+  env.connect(out);
+  out.connect(master);
+  if (delayNode) out.connect(delayNode);
+
+  const partials = [
+    [1.00, 1.00], [2.00, 0.40], [3.01, 0.16], [4.20, 0.082],
+    [5.40, 0.040], [6.80, 0.020], [8.10, 0.010]
+  ];
+
+  for (const [m, a] of partials){
+    const o = actx.createOscillator();
+    o.type = 'sine';
+    o.frequency.value = freq * m;
+    o.detune.value = (Math.random() - 0.5) * 7;
+    const og = actx.createGain();
+    og.gain.value = a;
+    o.connect(og);
+    og.connect(filt);
+    o.start(now);
+    o.stop(now + dur + 0.25);
+  }
+}
+
+/* ============================================================
+   宣纸纹理
+   ============================================================ */
+function makePaper(){
+  paperCanvas = document.createElement('canvas');
+  paperCanvas.width  = Math.max(1, Math.round(W));
+  paperCanvas.height = Math.max(1, Math.round(H));
+  const p = paperCanvas.getContext('2d');
+
+  const g = p.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0.00, '#f5efe2');
+  g.addColorStop(0.42, '#faf6ec');
+  g.addColorStop(1.00, '#f2ecdf');
+  p.fillStyle = g;
+  p.fillRect(0, 0, W, H);
+
+  const rg = p.createRadialGradient(
+    W * 0.5, H * 0.42, Math.min(W, H) * 0.04,
+    W * 0.5, H * 0.52, Math.max(W, H) * 0.90
+  );
+  rg.addColorStop(0.00, 'rgba(255,253,247,0.55)');
+  rg.addColorStop(0.60, 'rgba(255,253,247,0.10)');
+  rg.addColorStop(1.00, 'rgba(255,253,247,0)');
+  p.fillStyle = rg;
+  p.fillRect(0, 0, W, H);
+
+  // 纸纤维
+  const n = Math.floor((W * H) / 820);
+  for (let i = 0; i < n; i++){
+    p.fillStyle = `rgba(120,108,86,${Math.random() * 0.032})`;
+    p.fillRect(
+      Math.random() * W,
+      Math.random() * H,
+      Math.random() * 2 + 0.4,
+      Math.random() * 1.2 + 0.3
+    );
+  }
+
+  // 淡墨晕
+  for (let i = 0; i < 13; i++){
+    const x = Math.random() * W;
+    const y = Math.random() * H;
+    const r = 100 + Math.random() * 280;
+    const rg2 = p.createRadialGradient(x, y, 0, x, y, r);
+    rg2.addColorStop(0, `rgba(148,138,116,${0.014 + Math.random() * 0.020})`);
+    rg2.addColorStop(1, 'rgba(148,138,116,0)');
+    p.fillStyle = rg2;
+    p.beginPath();
+    p.arc(x, y, r, 0, Math.PI * 2);
+    p.fill();
+  }
+
+  // 四角暗角
+  const v = p.createRadialGradient(
+    W * 0.5, H * 0.5, Math.min(W, H) * 0.34,
+    W * 0.5, H * 0.5, Math.max(W, H) * 0.84
+  );
+  v.addColorStop(0, 'rgba(0,0,0,0)');
+  v.addColorStop(1, 'rgba(92,80,60,0.14)');
+  p.fillStyle = v;
+  p.fillRect(0, 0, W, H);
+}
+
+/* ============================================================
+   布局：零点 → 留白
+   ============================================================ */
+function buildZeros(){
+  const lineY  = H * 0.52;
+  const marginX = W * 0.055;
+  const spanX   = W - marginX * 2;
+
+  const gMin = ZEROS_GAMMA[0];
+  const gMax = ZEROS_GAMMA[ZEROS_GAMMA.length - 1];
+
+  const avgSpacing = spanX / (ZEROS_GAMMA.length - 1);
+  const holeR = avgSpacing * 0.44;
+
+  return ZEROS_GAMMA.map((g, i) => {
+    const t = (g - gMin) / (gMax - gMin);
+    const x = marginX + t * spanX;
+
+    // 留白半径随位置微调（越靠后越紧）
+    const r = holeR * (0.90 + (1 - t) * 0.22) * rr(0.94, 1.06);
+
+    return {
+      gamma: g,
+      x,
+      y: lineY,
+      holeR: r,
+      pulse: 0,
+      step: Math.round(t * 10),
+      index: i
+    };
+  });
+}
+
+/* ============================================================
+   布局：素数分布 → 墨点
+   ============================================================ */
+function buildDots(){
+  const list = [];
+  const spacing = Math.max(10, Math.min(W, H) * 0.020);
+
+  const cols = Math.ceil(W / spacing) + 2;
+  const rows = Math.ceil(H / spacing) + 2;
+
+  for (let r = 0; r < rows; r++){
+    for (let c = 0; c < cols; c++){
+      const x = (c - 0.5) * spacing + (rnd() - 0.5) * spacing * 0.86;
+      const y = (r - 0.5) * spacing + (rnd() - 0.5) * spacing * 0.86;
+
+      if (x < -12 || x > W + 12 || y < -12 || y > H + 12) continue;
+
+      // 与最近零点的相对距离
+      let minD = Infinity;
+      for (const z of zeros){
+        const d = Math.hypot(x - z.x, y - z.y) / z.holeR;
+        if (d < minD) minD = d;
+      }
+      // 落在留白内 → 不落墨
+      if (minD < 1) continue;
+
+      list.push({
+        x, y,
+        baseR: spacing * rr(0.075, 0.165),
+        ink:   rr(0.32, 0.82),
+        phase: rnd() * Math.PI * 2,
+        holeDist: minD,
+        offX: 0, offY: 0,
+        cr: 26 + rnd() * 8,
+        cg: 34 + rnd() * 8,
+        cb: 50 + rnd() * 10
+      });
+    }
+  }
+  return list;
+}
+
+/* ============================================================
+   重建全部
+   ============================================================ */
+function rebuild(){
+  seed = 99887766;
+  zeros = buildZeros();
+  dots  = buildDots();
+}
+
+/* ============================================================
+   涟漪
+   ============================================================ */
+function drawRipples(dt){
+  for (let i = ripples.length - 1; i >= 0; i--){
+    const rp = ripples[i];
+    rp.life -= dt * 0.60;
+    rp.r += (rp.max - rp.r) * Math.min(1, dt * 2.0);
+
+    if (rp.life <= 0){ ripples.splice(i, 1); continue; }
+
+    const a = rp.life * 0.24;
+    ctx.save();
+    ctx.translate(rp.x, rp.y);
+
+    ctx.strokeStyle = `rgba(52,62,86,${a})`;
+    ctx.lineWidth = 1.3;
+    ctx.beginPath(); ctx.arc(0, 0, rp.r, 0, Math.PI * 2); ctx.stroke();
+
+    ctx.strokeStyle = `rgba(52,62,86,${a * 0.55})`;
+    ctx.lineWidth = 0.9;
+    ctx.beginPath(); ctx.arc(0, 0, rp.r * 0.62, 0, Math.PI * 2); ctx.stroke();
+
+    ctx.strokeStyle = `rgba(176,132,58,${a * 0.45})`;
+    ctx.lineWidth = 0.8;
+    ctx.beginPath(); ctx.arc(0, 0, rp.r * 0.30, 0, Math.PI * 2); ctx.stroke();
+
+    ctx.restore();
+  }
+}
+
+/* ============================================================
+   更新
+   ============================================================ */
+function update(dt, t){
+  const now = performance.now();
+
+  // 空闲游移
+  if (!mouse.active || now - mouse.lastMove > 3000){
+    mouse.x = W * 0.5 + Math.sin(t * 0.20) * W * 0.15;
+    mouse.y = H * 0.5 + Math.cos(t * 0.15) * H * 0.11;
+    mouse.active = false;
+  }
+
+  // —— 墨点：鼠标推力 + 回弹 ——
+  const R = Math.min(W, H) * 0.17;
+  for (const d of dots){
+    const dx = d.x - mouse.x;
+    const dy = d.y - mouse.y;
+    const dist = Math.hypot(dx, dy);
+
+    let tx = 0, ty = 0;
+    if (dist < R && dist > 0.01){
+      const f = (1 - dist / R) * (1 - dist / R) * R * 0.42;
+      tx = (dx / dist) * f;
+      ty = (dy / dist) * f;
+    }
+    const k = Math.min(1, dt * 7);
+    d.offX += (tx - d.offX) * k;
+    d.offY += (ty - d.offY) * k;
+  }
+
+  // —— 零点：悬停脉动 ——
+  let best = null, bestD = Infinity;
+  for (const z of zeros){
+    const d = Math.hypot(mouse.x - z.x, mouse.y - z.y);
+    if (d < z.holeR * 1.7 && d < bestD){ best = z; bestD = d; }
+    z.pulse *= Math.pow(0.10, dt);
+  }
+
+  if (best !== hoverZero){
+    hoverZero = best;
+    if (best){
+      playNote(noteFreq(best.step), 0.10, 2.4);
+    }
+  }
+  if (hoverZero){
+    hoverZero.pulse = Math.min(1, hoverZero.pulse + dt * 4);
+  }
+}
+
+/* ============================================================
+   渲染
+   ============================================================ */
+function render(t, dt){
+  ctx.clearRect(0, 0, W, H);
+
+  if (paperCanvas) ctx.drawImage(paperCanvas, 0, 0, W, H);
+  else { ctx.fillStyle = '#f6f1e6'; ctx.fillRect(0, 0, W, H); }
+
+  // —— 临界线：淡淡的暖光带 ——
+  const lineY = H * 0.52;
+  const bandG = ctx.createLinearGradient(0, lineY - H * 0.10, 0, lineY + H * 0.10);
+  bandG.addColorStop(0.00, 'rgba(196,164,116,0)');
+  bandG.addColorStop(0.50, 'rgba(196,164,116,0.075)');
+  bandG.addColorStop(1.00, 'rgba(196,164,116,0)');
+  ctx.fillStyle = bandG;
+  ctx.fillRect(0, lineY - H * 0.10, W, H * 0.20);
+
+  // —— 留白柔光 ——
+  for (const z of zeros){
+    const R = z.holeR * (1.05 + z.pulse * 0.42);
+    const g = ctx.createRadialGradient(z.x, z.y, 0, z.x, z.y, R);
+    g.addColorStop(0.00, `rgba(253,250,242,${0.85 + z.pulse * 0.15})`);
+    g.addColorStop(0.55, `rgba(253,250,242,${0.55 + z.pulse * 0.15})`);
+    g.addColorStop(1.00, 'rgba(253,250,242,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(z.x, z.y, R, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // —— 临界线虚线 ——
+  ctx.save();
+  ctx.strokeStyle = 'rgba(178,102,64,0.16)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 9]);
+  ctx.beginPath();
+  ctx.moveTo(W * 0.02, lineY);
+  ctx.lineTo(W * 0.98, lineY);
+  ctx.stroke();
+  ctx.restore();
+
+  // —— 墨点（素数分布） ——
+  for (const d of dots){
+    const px = d.x + d.offX;
+    const py = d.y + d.offY;
+
+    // 呼吸
+    const breath = 1 + Math.sin(t * 0.62 + d.phase) * 0.13;
+    const r = d.baseR * breath;
+
+    // 留白边缘平滑淡出
+    const e = Math.min(1, Math.max(0, (d.holeDist - 1) / 0.45));
+    const edge = e * e * (3 - 2 * e);
+
+    // 墨色随时间轻微明灭
+    const flick = 0.72 + 0.28 * Math.sin(t * 0.45 + d.phase * 1.7);
+    const a = d.ink * edge * flick;
+
+    ctx.fillStyle = `rgba(${d.cr|0},${d.cg|0},${d.cb|0},${a})`;
+    ctx.beginPath();
+    ctx.arc(px, py, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // —— 零点处的极细朱砂点 ——
+  for (const z of zeros){
+    const a = 0.35 + z.pulse * 0.5;
+    ctx.fillStyle = `rgba(172,88,58,${a})`;
+    ctx.beginPath();
+    ctx.arc(z.x, z.y, 1.6 + z.pulse * 1.6, 0, Math.PI * 2);
+    ctx.fill();
+
+    // γ 值标注
+    ctx.font = '400 9.5px "Times New Roman", Georgia, serif';
+    ctx.fillStyle = `rgba(148,96,68,${0.28 + z.pulse * 0.5})`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillText('γ' + (z.index + 1), z.x, z.y + z.holeR * 0.55);
+  }
+
+  // —— 涟漪 ——
+  drawRipples(dt);
+
+  // —— 鼠标柔光 ——
+  if (mouse.active){
+    const mg = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, 130);
+    mg.addColorStop(0, 'rgba(255,250,235,0.14)');
+    mg.addColorStop(1, 'rgba(255,250,235,0)');
+    ctx.fillStyle = mg;
+    ctx.beginPath();
+    ctx.arc(mouse.x, mouse.y, 130, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+/* ============================================================
+   主循环
+   ============================================================ */
+function loop(){
+  const now = performance.now();
+  const dt = Math.min((now - prevT) / 1000, 0.05);
+  prevT = now;
+  time = now / 1000;
+
+  update(dt, time);
+  render(time, dt);
+
+  requestAnimationFrame(loop);
+}
+
+/* ============================================================
+   尺寸
+   ============================================================ */
+function resize(){
+  const nw = window.innerWidth;
+  const nh = window.innerHeight;
+  if (nw === W && nh === H) return;
+
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = nw; H = nh;
+
+  cv.width  = Math.round(W * DPR);
+  cv.height = Math.round(H * DPR);
+  cv.style.width  = W + 'px';
+  cv.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  makePaper();
+  rebuild();
+
+  mouse.x = W / 2;
+  mouse.y = H / 2;
+}
+
+/* ============================================================
+   交互
+   ============================================================ */
+function pointerPos(e){
+  const r = cv.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+
+cv.addEventListener('pointermove', e => {
+  const p = pointerPos(e);
+  mouse.x = p.x;
+  mouse.y = p.y;
+  mouse.active = true;
+  mouse.lastMove = performance.now();
+  resumeAudio();
+}, { passive: true });
+
+cv.addEventListener('pointerdown', e => {
+  resumeAudio();
+
+  const p = pointerPos(e);
+  mouse.x = p.x;
+  mouse.y = p.y;
+  mouse.active = true;
+  mouse.lastMove = performance.now();
+
+  // 涟漪
+  ripples.push({
+    x: p.x, y: p.y,
+    r: 8,
+    max: 150 + Math.random() * 150,
+    life: 1
+  });
+
+  // 若靠近零点，激发其脉动
+  let nearest = null, nd = Infinity;
+  for (const z of zeros){
+    const d = Math.hypot(p.x - z.x, p.y - z.y);
+    if (d < nd){ nd = d; nearest = z; }
+  }
+
+  if (nearest && nd < nearest.holeR * 2.2){
+    nearest.pulse = 1;
+    playNote(noteFreq(nearest.step), 0.26, 3.2);
+    // 泛音尾音
+    setTimeout(() => playNote(noteFreq(nearest.step + 3), 0.11, 2.4), 140);
+  } else {
+    // 按高度取音
+    const step = Math.round((1 - p.y / H) * 10);
+    playNote(noteFreq(step), 0.22, 2.8);
+  }
+}, { passive: true });
+
+cv.addEventListener('pointerleave', () => {
+  mouse.active = false;
+  hoverZero = null;
+});
+
+/* 声音开关 */
+const sndBtn = document.getElementById('sndBtn');
+sndBtn.addEventListener('click', () => {
+  audioOn = !audioOn;
+  sndBtn.classList.toggle('off', !audioOn);
+  sndBtn.textContent = audioOn ? '♪' : '✕';
+
+  if (audioOn){
+    resumeAudio();
+    if (master && actx){
+      master.gain.cancelScheduledValues(actx.currentTime);
+      master.gain.setValueAtTime(master.gain.value, actx.currentTime);
+      master.gain.linearRampToValueAtTime(0.85, actx.currentTime + 0.5);
+    }
+    playNote(noteFreq(4), 0.2, 2.6);
+  } else if (master && actx){
+    master.gain.cancelScheduledValues(actx.currentTime);
+    master.gain.setValueAtTime(master.gain.value, actx.currentTime);
+    master.gain.linearRampToValueAtTime(0, actx.currentTime + 0.35);
+  }
+});
+
+/* 窗口变化 */
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(resize, 200);
+});
+
+/* ============================================================
+   启动
+   ============================================================ */
+resize();
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>

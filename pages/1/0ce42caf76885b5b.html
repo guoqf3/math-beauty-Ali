@@ -1,0 +1,776 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>欧拉公式水墨荷花 · Euler's Lotus</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{width:100%;height:100%;overflow:hidden;background:#efe9dd;}
+  canvas{display:block;width:100%;height:100%;cursor:crosshair;touch-action:none;}
+
+  .panel{
+    position:fixed;left:26px;bottom:24px;
+    font-family:"Songti SC","STSong","SimSun",serif;
+    color:#4a4438;user-select:none;pointer-events:none;
+    letter-spacing:.08em;
+  }
+  .panel h1{
+    font-size:16px;font-weight:600;letter-spacing:.34em;
+    color:#2e2921;margin-bottom:7px;
+  }
+  .panel .formula{
+    font-family:"Times New Roman",Georgia,serif;
+    font-size:14px;color:#8a8172;letter-spacing:.06em;
+    margin-bottom:9px;
+  }
+  .panel .formula i{color:#a05a3c;font-style:italic;}
+  .panel .hint{
+    font-size:11.5px;color:#9a917f;line-height:1.9;opacity:.9;
+  }
+  .panel .hint b{color:#7a7263;font-weight:500;}
+
+  .sound-btn{
+    position:fixed;right:22px;top:20px;
+    width:42px;height:42px;border-radius:50%;
+    border:1px solid rgba(90,84,72,.28);
+    background:rgba(252,250,244,.55);
+    backdrop-filter:blur(6px);
+    color:#5c5648;font-size:17px;line-height:1;
+    cursor:pointer;user-select:none;
+    display:flex;align-items:center;justify-content:center;
+    transition:all .28s ease;
+    font-family:"Songti SC",serif;
+  }
+  .sound-btn:hover{background:rgba(255,253,248,.9);transform:scale(1.06);}
+  .sound-btn.off{opacity:.4;}
+
+  .fade-in{animation:fi 1.8s ease both;}
+  @keyframes fi{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:none;}}
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+
+<div class="panel fade-in">
+  <h1>欧拉 · 水墨荷</h1>
+  <p class="formula">e<sup>iπ</sup> + 1 = 0</p>
+  <p class="hint">
+    <b>移动</b> · 靠近花心，轻拢慢展<br>
+    <b>点击</b> · 花苞初醒，徐徐盛开
+  </p>
+</div>
+
+<button class="sound-btn" id="sndBtn" title="声音开关">♪</button>
+
+<script>
+(() => {
+"use strict";
+
+/* ============================================================
+   基础环境
+   ============================================================ */
+const cv  = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+
+let W = 0, H = 0, DPR = 1;
+let paperCanvas = null;
+
+const center = { x: 0, y: 0 };
+let baseR = 100;
+let petals = [];
+let ripples = [];
+
+const mouse = { x: 0, y: 0, lastMove: -99999, active: false };
+
+/* ---------- 开花状态 ---------- */
+let bloomValue = 0.85;      // 0 = 花苞，1 = 完全盛开
+let bloomAnim  = null;      // { from, to, t0, dur, ease }
+let openAmt    = 0.85;      // 实际渲染开合（含悬停微调）
+let bloomToken = 0;         // 防止连续点击时音效堆叠
+
+let rotation  = 0;
+let glowPulse = 0;
+
+let prevT = performance.now();
+
+/* ============================================================
+   缓动函数
+   ============================================================ */
+function easeInOutSine(x){
+  return -(Math.cos(Math.PI * x) - 1) / 2;
+}
+
+/* ============================================================
+   音频引擎 —— 古琴泛音 + 山谷回响
+   ============================================================ */
+let actx = null, masterGain = null, delayNode = null;
+let audioOn = true;
+let lastNoteTime = 0;
+
+const ROOT_FREQ = 196.00;                 // G3
+const RATIOS = [1, 9/8, 5/4, 3/2, 5/3, 2, 9/4, 5/2, 3, 10/3, 4, 5, 6, 8];
+
+function noteFreq(step){
+  const n = RATIOS.length;
+  const i = ((step % n) + n) % n;
+  return ROOT_FREQ * RATIOS[i];
+}
+
+function initAudio(){
+  if (actx) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  actx = new AC();
+
+  masterGain = actx.createGain();
+  masterGain.gain.setValueAtTime(0, actx.currentTime);
+  masterGain.gain.linearRampToValueAtTime(audioOn ? 0.85 : 0, actx.currentTime + 1.4);
+  masterGain.connect(actx.destination);
+
+  const delay = actx.createDelay(2.0);
+  delay.delayTime.value = 0.31;
+
+  const fb = actx.createGain();
+  fb.gain.value = 0.42;
+
+  const damp = actx.createBiquadFilter();
+  damp.type = 'lowpass';
+  damp.frequency.value = 1900;
+
+  const wet = actx.createGain();
+  wet.gain.value = 0.38;
+
+  delay.connect(damp);
+  damp.connect(fb);
+  fb.connect(delay);
+  damp.connect(wet);
+  wet.connect(masterGain);
+
+  delayNode = delay;
+}
+
+function resumeAudio(){
+  if (!actx) initAudio();
+  if (actx && actx.state === 'suspended') actx.resume();
+}
+
+function playBell(freq, vel = 0.2, dur = 2.6){
+  if (!actx || !audioOn) return;
+  const now = actx.currentTime;
+  if (now - lastNoteTime < 0.035) return;
+  lastNoteTime = now;
+
+  const out = actx.createGain();
+  out.gain.value = vel;
+
+  const filt = actx.createBiquadFilter();
+  filt.type = 'lowpass';
+  filt.Q.value = 0.7;
+  filt.frequency.setValueAtTime(6000, now);
+  filt.frequency.exponentialRampToValueAtTime(900, now + dur * 0.8);
+
+  const amp = actx.createGain();
+  amp.gain.setValueAtTime(0.0001, now);
+  amp.gain.exponentialRampToValueAtTime(1, now + 0.007);
+  amp.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+
+  filt.connect(amp);
+  amp.connect(out);
+  out.connect(masterGain);
+  if (delayNode) out.connect(delayNode);
+
+  const partials = [
+    [1.00, 1.00], [2.00, 0.36], [3.01, 0.15],
+    [4.02, 0.070], [5.38, 0.034], [6.95, 0.016], [8.9, 0.008]
+  ];
+
+  for (const [mult, g] of partials){
+    const osc = actx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.value = freq * mult;
+    if (mult > 1) osc.detune.value = (Math.random() - 0.5) * 8;
+
+    const pg = actx.createGain();
+    pg.gain.value = g;
+
+    osc.connect(pg);
+    pg.connect(filt);
+    osc.start(now);
+    osc.stop(now + dur + 0.2);
+  }
+}
+
+/* ============================================================
+   宣纸
+   ============================================================ */
+function makePaper(){
+  paperCanvas = document.createElement('canvas');
+  paperCanvas.width  = Math.max(1, Math.round(W));
+  paperCanvas.height = Math.max(1, Math.round(H));
+  const p = paperCanvas.getContext('2d');
+
+  const g = p.createRadialGradient(
+    W * 0.5, H * 0.44, Math.min(W, H) * 0.05,
+    W * 0.5, H * 0.52, Math.max(W, H) * 0.88
+  );
+  g.addColorStop(0.00, '#fdfcf8');
+  g.addColorStop(0.55, '#f7f2e8');
+  g.addColorStop(1.00, '#e9e1d1');
+  p.fillStyle = g;
+  p.fillRect(0, 0, W, H);
+
+  const n = Math.floor((W * H) / 900);
+  for (let i = 0; i < n; i++){
+    p.fillStyle = `rgba(120,108,86,${Math.random() * 0.036})`;
+    p.fillRect(
+      Math.random() * W,
+      Math.random() * H,
+      Math.random() * 2 + 0.4,
+      Math.random() * 1.2 + 0.3
+    );
+  }
+
+  for (let i = 0; i < 12; i++){
+    const x = Math.random() * W;
+    const y = Math.random() * H;
+    const r = 80 + Math.random() * 260;
+    const rg = p.createRadialGradient(x, y, 0, x, y, r);
+    rg.addColorStop(0, `rgba(150,140,118,${0.020 + Math.random() * 0.026})`);
+    rg.addColorStop(1, 'rgba(150,140,118,0)');
+    p.fillStyle = rg;
+    p.beginPath();
+    p.arc(x, y, r, 0, Math.PI * 2);
+    p.fill();
+  }
+
+  const v = p.createRadialGradient(
+    W * 0.5, H * 0.5, Math.min(W, H) * 0.32,
+    W * 0.5, H * 0.5, Math.max(W, H) * 0.78
+  );
+  v.addColorStop(0, 'rgba(0,0,0,0)');
+  v.addColorStop(1, 'rgba(92,80,60,0.13)');
+  p.fillStyle = v;
+  p.fillRect(0, 0, W, H);
+}
+
+/* ============================================================
+   构建荷花
+   ============================================================ */
+function buildFlower(){
+  baseR = Math.min(W, H) * 0.30;
+  center.x = W * 0.5;
+  center.y = H * 0.50;
+
+  const cfg = [
+    { count: 15, rMul: 1.000, wMul: 0.30, ink: 0.46, curl: 0.42 },
+    { count: 13, rMul: 0.780, wMul: 0.32, ink: 0.38, curl: 0.58 },
+    { count: 11, rMul: 0.580, wMul: 0.34, ink: 0.30, curl: 0.76 },
+    { count: 9,  rMul: 0.400, wMul: 0.37, ink: 0.24, curl: 0.96 },
+    { count: 7,  rMul: 0.270, wMul: 0.40, ink: 0.19, curl: 1.15 }
+  ];
+
+  petals = [];
+  cfg.forEach((c, li) => {
+    for (let i = 0; i < c.count; i++){
+      const angle = (i / c.count) * Math.PI * 2 + li * 0.42 + c.curl * 0.3;
+      petals.push({
+        angle,
+        len:   baseR * c.rMul,
+        width: baseR * c.rMul * c.wMul,
+        curl:  c.curl,
+        ink:   c.ink,
+        layer: li,
+        phase: Math.random() * Math.PI * 2
+      });
+    }
+  });
+}
+
+/* ============================================================
+   花瓣几何 —— 含“花苞收拢”逻辑
+   ============================================================ */
+function petalPoints(pk, rot, open){
+  const N = 26;
+  const pts = [];
+  const cx = center.x, cy = center.y;
+
+  // 闭合程度：0 盛开 → 1 花苞
+  const closed = Math.max(0, 1 - open);
+  // 收拢系数（把花瓣方向往“正上方”混合）
+  const budT = Math.pow(closed, 0.70) * 0.78;
+
+  // 花苞时花瓣依然保持相当长度，才像花苞
+  const lenF = 0.30 + 0.70 * open;
+  const widF = 0.42 + 0.58 * open;
+
+  for (let i = 0; i <= N; i++){
+    const t = i / N;
+
+    // —— 当前点方向 ——
+    const baseAng = pk.angle + rot + pk.curl * t;
+    const dirX = Math.cos(baseAng), dirY = Math.sin(baseAng);
+
+    // 笛卡尔混合，避免角度环绕问题
+    let bX = dirX * (1 - budT);
+    let bY = dirY * (1 - budT) - budT;
+    const bl = Math.hypot(bX, bY) || 1;
+    bX /= bl; bY /= bl;
+    const ang = Math.atan2(bY, bX);
+
+    const rr = pk.len * lenF * Math.pow(t, 0.80);
+    const px = cx + Math.cos(ang) * rr;
+    const py = cy + Math.sin(ang) * rr;
+
+    // —— 数值切线 ——
+    const t2 = Math.min(1, t + 0.0015);
+    const baseAng2 = pk.angle + rot + pk.curl * t2;
+    const dirX2 = Math.cos(baseAng2), dirY2 = Math.sin(baseAng2);
+    let bX2 = dirX2 * (1 - budT);
+    let bY2 = dirY2 * (1 - budT) - budT;
+    const bl2 = Math.hypot(bX2, bY2) || 1;
+    bX2 /= bl2; bY2 /= bl2;
+    const ang2 = Math.atan2(bY2, bX2);
+    const rr2 = pk.len * lenF * Math.pow(t2, 0.80);
+    const qx = cx + Math.cos(ang2) * rr2;
+    const qy = cy + Math.sin(ang2) * rr2;
+
+    let tx = qx - px, ty = qy - py;
+    const tl = Math.hypot(tx, ty) || 1;
+    tx /= tl; ty /= tl;
+
+    const nx = -ty, ny = tx;
+    const w = pk.width * widF *
+              Math.sin(Math.PI * Math.pow(t, 0.72)) *
+              (0.62 + 0.38 * t);
+
+    pts.push({ x: px, y: py, nx, ny, w, t });
+  }
+  return pts;
+}
+
+function drawPetal(pk, rot, open, time){
+  const pts = petalPoints(pk, rot, open);
+  if (pts.length < 3) return;
+
+  const cx = center.x, cy = center.y;
+  const tip = pts[pts.length - 1];
+
+  // —— 路径 ——
+  ctx.beginPath();
+  ctx.moveTo(pts[0].x, pts[0].y);
+  for (let i = 0; i < pts.length; i++){
+    const p = pts[i];
+    ctx.lineTo(p.x + p.nx * p.w, p.y + p.ny * p.w);
+  }
+  for (let i = pts.length - 1; i >= 0; i--){
+    const p = pts[i];
+    ctx.lineTo(p.x - p.nx * p.w, p.y - p.ny * p.w);
+  }
+  ctx.closePath();
+
+  // —— 墨色渐变（花苞期略浓） ——
+  const ink = pk.ink;
+  const bud = 1 - open;
+  const dens = 1 + bud * 0.35;
+
+  const g = ctx.createLinearGradient(cx, cy, tip.x, tip.y);
+  g.addColorStop(0.00, `rgba(48,54,68,${0.035 * dens})`);
+  g.addColorStop(0.42, `rgba(46,52,66,${Math.min(1, ink * 0.52 * dens)})`);
+  g.addColorStop(0.82, `rgba(40,46,60,${Math.min(1, ink * 0.92 * dens)})`);
+  g.addColorStop(1.00, `rgba(34,40,54,${Math.min(1, ink * 1.08 * dens)})`);
+  ctx.fillStyle = g;
+  ctx.fill();
+
+  // —— 轮廓 ——
+  ctx.strokeStyle = `rgba(36,42,56,${Math.min(1, ink * 0.78 * dens)})`;
+  ctx.lineWidth = 0.85 + (1 - pk.layer / 5) * 0.5;
+  ctx.stroke();
+
+  // —— 叶脉 ——
+  ctx.strokeStyle = `rgba(50,56,70,${ink * 0.30})`;
+  ctx.lineWidth = 0.6;
+  ctx.beginPath();
+  ctx.moveTo(pts[0].x, pts[0].y);
+  for (let i = 1; i < pts.length; i++){
+    ctx.lineTo(pts[i].x, pts[i].y);
+  }
+  ctx.stroke();
+}
+
+/* ============================================================
+   花蕊 —— 黄金角螺旋 + 旋转虚数 i
+   ============================================================ */
+const GOLDEN = Math.PI * (3 - Math.sqrt(5));
+
+function drawCenter(t, open){
+  const cx = center.x, cy = center.y;
+  const R = baseR * 0.30 * (0.22 + 0.78 * open);
+  const vis = 0.18 + 0.82 * open;     // 花苞期花蕊几乎隐没
+
+  // 花心柔光
+  const glow = ctx.createRadialGradient(cx, cy, 0, cx, cy, R * 2.2);
+  glow.addColorStop(0.00, `rgba(255,253,246,${(0.55 + glowPulse * 0.25) * vis})`);
+  glow.addColorStop(0.55, `rgba(255,253,246,${0.16 * vis})`);
+  glow.addColorStop(1.00, 'rgba(255,253,246,0)');
+  ctx.fillStyle = glow;
+  ctx.beginPath();
+  ctx.arc(cx, cy, R * 2.2, 0, Math.PI * 2);
+  ctx.fill();
+
+  if (open < 0.25) return;            // 花苞期不画花蕊细节
+
+  // —— 黄金角螺旋点阵 ——
+  const N = 110;
+  for (let i = 0; i < N; i++){
+    const a  = i * GOLDEN + t * 0.22;
+    const rr = R * Math.sqrt(i / N) * (0.94 + 0.06 * Math.sin(t * 2.2 + i * 0.7));
+    const px = cx + Math.cos(a) * rr;
+    const py = cy + Math.sin(a) * rr;
+
+    const s = 1.5 + (1 - i / N) * 1.1;
+    const alpha = (0.20 + (i / N) * 0.42) * vis;
+
+    ctx.fillStyle = `rgba(176,132,58,${alpha})`;
+    ctx.beginPath();
+    ctx.arc(px, py, s, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = `rgba(255,246,220,${alpha * 0.6})`;
+    ctx.beginPath();
+    ctx.arc(px - s * 0.3, py - s * 0.3, s * 0.42, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // —— 单位圆 ——
+  const ur = R * 1.42;
+  ctx.strokeStyle = `rgba(62,68,84,${0.16 * vis})`;
+  ctx.lineWidth = 1;
+  ctx.setLineDash([3, 5]);
+  ctx.beginPath();
+  ctx.arc(cx, cy, ur, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  const th = t * 0.85;
+  const px = cx + Math.cos(th) * ur;
+  const py = cy + Math.sin(th) * ur;
+
+  ctx.strokeStyle = `rgba(168,88,58,${0.32 * vis})`;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(cx, cy);
+  ctx.lineTo(px, py);
+  ctx.stroke();
+
+  ctx.fillStyle = `rgba(179,84,58,${vis})`;
+  ctx.beginPath();
+  ctx.arc(px, py, 3.2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = `rgba(179,84,58,${0.25 * vis})`;
+  ctx.beginPath();
+  ctx.arc(px, py, 7.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  // —— 旋转虚数 i ——
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(t * 0.55);
+  ctx.font = `italic 600 ${Math.round(R * 0.95)}px "Times New Roman", Georgia, serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = `rgba(40,46,60,${0.10 * vis})`;
+  ctx.fillText('i', 0, 0);
+  ctx.restore();
+
+  // —— 内层细纹 ——
+  ctx.strokeStyle = `rgba(46,52,66,${0.18 * vis})`;
+  ctx.lineWidth = 0.7;
+  for (let k = 0; k < 6; k++){
+    const a0 = t * 0.12 + k * (Math.PI / 3);
+    ctx.beginPath();
+    for (let i = 0; i <= 18; i++){
+      const u = i / 18;
+      const rr = R * 0.55 * u;
+      const a = a0 + u * 2.4;
+      const x = cx + Math.cos(a) * rr;
+      const y = cy + Math.sin(a) * rr;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+}
+
+/* ============================================================
+   涟漪
+   ============================================================ */
+function drawRipples(dt){
+  for (let i = ripples.length - 1; i >= 0; i--){
+    const r = ripples[i];
+    r.life -= dt * 0.55;
+    r.r += (r.max - r.r) * Math.min(1, dt * 1.8);
+
+    if (r.life <= 0){ ripples.splice(i, 1); continue; }
+
+    const a = r.life * 0.24;
+    ctx.save();
+    ctx.translate(r.x, r.y);
+
+    ctx.strokeStyle = `rgba(46,52,66,${a})`;
+    ctx.lineWidth = 1.3;
+    ctx.beginPath(); ctx.arc(0, 0, r.r, 0, Math.PI * 2); ctx.stroke();
+
+    ctx.strokeStyle = `rgba(46,52,66,${a * 0.6})`;
+    ctx.lineWidth = 0.9;
+    ctx.beginPath(); ctx.arc(0, 0, r.r * 0.66, 0, Math.PI * 2); ctx.stroke();
+
+    ctx.strokeStyle = `rgba(176,132,58,${a * 0.5})`;
+    ctx.lineWidth = 0.8;
+    ctx.beginPath(); ctx.arc(0, 0, r.r * 0.34, 0, Math.PI * 2); ctx.stroke();
+
+    ctx.restore();
+  }
+}
+
+/* ============================================================
+   开花控制
+   ============================================================ */
+function startBloom(dur = 4500){
+  bloomValue = 0.035;                 // 立刻进入花苞
+  bloomAnim = {
+    from: 0.035,
+    to:   1.0,
+    t0:   performance.now(),
+    dur,
+    ease: easeInOutSine
+  };
+}
+
+/* ============================================================
+   更新
+   ============================================================ */
+function update(dt, t){
+  const now = performance.now();
+
+  // —— 绽放时间轴 ——
+  if (bloomAnim){
+    const p = Math.min(1, (now - bloomAnim.t0) / bloomAnim.dur);
+    const e = bloomAnim.ease(p);
+    bloomValue = bloomAnim.from + (bloomAnim.to - bloomAnim.from) * e;
+    if (p >= 1){
+      bloomValue = bloomAnim.to;
+      bloomAnim = null;
+    }
+  }
+
+  // —— 空闲游移 ——
+  const idle = now - mouse.lastMove > 3000;
+  if (idle){
+    mouse.x = W * 0.5 + Math.sin(t * 0.21) * W * 0.11;
+    mouse.y = H * 0.5 + Math.cos(t * 0.16) * H * 0.07;
+  }
+
+  // —— 悬停微调 ——
+  const dx = mouse.x - center.x;
+  const dy = mouse.y - center.y;
+  const dist = Math.hypot(dx, dy);
+  const near = Math.max(0, 1 - dist / (baseR * 2.6));
+  const hoverExtra = near * 0.09 * bloomValue;   // 花越开，悬停影响越明显
+
+  const targetOpen = Math.min(1.15, bloomValue + hoverExtra);
+  openAmt += (targetOpen - openAmt) * Math.min(1, dt * 10);
+
+  glowPulse *= Math.pow(0.28, dt);
+  rotation = t * 0.045 + Math.sin(t * 0.19) * 0.055;
+}
+
+/* ============================================================
+   渲染
+   ============================================================ */
+function render(t, dt){
+  ctx.clearRect(0, 0, W, H);
+
+  if (paperCanvas) ctx.drawImage(paperCanvas, 0, 0, W, H);
+  else { ctx.fillStyle = '#f6f1e6'; ctx.fillRect(0, 0, W, H); }
+
+  const open = openAmt;
+
+  // —— 中心光晕 ——
+  const halo = ctx.createRadialGradient(
+    center.x, center.y, 0,
+    center.x, center.y, baseR * 1.9
+  );
+  halo.addColorStop(0.00, `rgba(255,252,244,${0.42 + glowPulse * 0.3})`);
+  halo.addColorStop(0.60, 'rgba(255,252,244,0.10)');
+  halo.addColorStop(1.00, 'rgba(255,252,244,0)');
+  ctx.fillStyle = halo;
+  ctx.beginPath();
+  ctx.arc(center.x, center.y, baseR * 1.9, 0, Math.PI * 2);
+  ctx.fill();
+
+  // —— 花瓣绘制顺序：花苞时外层包内层，盛开时内层在前 ——
+  const order = open < 0.5 ? [0, 1, 2, 3, 4] : [0, 1, 2, 3, 4];
+  // 花苞（open < 0.5）：外层后画（包裹感）
+  const seq = open < 0.5 ? [4, 3, 2, 1, 0] : [0, 1, 2, 3, 4];
+
+  for (const li of seq){
+    for (const pk of petals){
+      if (pk.layer !== li) continue;
+      drawPetal(pk, rotation, open, t);
+    }
+  }
+
+  // —— 花蕊 ——
+  drawCenter(t, open);
+
+  // —— 涟漪 ——
+  drawRipples(dt);
+
+  // —— 鼠标柔光 ——
+  if (mouse.active){
+    const m = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, 130);
+    m.addColorStop(0, 'rgba(255,250,235,0.20)');
+    m.addColorStop(1, 'rgba(255,250,235,0)');
+    ctx.fillStyle = m;
+    ctx.beginPath();
+    ctx.arc(mouse.x, mouse.y, 130, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+/* ============================================================
+   主循环
+   ============================================================ */
+function loop(){
+  const now = performance.now();
+  const dt = Math.min((now - prevT) / 1000, 0.05);
+  prevT = now;
+  const t = now / 1000;
+
+  update(dt, t);
+  render(t, dt);
+
+  requestAnimationFrame(loop);
+}
+
+/* ============================================================
+   尺寸
+   ============================================================ */
+function resize(){
+  const nw = window.innerWidth;
+  const nh = window.innerHeight;
+  if (nw === W && nh === H) return;
+
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = nw; H = nh;
+
+  cv.width  = Math.round(W * DPR);
+  cv.height = Math.round(H * DPR);
+  cv.style.width  = W + 'px';
+  cv.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  makePaper();
+  buildFlower();
+
+  mouse.x = W / 2;
+  mouse.y = H / 2;
+}
+
+/* ============================================================
+   事件
+   ============================================================ */
+function pointerPos(e){
+  const r = cv.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+
+cv.addEventListener('pointermove', e => {
+  const p = pointerPos(e);
+  mouse.x = p.x;
+  mouse.y = p.y;
+  mouse.lastMove = performance.now();
+  mouse.active = true;
+  resumeAudio();
+}, { passive: true });
+
+cv.addEventListener('pointerdown', e => {
+  resumeAudio();
+
+  const p = pointerPos(e);
+  mouse.x = p.x;
+  mouse.y = p.y;
+  mouse.lastMove = performance.now();
+  mouse.active = true;
+
+  // —— 触发绽放：从花苞徐徐盛开 ——
+  startBloom(4500);
+  glowPulse = 1;
+
+  // 墨波
+  ripples.push({
+    x: p.x,
+    y: p.y,
+    r: 8,
+    max: 150 + Math.random() * 140,
+    life: 1
+  });
+
+  // —— 伴随绽放的音效序列 ——
+  const token = ++bloomToken;
+  const baseStep = Math.floor(Math.random() * 4);
+  playBell(noteFreq(baseStep), 0.26, 3.0);
+
+  [2, 4, 6, 8].forEach((s, i) => {
+    setTimeout(() => {
+      if (token !== bloomToken) return;      // 已重新点击 → 丢弃旧音
+      playBell(noteFreq(baseStep + s), 0.10, 2.3);
+    }, 620 + i * 720);
+  });
+}, { passive: true });
+
+cv.addEventListener('pointerleave', () => {
+  mouse.active = false;
+});
+
+/* 声音开关 */
+const sndBtn = document.getElementById('sndBtn');
+sndBtn.addEventListener('click', () => {
+  audioOn = !audioOn;
+  sndBtn.classList.toggle('off', !audioOn);
+  sndBtn.textContent = audioOn ? '♪' : '✕';
+
+  if (audioOn){
+    resumeAudio();
+    if (masterGain && actx){
+      masterGain.gain.cancelScheduledValues(actx.currentTime);
+      masterGain.gain.setValueAtTime(masterGain.gain.value, actx.currentTime);
+      masterGain.gain.linearRampToValueAtTime(0.85, actx.currentTime + 0.5);
+    }
+    playBell(noteFreq(5), 0.2, 2.4);
+  } else if (masterGain && actx){
+    masterGain.gain.cancelScheduledValues(actx.currentTime);
+    masterGain.gain.setValueAtTime(masterGain.gain.value, actx.currentTime);
+    masterGain.gain.linearRampToValueAtTime(0, actx.currentTime + 0.35);
+  }
+});
+
+/* 窗口变化 */
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(resize, 180);
+});
+
+/* ============================================================
+   启动
+   ============================================================ */
+resize();
+startBloom(5200);          // 首次进入：花苞徐徐盛开
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>

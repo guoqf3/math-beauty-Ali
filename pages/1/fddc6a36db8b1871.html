@@ -1,0 +1,706 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>傅里叶级数云纹 · Fourier Clouds</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{width:100%;height:100%;overflow:hidden;background:#efe9dd;}
+  canvas{display:block;width:100%;height:100%;cursor:crosshair;touch-action:none;}
+
+  .panel{
+    position:fixed;left:26px;bottom:24px;
+    font-family:"Songti SC","STSong","SimSun",serif;
+    color:#4a4438;user-select:none;pointer-events:none;
+    letter-spacing:.08em;
+  }
+  .panel h1{
+    font-size:16px;font-weight:600;letter-spacing:.34em;
+    color:#2e2921;margin-bottom:7px;
+  }
+  .panel .formula{
+    font-family:"Times New Roman",Georgia,serif;
+    font-size:13px;color:#8a8172;letter-spacing:.05em;
+    margin-bottom:9px;
+  }
+  .panel .formula i{color:#a05a3c;font-style:italic;}
+  .panel .hint{
+    font-size:11.5px;color:#9a917f;line-height:1.9;opacity:.9;
+  }
+  .panel .hint b{color:#7a7263;font-weight:500;}
+
+  .sound-btn{
+    position:fixed;right:22px;top:20px;
+    width:42px;height:42px;border-radius:50%;
+    border:1px solid rgba(90,84,72,.28);
+    background:rgba(252,250,244,.55);
+    backdrop-filter:blur(6px);
+    color:#5c5648;font-size:17px;line-height:1;
+    cursor:pointer;user-select:none;
+    display:flex;align-items:center;justify-content:center;
+    transition:all .28s ease;
+    font-family:"Songti SC",serif;
+  }
+  .sound-btn:hover{background:rgba(255,253,248,.9);transform:scale(1.06);}
+  .sound-btn.off{opacity:.4;}
+
+  .fade-in{animation:fi 1.8s ease both;}
+  @keyframes fi{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:none;}}
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+
+<div class="panel fade-in">
+  <h1>傅里叶 · 祥云</h1>
+  <p class="formula">
+    <i>r</i>(θ) = 1 + Σ <i>a<sub>k</sub></i> sin(<i>k</i>θ + φ<sub>k</sub>)
+  </p>
+  <p class="hint">
+    <b>移动</b> · 云随息舒，近之愈密<br>
+    <b>点击</b> · 添一谐波，云纹重生
+  </p>
+</div>
+
+<button class="sound-btn" id="sndBtn" title="声音开关">♪</button>
+
+<script>
+(() => {
+"use strict";
+
+/* ============================================================
+   基础环境
+   ============================================================ */
+const cv  = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+
+let W = 0, H = 0, DPR = 1;
+let paperCanvas = null;
+
+const mouse = { x: 0, y: 0, active: false, lastMove: 0 };
+const ripples = [];
+
+let time = 0, prevT = performance.now();
+
+/* ============================================================
+   音效引擎 —— 加法合成（谐波叠加）+ 山谷回响
+   ============================================================ */
+let actx = null, master = null, delayNode = null;
+let audioOn = true;
+let lastNoteTime = 0;
+
+const PENTA = [0, 2, 4, 7, 9];
+const BASE_FREQ = 196.00;              // G3
+
+function noteFreq(step){
+  const oct = Math.floor(step / 5);
+  const deg = ((step % 5) + 5) % 5;
+  return BASE_FREQ * Math.pow(2, (PENTA[deg] + oct * 12) / 12);
+}
+
+function initAudio(){
+  if (actx) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  actx = new AC();
+
+  master = actx.createGain();
+  master.gain.setValueAtTime(0, actx.currentTime);
+  master.gain.linearRampToValueAtTime(audioOn ? 0.85 : 0, actx.currentTime + 1.4);
+  master.connect(actx.destination);
+
+  // 山谷回响
+  const delay = actx.createDelay(2.5);
+  delay.delayTime.value = 0.32;
+
+  const fb = actx.createGain();
+  fb.gain.value = 0.40;
+
+  const damp = actx.createBiquadFilter();
+  damp.type = 'lowpass';
+  damp.frequency.value = 2000;
+
+  const wet = actx.createGain();
+  wet.gain.value = 0.35;
+
+  delay.connect(damp);
+  damp.connect(fb);
+  fb.connect(delay);
+  damp.connect(wet);
+  wet.connect(master);
+
+  delayNode = delay;
+}
+
+function resumeAudio(){
+  if (!actx) initAudio();
+  if (actx && actx.state === 'suspended') actx.resume();
+}
+
+/* 加法合成：基频 + 谐波列（对应傅里叶级数） */
+function playCloud(freq, vel = 0.2, dur = 2.8, harmCount = 5){
+  if (!actx || !audioOn) return;
+  const now = actx.currentTime;
+  if (now - lastNoteTime < 0.035) return;
+  lastNoteTime = now;
+
+  const out = actx.createGain();
+  out.gain.value = vel;
+
+  const filt = actx.createBiquadFilter();
+  filt.type = 'lowpass';
+  filt.Q.value = 0.65;
+  filt.frequency.setValueAtTime(5600, now);
+  filt.frequency.exponentialRampToValueAtTime(780, now + dur * 0.9);
+
+  const env = actx.createGain();
+  env.gain.setValueAtTime(0.0001, now);
+  env.gain.exponentialRampToValueAtTime(1, now + 0.008);
+  env.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+
+  filt.connect(env);
+  env.connect(out);
+  out.connect(master);
+  if (delayNode) out.connect(delayNode);
+
+  // 谐波振幅按 1/k 衰减（类似锯齿波的傅里叶系数）
+  const partials = [];
+  for (let k = 1; k <= harmCount; k++){
+    partials.push([k, 1 / (k * k * 0.55 + 0.6)]);
+  }
+  // 补充高频亮音
+  partials.push([9.2, 0.008], [13.5, 0.004]);
+
+  for (const [m, a] of partials){
+    const o = actx.createOscillator();
+    o.type = 'sine';
+    o.frequency.value = freq * m;
+    o.detune.value = (Math.random() - 0.5) * 7;
+
+    const og = actx.createGain();
+    og.gain.value = a;
+
+    o.connect(og);
+    og.connect(filt);
+    o.start(now);
+    o.stop(now + dur + 0.25);
+  }
+}
+
+/* ============================================================
+   宣纸纹理
+   ============================================================ */
+function makePaper(){
+  paperCanvas = document.createElement('canvas');
+  paperCanvas.width  = Math.max(1, Math.round(W));
+  paperCanvas.height = Math.max(1, Math.round(H));
+  const p = paperCanvas.getContext('2d');
+
+  // 天空微暖底色
+  const g = p.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0.00, '#f4efe3');
+  g.addColorStop(0.42, '#faf6ec');
+  g.addColorStop(1.00, '#f2ecdf');
+  p.fillStyle = g;
+  p.fillRect(0, 0, W, H);
+
+  // 中心柔光
+  const rg = p.createRadialGradient(
+    W * 0.5, H * 0.38, Math.min(W, H) * 0.04,
+    W * 0.5, H * 0.52, Math.max(W, H) * 0.88
+  );
+  rg.addColorStop(0.00, 'rgba(255,253,247,0.65)');
+  rg.addColorStop(0.60, 'rgba(255,253,247,0.12)');
+  rg.addColorStop(1.00, 'rgba(255,253,247,0)');
+  p.fillStyle = rg;
+  p.fillRect(0, 0, W, H);
+
+  // 纸纤维
+  const n = Math.floor((W * H) / 850);
+  for (let i = 0; i < n; i++){
+    p.fillStyle = `rgba(120,108,86,${Math.random() * 0.034})`;
+    p.fillRect(
+      Math.random() * W,
+      Math.random() * H,
+      Math.random() * 2 + 0.4,
+      Math.random() * 1.2 + 0.3
+    );
+  }
+
+  // 淡墨晕
+  for (let i = 0; i < 11; i++){
+    const x = Math.random() * W;
+    const y = Math.random() * H;
+    const r = 90 + Math.random() * 260;
+    const rg2 = p.createRadialGradient(x, y, 0, x, y, r);
+    rg2.addColorStop(0, `rgba(148,138,116,${0.016 + Math.random() * 0.022})`);
+    rg2.addColorStop(1, 'rgba(148,138,116,0)');
+    p.fillStyle = rg2;
+    p.beginPath();
+    p.arc(x, y, r, 0, Math.PI * 2);
+    p.fill();
+  }
+
+  // 四角暗角
+  const v = p.createRadialGradient(
+    W * 0.5, H * 0.5, Math.min(W, H) * 0.34,
+    W * 0.5, H * 0.5, Math.max(W, H) * 0.82
+  );
+  v.addColorStop(0, 'rgba(0,0,0,0)');
+  v.addColorStop(1, 'rgba(92,80,60,0.14)');
+  p.fillStyle = v;
+  p.fillRect(0, 0, W, H);
+}
+
+/* ============================================================
+   云层配置 —— 频率越高 = 云纹越密
+   ============================================================ */
+const LAYER_CFG = [
+  {
+    name: 'far',
+    color: 'rgba(122,132,150,0.095)',
+    count: 6,
+    sizeRange: [0.30, 0.48],
+    freqs: [1, 2],                 // 低频 → 轮廓疏朗
+    speed: 0.010,
+    yRange: [0.16, 0.36]
+  },
+  {
+    name: 'mid',
+    color: 'rgba(90,102,124,0.155)',
+    count: 4,
+    sizeRange: [0.52, 0.80],
+    freqs: [1, 2, 3],              // 中频 → 层次渐丰
+    speed: 0.020,
+    yRange: [0.30, 0.52]
+  },
+  {
+    name: 'near',
+    color: 'rgba(56,66,88,0.245)',
+    count: 3,
+    sizeRange: [0.82, 1.18],
+    freqs: [1, 2, 3, 5],           // 高频 → 云纹细密
+    speed: 0.032,
+    yRange: [0.46, 0.70]
+  }
+];
+
+/* 可追加的谐波频率池（1 已被基础波形占用） */
+const FREQ_POOL = [2, 3, 4, 5, 6, 7, 8, 9, 11, 13];
+
+/* ============================================================
+   云朵
+   ============================================================ */
+let clouds = [];
+let baseSize = 100;
+
+class Cloud {
+  constructor(layer, x, y, size){
+    this.layer   = layer;
+    this.x       = x;
+    this.y       = y;
+    this.size    = size;
+    this.speed   = (Math.random() < 0.5 ? -1 : 1) * (0.55 + Math.random() * 0.85);
+    this.hover   = 0;
+    this.breathe = 1;
+    this.phase   = Math.random() * Math.PI * 2;
+    this.step    = Math.floor(Math.random() * 8);   // 音阶步进
+    this.puffs   = [];
+    this.harmonics = [];
+    this.buildPuffs();
+    this.buildHarmonics();
+  }
+
+  /* —— 云瓣：沿水平基线排布，中间大两端小 —— */
+  buildPuffs(){
+    const n = 3 + Math.floor(Math.random() * 3);     // 3 ~ 5 瓣
+    const R = this.size;
+    for (let i = 0; i < n; i++){
+      const u = n === 1 ? 0 : (i / (n - 1)) * 2 - 1; // -1 → 1
+      const px = u * R * 1.18;
+      const py = -Math.abs(u) * R * 0.16;
+      const pr = R * (0.50 + 0.50 * Math.cos(u * 1.30));
+      this.puffs.push({
+        x: px,
+        y: py,
+        r: pr,
+        phase: Math.random() * Math.PI * 2
+      });
+    }
+  }
+
+  /* —— 谐波列：振幅按 1/√k 衰减 —— */
+  buildHarmonics(){
+    this.harmonics = [];
+    for (const f of this.layer.freqs){
+      this.harmonics.push({
+        freq:  f,
+        amp:   (0.062 / Math.sqrt(f)) * (0.75 + Math.random() * 0.55),
+        phase: Math.random() * Math.PI * 2,
+        drift: (0.10 + Math.random() * 0.22) * (Math.random() < 0.5 ? -1 : 1)
+      });
+    }
+  }
+
+  /* —— 追加一个谐波（点击时） —— */
+  addHarmonic(){
+    if (this.harmonics.length >= 8) return -1;
+    const used = new Set(this.harmonics.map(h => h.freq));
+    const avail = FREQ_POOL.filter(f => !used.has(f));
+    if (!avail.length) return -1;
+
+    const f = avail[Math.floor(Math.random() * avail.length)];
+    this.harmonics.push({
+      freq:  f,
+      amp:   (0.062 / Math.sqrt(f)) * 1.15,
+      phase: Math.random() * Math.PI * 2,
+      drift: (0.10 + Math.random() * 0.24) * (Math.random() < 0.5 ? -1 : 1)
+    });
+    return f;
+  }
+
+  /* —— 生成某一云瓣的采样点 —— */
+  puffPoints(puff, t){
+    const N = 54;
+    const pts = [];
+    const b = this.breathe;
+
+    for (let i = 0; i <= N; i++){
+      const th = (i / N) * Math.PI * 2;
+
+      // 傅里叶级数：r(θ) = 1 + Σ aₖ·sin(kθ + φₖ)
+      let r = 1;
+      for (let k = 0; k < this.harmonics.length; k++){
+        const h = this.harmonics[k];
+        r += h.amp * b *
+             Math.sin(h.freq * th + h.phase + puff.phase + t * h.drift);
+      }
+
+      const c = Math.cos(th);
+      const s = Math.sin(th) * 0.72;      // 垂直压扁 → 云形
+
+      pts.push([
+        this.x + puff.x + c * puff.r * r,
+        this.y + puff.y + s * puff.r * r
+      ]);
+    }
+    return pts;
+  }
+}
+
+/* ============================================================
+   构建全部云朵
+   ============================================================ */
+function buildClouds(){
+  baseSize = Math.min(W, H) * 0.115;
+  clouds = [];
+
+  LAYER_CFG.forEach(cfg => {
+    for (let i = 0; i < cfg.count; i++){
+      const size = baseSize * (cfg.sizeRange[0] +
+                   Math.random() * (cfg.sizeRange[1] - cfg.sizeRange[0]));
+      const x = (i + 0.5 + (Math.random() - 0.5) * 0.55) * (W / cfg.count);
+      const y = H * (cfg.yRange[0] +
+                Math.random() * (cfg.yRange[1] - cfg.yRange[0]));
+
+      clouds.push(new Cloud(cfg, x, y, size));
+    }
+  });
+
+  // 按纵深排序：远 → 近
+  clouds.sort((a, b) => a.size - b.size);
+}
+
+/* ============================================================
+   涟漪
+   ============================================================ */
+function drawRipples(dt){
+  for (let i = ripples.length - 1; i >= 0; i--){
+    const r = ripples[i];
+    r.life -= dt * 0.62;
+    r.r += (r.max - r.r) * Math.min(1, dt * 2.0);
+
+    if (r.life <= 0){ ripples.splice(i, 1); continue; }
+
+    const a = r.life * 0.22;
+    ctx.save();
+    ctx.translate(r.x, r.y);
+
+    ctx.strokeStyle = `rgba(60,70,92,${a})`;
+    ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.arc(0, 0, r.r, 0, Math.PI * 2); ctx.stroke();
+
+    ctx.strokeStyle = `rgba(60,70,92,${a * 0.55})`;
+    ctx.lineWidth = 0.9;
+    ctx.beginPath(); ctx.arc(0, 0, r.r * 0.62, 0, Math.PI * 2); ctx.stroke();
+
+    ctx.strokeStyle = `rgba(176,132,58,${a * 0.45})`;
+    ctx.lineWidth = 0.8;
+    ctx.beginPath(); ctx.arc(0, 0, r.r * 0.30, 0, Math.PI * 2); ctx.stroke();
+
+    ctx.restore();
+  }
+}
+
+/* ============================================================
+   绘制单朵云
+   ============================================================ */
+function drawCloud(cloud, t){
+  ctx.beginPath();
+
+  for (const puff of cloud.puffs){
+    const pts = cloud.puffPoints(puff, t);
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++){
+      ctx.lineTo(pts[i][0], pts[i][1]);
+    }
+    ctx.closePath();
+  }
+
+  // 合并填充：重叠区域仅填一次 → 云瓣自然融合
+  ctx.fillStyle = cloud.layer.color;
+  ctx.fill();
+
+  // 悬停时叠一层暖光边
+  if (cloud.hover > 0.03){
+    ctx.fillStyle = `rgba(214,180,120,${cloud.hover * 0.055})`;
+    ctx.fill();
+  }
+}
+
+/* ============================================================
+   更新
+   ============================================================ */
+let currentHover = null;
+
+function update(dt, t){
+  const now = performance.now();
+
+  // 空闲时轻移
+  if (!mouse.active || now - mouse.lastMove > 3000){
+    mouse.x = W * 0.5 + Math.sin(t * 0.19) * W * 0.16;
+    mouse.y = H * 0.5 + Math.cos(t * 0.13) * H * 0.11;
+    mouse.active = false;
+  }
+
+  // —— 云朵运动 & 呼吸 ——
+  let bestNear = 0;
+  let bestCloud = null;
+
+  for (const cloud of clouds){
+    // 漂移
+    cloud.x += cloud.speed * cloud.layer.speed * 60 * dt;
+
+    const margin = cloud.size * 2.4;
+    if (cloud.x > W + margin) cloud.x = -margin;
+    if (cloud.x < -margin)      cloud.x = W + margin;
+
+    // 与鼠标的距离 → 呼吸强度
+    const dx = mouse.x - cloud.x;
+    const dy = mouse.y - cloud.y;
+    const d = Math.hypot(dx, dy);
+    const R = cloud.size * 1.45;
+    const near = Math.max(0, 1 - d / R);
+
+    cloud.hover += (near - cloud.hover) * Math.min(1, dt * 5.5);
+
+    // 开合呼吸（含自然律动）
+    const idle = 1 + Math.sin(t * 0.75 + cloud.phase) * 0.035;
+    const target = idle + cloud.hover * 0.58;
+    cloud.breathe += (target - cloud.breathe) * Math.min(1, dt * 4);
+
+    if (near > bestNear){ bestNear = near; bestCloud = cloud; }
+  }
+
+  // —— 悬停换云时奏一音 ——
+  if (bestNear > 0.22 && bestCloud !== currentHover){
+    currentHover = bestCloud;
+    playCloud(noteFreq(bestCloud.step), 0.075, 2.2, 4);
+  } else if (bestNear <= 0.22){
+    currentHover = null;
+  }
+}
+
+/* ============================================================
+   渲染
+   ============================================================ */
+function render(t, dt){
+  ctx.clearRect(0, 0, W, H);
+
+  if (paperCanvas) ctx.drawImage(paperCanvas, 0, 0, W, H);
+  else { ctx.fillStyle = '#f6f1e6'; ctx.fillRect(0, 0, W, H); }
+
+  // 云朵（远 → 近）
+  for (const cloud of clouds) drawCloud(cloud, t);
+
+  // 涟漪
+  drawRipples(dt);
+
+  // 鼠标柔光
+  if (mouse.active){
+    const mg = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, 140);
+    mg.addColorStop(0, 'rgba(255,250,235,0.14)');
+    mg.addColorStop(1, 'rgba(255,250,235,0)');
+    ctx.fillStyle = mg;
+    ctx.beginPath();
+    ctx.arc(mouse.x, mouse.y, 140, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+/* ============================================================
+   主循环
+   ============================================================ */
+function loop(){
+  const now = performance.now();
+  const dt = Math.min((now - prevT) / 1000, 0.05);
+  prevT = now;
+  time = now / 1000;
+
+  update(dt, time);
+  render(time, dt);
+
+  requestAnimationFrame(loop);
+}
+
+/* ============================================================
+   尺寸
+   ============================================================ */
+function resize(){
+  const nw = window.innerWidth;
+  const nh = window.innerHeight;
+  if (nw === W && nh === H) return;
+
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = nw; H = nh;
+
+  cv.width  = Math.round(W * DPR);
+  cv.height = Math.round(H * DPR);
+  cv.style.width  = W + 'px';
+  cv.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  makePaper();
+  buildClouds();
+
+  mouse.x = W / 2;
+  mouse.y = H / 2;
+}
+
+/* ============================================================
+   交互
+   ============================================================ */
+function pointerPos(e){
+  const r = cv.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+
+cv.addEventListener('pointermove', e => {
+  const p = pointerPos(e);
+  mouse.x = p.x;
+  mouse.y = p.y;
+  mouse.active = true;
+  mouse.lastMove = performance.now();
+  resumeAudio();
+}, { passive: true });
+
+cv.addEventListener('pointerdown', e => {
+  resumeAudio();
+
+  const p = pointerPos(e);
+  mouse.x = p.x;
+  mouse.y = p.y;
+  mouse.active = true;
+  mouse.lastMove = performance.now();
+
+  // 涟漪
+  ripples.push({
+    x: p.x, y: p.y,
+    r: 6,
+    max: 130 + Math.random() * 120,
+    life: 1
+  });
+
+  // 找到最近的云
+  let target = null, best = Infinity;
+  for (const cloud of clouds){
+    const d = Math.hypot(p.x - cloud.x, p.y - cloud.y);
+    if (d < best){ best = d; target = cloud; }
+  }
+
+  if (target && best < target.size * 2.4){
+    // 追加谐波 → 云纹变密
+    const f = target.addHarmonic();
+    if (f > 0){
+      // 谐波次数映射到五声音阶
+      const idx = FREQ_POOL.indexOf(f);
+      const step = target.step + 1 + (idx >= 0 ? idx % 5 : 0);
+      playCloud(noteFreq(step), 0.24, 3.0, Math.min(7, target.harmonics.length + 2));
+    } else {
+      // 谐波已满 → 仅作回响
+      playCloud(noteFreq(target.step), 0.18, 2.6, 6);
+    }
+  } else {
+    // 空白处 → 生成一朵新云
+    const cfg = LAYER_CFG[Math.floor(Math.random() * LAYER_CFG.length)];
+    const size = baseSize * (cfg.sizeRange[0] +
+                 Math.random() * (cfg.sizeRange[1] - cfg.sizeRange[0]));
+    const nc = new Cloud(cfg, p.x, p.y, size);
+    clouds.push(nc);
+    clouds.sort((a, b) => a.size - b.size);
+
+    // 控制云朵总数
+    if (clouds.length > 22){
+      const idx = clouds.findIndex(c => c === nc);
+      clouds.splice(0, clouds.length - 22);
+    }
+
+    playCloud(noteFreq(nc.step + 2), 0.20, 2.8, 5);
+  }
+}, { passive: true });
+
+cv.addEventListener('pointerleave', () => {
+  mouse.active = false;
+  currentHover = null;
+});
+
+/* 声音开关 */
+const sndBtn = document.getElementById('sndBtn');
+sndBtn.addEventListener('click', () => {
+  audioOn = !audioOn;
+  sndBtn.classList.toggle('off', !audioOn);
+  sndBtn.textContent = audioOn ? '♪' : '✕';
+
+  if (audioOn){
+    resumeAudio();
+    if (master && actx){
+      master.gain.cancelScheduledValues(actx.currentTime);
+      master.gain.setValueAtTime(master.gain.value, actx.currentTime);
+      master.gain.linearRampToValueAtTime(0.85, actx.currentTime + 0.5);
+    }
+    playCloud(noteFreq(4), 0.2, 2.6, 5);
+  } else if (master && actx){
+    master.gain.cancelScheduledValues(actx.currentTime);
+    master.gain.setValueAtTime(master.gain.value, actx.currentTime);
+    master.gain.linearRampToValueAtTime(0, actx.currentTime + 0.35);
+  }
+});
+
+/* 窗口变化 */
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(resize, 200);
+});
+
+/* ============================================================
+   启动
+   ============================================================ */
+resize();
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>
