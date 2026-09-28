@@ -1,0 +1,949 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>心跳水母 · Heartbeat Jellyfish</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; min-height: 100%;
+    background: radial-gradient(120% 90% at 50% 0%, #0c1c33 0%, #071228 55%, #030710 100%);
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    color: #d8ecf8;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .wrap {
+    max-width: 1180px; margin: 0 auto; padding: 22px;
+    display: flex; gap: 22px; align-items: flex-start; flex-wrap: wrap;
+  }
+  .stage {
+    flex: 1 1 580px; min-width: 300px;
+    position: relative;
+    aspect-ratio: 760 / 520;
+    border-radius: 26px;
+    overflow: hidden;
+    background: #04101f;
+    box-shadow: 0 24px 54px -24px rgba(0, 0, 0, .95),
+                0 0 0 1px rgba(90, 200, 240, .18) inset;
+  }
+  canvas { display: block; width: 100%; height: 100%; cursor: pointer; }
+
+  .sound-toggle {
+    position: absolute; top: 14px; right: 14px;
+    width: 42px; height: 42px; border-radius: 50%;
+    border: none; cursor: pointer; padding: 0;
+    display: grid; place-items: center;
+    font-size: 18px; line-height: 1;
+    background: rgba(14, 40, 62, .84);
+    color: #9fe4ff;
+    box-shadow: 0 5px 16px -5px rgba(0, 0, 0, .85),
+                0 0 0 1px rgba(90, 200, 240, .34) inset;
+    transition: transform .12s;
+    z-index: 3;
+  }
+  .sound-toggle:active { transform: scale(.92); }
+
+  .panel {
+    flex: 0 1 350px; min-width: 292px;
+    background: rgba(10, 28, 46, .78);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border-radius: 26px;
+    padding: 22px 22px 18px;
+    box-shadow: 0 24px 54px -26px rgba(0, 0, 0, .95),
+                0 0 0 1px rgba(90, 200, 240, .16) inset;
+    display: flex; flex-direction: column; gap: 14px;
+  }
+  h1 {
+    font-size: 20px; margin: 0; letter-spacing: .5px;
+    display: flex; align-items: center; gap: 8px;
+    color: #e2f4ff;
+  }
+  h1 .emoji { font-size: 23px; }
+
+  .formula {
+    font-family: "Cambria Math", "Times New Roman", Georgia, serif;
+    font-size: 17px; text-align: center;
+    padding: 11px 10px; border-radius: 15px;
+    background: linear-gradient(135deg, rgba(16, 58, 88, .92), rgba(10, 36, 60, .92));
+    color: #8fdcff;
+    letter-spacing: .6px;
+    box-shadow: 0 0 0 1px rgba(90, 200, 240, .24) inset;
+    line-height: 1.6;
+  }
+  .formula b { color: #ffd88a; font-weight: 700; }
+  .formula .note { font-size: 12px; color: #5f9fbe; letter-spacing: .3px; }
+
+  .readout {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px;
+    padding: 11px 13px; border-radius: 15px;
+    background: rgba(12, 38, 58, .92);
+    box-shadow: 0 0 0 1px rgba(90, 200, 240, .18) inset;
+    font-size: 12.5px;
+  }
+  .readout .k { color: #6ba8c8; font-weight: 700; }
+  .readout .v {
+    font-family: "SF Mono", "Menlo", "Consolas", monospace;
+    color: #7fe4ff; font-weight: 700; font-size: 13.5px;
+    text-align: right;
+  }
+
+  .field { display: flex; flex-direction: column; gap: 7px; }
+  .field .row {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-size: 13.5px; font-weight: 700; letter-spacing: .3px;
+    color: #87b6cf;
+  }
+  .field .val {
+    color: #7fe4ff; font-variant-numeric: tabular-nums; font-size: 13.5px;
+    font-family: "SF Mono", "Menlo", "Consolas", monospace;
+  }
+
+  input[type=range] {
+    -webkit-appearance: none; appearance: none;
+    width: 100%; height: 7px; border-radius: 99px;
+    background: linear-gradient(90deg, #1f5674, #4fc3ea);
+    outline: none; cursor: pointer;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 21px; height: 21px; border-radius: 50%;
+    background: #08202e; border: 3.5px solid #4fc3ea;
+    box-shadow: 0 0 12px rgba(80, 200, 240, .7);
+    transition: transform .12s;
+  }
+  input[type=range]::-webkit-slider-thumb:active { transform: scale(1.2); }
+  input[type=range]::-moz-range-thumb {
+    width: 15px; height: 15px; border-radius: 50%;
+    background: #08202e; border: 3.5px solid #4fc3ea;
+    box-shadow: 0 0 12px rgba(80, 200, 240, .7);
+  }
+  input[type=range]::-moz-range-track {
+    height: 7px; border-radius: 99px;
+    background: linear-gradient(90deg, #1f5674, #4fc3ea);
+  }
+
+  .btns { display: flex; gap: 10px; }
+  button.main {
+    flex: 1; padding: 11px 8px; border: none; border-radius: 14px;
+    font-size: 14px; font-weight: 700; cursor: pointer;
+    font-family: inherit; letter-spacing: .4px;
+    background: linear-gradient(180deg, #4fc3ea, #1f8fc4);
+    color: #03202e;
+    box-shadow: 0 7px 18px -8px rgba(70, 200, 240, .95);
+    transition: transform .12s, filter .12s;
+  }
+  button.main:hover { filter: brightness(1.08); }
+  button.main:active { transform: translateY(2px) scale(.98); }
+  button.main.ghost {
+    background: rgba(14, 44, 66, .95);
+    color: #7fe4ff;
+    box-shadow: 0 5px 14px -8px rgba(0, 0, 0, .9),
+                0 0 0 1.5px rgba(90, 200, 240, .3) inset;
+  }
+
+  .hint {
+    margin: 0; font-size: 12.5px; line-height: 1.7; color: #628aa4;
+    text-align: center;
+  }
+  .hint kbd {
+    background: rgba(18, 52, 76, .9); border-radius: 5px; padding: 1px 6px;
+    font-family: inherit; font-size: 11.5px; color: #7fe4ff;
+    box-shadow: 0 0 0 1px rgba(90, 200, 240, .28) inset;
+  }
+  @media (max-width: 740px) {
+    .wrap { padding: 14px; gap: 16px; }
+    .panel { flex: 1 1 100%; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="stage">
+    <canvas id="cv"></canvas>
+    <button class="sound-toggle" id="soundToggle" title="音效开关">🔊</button>
+  </div>
+
+  <div class="panel">
+    <h1><span class="emoji">🪼</span> 心跳水母</h1>
+
+    <div class="formula">
+      R(t) = R₀ · (1 + <b>A</b>·sin(2π<b>f</b>t))<br>
+      <span class="note">每一次正弦周期 = 一次心跳收缩</span>
+    </div>
+
+    <div class="readout">
+      <span class="k">当前相位</span><span class="v" id="roPhase">0.00 π</span>
+      <span class="k">瞬时收缩量</span><span class="v" id="roPulse">+0.00</span>
+      <span class="k">心跳频率</span><span class="v" id="roBpm">51 次/分</span>
+      <span class="k">伞径变化</span><span class="v" id="roDia">108 px</span>
+    </div>
+
+    <div class="field">
+      <div class="row"><span>心跳频率 f</span><span class="val" id="fVal">0.85 Hz</span></div>
+      <input type="range" id="fRange" min="30" max="200" step="1" value="85">
+    </div>
+
+    <div class="field">
+      <div class="row"><span>收缩振幅 A</span><span class="val" id="aVal">75%</span></div>
+      <input type="range" id="aRange" min="0" max="100" step="1" value="75">
+    </div>
+
+    <div class="field">
+      <div class="row"><span>触手柔韧度</span><span class="val" id="wVal">60%</span></div>
+      <input type="range" id="wRange" min="0" max="100" step="1" value="60">
+    </div>
+
+    <div class="btns">
+      <button class="main" id="btnBeat">手动心跳</button>
+      <button class="main ghost" id="btnReset">重置</button>
+    </div>
+
+    <p class="hint">
+      拖动滑杆改变节律 · <kbd>点击画面</kbd> 触发一次额外心跳<br>
+      观察伞状体收缩时，触手如何被带动飘荡
+    </p>
+
+  </div>
+
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ============================================================
+     基础
+  ============================================================ */
+  const W = 760, H = 520;
+  const CX = 380, CY = 248;
+  const BASE_R = 108;
+  const BASE_H = 96;
+  const BASE_SAG = 22;
+
+  const cv = document.getElementById('cv');
+  const ctx = cv.getContext('2d');
+
+  function resizeCanvas() {
+    const rect = cv.getBoundingClientRect();
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    cv.width  = Math.max(1, Math.round(rect.width  * dpr));
+    cv.height = Math.max(1, Math.round(rect.height * dpr));
+  }
+  window.addEventListener('resize', resizeCanvas);
+
+  /* ============================================================
+     音频
+  ============================================================ */
+  let actx = null, muted = false;
+
+  function ensureAudio() {
+    if (muted) return null;
+    if (!actx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return null;
+      try { actx = new AC(); } catch (e) { return null; }
+    }
+    if (actx.state === 'suspended') actx.resume();
+    return actx;
+  }
+
+  function tone(freq, dur, type, vol, delay, freqEnd) {
+    const ac = ensureAudio(); if (!ac) return;
+    type = type || 'sine'; vol = vol || 0.055; delay = delay || 0;
+    const t = ac.currentTime + delay;
+    const o = ac.createOscillator();
+    const g = ac.createGain();
+    o.type = type;
+    o.frequency.setValueAtTime(freq, t);
+    if (freqEnd) o.frequency.exponentialRampToValueAtTime(Math.max(20, freqEnd), t + dur * 0.92);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + 0.014);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g); g.connect(ac.destination);
+    o.start(t); o.stop(t + dur + 0.06);
+  }
+
+  /** 心跳音：低频"咚" + 高频微光 */
+  function beatSound(strength) {
+    const ac = ensureAudio(); if (!ac) return;
+    strength = Math.max(0.25, Math.min(1, strength));
+    const t0 = ac.currentTime;
+
+    // 低频心跳主体
+    const o1 = ac.createOscillator();
+    const g1 = ac.createGain();
+    o1.type = 'sine';
+    o1.frequency.setValueAtTime(118, t0);
+    o1.frequency.exponentialRampToValueAtTime(48, t0 + 0.17);
+    g1.gain.setValueAtTime(0.0001, t0);
+    g1.gain.exponentialRampToValueAtTime(0.10 * strength, t0 + 0.011);
+    g1.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.26);
+    o1.connect(g1); g1.connect(ac.destination);
+    o1.start(t0); o1.stop(t0 + 0.3);
+
+    // 第二下"咚"（更轻，形成心跳双搏感）
+    const o1b = ac.createOscillator();
+    const g1b = ac.createGain();
+    o1b.type = 'sine';
+    o1b.frequency.setValueAtTime(104, t0 + 0.14);
+    o1b.frequency.exponentialRampToValueAtTime(42, t0 + 0.30);
+    g1b.gain.setValueAtTime(0.0001, t0 + 0.14);
+    g1b.gain.exponentialRampToValueAtTime(0.055 * strength, t0 + 0.155);
+    g1b.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.38);
+    o1b.connect(g1b); g1b.connect(ac.destination);
+    o1b.start(t0 + 0.14); o1b.stop(t0 + 0.42);
+
+    // 高频闪烁
+    const o2 = ac.createOscillator();
+    const g2 = ac.createGain();
+    o2.type = 'triangle';
+    o2.frequency.setValueAtTime(960, t0 + 0.01);
+    o2.frequency.exponentialRampToValueAtTime(520, t0 + 0.13);
+    g2.gain.setValueAtTime(0.0001, t0 + 0.01);
+    g2.gain.exponentialRampToValueAtTime(0.016 * strength, t0 + 0.026);
+    g2.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.17);
+    o2.connect(g2); g2.connect(ac.destination);
+    o2.start(t0 + 0.01); o2.stop(t0 + 0.2);
+  }
+
+  /** 点击水母：气泡音 */
+  function bubbleSound() {
+    tone(620 + Math.random() * 220, 0.16, 'sine', 0.05, 0, 180);
+    tone(340, 0.2, 'triangle', 0.03, 0.05, 120);
+  }
+
+  let lastBlip = 0;
+  function sndBlip(freq) {
+    const now = performance.now();
+    if (now - lastBlip < 68) return;
+    lastBlip = now;
+    tone(freq, 0.055, 'sine', 0.038);
+  }
+
+  /* ============================================================
+     状态
+  ============================================================ */
+  const P = {
+    freq: 0.85,     // Hz
+    amp: 0.75,      // 0..1
+    wobble: 0.60    // 触手柔韧度 0..1
+  };
+
+  const S = {
+    time: 0,
+    phase: 0,        // 0..1
+    beatFlash: 0,
+    rings: [],
+    manualPulse: 0
+  };
+
+  // 背景气泡 / 浮游生物
+  const motes = [];
+  for (let i = 0; i < 54; i++) {
+    motes.push({
+      x: Math.random() * W,
+      y: Math.random() * H,
+      r: 0.7 + Math.random() * 2.6,
+      sp: 8 + Math.random() * 26,
+      ph: Math.random() * Math.PI * 2,
+      a: 0.05 + Math.random() * 0.16
+    });
+  }
+
+  /* ============================================================
+     更新
+  ============================================================ */
+  function update(dt) {
+    S.time += dt;
+
+    // 相位推进
+    const prev = S.phase;
+    S.phase += P.freq * dt;
+    if (S.phase >= 1) {
+      S.phase -= Math.floor(S.phase);
+      onBeat();
+    }
+
+    // 手动心跳脉冲
+    S.manualPulse *= Math.exp(-dt * 4.2);
+
+    // 心跳闪光衰减
+    S.beatFlash *= Math.exp(-dt * 4.8);
+
+    // 扩散环
+    for (let i = S.rings.length - 1; i >= 0; i--) {
+      const r = S.rings[i];
+      r.r += dt * 240;
+      r.life -= dt * 1.15;
+      if (r.life <= 0) S.rings.splice(i, 1);
+    }
+
+    // 背景微粒上浮
+    for (let i = 0; i < motes.length; i++) {
+      const m = motes[i];
+      m.y -= m.sp * dt;
+      m.x += Math.sin(S.time * 0.7 + m.ph) * 8 * dt;
+      if (m.y < -8) {
+        m.y = H + 8;
+        m.x = Math.random() * W;
+      }
+    }
+  }
+
+  function onBeat() {
+    S.beatFlash = 1;
+    S.rings.push({
+      x: CX, y: CY,
+      r: BASE_R * 0.55,
+      life: 1
+    });
+    beatSound(0.55 + P.amp * 0.55);
+  }
+
+  /* ============================================================
+     绘制
+  ============================================================ */
+  function render() {
+    const kx = cv.width / W;
+    const ky = cv.height / H;
+    ctx.setTransform(kx, 0, 0, ky, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+
+    drawBackground();
+    drawMotes();
+    drawRings();
+    drawScene();
+    drawWaveTrace();
+  }
+
+  /* ---------- 背景 ---------- */
+  function drawBackground() {
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0.00, '#0a1a30');
+    g.addColorStop(0.45, '#071428');
+    g.addColorStop(1.00, '#020610');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+
+    // 上方光柱
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < 6; i++) {
+      const x = 60 + i * 132 + Math.sin(S.time * 0.28 + i * 1.4) * 22;
+      const lg = ctx.createLinearGradient(x, 0, x + 60, H * 0.9);
+      lg.addColorStop(0, 'rgba(70, 170, 230, 0.055)');
+      lg.addColorStop(1, 'rgba(70, 170, 230, 0)');
+      ctx.fillStyle = lg;
+      ctx.beginPath();
+      ctx.moveTo(x - 40, 0);
+      ctx.lineTo(x + 40, 0);
+      ctx.lineTo(x + 104, H);
+      ctx.lineTo(x - 104, H);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.restore();
+
+    // 水母周围柔光
+    const pulse = Math.sin(S.phase * Math.PI * 2);
+    const halo = ctx.createRadialGradient(CX, CY, 30, CX, CY, 320);
+    const hA = 0.09 + 0.06 * S.beatFlash + 0.03 * Math.max(0, pulse) * P.amp;
+    halo.addColorStop(0, 'rgba(80, 210, 255, ' + hA + ')');
+    halo.addColorStop(0.5, 'rgba(60, 150, 230, ' + (hA * 0.35) + ')');
+    halo.addColorStop(1, 'rgba(40, 100, 200, 0)');
+    ctx.fillStyle = halo;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  function drawMotes() {
+    for (let i = 0; i < motes.length; i++) {
+      const m = motes[i];
+      const tw = 0.6 + 0.4 * Math.sin(S.time * 1.6 + m.ph);
+      ctx.beginPath();
+      ctx.arc(m.x, m.y, m.r, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(150, 225, 255, ' + (m.a * tw) + ')';
+      ctx.fill();
+    }
+  }
+
+  function drawRings() {
+    for (let i = 0; i < S.rings.length; i++) {
+      const r = S.rings[i];
+      const a = Math.max(0, r.life) * 0.28;
+      ctx.beginPath();
+      ctx.arc(r.x, r.y, r.r, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(120, 230, 255, ' + a + ')';
+      ctx.lineWidth = 1.8;
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(r.x, r.y, r.r * 0.72, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(160, 200, 255, ' + (a * 0.5) + ')';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+  }
+
+  /* ---------- 场景主体 ---------- */
+  function drawScene() {
+    const amp = P.amp;
+    const p = Math.sin(S.phase * Math.PI * 2) + S.manualPulse * 0.85;
+
+    const R   = BASE_R * (1 + 0.165 * p * amp);
+    const Hh  = BASE_H * (1 - 0.135 * p * amp);
+    const sag = BASE_SAG * (1 + 0.55 * p * amp);
+
+    const bob = Math.sin(S.time * 0.9) * 5;
+    const cy = CY + bob;
+    const cx = CX;
+
+    // 触手（先画，被伞体盖住根部）
+    drawAllTentacles(cx, cy, R, sag);
+
+    // 伞体
+    drawBell(cx, cy, R, Hh, sag);
+
+    // 内部正弦指示
+    drawPhaseIndicator(cx, cy, R, Hh, p);
+
+    // 上下浮动标记
+    ctx.save();
+    ctx.globalAlpha = 0.35;
+    ctx.strokeStyle = 'rgba(120, 220, 255, 0.35)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 6]);
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - Hh - 26);
+    ctx.lineTo(cx, cy - Hh - 8);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /* ---------- 伞状体 ---------- */
+  function drawBell(cx, cy, R, Hh, sag) {
+    const N = 68;
+
+    // 外辉光
+    const glowR = R * 2.15;
+    const gg = ctx.createRadialGradient(cx, cy - Hh * 0.35, R * 0.35, cx, cy - Hh * 0.35, glowR);
+    gg.addColorStop(0, 'hsla(190, 95%, 68%, ' + (0.16 + 0.14 * S.beatFlash) + ')');
+    gg.addColorStop(0.5, 'hsla(215, 90%, 62%, ' + (0.06 + 0.06 * S.beatFlash) + ')');
+    gg.addColorStop(1, 'hsla(270, 80%, 60%, 0)');
+    ctx.beginPath();
+    ctx.arc(cx, cy - Hh * 0.35, glowR, 0, Math.PI * 2);
+    ctx.fillStyle = gg;
+    ctx.fill();
+
+    // ---- 伞体轮廓 ----
+    function bellPath(rMul, hMul, sMul, yOff) {
+      ctx.beginPath();
+      // 顶部穹顶
+      for (let i = 0; i <= N; i++) {
+        const phi = i / N * Math.PI;
+        const x = cx + R * rMul * Math.cos(phi);
+        const y = cy - Hh * hMul * Math.sin(phi) + yOff;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      // 底部伞缘
+      for (let i = 0; i <= N; i++) {
+        const phi = Math.PI + i / N * Math.PI;
+        const x = cx + R * rMul * Math.cos(phi);
+        const y = cy - sag * sMul * Math.sin(phi) + yOff;
+        ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+    }
+
+    // ---- 主体填充 ----
+    bellPath(1, 1, 1, 0);
+    const bodyGrad = ctx.createRadialGradient(
+      cx - R * 0.26, cy - Hh * 0.66, R * 0.10,
+      cx, cy - Hh * 0.10, R * 1.35
+    );
+    bodyGrad.addColorStop(0.00, 'hsla(185, 100%, 90%, 0.86)');
+    bodyGrad.addColorStop(0.24, 'hsla(196, 96%, 74%, 0.66)');
+    bodyGrad.addColorStop(0.58, 'hsla(222, 88%, 63%, 0.40)');
+    bodyGrad.addColorStop(1.00, 'hsla(276, 82%, 58%, 0.14)');
+    ctx.fillStyle = bodyGrad;
+    ctx.fill();
+
+    // 外轮廓描边
+    ctx.strokeStyle = 'hsla(190, 100%, 84%, ' + (0.42 + 0.34 * S.beatFlash) + ')';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // ---- 内腔 ----
+    bellPath(0.72, 0.76, 0.68, Hh * 0.07);
+    const cavGrad = ctx.createRadialGradient(cx, cy - Hh * 0.4, R * 0.08, cx, cy, R * 0.95);
+    cavGrad.addColorStop(0, 'hsla(198, 100%, 92%, 0.28)');
+    cavGrad.addColorStop(1, 'hsla(255, 82%, 62%, 0.04)');
+    ctx.fillStyle = cavGrad;
+    ctx.fill();
+
+    // ---- 伞缘高光 ----
+    ctx.beginPath();
+    for (let i = 0; i <= N; i++) {
+      const phi = Math.PI + i / N * Math.PI;
+      const x = cx + R * Math.cos(phi);
+      const y = cy - sag * Math.sin(phi);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.strokeStyle = 'hsla(180, 100%, 90%, ' + (0.5 + 0.42 * S.beatFlash) + ')';
+    ctx.lineWidth = 2.6;
+    ctx.lineCap = 'round';
+    ctx.stroke();
+
+    // ---- 伞顶高光 ----
+    ctx.beginPath();
+    ctx.ellipse(cx - R * 0.30, cy - Hh * 0.64, R * 0.34, Hh * 0.20, -0.45, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255, 255, 255, ' + (0.14 + 0.10 * S.beatFlash) + ')';
+    ctx.fill();
+
+    // ---- 放射脉络 ----
+    ctx.save();
+    ctx.globalAlpha = 0.22 + 0.14 * S.beatFlash;
+    ctx.strokeStyle = 'hsla(190, 100%, 88%, 0.85)';
+    ctx.lineWidth = 1;
+    for (let k = 0; k < 9; k++) {
+      const u = (k + 0.5) / 9;
+      const phi = u * Math.PI;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy - Hh * 0.94);
+      ctx.quadraticCurveTo(
+        cx + R * 0.55 * Math.cos(phi),
+        cy - Hh * 0.42,
+        cx + R * Math.cos(phi),
+        cy - Hh * 0.03
+      );
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  /* ---------- 相位指示器 ---------- */
+  function drawPhaseIndicator(cx, cy, R, Hh, p) {
+    // 在伞体内部画一条随相位摆动的小圆点轨迹
+    const rIn = R * 0.44;
+    const yIn = cy - Hh * 0.44;
+
+    ctx.save();
+    ctx.globalAlpha = 0.55;
+
+    // 轨迹圈
+    ctx.beginPath();
+    ctx.arc(cx, yIn, rIn, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(160, 235, 255, 0.16)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 7]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // 当前相位点
+    const ang = S.phase * Math.PI * 2 - Math.PI / 2;
+    const px = cx + rIn * Math.cos(ang);
+    const py = yIn + rIn * Math.sin(ang);
+
+    const pg = ctx.createRadialGradient(px, py, 0, px, py, 14);
+    pg.addColorStop(0, 'rgba(200, 250, 255, 0.95)');
+    pg.addColorStop(0.4, 'rgba(120, 225, 255, 0.5)');
+    pg.addColorStop(1, 'rgba(120, 225, 255, 0)');
+    ctx.beginPath();
+    ctx.arc(px, py, 14, 0, Math.PI * 2);
+    ctx.fillStyle = pg;
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.arc(px, py, 3.2, 0, Math.PI * 2);
+    ctx.fillStyle = '#ffffff';
+    ctx.fill();
+
+    ctx.restore();
+  }
+
+  /* ---------- 触手 ---------- */
+  function drawAllTentacles(cx, cy, R, sag) {
+    const NT = 13;
+    const wob = P.wobble;
+    const p = Math.sin(S.phase * Math.PI * 2) + S.manualPulse * 0.85;
+
+    for (let i = 0; i < NT; i++) {
+      const u = (i + 0.5) / NT;
+      const phi = Math.PI + u * Math.PI;
+
+      const ax = cx + R * Math.cos(phi);
+      const ay = cy - sag * Math.sin(phi);
+
+      // 深度：越靠中间越靠前
+      const depth = 0.55 + 0.45 * Math.sin(u * Math.PI);
+
+      const baseLen = (108 + (i % 4) * 24) * (0.85 + 0.4 * depth);
+      const len = baseLen * (1 + 0.13 * p * P.amp);
+
+      const hueBase = 186 + depth * 92;   // 186 → 278
+
+      const segs = 26;
+      const segLen = len / segs;
+
+      for (let s = 0; s <= segs; s++) {
+        const t = s / segs;
+
+        // 波浪
+        const wave = Math.sin(t * 4.4 + S.time * 2.3 + i * 1.08)
+                     * (10 + 9 * wob) * t * (1 - 0.32 * t);
+        // 向外散开
+        const spread = (u - 0.5) * 96 * t * t;
+        // 心跳带动
+        const drag = Math.sin(S.phase * Math.PI * 2 - 0.5) * 8 * t * P.amp;
+
+        const px = ax + spread + wave + drag * 0.6;
+        const py = ay + segLen * s;
+
+        const rad = (10.2 * Math.pow(1 - t, 1.05) + 0.85) * (0.55 + 0.45 * depth);
+        const alpha = (0.78 - t * 0.5) * (0.6 + 0.4 * depth);
+        const light = 50 + t * 20 + depth * 6;
+
+        ctx.beginPath();
+        ctx.arc(px, py, rad, 0, Math.PI * 2);
+        ctx.fillStyle = 'hsla(' + hueBase + ', 82%, ' + light + '%, ' + alpha + ')';
+        ctx.fill();
+      }
+
+      // 触手尖端微光
+      const tipWave = Math.sin(4.4 + S.time * 2.3 + i * 1.08) * (10 + 9 * wob) * 0.68;
+      const tipSpread = (u - 0.5) * 96;
+      const tx = ax + tipSpread + tipWave;
+      const ty = ay + len;
+
+      const tg = ctx.createRadialGradient(tx, ty, 0, tx, ty, 9);
+      tg.addColorStop(0, 'hsla(' + (hueBase + 30) + ', 100%, 85%, 0.42)');
+      tg.addColorStop(1, 'hsla(' + (hueBase + 30) + ', 100%, 75%, 0)');
+      ctx.beginPath();
+      ctx.arc(tx, ty, 9, 0, Math.PI * 2);
+      ctx.fillStyle = tg;
+      ctx.fill();
+    }
+
+    // 中央口腕（更粗更短）
+    for (let k = 0; k < 4; k++) {
+      const u = (k + 0.5) / 4;
+      const phi = Math.PI + u * Math.PI;
+      const ax = cx + R * 0.62 * Math.cos(phi);
+      const ay = cy - sag * 0.55 * Math.sin(phi);
+      const len = 62 * (1 + 0.1 * p * P.amp);
+
+      const segs = 14;
+      for (let s = 0; s <= segs; s++) {
+        const t = s / segs;
+        const wave = Math.sin(t * 3.6 + S.time * 2.0 + k * 1.6) * 7 * t;
+        const px = ax + (u - 0.5) * 40 * t + wave;
+        const py = ay + (len / segs) * s;
+        const rad = 7.5 * (1 - t) + 0.8;
+        ctx.beginPath();
+        ctx.arc(px, py, rad, 0, Math.PI * 2);
+        ctx.fillStyle = 'hsla(200, 88%, ' + (66 + t * 18) + '%, ' + (0.55 - t * 0.34) + ')';
+        ctx.fill();
+      }
+    }
+  }
+
+  /* ---------- 左下角心跳波形 ---------- */
+  function drawWaveTrace() {
+    const bx = 30, by = H - 62, bw = 196, bh = 34;
+    const p = Math.sin(S.phase * Math.PI * 2);
+
+    ctx.save();
+    ctx.globalAlpha = 0.72;
+
+    // 背景框
+    ctx.beginPath();
+    ctx.roundRect ? ctx.roundRect(bx - 10, by - bh / 2 - 12, bw + 20, bh + 26, 10)
+                  : ctx.rect(bx - 10, by - bh / 2 - 12, bw + 20, bh + 26);
+    ctx.fillStyle = 'rgba(8, 26, 42, 0.6)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(90, 200, 240, 0.18)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // 中轴线
+    ctx.beginPath();
+    ctx.moveTo(bx, by);
+    ctx.lineTo(bx + bw, by);
+    ctx.strokeStyle = 'rgba(90, 200, 240, 0.2)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 4]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // 正弦曲线（显示 2 个周期）
+    ctx.beginPath();
+    const N = 140;
+    for (let i = 0; i <= N; i++) {
+      const u = i / N;
+      const x = bx + u * bw;
+      const y = by - Math.sin((u * 2 - S.phase * 2) * Math.PI * 2 + Math.PI / 2) * bh * 0.42;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.strokeStyle = 'rgba(110, 225, 255, 0.85)';
+    ctx.lineWidth = 1.8;
+    ctx.stroke();
+
+    // 当前相位标记
+    const mx = bx + bw;
+    const my = by - Math.sin(Math.PI / 2) * bh * 0.42;
+    // 实际当前点在最右端
+    const curX = bx + bw;
+    const curY = by - Math.sin((2 - S.phase * 2) * Math.PI * 2 + Math.PI / 2) * bh * 0.42;
+
+    ctx.beginPath();
+    ctx.arc(curX, curY, 3.4, 0, Math.PI * 2);
+    ctx.fillStyle = '#ffe08a';
+    ctx.fill();
+
+    // 标签
+    ctx.font = '600 10.5px -apple-system, system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillStyle = 'rgba(120, 200, 230, 0.6)';
+    ctx.fillText('sin(2πft)', bx, by - bh / 2 - 2);
+
+    ctx.restore();
+  }
+
+  /* ============================================================
+     主循环
+  ============================================================ */
+  let lastTime = performance.now();
+  function loop(now) {
+    const dt = Math.min(0.05, (now - lastTime) / 1000);
+    lastTime = now;
+    update(dt);
+    render();
+    requestAnimationFrame(loop);
+  }
+
+  /* ============================================================
+     UI
+  ============================================================ */
+  const fRange = document.getElementById('fRange');
+  const aRange = document.getElementById('aRange');
+  const wRange = document.getElementById('wRange');
+  const fVal = document.getElementById('fVal');
+  const aVal = document.getElementById('aVal');
+  const wVal = document.getElementById('wVal');
+
+  const roPhase = document.getElementById('roPhase');
+  const roPulse = document.getElementById('roPulse');
+  const roBpm = document.getElementById('roBpm');
+  const roDia = document.getElementById('roDia');
+
+  function syncLabels() {
+    fVal.textContent = P.freq.toFixed(2) + ' Hz';
+    aVal.textContent = Math.round(P.amp * 100) + '%';
+    wVal.textContent = Math.round(P.wobble * 100) + '%';
+
+    roBpm.textContent = Math.round(P.freq * 60) + ' 次/分';
+
+    const p = Math.sin(S.phase * Math.PI * 2);
+    const dia = BASE_R * 2 * (1 + 0.165 * p * P.amp);
+    roDia.textContent = Math.round(dia) + ' px';
+  }
+
+  // 读数高频刷新（每帧调用开销小）
+  setInterval(function () {
+    const p = Math.sin(S.phase * Math.PI * 2);
+    roPhase.textContent = (S.phase * 2).toFixed(2) + ' π';
+    roPulse.textContent = (p >= 0 ? '+' : '') + p.toFixed(2);
+    const dia = BASE_R * 2 * (1 + 0.165 * p * P.amp);
+    roDia.textContent = Math.round(dia) + ' px';
+  }, 60);
+
+  fRange.addEventListener('input', function () {
+    P.freq = +this.value / 100;
+    syncLabels();
+    sndBlip(260 + P.freq * 200);
+  });
+
+  aRange.addEventListener('input', function () {
+    P.amp = +this.value / 100;
+    syncLabels();
+    sndBlip(300 + P.amp * 260);
+  });
+
+  wRange.addEventListener('input', function () {
+    P.wobble = +this.value / 100;
+    syncLabels();
+    sndBlip(360 + P.wobble * 220);
+  });
+
+  document.getElementById('btnBeat').addEventListener('click', function () {
+    ensureAudio();
+    S.manualPulse = 1;
+    S.beatFlash = 1;
+    S.rings.push({ x: CX, y: CY, r: BASE_R * 0.55, life: 1 });
+    beatSound(1);
+  });
+
+  document.getElementById('btnReset').addEventListener('click', function () {
+    ensureAudio();
+    P.freq = 0.85;
+    P.amp = 0.75;
+    P.wobble = 0.60;
+    fRange.value = 85;
+    aRange.value = 75;
+    wRange.value = 60;
+    syncLabels();
+    S.phase = 0;
+    S.rings.length = 0;
+    S.beatFlash = 1;
+    beatSound(0.9);
+    tone(523.25, 0.22, 'sine', 0.045, 0.1);
+    tone(659.25, 0.26, 'sine', 0.035, 0.2);
+  });
+
+  /* ---------- 点击画面 ---------- */
+  cv.addEventListener('pointerdown', function (e) {
+    e.preventDefault();
+    ensureAudio();
+
+    const rect = cv.getBoundingClientRect();
+    const mx = (e.clientX - rect.left) / rect.width * W;
+    const my = (e.clientY - rect.top) / rect.height * H;
+
+    S.manualPulse = 1;
+    S.beatFlash = 1;
+    S.rings.push({ x: mx, y: my, r: 10, life: 1 });
+    S.rings.push({ x: CX, y: CY, r: BASE_R * 0.55, life: 1 });
+
+    beatSound(1);
+    bubbleSound();
+  });
+
+  /* ---------- 音效开关 ---------- */
+  const soundToggle = document.getElementById('soundToggle');
+  soundToggle.addEventListener('click', function () {
+    muted = !muted;
+    soundToggle.textContent = muted ? '🔇' : '🔊';
+    if (!muted) {
+      ensureAudio();
+      tone(660, 0.1, 'sine', 0.05);
+    }
+  });
+
+  /* ============================================================
+     启动
+  ============================================================ */
+  resizeCanvas();
+  syncLabels();
+  requestAnimationFrame(loop);
+
+  window.addEventListener('pointerdown', function once() {
+    ensureAudio();
+    window.removeEventListener('pointerdown', once);
+  });
+
+})();
+</script>
+</body>
+</html>
