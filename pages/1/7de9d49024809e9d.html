@@ -1,0 +1,794 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>四维投影 · 超立方体</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body {
+    width:100%; height:100%; overflow:hidden;
+    background:#04050a;
+    font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;
+    color:#b8d0e4; user-select:none; -webkit-tap-highlight-color:transparent;
+    cursor:crosshair;
+  }
+  canvas { position:fixed; inset:0; display:block; touch-action:none; }
+
+  #hud {
+    position:fixed; top:24px; left:28px; z-index:5;
+    pointer-events:none; font-size:12px; line-height:1.75;
+    letter-spacing:0.03em; text-shadow:0 0 22px rgba(0,0,0,0.95);
+  }
+  #hud .title {
+    font-size:18px; font-weight:300; letter-spacing:0.3em;
+    color:#dceaf8; margin-bottom:2px;
+  }
+  #hud .sub {
+    font-size:10px; letter-spacing:0.28em;
+    color:rgba(126,166,210,0.48); margin-bottom:16px;
+  }
+  #hud .row { display:flex; gap:10px; font-variant-numeric:tabular-nums; }
+  #hud .k { color:rgba(116,160,200,0.42); width:46px; }
+  #hud .v { color:#9fd4ea; }
+  #hud .v.hi { color:#ffcf8a; }
+  #hud .v.g { color:#7de0c8; }
+
+  #hud .sec {
+    margin-top:13px; padding-top:12px;
+    border-top:1px solid rgba(98,146,190,0.14);
+  }
+  #hud .sec-title {
+    font-size:9.5px; letter-spacing:0.2em;
+    color:rgba(126,166,210,0.42); margin-bottom:8px;
+  }
+  #hud .track {
+    width:142px; height:3px; border-radius:3px;
+    background:rgba(90,130,175,0.14);
+    margin-bottom:10px; position:relative; overflow:hidden;
+  }
+  #hud .track .fill {
+    position:absolute; inset:0 auto 0 0;
+    height:100%; border-radius:3px;
+    background:linear-gradient(90deg,#2f6ba8,#6fe0d8,#ffe2b0);
+    box-shadow:0 0 12px rgba(110,190,230,0.5);
+    transition:width 0.2s ease;
+  }
+
+  .btn {
+    position:fixed; z-index:6;
+    padding:11px 21px;
+    background:rgba(13,22,34,0.72);
+    border:1px solid rgba(102,170,215,0.26);
+    border-radius:999px;
+    color:#96c6e4; font-size:12.5px; letter-spacing:0.14em;
+    font-family:inherit; cursor:pointer;
+    backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
+    transition:all 0.3s cubic-bezier(0.4,0,0.2,1);
+  }
+  .btn:hover {
+    background:rgba(28,56,78,0.8);
+    border-color:rgba(140,215,255,0.6);
+    color:#d6f4ff;
+  }
+  .btn.on {
+    background:rgba(46,98,130,0.55);
+    border-color:rgba(160,235,255,0.75);
+    color:#e2f9ff;
+    box-shadow:0 0 26px rgba(90,195,255,0.24);
+  }
+  #btn-reset { right:26px; bottom:26px; }
+
+  #hint {
+    position:fixed; bottom:32px; left:28px; z-index:5;
+    font-size:10.5px; letter-spacing:0.1em;
+    color:rgba(120,166,200,0.4);
+    pointer-events:none; transition:opacity 0.9s;
+  }
+  #hint.hide { opacity:0; }
+
+  @media (max-width:640px) {
+    #hud { top:14px; left:14px; font-size:10.5px; }
+    #hud .title { font-size:14px; letter-spacing:0.22em; }
+    #hud .track { width:100px; }
+    .btn { padding:9px 14px; font-size:11px; }
+    #btn-reset { right:12px; bottom:16px; }
+    #hint { left:14px; bottom:20px; font-size:9.5px; }
+  }
+</style>
+</head>
+<body>
+
+<canvas id="cv"></canvas>
+
+<div id="hud">
+  <div class="title">四维投影</div>
+  <div class="sub">TESSERACT · 4D</div>
+  <div class="row"><span class="k">方位</span><span class="v" id="v-yaw">0.0°</span></div>
+  <div class="row"><span class="k">仰角</span><span class="v" id="v-pitch">0.0°</span></div>
+  <div class="row"><span class="k">距离</span><span class="v" id="v-dist">6.0</span></div>
+  <div class="row"><span class="k">旋转</span><span class="v g" id="v-spin">1.00×</span></div>
+  <div class="sec">
+    <div class="sec-title">四维深度 w</div>
+    <div class="track"><div class="fill" id="v-fill"></div></div>
+    <div class="sec-title" id="v-note">顶点 0 · 待奏</div>
+  </div>
+</div>
+
+<button class="btn" id="btn-reset">重置视角</button>
+<div id="hint">移动鼠标 · 观察四维投影的形变 · 滚轮缩放</div>
+
+<script>
+(() => {
+'use strict';
+
+// ============================================================
+//  画布
+// ============================================================
+const canvas = document.getElementById('cv');
+const ctx = canvas.getContext('2d');
+
+let W = 0, H = 0, DPR = 1, cx = 0, cy = 0;
+const clamp = (v,a,b) => v < a ? a : v > b ? b : v;
+const lerp  = (a,b,t) => a + (b-a)*t;
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width  = Math.round(W * DPR);
+  canvas.height = Math.round(H * DPR);
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  cx = W * 0.5;
+  cy = H * 0.5;
+}
+
+// ============================================================
+//  超立方体几何
+// ============================================================
+const V4 = [];
+for (let i = 0; i < 16; i++) {
+  V4.push({
+    x: (i & 1) ? 1 : -1,
+    y: (i & 2) ? 1 : -1,
+    z: (i & 4) ? 1 : -1,
+    w: (i & 8) ? 1 : -1,
+  });
+}
+
+// 32 条棱：恰好一个坐标不同的顶点对
+const EDGES = [];
+for (let i = 0; i < 16; i++) {
+  for (let j = i + 1; j < 16; j++) {
+    const d = i ^ j;
+    if ((d & (d - 1)) === 0) EDGES.push([i, j]);
+  }
+}
+
+// 24 个四边形面
+const FACES = [];
+{
+  const qOff = [[-1,-1],[1,-1],[1,1],[-1,1]];
+  for (let a = 0; a < 4; a++) {
+    for (let b = a + 1; b < 4; b++) {
+      const free  = [a, b];
+      const fixed = [0,1,2,3].filter(k => k !== a && k !== b);
+      for (let f = 0; f < 4; f++) {
+        const fa = (f & 1) ? 1 : -1;
+        const fb = (f & 2) ? 1 : -1;
+        const quad = [];
+        for (let q = 0; q < 4; q++) {
+          const coord = [0,0,0,0];
+          coord[free[0]] = qOff[q][0];
+          coord[free[1]] = qOff[q][1];
+          coord[fixed[0]] = fa;
+          coord[fixed[1]] = fb;
+          let idx = 0;
+          if (coord[0] > 0) idx |= 1;
+          if (coord[1] > 0) idx |= 2;
+          if (coord[2] > 0) idx |= 4;
+          if (coord[3] > 0) idx |= 8;
+          quad.push(idx);
+        }
+        FACES.push(quad);
+      }
+    }
+  }
+}
+
+// ============================================================
+//  四维旋转（六个平面）
+// ============================================================
+function rotate4D(p, a) {
+  let x = p.x, y = p.y, z = p.z, w = p.w;
+
+  // XY 平面
+  let c = Math.cos(a.xy), s = Math.sin(a.xy);
+  let nx = x * c - y * s;
+  let ny = x * s + y * c;
+  x = nx; y = ny;
+
+  // XZ 平面
+  c = Math.cos(a.xz); s = Math.sin(a.xz);
+  nx = x * c - z * s;
+  let nz = x * s + z * c;
+  x = nx; z = nz;
+
+  // XW 平面
+  c = Math.cos(a.xw); s = Math.sin(a.xw);
+  nx = x * c - w * s;
+  let nw = x * s + w * c;
+  x = nx; w = nw;
+
+  // YZ 平面
+  c = Math.cos(a.yz); s = Math.sin(a.yz);
+  ny = y * c - z * s;
+  nz = y * s + z * c;
+  y = ny; z = nz;
+
+  // YW 平面
+  c = Math.cos(a.yw); s = Math.sin(a.yw);
+  ny = y * c - w * s;
+  nw = y * s + w * c;
+  y = ny; w = nw;
+
+  // ZW 平面
+  c = Math.cos(a.zw); s = Math.sin(a.zw);
+  nz = z * c - w * s;
+  nw = z * s + w * c;
+  z = nz; w = nw;
+
+  return { x, y, z, w };
+}
+
+// ============================================================
+//  颜色：w 深度 → 冷青到暖金
+// ============================================================
+function colorAt(w) {
+  const f = clamp((w + 1.6) / 3.2, 0, 1);
+  const r = Math.round(lerp( 88, 255, f));
+  const g = Math.round(lerp(206, 198, f));
+  const b = Math.round(lerp(255, 110, f));
+  return [r, g, b];
+}
+
+// ============================================================
+//  音频
+// ============================================================
+const audio = { ctx:null, bus:null, drone:null, drone2:null, droneGain:null, droneFilter:null, ready:false };
+
+function makeIR(actx, dur, decay) {
+  const rate = actx.sampleRate;
+  const len = Math.floor(rate * dur);
+  const buf = actx.createBuffer(2, len, rate);
+  for (let ch = 0; ch < 2; ch++) {
+    const d = buf.getChannelData(ch);
+    for (let i = 0; i < len; i++) {
+      const t = i / len;
+      d[i] = (Math.random()*2 - 1) * Math.pow(1 - t, decay);
+    }
+  }
+  return buf;
+}
+
+function initAudio() {
+  if (audio.ctx) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  const actx = new AC();
+  audio.ctx = actx;
+
+  const master = actx.createGain();
+  master.gain.value = 0.52;
+  master.connect(actx.destination);
+
+  const conv = actx.createConvolver();
+  conv.buffer = makeIR(actx, 4.2, 2.6);
+  const wet = actx.createGain();
+  wet.gain.value = 0.58;
+  conv.connect(wet); wet.connect(master);
+
+  const bus = actx.createGain();
+  bus.gain.value = 1;
+  bus.connect(master);
+  bus.connect(conv);
+  audio.bus = bus;
+
+  // 持续低音
+  const drone = actx.createOscillator();
+  drone.type = 'sine';
+  drone.frequency.value = 55;
+
+  const drone2 = actx.createOscillator();
+  drone2.type = 'sine';
+  drone2.frequency.value = 82.41;
+  drone2.detune.value = 6;
+
+  const dg = actx.createGain();
+  dg.gain.value = 0.028;
+
+  const lp = actx.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.frequency.value = 420;
+  lp.Q.value = 0.7;
+
+  drone.connect(dg);
+  drone2.connect(dg);
+  dg.connect(lp);
+  lp.connect(bus);
+
+  drone.start();
+  drone2.start();
+
+  audio.drone = dg;
+  audio.droneFilter = lp;
+  audio.ready = true;
+}
+
+function ensureAudio() {
+  initAudio();
+  if (audio.ctx && audio.ctx.state === 'suspended') audio.ctx.resume();
+}
+
+/** 钟磬音色 */
+function playBell(freq, vel, dur) {
+  ensureAudio();
+  if (!audio.ready) return;
+  const actx = audio.ctx;
+  const t0 = actx.currentTime;
+  const v = clamp(vel, 0.04, 1);
+  const D = dur || 3.0;
+
+  const lp = actx.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.frequency.value = clamp(freq * 9 + 1800, 900, 12000);
+  lp.Q.value = 0.4;
+  lp.connect(audio.bus);
+
+  const partials = [
+    { m: 1.000, g: 1.00, d: D },
+    { m: 2.006, g: 0.42, d: D * 0.78 },
+    { m: 3.014, g: 0.19, d: D * 0.55 },
+    { m: 4.028, g: 0.088, d: D * 0.38 },
+    { m: 5.046, g: 0.040, d: D * 0.26 },
+    { m: 6.070, g: 0.018, d: D * 0.17 },
+  ];
+
+  for (const p of partials) {
+    const o = actx.createOscillator();
+    o.type = 'sine';
+    o.frequency.value = freq * p.m;
+    o.detune.value = (Math.random() - 0.5) * 6;
+
+    const g = actx.createGain();
+    const peak = 0.10 * v * p.g;
+    g.gain.setValueAtTime(0, t0);
+    g.gain.linearRampToValueAtTime(peak, t0 + 0.007);
+    g.gain.exponentialRampToValueAtTime(0.00005, t0 + p.d);
+
+    o.connect(g); g.connect(lp);
+    o.start(t0); o.stop(t0 + p.d + 0.12);
+  }
+
+  // 击弦瞬态
+  const nlen = Math.floor(actx.sampleRate * 0.05);
+  const nbuf = actx.createBuffer(1, nlen, actx.sampleRate);
+  const nd = nbuf.getChannelData(0);
+  for (let i = 0; i < nlen; i++) {
+    nd[i] = (Math.random()*2 - 1) * Math.pow(1 - i / nlen, 3.5);
+  }
+  const ns = actx.createBufferSource();
+  ns.buffer = nbuf;
+
+  const bp = actx.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.frequency.value = clamp(freq * 5, 600, 6000);
+  bp.Q.value = 1.4;
+
+  const ng = actx.createGain();
+  ng.gain.value = 0.055 * v;
+
+  ns.connect(bp); bp.connect(ng); ng.connect(audio.bus);
+  ns.start(t0);
+}
+
+// 顶点音高（五声音阶）
+const PENTA = [0, 2, 4, 7, 9];
+function vertexFreq(i) {
+  const oct = Math.floor(i / 5) % 3;
+  const st  = PENTA[i % 5];
+  const midi = 52 + st + oct * 12;
+  return 440 * Math.pow(2, (midi - 69) / 12);
+}
+
+// ============================================================
+//  相机与交互
+// ============================================================
+const cam = {
+  yaw: 0, pitch: 0,
+  targetYaw: 0, targetPitch: 0,
+  dist: 6.0,
+  targetDist: 6.0,
+  spinBoost: 1,
+  targetSpin: 1,
+};
+
+const pointer = { x: 0.5, y: 0.5, hasMoved: false };
+
+canvas.addEventListener('pointermove', e => {
+  const rect = canvas.getBoundingClientRect();
+  pointer.x = clamp((e.clientX - rect.left) / W, 0, 1);
+  pointer.y = clamp((e.clientY - rect.top) / H, 0, 1);
+  if (!pointer.hasMoved) {
+    pointer.hasMoved = true;
+    document.getElementById('hint').classList.add('hide');
+  }
+});
+
+canvas.addEventListener('pointerdown', () => {
+  ensureAudio();
+  cam.targetSpin = 3.2;
+  playBell(vertexFreq(8), 0.55, 2.6);
+});
+
+canvas.addEventListener('pointerup', () => {
+  cam.targetSpin = 1;
+});
+
+canvas.addEventListener('pointercancel', () => {
+  cam.targetSpin = 1;
+});
+
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  ensureAudio();
+  cam.targetDist = clamp(cam.targetDist * Math.exp(e.deltaY * 0.0011), 3.6, 12);
+}, { passive: false });
+
+// 双指缩放
+let pinchDist = 0;
+canvas.addEventListener('touchstart', e => {
+  if (e.touches.length === 2) {
+    const [a, b] = e.touches;
+    pinchDist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+  }
+}, { passive: true });
+
+canvas.addEventListener('touchmove', e => {
+  if (e.touches.length === 2 && pinchDist > 0) {
+    e.preventDefault();
+    const [a, b] = e.touches;
+    const d = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+    cam.targetDist = clamp(cam.targetDist * (pinchDist / (d || 1)), 3.6, 12);
+    pinchDist = d;
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchend', () => { pinchDist = 0; });
+
+document.getElementById('btn-reset').addEventListener('click', () => {
+  cam.targetYaw = 0;
+  cam.targetPitch = 0;
+  cam.targetDist = 6.0;
+  cam.targetSpin = 1;
+  pointer.hasMoved = false;
+  document.getElementById('hint').classList.remove('hide');
+});
+
+window.addEventListener('keydown', e => {
+  if (e.key === 'r' || e.key === 'R') {
+    document.getElementById('btn-reset').click();
+  }
+});
+
+window.addEventListener('resize', resize);
+
+// ============================================================
+//  投影
+// ============================================================
+const D4 = 5.5;
+const CAM_DIST_MIN = 3.6;
+
+let projected = new Array(16);
+
+function projectAll(t) {
+  // 四维旋转角
+  const spin = cam.spinBoost;
+  const angles = {
+    xy: t * 0.28 * spin,
+    xz: t * 0.17 * spin,
+    xw: t * 0.21 * spin,
+    yz: t * 0.13 * spin,
+    yw: t * 0.19 * spin,
+    zw: t * 0.11 * spin,
+  };
+
+  const focal = Math.min(W, H) * 0.92;
+
+  for (let i = 0; i < 16; i++) {
+    const r4 = rotate4D(V4[i], angles);
+
+    // 四维 → 三维透视
+    const k4 = D4 / Math.max(D4 - r4.w, 0.4);
+    let x3 = r4.x * k4;
+    let y3 = r4.y * k4;
+    let z3 = r4.z * k4;
+
+    // 相机轨道：先绕 Y 偏航，再绕 X 俯仰
+    const cYaw = Math.cos(cam.yaw), sYaw = Math.sin(cam.yaw);
+    let xr = x3 * cYaw + z3 * sYaw;
+    let zr = -x3 * sYaw + z3 * cYaw;
+
+    const cPit = Math.cos(cam.pitch), sPit = Math.sin(cam.pitch);
+    let yr = y3 * cPit - zr * sPit;
+    let zr2 = y3 * sPit + zr * cPit;
+
+    // 三维 → 二维透视
+    const dz = Math.max(cam.dist - zr2, 0.55);
+    const k2 = focal / dz;
+
+    projected[i] = {
+      sx: cx + xr * k2,
+      sy: cy - yr * k2,
+      z: zr2,
+      k4,
+      k2,
+      w: r4.w,
+      screenR: 4.5 * k4 * (k2 / (focal / cam.dist)),
+    };
+  }
+}
+
+// ============================================================
+//  渲染
+// ============================================================
+let bgGrad = null, bgKey = '';
+
+function drawBackground() {
+  const key = W + 'x' + H;
+  if (key !== bgKey) {
+    bgGrad = ctx.createRadialGradient(
+      W * 0.5, H * 0.48, 0,
+      W * 0.5, H * 0.5, Math.max(W, H) * 0.72
+    );
+    bgGrad.addColorStop(0,    '#0b1220');
+    bgGrad.addColorStop(0.45, '#060a12');
+    bgGrad.addColorStop(1,    '#04050a');
+    bgKey = key;
+  }
+  ctx.fillStyle = bgGrad;
+  ctx.fillRect(0, 0, W, H);
+
+  // 背景极坐标网格（当代装置感）
+  ctx.save();
+  ctx.strokeStyle = 'rgba(110, 170, 220, 0.032)';
+  ctx.lineWidth = 1;
+  const rStep = Math.min(W, H) * 0.075;
+  for (let i = 1; i <= 9; i++) {
+    ctx.beginPath();
+    ctx.arc(cx, cy, i * rStep, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  for (let i = 0; i < 24; i++) {
+    const a = i * Math.PI / 12;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + Math.cos(a) * rStep * 9, cy + Math.sin(a) * rStep * 9);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawFaces() {
+  // 按平均深度排序
+  const list = [];
+  for (const f of FACES) {
+    const a = projected[f[0]], b = projected[f[1]];
+    const c = projected[f[2]], d = projected[f[3]];
+    list.push({
+      pts: [a, b, c, d],
+      z: (a.z + b.z + c.z + d.z) * 0.25,
+      w: (a.w + b.w + c.w + d.w) * 0.25,
+    });
+  }
+  list.sort((p, q) => p.z - q.z);
+
+  ctx.save();
+  for (const f of list) {
+    const [r, g, b] = colorAt(f.w);
+    const depth = clamp((f.z + 2) / 4, 0, 1);
+
+    ctx.beginPath();
+    ctx.moveTo(f.pts[0].sx, f.pts[0].sy);
+    for (let i = 1; i < 4; i++) ctx.lineTo(f.pts[i].sx, f.pts[i].sy);
+    ctx.closePath();
+
+    ctx.fillStyle = `rgba(${r},${g},${b},${0.016 + depth * 0.030})`;
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawEdges() {
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap = 'round';
+
+  for (const [i, j] of EDGES) {
+    const a = projected[i], b = projected[j];
+
+    const wAvg = (a.w + b.w) * 0.5;
+    const [cr, cg, cb] = colorAt(wAvg);
+
+    const zAvg = (a.z + b.z) * 0.5;
+    const depth = clamp((zAvg + 2) / 4, 0, 1);
+
+    // 线宽随深度变化
+    const lw = 0.7 + depth * 1.9;
+
+    // 亮度：近处亮，远处淡
+    const alpha = 0.12 + depth * 0.52;
+
+    ctx.beginPath();
+    ctx.moveTo(a.sx, a.sy);
+    ctx.lineTo(b.sx, b.sy);
+    ctx.strokeStyle = `rgba(${cr},${cg},${cb},${alpha})`;
+    ctx.lineWidth = lw;
+
+    if (depth > 0.72) {
+      ctx.shadowColor = `rgba(${cr},${cg},${cb},0.7)`;
+      ctx.shadowBlur = 10 * (depth - 0.72) / 0.28;
+    } else {
+      ctx.shadowBlur = 0;
+    }
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+  }
+
+  ctx.restore();
+}
+
+function drawVertices(t) {
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+
+  for (let i = 0; i < 16; i++) {
+    const p = projected[i];
+    const [r, g, b] = colorAt(p.w);
+
+    const depth = clamp((p.z + 2) / 4, 0, 1);
+    const radius = Math.max(2.2, p.screenR * (0.55 + depth * 0.55));
+
+    // 光晕
+    const haloR = radius * 4.5;
+    const halo = ctx.createRadialGradient(p.sx, p.sy, 0, p.sx, p.sy, haloR);
+    halo.addColorStop(0,    `rgba(${r},${g},${b},${0.28 + depth * 0.32})`);
+    halo.addColorStop(0.42, `rgba(${r},${g},${b},${0.08 + depth * 0.10})`);
+    halo.addColorStop(1,    `rgba(${r},${g},${b},0)`);
+    ctx.fillStyle = halo;
+    ctx.beginPath();
+    ctx.arc(p.sx, p.sy, haloR, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 核心点
+    ctx.beginPath();
+    ctx.arc(p.sx, p.sy, radius, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(${Math.min(255,r+60)},${Math.min(255,g+40)},${Math.min(255,b+20)},${0.65 + depth * 0.32})`;
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+// ============================================================
+//  HUD
+// ============================================================
+const elYaw   = document.getElementById('v-yaw');
+const elPitch = document.getElementById('v-pitch');
+const elDist  = document.getElementById('v-dist');
+const elSpin  = document.getElementById('v-spin');
+const elFill  = document.getElementById('v-fill');
+const elNote  = document.getElementById('v-note');
+
+let hudT = 0;
+function updateHUD(dt) {
+  hudT += dt;
+  if (hudT < 0.09) return;
+  hudT = 0;
+
+  elYaw.textContent   = (cam.yaw * 180 / Math.PI).toFixed(1) + '°';
+  elPitch.textContent = (cam.pitch * 180 / Math.PI).toFixed(1) + '°';
+  elDist.textContent  = cam.dist.toFixed(2);
+  elSpin.textContent  = cam.spinBoost.toFixed(2) + '×';
+
+  // 当前最靠前顶点的 w
+  let maxZ = -Infinity, maxI = -1;
+  for (let i = 0; i < 16; i++) {
+    if (projected[i].z > maxZ) { maxZ = projected[i].z; maxI = i; }
+  }
+  if (maxI >= 0) {
+    const w = projected[maxI].w;
+    const f = clamp((w + 1.6) / 3.2, 0, 1);
+    elFill.style.width = (f * 100).toFixed(1) + '%';
+  }
+}
+
+// ============================================================
+//  音乐触发
+// ============================================================
+let frontVertex = -1;
+let noteCooldown = 0;
+
+// ============================================================
+//  主循环
+// ============================================================
+let lastT = performance.now() / 1000;
+
+function frame(nowMs) {
+  const t = nowMs / 1000;
+  const dt = Math.min(t - lastT, 0.05);
+  lastT = t;
+
+  // ── 相机平滑 ──
+  if (pointer.hasMoved) {
+    cam.targetYaw   = (pointer.x - 0.5) * 1.8;
+    cam.targetPitch = (pointer.y - 0.5) * 1.2;
+  }
+  cam.yaw   += (cam.targetYaw   - cam.yaw)   * Math.min(1, dt * 3.2);
+  cam.pitch += (cam.targetPitch - cam.pitch) * Math.min(1, dt * 3.2);
+  cam.dist  += (cam.targetDist  - cam.dist)  * Math.min(1, dt * 3.5);
+  cam.spinBoost += (cam.targetSpin - cam.spinBoost) * Math.min(1, dt * 2.8);
+
+  // 环境音随旋转变化
+  if (audio.ready) {
+    const now = audio.ctx.currentTime;
+    audio.droneFilter.frequency.setTargetAtTime(
+      380 + cam.spinBoost * 260 + Math.abs(cam.yaw) * 240,
+      now, 0.4
+    );
+  }
+
+  // ── 投影 ──
+  projectAll(t);
+
+  // ── 找到最靠前的顶点 ──
+  let maxZ = -Infinity, maxI = -1;
+  for (let i = 0; i < 16; i++) {
+    if (projected[i].z > maxZ) { maxZ = projected[i].z; maxI = i; }
+  }
+
+  noteCooldown -= dt;
+  if (maxI >= 0 && maxI !== frontVertex && maxZ > 1.15 && noteCooldown <= 0) {
+    frontVertex = maxI;
+    noteCooldown = 0.28;
+    playBell(vertexFreq(maxI), 0.28 + clamp(maxZ / 3, 0, 0.34), 2.4);
+
+    if (elNote) {
+      elNote.textContent = `顶点 ${maxI} · ${vertexFreq(maxI).toFixed(0)} Hz`;
+    }
+  }
+
+  // ── 绘制 ──
+  drawBackground();
+  drawFaces();
+  drawEdges();
+  drawVertices(t);
+
+  updateHUD(dt);
+
+  requestAnimationFrame(frame);
+}
+
+// ============================================================
+//  启动
+// ============================================================
+resize();
+projectAll(0);
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

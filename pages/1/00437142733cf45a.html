@@ -1,0 +1,913 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>斐波那契 · 梅兰竹菊</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{width:100%;height:100%;overflow:hidden;background:#efe9dd;}
+  canvas{display:block;width:100%;height:100%;cursor:pointer;touch-action:none;}
+
+  .panel{
+    position:fixed;left:26px;bottom:24px;
+    font-family:"Songti SC","STSong","SimSun",serif;
+    color:#4a4438;user-select:none;pointer-events:none;
+    letter-spacing:.08em;
+  }
+  .panel h1{
+    font-size:16px;font-weight:600;letter-spacing:.30em;
+    color:#2e2921;margin-bottom:7px;
+  }
+  .panel .formula{
+    font-family:"Times New Roman",Georgia,serif;
+    font-size:13px;color:#8a8172;letter-spacing:.05em;
+    margin-bottom:9px;
+  }
+  .panel .formula i{color:#a05a3c;font-style:italic;}
+  .panel .hint{
+    font-size:11.5px;color:#9a917f;line-height:1.9;opacity:.9;
+  }
+  .panel .hint b{color:#7a7263;font-weight:500;}
+
+  .sound-btn{
+    position:fixed;right:22px;top:20px;
+    width:42px;height:42px;border-radius:50%;
+    border:1px solid rgba(90,84,72,.28);
+    background:rgba(252,250,244,.55);
+    backdrop-filter:blur(6px);
+    color:#5c5648;font-size:17px;line-height:1;
+    cursor:pointer;user-select:none;
+    display:flex;align-items:center;justify-content:center;
+    transition:all .28s ease;
+    font-family:"Songti SC",serif;
+  }
+  .sound-btn:hover{background:rgba(255,253,248,.9);transform:scale(1.06);}
+  .sound-btn.off{opacity:.4;}
+
+  .fade-in{animation:fi 1.8s ease both;}
+  @keyframes fi{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:none;}}
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+
+<div class="panel fade-in">
+  <h1>斐波那契 · 四君子</h1>
+  <p class="formula">
+    <i>F</i><sub>n</sub> = 1, 1, 2, 3, 5, 8…
+  </p>
+  <p class="hint">
+    <b>移动</b> · 花木微光<br>
+    <b>点击</b> · 依次生长一、一、二、三、五、八
+  </p>
+</div>
+
+<button class="sound-btn" id="sndBtn" title="声音开关">♪</button>
+
+<script>
+(() => {
+"use strict";
+
+/* ============================================================
+   画布
+   ============================================================ */
+const cv  = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+
+let W = 0, H = 0, DPR = 1;
+let paperCanvas = null;
+
+let time = 0, prevT = performance.now();
+
+/* ============================================================
+   斐波那契数列
+   ============================================================ */
+const FIB = [1, 1, 2, 3, 5, 8];
+
+/* 五声音阶比例 */
+const RATIOS = [1, 9/8, 5/4, 3/2, 5/3, 2];
+
+/* ============================================================
+   音效 —— 古琴拨弦 + 回响
+   ============================================================ */
+let actx = null, master = null, delayNode = null;
+let audioOn = true;
+let lastNoteTime = 0;
+
+function initAudio(){
+  if (actx) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  actx = new AC();
+
+  master = actx.createGain();
+  master.gain.setValueAtTime(0, actx.currentTime);
+  master.gain.linearRampToValueAtTime(audioOn ? 0.85 : 0, actx.currentTime + 1.2);
+  master.connect(actx.destination);
+
+  const delay = actx.createDelay(2.5);
+  delay.delayTime.value = 0.29;
+
+  const fb = actx.createGain();
+  fb.gain.value = 0.40;
+
+  const damp = actx.createBiquadFilter();
+  damp.type = 'lowpass';
+  damp.frequency.value = 2000;
+
+  const wet = actx.createGain();
+  wet.gain.value = 0.34;
+
+  delay.connect(damp);
+  damp.connect(fb);
+  fb.connect(delay);
+  damp.connect(wet);
+  wet.connect(master);
+
+  delayNode = delay;
+}
+
+function resumeAudio(){
+  if (!actx) initAudio();
+  if (actx && actx.state === 'suspended') actx.resume();
+}
+
+function playNote(freq, vel = 0.22, dur = 2.8){
+  if (!actx || !audioOn) return;
+  const now = actx.currentTime;
+  if (now - lastNoteTime < 0.04) return;
+  lastNoteTime = now;
+
+  const out = actx.createGain();
+  out.gain.value = vel;
+
+  const filt = actx.createBiquadFilter();
+  filt.type = 'lowpass';
+  filt.Q.value = 0.65;
+  filt.frequency.setValueAtTime(5600, now);
+  filt.frequency.exponentialRampToValueAtTime(760, now + dur * 0.9);
+
+  const env = actx.createGain();
+  env.gain.setValueAtTime(0.0001, now);
+  env.gain.exponentialRampToValueAtTime(1, now + 0.008);
+  env.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+
+  filt.connect(env);
+  env.connect(out);
+  out.connect(master);
+  if (delayNode) out.connect(delayNode);
+
+  const partials = [
+    [1.00, 1.00], [2.00, 0.42], [3.01, 0.17], [4.20, 0.085],
+    [5.40, 0.042], [6.80, 0.021], [8.10, 0.010]
+  ];
+
+  for (const [m, a] of partials){
+    const o = actx.createOscillator();
+    o.type = 'sine';
+    o.frequency.value = freq * m;
+    o.detune.value = (Math.random() - 0.5) * 6;
+
+    const og = actx.createGain();
+    og.gain.value = a;
+
+    o.connect(og);
+    og.connect(filt);
+    o.start(now);
+    o.stop(now + dur + 0.25);
+  }
+}
+
+/* ============================================================
+   宣纸纹理
+   ============================================================ */
+function makePaper(){
+  paperCanvas = document.createElement('canvas');
+  paperCanvas.width  = Math.max(1, Math.round(W));
+  paperCanvas.height = Math.max(1, Math.round(H));
+  const p = paperCanvas.getContext('2d');
+
+  const g = p.createRadialGradient(
+    W * 0.5, H * 0.44, Math.min(W, H) * 0.05,
+    W * 0.5, H * 0.52, Math.max(W, H) * 0.92
+  );
+  g.addColorStop(0.00, '#fdfcf8');
+  g.addColorStop(0.55, '#f7f2e8');
+  g.addColorStop(1.00, '#e8e0d0');
+  p.fillStyle = g;
+  p.fillRect(0, 0, W, H);
+
+  const n = Math.floor((W * H) / 850);
+  for (let i = 0; i < n; i++){
+    p.fillStyle = `rgba(120,108,86,${Math.random() * 0.034})`;
+    p.fillRect(
+      Math.random() * W,
+      Math.random() * H,
+      Math.random() * 2 + 0.4,
+      Math.random() * 1.2 + 0.3
+    );
+  }
+
+  for (let i = 0; i < 12; i++){
+    const x = Math.random() * W;
+    const y = Math.random() * H;
+    const r = 90 + Math.random() * 260;
+    const rg = p.createRadialGradient(x, y, 0, x, y, r);
+    rg.addColorStop(0, `rgba(148,138,116,${0.016 + Math.random() * 0.022})`);
+    rg.addColorStop(1, 'rgba(148,138,116,0)');
+    p.fillStyle = rg;
+    p.beginPath();
+    p.arc(x, y, r, 0, Math.PI * 2);
+    p.fill();
+  }
+
+  const v = p.createRadialGradient(
+    W * 0.5, H * 0.5, Math.min(W, H) * 0.34,
+    W * 0.5, H * 0.5, Math.max(W, H) * 0.82
+  );
+  v.addColorStop(0, 'rgba(0,0,0,0)');
+  v.addColorStop(1, 'rgba(92,80,60,0.14)');
+  p.fillStyle = v;
+  p.fillRect(0, 0, W, H);
+}
+
+/* ============================================================
+   确定性随机（每株植物用固定种子）
+   ============================================================ */
+function makeRng(seed){
+  let s = seed >>> 0;
+  return () => {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+}
+
+function hashCode(str){
+  let h = 0;
+  for (let i = 0; i < str.length; i++){
+    h = ((h << 5) - h + str.charCodeAt(i)) | 0;
+  }
+  return h >>> 0;
+}
+
+/* ============================================================
+   缓动
+   ============================================================ */
+function easeOutCubic(x){ return 1 - Math.pow(1 - x, 3); }
+function easeOutBack(x){
+  const c1 = 1.70158, c3 = c1 + 1;
+  return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
+}
+
+/* ============================================================
+   植物类
+   ============================================================ */
+class Plant {
+  constructor(type, name, x, y, size, baseFreq){
+    this.type     = type;
+    this.name     = name;
+    this.x        = x;
+    this.y        = y;
+    this.size     = size;
+    this.baseFreq = baseFreq;
+
+    this.level    = 0;
+    this.growT    = 1;          // 生长进度
+    this.hover    = 0;
+    this.hoverTgt = 0;
+    this.pulse    = 0;          // 点击脉冲
+
+    // 预生成随机数
+    const rng = makeRng(hashCode(type + name));
+    this.rand = [];
+    for (let i = 0; i < 40; i++) this.rand.push(rng());
+  }
+
+  /* 当前斐波那契数 */
+  get count(){ return FIB[this.level]; }
+
+  /* 某个元素的生长进度（错开出现） */
+  elemProgress(i, N){
+    if (N === 1) {
+      return easeOutBack(Math.min(1, this.growT * 1.4));
+    }
+    const delayPer = 0.06;
+    const start = i * delayPer;
+    const raw = (this.growT * (delayPer * (N - 1) + 0.45) - start) / 0.45;
+    return easeOutBack(Math.max(0, Math.min(1, raw)));
+  }
+
+  /* 点击 */
+  click(){
+    this.level = (this.level + 1) % FIB.length;
+    this.growT = 0;
+    this.pulse = 1;
+
+    // 音高
+    const ratio = RATIOS[this.level % RATIOS.length];
+    playNote(this.baseFreq * ratio, 0.24, 2.9);
+
+    // 泛音尾
+    setTimeout(() => {
+      playNote(this.baseFreq * ratio * 2, 0.075, 2.0);
+    }, 130);
+
+    return this.level;
+  }
+
+  /* 悬停检测 */
+  contains(mx, my){
+    const r = this.size * 1.15;
+    const dx = mx - this.x;
+    const dy = my - this.y;
+    return dx*dx + dy*dy < r*r;
+  }
+
+  /* 更新 */
+  update(dt){
+    if (this.growT < 1){
+      this.growT = Math.min(1, this.growT + dt / 0.95);
+    }
+    this.hover += (this.hoverTgt - this.hover) * Math.min(1, dt * 8);
+    this.pulse *= Math.pow(0.12, dt);
+  }
+}
+
+/* ============================================================
+   创建四君子
+   ============================================================ */
+let plants = [];
+
+function buildPlants(){
+  const size = Math.min(W, H) * 0.155;
+
+  plants = [
+    new Plant('mei', '梅', W * 0.27, H * 0.32, size, 523.25),
+    new Plant('lan', '兰', W * 0.73, H * 0.32, size, 440.00),
+    new Plant('zhu', '竹', W * 0.27, H * 0.70, size, 392.00),
+    new Plant('ju',  '菊', W * 0.73, H * 0.70, size, 329.63)
+  ];
+}
+
+/* ============================================================
+   绘制：梅 —— 枝干 + 五瓣梅花
+   ============================================================ */
+function drawMei(p, t){
+  const S = p.size;
+  const N = p.count;
+
+  // —— 主枝（二次贝塞尔）——
+  const p0 = { x: 0,        y:  S * 0.50 };
+  const p1 = { x: -S * 0.12, y:  S * 0.05 };
+  const p2 = { x:  S * 0.06, y: -S * 0.62 };
+
+  ctx.beginPath();
+  ctx.moveTo(p0.x, p0.y);
+  ctx.quadraticCurveTo(p1.x, p1.y, p2.x, p2.y);
+  ctx.strokeStyle = 'rgba(48,42,38,0.78)';
+  ctx.lineWidth = S * 0.045;
+  ctx.lineCap = 'round';
+  ctx.stroke();
+
+  // 副枝
+  ctx.beginPath();
+  ctx.moveTo(p0.x + S*0.02, p0.y - S*0.08);
+  ctx.quadraticCurveTo(S*0.18, S*0.02, S*0.24, -S*0.18);
+  ctx.strokeStyle = 'rgba(48,42,38,0.55)';
+  ctx.lineWidth = S * 0.028;
+  ctx.stroke();
+
+  // 计算枝条上一点
+  const bez = (u) => {
+    const mt = 1 - u;
+    return {
+      x: mt*mt*p0.x + 2*mt*u*p1.x + u*u*p2.x,
+      y: mt*mt*p0.y + 2*mt*u*p1.y + u*u*p2.y
+    };
+  };
+
+  // —— 梅花 ——
+  for (let i = 0; i < N; i++){
+    const ep = p.elemProgress(i, N);
+    if (ep < 0.01) continue;
+
+    // 沿枝位置
+    let u;
+    if (N === 1) u = 0.68 + p.level * 0.06;
+    else u = 0.40 + 0.55 * ((i + 0.5) / N);
+
+    const pt = bez(Math.min(0.98, u));
+
+    // 侧向偏移
+    const r1 = p.rand[i % p.rand.length];
+    const side = (i % 2 === 0 ? 1 : -1) * (0.05 + r1 * 0.06) * S;
+    const fx = pt.x + side;
+    const fy = pt.y + (r1 - 0.5) * S * 0.05;
+
+    const scale = 0.72 + p.level * 0.05;
+    drawPlumFlower(fx, fy, S * 0.075 * scale, ep);
+  }
+}
+
+function drawPlumFlower(x, y, r, prog){
+  const pr = r * prog;
+  if (pr < 0.4) return;
+
+  const petals = 5;
+  for (let k = 0; k < petals; k++){
+    const ang = -Math.PI / 2 + k * (Math.PI * 2 / petals);
+    const px = x + Math.cos(ang) * pr * 0.52;
+    const py = y + Math.sin(ang) * pr * 0.52;
+
+    // 花瓣
+    ctx.beginPath();
+    ctx.ellipse(px, py, pr * 0.48, pr * 0.40, ang, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(246,226,232,${0.82 * prog})`;
+    ctx.fill();
+    ctx.strokeStyle = `rgba(176,120,140,${0.52 * prog})`;
+    ctx.lineWidth = 0.7;
+    ctx.stroke();
+  }
+
+  // 花心
+  ctx.beginPath();
+  ctx.arc(x, y, pr * 0.16, 0, Math.PI * 2);
+  ctx.fillStyle = `rgba(180,72,48,${prog})`;
+  ctx.fill();
+}
+
+/* ============================================================
+   绘制：兰 —— 飘逸叶片
+   ============================================================ */
+function drawLan(p, t){
+  const S = p.size;
+  const N = p.count;
+
+  const base = { x: 0, y: S * 0.42 };
+  const spread = 0.80;
+
+  for (let i = 0; i < N; i++){
+    const ep = p.elemProgress(i, N);
+    if (ep < 0.01) continue;
+
+    // 角度
+    let angle;
+    if (N === 1) angle = 0.05;
+    else angle = ((i / (N - 1)) * 2 - 1) * spread;
+
+    // 微扰
+    const r1 = p.rand[i % p.rand.length];
+    angle += (r1 - 0.5) * 0.10;
+
+    const len = S * (0.88 + r1 * 0.20);
+    const dirX = Math.sin(angle);
+    const dirY = -Math.cos(angle);
+    const perpX = -dirY, perpY = dirX;
+
+    // 弯曲方向交替
+    const bendSign = (i % 2 === 0 ? 1 : -1);
+    const curve = len * (0.22 + r1 * 0.10) * bendSign;
+
+    // 控制点
+    const cX = base.x + dirX * len * 0.5 + perpX * curve;
+    const cY = base.y + dirY * len * 0.5 + perpY * curve;
+
+    // 尖端（随 ep 伸展）
+    const tipX = base.x + dirX * len * ep;
+    const tipY = base.y + dirY * len * ep;
+
+    // 实际控制点随 ep 插值
+    const ccX = base.x + (cX - base.x) * ep;
+    const ccY = base.y + (cY - base.y) * ep;
+
+    // —— 叶片（双贝塞尔填充）——
+    const w = S * 0.020 * Math.min(1, ep * 1.2);
+
+    ctx.beginPath();
+    ctx.moveTo(base.x, base.y);
+    ctx.quadraticCurveTo(ccX + perpX * w, ccY + perpY * w, tipX, tipY);
+    ctx.quadraticCurveTo(ccX - perpX * w, ccY - perpY * w, base.x, base.y);
+    ctx.closePath();
+
+    // 兰叶：墨绿渐变
+    const a = 0.72 * ep;
+    ctx.fillStyle = `rgba(62,92,68,${a})`;
+    ctx.fill();
+
+    ctx.strokeStyle = `rgba(38,58,44,${a * 1.1})`;
+    ctx.lineWidth = 0.7;
+    ctx.stroke();
+
+    // 中脉
+    ctx.beginPath();
+    ctx.moveTo(base.x, base.y);
+    ctx.quadraticCurveTo(ccX, ccY, tipX, tipY);
+    ctx.strokeStyle = `rgba(30,48,36,${a * 0.55})`;
+    ctx.lineWidth = 0.6;
+    ctx.stroke();
+  }
+
+  // —— 花（少量点缀）——
+  if (p.level >= 3){
+    const nf = p.level - 2;
+    for (let i = 0; i < nf; i++){
+      const u = (i + 0.5) / nf;
+      const fx = (u - 0.5) * S * 0.42;
+      const fy = -S * (0.30 + u * 0.16);
+      const ep = p.elemProgress(i, nf);
+
+      ctx.beginPath();
+      ctx.arc(fx, fy, S * 0.028 * ep, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(198,160,120,${0.72 * ep})`;
+      ctx.fill();
+    }
+  }
+}
+
+/* ============================================================
+   绘制：竹 —— 竹节 + 竹叶
+   ============================================================ */
+function drawZhu(p, t){
+  const S = p.size;
+  const N = p.count;
+
+  const totalH = S * 1.05;
+  const segH = totalH / N;
+  const w = S * 0.075;
+
+  const bottomY = S * 0.46;
+
+  for (let i = 0; i < N; i++){
+    const ep = p.elemProgress(i, N);
+    if (ep < 0.01) continue;
+
+    const y1 = bottomY - i * segH;
+    const y2 = y1 - segH * ep;
+
+    // 竹节矩形
+    ctx.beginPath();
+    ctx.rect(-w / 2, y2, w, y1 - y2);
+    ctx.fillStyle = `rgba(96,128,88,0.72)`;
+    ctx.fill();
+
+    ctx.strokeStyle = `rgba(46,72,46,0.78)`;
+    ctx.lineWidth = 1.0;
+    ctx.stroke();
+
+    // 节环
+    if (ep > 0.6){
+      ctx.beginPath();
+      ctx.moveTo(-w * 0.68, y2);
+      ctx.lineTo(w * 0.68, y2);
+      ctx.strokeStyle = `rgba(42,66,42,${(ep - 0.6) / 0.4 * 0.85})`;
+      ctx.lineWidth = 1.6;
+      ctx.stroke();
+    }
+  }
+
+  // —— 竹叶 ——
+  const leafN = Math.min(N, 5);
+  const topY = bottomY - totalH;
+  for (let i = 0; i < leafN; i++){
+    const r1 = p.rand[i % p.rand.length];
+    const ang = -Math.PI / 2 + (i - (leafN - 1) / 2) * 0.45 + (r1 - 0.5) * 0.2;
+    const len = S * (0.30 + r1 * 0.14);
+
+    const tipX = Math.cos(ang) * len;
+    const tipY = topY + Math.sin(ang) * len;
+
+    ctx.beginPath();
+    ctx.moveTo(0, topY);
+    ctx.quadraticCurveTo(
+      tipX * 0.5 + (r1 - 0.5) * 12,
+      tipY * 0.5 + 8,
+      tipX, tipY
+    );
+    ctx.strokeStyle = 'rgba(56,88,56,0.62)';
+    ctx.lineWidth = 1.8;
+    ctx.lineCap = 'round';
+    ctx.stroke();
+  }
+}
+
+/* ============================================================
+   绘制：菊 —— 放射花瓣
+   ============================================================ */
+function drawJu(p, t){
+  const S = p.size;
+  const N = p.count;
+
+  const cx = 0;
+  const cy = -S * 0.05;
+  const baseR = S * 0.30;
+
+  // 花心
+  ctx.beginPath();
+  ctx.arc(cx, cy, S * 0.07, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(180,140,72,0.72)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(120,88,42,0.62)';
+  ctx.lineWidth = 0.8;
+  ctx.stroke();
+
+  // 花瓣
+  for (let i = 0; i < N; i++){
+    const ep = p.elemProgress(i, N);
+    if (ep < 0.01) continue;
+
+    const ang = i * Math.PI * 2 / N - Math.PI / 2;
+    const len = baseR * (0.72 + p.level * 0.045) * ep;
+    const w   = S * 0.030 * (0.8 + p.level * 0.04);
+
+    const dx = Math.cos(ang), dy = Math.sin(ang);
+    const perpX = -dy, perpY = dx;
+
+    const tipX = cx + dx * len;
+    const tipY = cy + dy * len;
+
+    // 花瓣（两端尖）
+    ctx.beginPath();
+    ctx.moveTo(cx + dx * S * 0.06, cy + dy * S * 0.06);
+    ctx.quadraticCurveTo(
+      cx + dx * len * 0.5 + perpX * w,
+      cy + dy * len * 0.5 + perpY * w,
+      tipX, tipY
+    );
+    ctx.quadraticCurveTo(
+      cx + dx * len * 0.5 - perpX * w,
+      cy + dy * len * 0.5 - perpY * w,
+      cx + dx * S * 0.06, cy + dy * S * 0.06
+    );
+    ctx.closePath();
+
+    ctx.fillStyle = `rgba(232,196,124,${0.62 * ep})`;
+    ctx.fill();
+
+    ctx.strokeStyle = `rgba(148,104,44,${0.52 * ep})`;
+    ctx.lineWidth = 0.7;
+    ctx.stroke();
+  }
+}
+
+/* ============================================================
+   绘制总入口
+   ============================================================ */
+function drawPlant(p, t){
+  // 悬停光晕
+  if (p.hover > 0.01){
+    const r = p.size * 1.25;
+    const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r);
+    g.addColorStop(0, `rgba(212,180,120,${p.hover * 0.22})`);
+    g.addColorStop(1, 'rgba(212,180,120,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // 点击脉冲
+  if (p.pulse > 0.01){
+    const r = p.size * (0.8 + p.pulse * 0.85);
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(184,132,72,${p.pulse * 0.48})`;
+    ctx.lineWidth = 1.4;
+    ctx.stroke();
+  }
+
+  // 植物本体
+  ctx.save();
+  ctx.translate(p.x, p.y);
+  switch (p.type){
+    case 'mei': drawMei(p, t); break;
+    case 'lan': drawLan(p, t); break;
+    case 'zhu': drawZhu(p, t); break;
+    case 'ju':  drawJu(p, t);  break;
+  }
+  ctx.restore();
+
+  // —— 名称与数字 ——
+  const isHover = p.hover > 0.05;
+
+  ctx.font = '600 19px "KaiTi","STKaiti","楷体","Songti SC","SimSun",serif';
+  ctx.fillStyle = `rgba(46,38,30,${0.62 + p.hover * 0.28})`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(p.name, p.x, p.y + p.size * 0.82);
+
+  // 当前斐波那契数
+  ctx.font = '500 15px "Times New Roman",Georgia,serif';
+  ctx.fillStyle = `rgba(148,110,64,${0.58 + p.hover * 0.30})`;
+  ctx.fillText(String(p.count), p.x, p.y + p.size * 0.82 + 24);
+
+  // 悬停时显示级数
+  if (isHover){
+    ctx.font = '400 10.5px "Songti SC","SimSun",serif';
+    ctx.fillStyle = `rgba(168,132,82,${p.hover * 0.75})`;
+    ctx.fillText(`第 ${p.level + 1} 级`, p.x, p.y - p.size * 1.10);
+  }
+}
+
+/* ============================================================
+   更新
+   ============================================================ */
+const mouse = { x:0, y:0, active:false, lastMove:0 };
+
+function update(dt, t){
+  const now = performance.now();
+
+  // 每株植物
+  for (const p of plants){
+    p.update(dt);
+  }
+
+  // 空闲游移
+  if (!mouse.active || now - mouse.lastMove > 3200){
+    mouse.x = W * 0.5 + Math.sin(t * 0.22) * W * 0.18;
+    mouse.y = H * 0.5 + Math.cos(t * 0.17) * H * 0.14;
+    mouse.active = false;
+  }
+
+  // 悬停目标
+  let hit = null, bestD = Infinity;
+  for (const p of plants){
+    p.hoverTgt = 0;
+    if (!mouse.active) continue;
+    const dx = mouse.x - p.x, dy = mouse.y - p.y;
+    const d = Math.hypot(dx, dy);
+    if (d < p.size * 1.15 && d < bestD){
+      hit = p; bestD = d;
+    }
+  }
+  if (hit) hit.hoverTgt = 1;
+}
+
+/* ============================================================
+   渲染
+   ============================================================ */
+function render(t){
+  ctx.clearRect(0, 0, W, H);
+
+  if (paperCanvas) ctx.drawImage(paperCanvas, 0, 0, W, H);
+  else { ctx.fillStyle = '#f6f1e6'; ctx.fillRect(0, 0, W, H); }
+
+  // 中心柔光
+  const halo = ctx.createRadialGradient(
+    W * 0.5, H * 0.5, 0,
+    W * 0.5, H * 0.5, Math.min(W, H) * 0.62
+  );
+  halo.addColorStop(0.00, 'rgba(255,252,244,0.40)');
+  halo.addColorStop(0.60, 'rgba(255,252,244,0.08)');
+  halo.addColorStop(1.00, 'rgba(255,252,244,0)');
+  ctx.fillStyle = halo;
+  ctx.fillRect(0, 0, W, H);
+
+  // 四株
+  for (const p of plants) drawPlant(p, t);
+
+  // 鼠标柔光
+  if (mouse.active){
+    const mg = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, 120);
+    mg.addColorStop(0, 'rgba(255,250,235,0.13)');
+    mg.addColorStop(1, 'rgba(255,250,235,0)');
+    ctx.fillStyle = mg;
+    ctx.beginPath();
+    ctx.arc(mouse.x, mouse.y, 120, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+/* ============================================================
+   主循环
+   ============================================================ */
+function loop(){
+  const now = performance.now();
+  const dt = Math.min((now - prevT) / 1000, 0.05);
+  prevT = now;
+  time = now / 1000;
+
+  update(dt, time);
+  render(time);
+
+  requestAnimationFrame(loop);
+}
+
+/* ============================================================
+   尺寸
+   ============================================================ */
+function resize(){
+  const nw = window.innerWidth;
+  const nh = window.innerHeight;
+  if (nw === W && nh === H) return;
+
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = nw; H = nh;
+
+  cv.width  = Math.round(W * DPR);
+  cv.height = Math.round(H * DPR);
+  cv.style.width  = W + 'px';
+  cv.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  makePaper();
+  buildPlants();
+
+  mouse.x = W / 2;
+  mouse.y = H / 2;
+}
+
+/* ============================================================
+   交互
+   ============================================================ */
+function pointerPos(e){
+  const r = cv.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+
+cv.addEventListener('pointermove', e => {
+  const p = pointerPos(e);
+  mouse.x = p.x;
+  mouse.y = p.y;
+  mouse.active = true;
+  mouse.lastMove = performance.now();
+  resumeAudio();
+}, { passive: true });
+
+cv.addEventListener('pointerdown', e => {
+  resumeAudio();
+
+  const p = pointerPos(e);
+  mouse.x = p.x;
+  mouse.y = p.y;
+  mouse.active = true;
+  mouse.lastMove = performance.now();
+
+  // 找最近的植物
+  let hit = null, bestD = Infinity;
+  for (const pl of plants){
+    const d = Math.hypot(p.x - pl.x, p.y - pl.y);
+    if (d < pl.size * 1.15 && d < bestD){
+      hit = pl; bestD = d;
+    }
+  }
+
+  if (hit){
+    const lvl = hit.click();
+    // 点击时按级数补一记柔和的高音
+    setTimeout(() => {
+      if (audioOn){
+        playNote(hit.baseFreq * RATIOS[(lvl + 2) % RATIOS.length] * 2, 0.06, 1.8);
+      }
+    }, 210);
+  }
+}, { passive: true });
+
+cv.addEventListener('pointerleave', () => {
+  mouse.active = false;
+  for (const p of plants) p.hoverTgt = 0;
+});
+
+/* ============================================================
+   声音开关
+   ============================================================ */
+const sndBtn = document.getElementById('sndBtn');
+sndBtn.addEventListener('click', () => {
+  audioOn = !audioOn;
+  sndBtn.classList.toggle('off', !audioOn);
+  sndBtn.textContent = audioOn ? '♪' : '✕';
+
+  if (audioOn){
+    resumeAudio();
+    if (master && actx){
+      master.gain.cancelScheduledValues(actx.currentTime);
+      master.gain.setValueAtTime(master.gain.value, actx.currentTime);
+      master.gain.linearRampToValueAtTime(0.85, actx.currentTime + 0.5);
+    }
+    playNote(440, 0.18, 2.4);
+  } else if (master && actx){
+    master.gain.cancelScheduledValues(actx.currentTime);
+    master.gain.setValueAtTime(master.gain.value, actx.currentTime);
+    master.gain.linearRampToValueAtTime(0, actx.currentTime + 0.35);
+  }
+});
+
+/* ============================================================
+   窗口变化
+   ============================================================ */
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(resize, 200);
+});
+
+/* ============================================================
+   启动
+   ============================================================ */
+resize();
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>

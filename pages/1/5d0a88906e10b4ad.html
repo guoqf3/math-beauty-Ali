@@ -1,0 +1,832 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>太极波纹琴 · 正弦波叠加</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body {
+    width:100%; height:100%; overflow:hidden;
+    background:#06070b;
+    font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;
+    color:#b8d0e4; user-select:none; -webkit-tap-highlight-color:transparent;
+    cursor:crosshair;
+  }
+  canvas { position:fixed; inset:0; display:block; touch-action:none; }
+
+  #hud {
+    position:fixed; top:24px; left:28px; z-index:5;
+    pointer-events:none; font-size:12px; line-height:1.75;
+    letter-spacing:0.03em; text-shadow:0 0 22px rgba(0,0,0,0.95);
+  }
+  #hud .title {
+    font-size:18px; font-weight:300; letter-spacing:0.28em;
+    color:#dceaf6; margin-bottom:2px;
+  }
+  #hud .sub {
+    font-size:10px; letter-spacing:0.24em;
+    color:rgba(126,166,200,0.46); margin-bottom:16px;
+  }
+  #hud .row { display:flex; gap:9px; font-variant-numeric:tabular-nums; }
+  #hud .k { color:rgba(116,160,196,0.42); width:50px; }
+  #hud .v { color:#9fd4ea; }
+  #hud .v.yin { color:#e8eef5; }
+  #hud .v.yang { color:#ffcf8a; }
+  #hud .v.g { color:#7de0c8; }
+
+  #hud .sec {
+    margin-top:13px; padding-top:12px;
+    border-top:1px solid rgba(98,146,188,0.13);
+  }
+  #hud .sec-title {
+    font-size:9.5px; letter-spacing:0.18em;
+    color:rgba(126,166,200,0.42); margin-bottom:8px;
+  }
+  #hud .track {
+    width:146px; height:3px; border-radius:3px;
+    background:rgba(90,130,175,0.14);
+    margin-bottom:10px; position:relative; overflow:hidden;
+  }
+  #hud .track .fill {
+    position:absolute; inset:0 auto 0 0;
+    height:100%; border-radius:3px;
+    background:linear-gradient(90deg,#2f6ba8,#6fe0d8,#ffe2b0);
+    box-shadow:0 0 12px rgba(110,190,230,0.5);
+    transition:width 0.18s ease;
+  }
+
+  .btn {
+    position:fixed; z-index:6;
+    padding:11px 21px;
+    background:rgba(13,22,33,0.72);
+    border:1px solid rgba(102,170,215,0.25);
+    border-radius:999px;
+    color:#96c6e4; font-size:12.5px; letter-spacing:0.14em;
+    font-family:inherit; cursor:pointer;
+    backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
+    transition:all 0.3s cubic-bezier(0.4,0,0.2,1);
+  }
+  .btn:hover {
+    background:rgba(28,56,78,0.8);
+    border-color:rgba(140,215,255,0.6);
+    color:#d6f4ff;
+  }
+  .btn.on {
+    background:rgba(46,98,130,0.55);
+    border-color:rgba(160,235,255,0.75);
+    color:#e2f9ff;
+    box-shadow:0 0 26px rgba(90,195,255,0.24);
+  }
+  #btn-mute { right:26px; bottom:26px; }
+
+  #hint {
+    position:fixed; bottom:32px; left:28px; z-index:5;
+    font-size:10.5px; letter-spacing:0.1em;
+    color:rgba(120,166,200,0.4);
+    pointer-events:none; transition:opacity 0.9s;
+  }
+  #hint.hide { opacity:0; }
+
+  @media (max-width:640px) {
+    #hud { top:14px; left:14px; font-size:10.5px; }
+    #hud .title { font-size:14px; letter-spacing:0.2em; }
+    #hud .track { width:104px; }
+    .btn { padding:9px 14px; font-size:11px; }
+    #btn-mute { right:12px; bottom:16px; }
+    #hint { left:14px; bottom:20px; font-size:9.5px; }
+  }
+</style>
+</head>
+<body>
+
+<canvas id="cv"></canvas>
+
+<div id="hud">
+  <div class="title">太极波纹琴</div>
+  <div class="sub">SINE SUPERPOSITION · 阴阳消长</div>
+  <div class="row"><span class="k">振幅</span><span class="v g" id="v-amp">0.00</span></div>
+  <div class="row"><span class="k">相位</span><span class="v" id="v-phase">0.0°</span></div>
+  <div class="row"><span class="k">音色</span><span class="v yin" id="v-mode">散音</span></div>
+  <div class="row"><span class="k">音高</span><span class="v yang" id="v-note">—</span></div>
+  <div class="sec">
+    <div class="sec-title">阴阳比例</div>
+    <div class="track"><div class="fill" id="v-fill"></div></div>
+  </div>
+</div>
+
+<button class="btn" id="btn-mute">静音水声</button>
+<div id="hint">滑动太极 · 正弦波振幅与相位实时变化 · 点击鱼眼切换音色</div>
+
+<script>
+(() => {
+'use strict';
+
+// ============================================================
+//  画布
+// ============================================================
+const canvas = document.getElementById('cv');
+const ctx = canvas.getContext('2d');
+let W = 0, H = 0, DPR = 1, cx = 0, cy = 0, R = 100;
+
+const clamp = (v,a,b) => v < a ? a : v > b ? b : v;
+const lerp  = (a,b,t) => a + (b-a)*t;
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width  = Math.round(W * DPR);
+  canvas.height = Math.round(H * DPR);
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  cx = W * 0.5;
+  cy = H * 0.5;
+  R = Math.min(W, H) * 0.16;
+}
+
+// ============================================================
+//  状态
+// ============================================================
+const state = {
+  time: 0,
+  mouseX: 0, mouseY: 0,
+  mouseInside: false,
+  amp: 0, targetAmp: 0,
+  phase: 0, targetPhase: 0,
+  mode: 'sanyin',
+  noteIndex: 0,
+  lastNoteX: 0, lastNoteY: 0,
+  pulses: [],
+  eye1: { x: 0, y: 0 },
+  eye2: { x: 0, y: 0 },
+  rotation: 0,
+};
+
+// ============================================================
+//  音频
+// ============================================================
+const audio = {
+  ctx: null,
+  master: null,
+  waterGain: null,
+  muted: false,
+  ready: false,
+};
+
+function makeNoiseBuffer(ctx, dur) {
+  const rate = ctx.sampleRate;
+  const len = Math.floor(rate * dur);
+  const buf = ctx.createBuffer(1, len, rate);
+  const d = buf.getChannelData(0);
+  let b0=0,b1=0,b2=0,b3=0,b4=0,b5=0,b6=0;
+  for (let i = 0; i < len; i++) {
+    const w = Math.random() * 2 - 1;
+    b0 = 0.99886*b0 + w*0.0555179;
+    b1 = 0.99332*b1 + w*0.0750759;
+    b2 = 0.96900*b2 + w*0.1538520;
+    b3 = 0.86650*b3 + w*0.3104856;
+    b4 = 0.55000*b4 + w*0.5329522;
+    b5 = -0.7616*b5 - w*0.0168980;
+    d[i] = (b0+b1+b2+b3+b4+b5+b6 + w*0.5362) * 0.11;
+    b6 = w * 0.115926;
+  }
+  return buf;
+}
+
+function initAudio() {
+  if (audio.ctx) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  const actx = new AC();
+  audio.ctx = actx;
+
+  const master = actx.createGain();
+  master.gain.value = 0.55;
+  master.connect(actx.destination);
+  audio.master = master;
+
+  const noise = actx.createBufferSource();
+  noise.buffer = makeNoiseBuffer(actx, 4);
+  noise.loop = true;
+
+  const hp = actx.createBiquadFilter();
+  hp.type = 'highpass';
+  hp.frequency.value = 220;
+  hp.Q.value = 0.6;
+
+  const lp = actx.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.frequency.value = 900;
+  lp.Q.value = 0.8;
+
+  const wg = actx.createGain();
+  wg.gain.value = 0.12;
+
+  const lfo = actx.createOscillator();
+  lfo.frequency.value = 0.09;
+  const lfoGain = actx.createGain();
+  lfoGain.gain.value = 320;
+  lfo.connect(lfoGain);
+  lfoGain.connect(lp.frequency);
+
+  const lp2 = actx.createBiquadFilter();
+  lp2.type = 'bandpass';
+  lp2.frequency.value = 1800;
+  lp2.Q.value = 1.1;
+
+  const wg2 = actx.createGain();
+  wg2.gain.value = 0.035;
+
+  const lfo2 = actx.createOscillator();
+  lfo2.frequency.value = 0.17;
+  const lfoGain2 = actx.createGain();
+  lfoGain2.gain.value = 600;
+  lfo2.connect(lfoGain2);
+  lfoGain2.connect(lp2.frequency);
+
+  noise.connect(hp);
+  hp.connect(lp);
+  lp.connect(wg);
+  wg.connect(master);
+
+  noise.connect(lp2);
+  lp2.connect(wg2);
+  wg2.connect(master);
+
+  noise.start();
+  lfo.start();
+  lfo2.start();
+
+  audio.waterGain = wg;
+  audio.ready = true;
+}
+
+function ensureAudio() {
+  initAudio();
+  if (audio.ctx && audio.ctx.state === 'suspended') audio.ctx.resume();
+}
+
+function playSanyin(freq, vel) {
+  ensureAudio();
+  if (!audio.ready) return;
+  const actx = audio.ctx;
+  const t0 = actx.currentTime;
+
+  const partials = [
+    { m: 1.000, g: 1.00, d: 4.0 },
+    { m: 2.004, g: 0.48, d: 3.4 },
+    { m: 3.010, g: 0.26, d: 2.6 },
+    { m: 4.018, g: 0.14, d: 2.0 },
+    { m: 5.028, g: 0.075, d: 1.5 },
+    { m: 6.042, g: 0.038, d: 1.1 },
+    { m: 7.058, g: 0.018, d: 0.8 },
+  ];
+
+  const lp = actx.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.frequency.value = 2800;
+  lp.Q.value = 0.5;
+  lp.connect(audio.master);
+
+  for (const p of partials) {
+    const osc = actx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.value = freq * p.m;
+    osc.detune.value = (Math.random() - 0.5) * 5;
+
+    const g = actx.createGain();
+    const peak = 0.15 * vel * p.g;
+    g.gain.setValueAtTime(0, t0);
+    g.gain.linearRampToValueAtTime(peak, t0 + 0.008);
+    g.gain.exponentialRampToValueAtTime(0.00005, t0 + p.d);
+
+    osc.connect(g);
+    g.connect(lp);
+    osc.start(t0);
+    osc.stop(t0 + p.d + 0.1);
+  }
+
+  const nlen = Math.floor(actx.sampleRate * 0.04);
+  const nbuf = actx.createBuffer(1, nlen, actx.sampleRate);
+  const nd = nbuf.getChannelData(0);
+  for (let i = 0; i < nlen; i++) {
+    nd[i] = (Math.random()*2 - 1) * Math.pow(1 - i/nlen, 3);
+  }
+  const ns = actx.createBufferSource();
+  ns.buffer = nbuf;
+
+  const nf = actx.createBiquadFilter();
+  nf.type = 'bandpass';
+  nf.frequency.value = 700;
+  nf.Q.value = 1.2;
+
+  const ng = actx.createGain();
+  ng.gain.value = 0.055 * vel;
+
+  ns.connect(nf);
+  nf.connect(ng);
+  ng.connect(audio.master);
+  ns.start(t0);
+}
+
+function playFanyin(freq, vel) {
+  ensureAudio();
+  if (!audio.ready) return;
+  const actx = audio.ctx;
+  const t0 = actx.currentTime;
+
+  const partials = [
+    { m: 1.000, g: 1.00, d: 2.6 },
+    { m: 2.010, g: 0.22, d: 1.8 },
+    { m: 3.022, g: 0.07, d: 1.1 },
+    { m: 4.038, g: 0.025, d: 0.7 },
+    { m: 5.060, g: 0.010, d: 0.45 },
+  ];
+
+  const lp = actx.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.frequency.value = 6000;
+  lp.Q.value = 0.4;
+  lp.connect(audio.master);
+
+  for (const p of partials) {
+    const osc = actx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.value = freq * p.m;
+    osc.detune.value = (Math.random() - 0.5) * 4;
+
+    const g = actx.createGain();
+    const peak = 0.13 * vel * p.g;
+    g.gain.setValueAtTime(0, t0);
+    g.gain.linearRampToValueAtTime(peak, t0 + 0.005);
+    g.gain.exponentialRampToValueAtTime(0.00005, t0 + p.d);
+
+    osc.connect(g);
+    g.connect(lp);
+    osc.start(t0);
+    osc.stop(t0 + p.d + 0.1);
+  }
+}
+
+const PENTA = [0, 2, 4, 7, 9];
+function freqFromPos(angle, dist, isHigh) {
+  const a = ((angle + Math.PI) / (Math.PI * 2)) % 1;
+  const idx = Math.floor(a * 5) % 5;
+  const oct = Math.floor(clamp(dist / (Math.max(W,H) * 0.18), 0, 2));
+  const midi = 48 + PENTA[idx] + oct * 12 + (isHigh ? 12 : 0);
+  return 440 * Math.pow(2, (midi - 69) / 12);
+}
+
+// ============================================================
+//  太极绘制 —— 鱼眼大幅增强
+// ============================================================
+function drawTaiji(t) {
+  const rot = t * 0.10;
+
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(rot);
+
+  // 外光晕
+  const glow = ctx.createRadialGradient(0, 0, R * 0.85, 0, 0, R * 1.75);
+  glow.addColorStop(0, 'rgba(130, 190, 240, 0.12)');
+  glow.addColorStop(0.5, 'rgba(100, 160, 220, 0.05)');
+  glow.addColorStop(1, 'rgba(60, 100, 160, 0)');
+  ctx.fillStyle = glow;
+  ctx.beginPath();
+  ctx.arc(0, 0, R * 1.75, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 白色底圆
+  ctx.beginPath();
+  ctx.arc(0, 0, R, 0, Math.PI * 2);
+  ctx.fillStyle = '#e6edf5';
+  ctx.fill();
+
+  // 黑色鱼
+  ctx.beginPath();
+  ctx.arc(0, 0, R, -Math.PI/2, Math.PI/2, true);
+  ctx.arc(0, R/2, R/2, Math.PI/2, -Math.PI/2, true);
+  ctx.arc(0, -R/2, R/2, Math.PI/2, -Math.PI/2, false);
+  ctx.closePath();
+  ctx.fillStyle = '#08080e';
+  ctx.fill();
+
+  // 外轮廓
+  ctx.beginPath();
+  ctx.arc(0, 0, R, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(180, 210, 240, 0.32)';
+  ctx.lineWidth = 1.6;
+  ctx.stroke();
+
+  // ═══════════════════════════════════════════
+  //  鱼眼 —— 尺寸更大、对比更强、带呼吸脉动
+  // ═══════════════════════════════════════════
+  const pulse = 1 + 0.07 * Math.sin(t * 2.4);
+  const eyeR = R / 4.4 * pulse;
+
+  // ── 上方白鱼眼（位于黑鱼中）──
+  // 外光晕
+  const glow1 = ctx.createRadialGradient(0, -R/2, 0, 0, -R/2, eyeR * 2.6);
+  glow1.addColorStop(0, 'rgba(255, 255, 255, 0.95)');
+  glow1.addColorStop(0.35, 'rgba(230, 242, 255, 0.42)');
+  glow1.addColorStop(1, 'rgba(200, 220, 245, 0)');
+  ctx.fillStyle = glow1;
+  ctx.beginPath();
+  ctx.arc(0, -R/2, eyeR * 2.6, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 白色主体
+  ctx.beginPath();
+  ctx.arc(0, -R/2, eyeR, 0, Math.PI * 2);
+  ctx.fillStyle = '#ffffff';
+  ctx.shadowColor = 'rgba(255, 255, 255, 1)';
+  ctx.shadowBlur = 26;
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  // 清晰外环
+  ctx.beginPath();
+  ctx.arc(0, -R/2, eyeR, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(255, 255, 255, 1)';
+  ctx.lineWidth = 2.6;
+  ctx.stroke();
+
+  // 深色内芯（瞳孔）
+  ctx.beginPath();
+  ctx.arc(0, -R/2, eyeR * 0.46, 0, Math.PI * 2);
+  ctx.fillStyle = '#06080f';
+  ctx.fill();
+
+  // 内芯外圈高光
+  ctx.beginPath();
+  ctx.arc(0, -R/2, eyeR * 0.46, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(160, 200, 240, 0.7)';
+  ctx.lineWidth = 1.2;
+  ctx.stroke();
+
+  // 内芯高光点
+  ctx.beginPath();
+  ctx.arc(-eyeR * 0.16, -R/2 - eyeR * 0.16, eyeR * 0.16, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+  ctx.fill();
+
+  // ── 下方黑鱼眼（位于白鱼中）──
+  const glow2 = ctx.createRadialGradient(0, R/2, 0, 0, R/2, eyeR * 2.6);
+  glow2.addColorStop(0, 'rgba(90, 140, 220, 0.75)');
+  glow2.addColorStop(0.35, 'rgba(50, 85, 150, 0.30)');
+  glow2.addColorStop(1, 'rgba(20, 40, 80, 0)');
+  ctx.fillStyle = glow2;
+  ctx.beginPath();
+  ctx.arc(0, R/2, eyeR * 2.6, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 黑色主体
+  ctx.beginPath();
+  ctx.arc(0, R/2, eyeR, 0, Math.PI * 2);
+  ctx.fillStyle = '#04050a';
+  ctx.shadowColor = 'rgba(120, 170, 240, 0.95)';
+  ctx.shadowBlur = 24;
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  // 清晰外环
+  ctx.beginPath();
+  ctx.arc(0, R/2, eyeR, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(170, 210, 250, 0.95)';
+  ctx.lineWidth = 2.6;
+  ctx.stroke();
+
+  // 浅色内芯（瞳孔）
+  ctx.beginPath();
+  ctx.arc(0, R/2, eyeR * 0.46, 0, Math.PI * 2);
+  ctx.fillStyle = '#eef4fb';
+  ctx.fill();
+
+  // 内芯外圈高光
+  ctx.beginPath();
+  ctx.arc(0, R/2, eyeR * 0.46, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.75)';
+  ctx.lineWidth = 1.2;
+  ctx.stroke();
+
+  // 内芯高光点
+  ctx.beginPath();
+  ctx.arc(-eyeR * 0.16, R/2 - eyeR * 0.16, eyeR * 0.16, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
+  ctx.fill();
+
+  ctx.restore();
+
+  // 保存鱼眼世界坐标
+  const c = Math.cos(rot), s = Math.sin(rot);
+  state.eye1.x = cx + (0 * c - (-R/2) * s);
+  state.eye1.y = cy + (0 * s + (-R/2) * c);
+  state.eye2.x = cx + (0 * c - (R/2) * s);
+  state.eye2.y = cy + (0 * s + (R/2) * c);
+}
+
+// ============================================================
+//  正弦波叠加波纹
+// ============================================================
+function drawRipples(t) {
+  const maxR = Math.max(W, H) * 0.62;
+  const numRings = 34;
+
+  ctx.save();
+
+  for (let i = 0; i < numRings; i++) {
+    const prog = ((i / numRings) + t * 0.09) % 1;
+    const baseR = prog * maxR;
+    const radialPhase = baseR * 0.032 - t * 2.4;
+    const env = Math.pow(1 - prog, 1.2) * (prog < 0.04 ? prog / 0.04 : 1);
+    const amp = state.amp * env * 20;
+    const lobes = 5;
+    const rotPhase = state.phase;
+
+    ctx.beginPath();
+    const steps = 64;
+    for (let a = 0; a <= steps; a++) {
+      const theta = a / steps * Math.PI * 2;
+      const disp =
+        amp * Math.sin(lobes * theta + rotPhase + radialPhase) +
+        amp * 0.35 * Math.sin(lobes * 2 * theta - rotPhase * 1.3 + radialPhase * 0.7);
+      const r = baseR + disp;
+      const px = cx + Math.cos(theta) * r;
+      const py = cy + Math.sin(theta) * r;
+      if (a === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+
+    const alpha = (0.03 + 0.13 * env) * (0.6 + 0.4 * Math.sin(t * 1.2 + i * 0.4));
+    const b = Math.floor(180 + 70 * env);
+    ctx.strokeStyle = `rgba(140, ${b}, 255, ${alpha})`;
+    ctx.lineWidth = 0.7 + env * 1.5;
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+// ============================================================
+//  脉冲涟漪
+// ============================================================
+function drawPulses(t) {
+  for (let i = state.pulses.length - 1; i >= 0; i--) {
+    const p = state.pulses[i];
+    const age = t - p.t;
+    if (age > 1.6) { state.pulses.splice(i, 1); continue; }
+
+    const k = age / 1.6;
+    const r = R + k * Math.max(W, H) * 0.5;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+    const col = p.type === 'fanyin' ? '255, 215, 150' : '150, 210, 255';
+    ctx.strokeStyle = `rgba(${col}, ${(1 - k) * 0.48})`;
+    ctx.lineWidth = 2.2 * (1 - k);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, r * 0.68, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(${col}, ${(1 - k) * 0.25})`;
+    ctx.lineWidth = 1.4 * (1 - k);
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+// ============================================================
+//  背景
+// ============================================================
+let bgGrad = null, bgKey = '';
+
+function drawBackground() {
+  const key = W + 'x' + H;
+  if (key !== bgKey) {
+    bgGrad = ctx.createRadialGradient(
+      W * 0.5, H * 0.48, 0,
+      W * 0.5, H * 0.5, Math.max(W, H) * 0.78
+    );
+    bgGrad.addColorStop(0,    '#0c1422');
+    bgGrad.addColorStop(0.42, '#070b14');
+    bgGrad.addColorStop(1,    '#06070b');
+    bgKey = key;
+  }
+  ctx.fillStyle = bgGrad;
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.save();
+  ctx.strokeStyle = 'rgba(110, 160, 210, 0.028)';
+  ctx.lineWidth = 1;
+  const rStep = Math.min(W, H) * 0.08;
+  for (let i = 1; i <= 9; i++) {
+    ctx.beginPath();
+    ctx.arc(cx, cy, i * rStep, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  for (let i = 0; i < 24; i++) {
+    const a = i * Math.PI / 12;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + Math.cos(a) * rStep * 9, cy + Math.sin(a) * rStep * 9);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// ============================================================
+//  HUD
+// ============================================================
+const elAmp   = document.getElementById('v-amp');
+const elPhase = document.getElementById('v-phase');
+const elMode  = document.getElementById('v-mode');
+const elNote  = document.getElementById('v-note');
+const elFill  = document.getElementById('v-fill');
+
+let hudT = 0;
+function updateHUD(dt) {
+  hudT += dt;
+  if (hudT < 0.08) return;
+  hudT = 0;
+
+  elAmp.textContent = state.amp.toFixed(3);
+  elPhase.textContent = (state.phase * 180 / Math.PI % 360).toFixed(1) + '°';
+
+  if (state.mode === 'fanyin') {
+    elMode.textContent = '泛音';
+    elMode.className = 'v yang';
+  } else {
+    elMode.textContent = '散音';
+    elMode.className = 'v yin';
+  }
+
+  elFill.style.width = (state.amp * 100).toFixed(1) + '%';
+}
+
+// ============================================================
+//  交互
+// ============================================================
+function getPointer(e) {
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: e.clientX - rect.left,
+    y: e.clientY - rect.top,
+  };
+}
+
+function triggerNote(x, y) {
+  const dx = x - cx, dy = y - cy;
+  const dist = Math.hypot(dx, dy);
+  const angle = Math.atan2(dy, dx);
+
+  const isFan = state.noteIndex % 2 === 1;
+  state.noteIndex++;
+
+  const freq = freqFromPos(angle, dist, isFan);
+
+  if (isFan) {
+    playFanyin(freq, 0.62);
+    state.pulses.push({ x, y, t: state.time, type: 'fanyin' });
+  } else {
+    playSanyin(freq, 0.72);
+    state.pulses.push({ x, y, t: state.time, type: 'sanyin' });
+  }
+
+  const noteNames = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+  const midi = Math.round(69 + 12 * Math.log2(freq / 440));
+  elNote.textContent = noteNames[midi % 12] + (Math.floor(midi / 12) - 1);
+}
+
+canvas.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  ensureAudio();
+  document.getElementById('hint').classList.add('hide');
+
+  const { x, y } = getPointer(e);
+
+  // 鱼眼点击检测 —— 判定区已扩大
+  const d1 = Math.hypot(x - state.eye1.x, y - state.eye1.y);
+  const d2 = Math.hypot(x - state.eye2.x, y - state.eye2.y);
+  const eyeR = R / 3.8;   // 扩大点击区
+
+  if (d1 < eyeR || d2 < eyeR) {
+    state.mode = state.mode === 'sanyin' ? 'fanyin' : 'sanyin';
+    if (state.mode === 'fanyin') {
+      playFanyin(523.25, 0.7);
+    } else {
+      playSanyin(130.81, 0.8);
+    }
+    state.pulses.push({
+      x: state.mode === 'fanyin' ? state.eye2.x : state.eye1.x,
+      y: state.mode === 'fanyin' ? state.eye2.y : state.eye1.y,
+      t: state.time,
+      type: state.mode,
+    });
+    return;
+  }
+
+  state.lastNoteX = x;
+  state.lastNoteY = y;
+  triggerNote(x, y);
+}, { passive: false });
+
+canvas.addEventListener('pointermove', e => {
+  e.preventDefault();
+  const { x, y } = getPointer(e);
+
+  state.mouseX = x;
+  state.mouseY = y;
+  state.mouseInside = true;
+
+  const dx = x - cx, dy = y - cy;
+  const dist = Math.hypot(dx, dy);
+
+  state.targetAmp = clamp(dist / (Math.max(W, H) * 0.45), 0, 1);
+  state.targetPhase = (x / W) * Math.PI * 3 + (y / H) * Math.PI;
+
+  const moveD = Math.hypot(x - state.lastNoteX, y - state.lastNoteY);
+  if (moveD > 62 && dist < R * 2.2) {
+    state.lastNoteX = x;
+    state.lastNoteY = y;
+    triggerNote(x, y);
+  }
+}, { passive: false });
+
+canvas.addEventListener('pointerleave', () => {
+  state.mouseInside = false;
+  state.targetAmp = 0;
+});
+
+canvas.addEventListener('touchmove', e => {
+  if (e.touches.length > 1) e.preventDefault();
+}, { passive: false });
+
+document.getElementById('btn-mute').addEventListener('click', () => {
+  ensureAudio();
+  audio.muted = !audio.muted;
+  const btn = document.getElementById('btn-mute');
+  btn.classList.toggle('on', audio.muted);
+  btn.textContent = audio.muted ? '开启水声' : '静音水声';
+
+  if (audio.ready && audio.waterGain) {
+    const now = audio.ctx.currentTime;
+    audio.waterGain.gain.setTargetAtTime(
+      audio.muted ? 0 : 0.12, now, 0.3
+    );
+  }
+});
+
+window.addEventListener('keydown', e => {
+  if (e.key === 'm' || e.key === 'M') {
+    document.getElementById('btn-mute').click();
+  }
+});
+
+window.addEventListener('resize', resize);
+
+// ============================================================
+//  主循环
+// ============================================================
+let lastT = performance.now() / 1000;
+
+function frame(nowMs) {
+  const t = nowMs / 1000;
+  const dt = Math.min(t - lastT, 0.05);
+  lastT = t;
+  state.time = t;
+  state.rotation = t * 0.10;
+
+  state.amp   += (state.targetAmp   - state.amp)   * Math.min(1, dt * 3.2);
+  state.phase += (state.targetPhase - state.phase) * Math.min(1, dt * 2.8);
+
+  drawBackground();
+  drawRipples(t);
+  drawTaiji(t);
+  drawPulses(t);
+
+  updateHUD(dt);
+
+  requestAnimationFrame(frame);
+}
+
+// ============================================================
+//  启动
+// ============================================================
+resize();
+state.lastNoteX = cx;
+state.lastNoteY = cy;
+requestAnimationFrame(frame);
+
+window.addEventListener('pointerdown', () => {
+  ensureAudio();
+}, { once: true });
+
+})();
+</script>
+</body>
+</html>

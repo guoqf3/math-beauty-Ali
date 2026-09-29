@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>元胞自动机 · 水墨晕染</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body {
+    width:100%; height:100%; overflow:hidden;
+    background:#08090c;
+    font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;
+    color:#b8c8d8; user-select:none; -webkit-tap-highlight-color:transparent;
+    cursor:crosshair;
+  }
+  canvas { position:fixed; inset:0; display:block; touch-action:none; }
+
+  #hud {
+    position:fixed; top:26px; left:30px; z-index:5;
+    pointer-events:none; font-size:12.5px; line-height:1.75;
+    letter-spacing:0.03em; text-shadow:0 0 22px rgba(0,0,0,0.95);
+  }
+  #hud .title {
+    font-size:19px; font-weight:300; letter-spacing:0.3em;
+    color:#dceaf6; margin-bottom:3px;
+  }
+  #hud .sub {
+    font-size:10.5px; letter-spacing:0.26em;
+    color:rgba(126,166,200,0.48); margin-bottom:20px;
+  }
+  #hud .row { display:flex; gap:10px; font-variant-numeric:tabular-nums; }
+  #hud .k { color:rgba(116,160,196,0.42); width:52px; }
+  #hud .v { color:#9fd4ea; }
+  #hud .v.hi { color:#ffcf8a; }
+
+  #hud .sec {
+    margin-top:15px; padding-top:13px;
+    border-top:1px solid rgba(98,146,188,0.13);
+  }
+  #hud .sec-title {
+    font-size:10px; letter-spacing:0.18em;
+    color:rgba(126,166,200,0.42); margin-bottom:9px;
+  }
+  #hud .track {
+    width:150px; height:3.5px; border-radius:3px;
+    background:rgba(90,130,175,0.14);
+    margin-bottom:12px; position:relative;
+  }
+  #hud .track .fill {
+    position:absolute; inset:0 auto 0 0;
+    height:100%; border-radius:3px;
+    background:linear-gradient(90deg,#2f6ba8,#6fc6e0,#ffe2b0);
+    box-shadow:0 0 12px rgba(110,190,230,0.45);
+    transition:width 0.1s linear;
+  }
+
+  .btn {
+    position:fixed; z-index:6;
+    padding:11px 21px;
+    background:rgba(13,22,33,0.7);
+    border:1px solid rgba(102,170,215,0.25);
+    border-radius:999px;
+    color:#96c6e4; font-size:12.5px; letter-spacing:0.14em;
+    font-family:inherit; cursor:pointer;
+    backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
+    transition:all 0.3s cubic-bezier(0.4,0,0.2,1);
+  }
+  .btn:hover {
+    background:rgba(28,56,78,0.8);
+    border-color:rgba(140,215,255,0.6);
+    color:#d6f4ff;
+  }
+  .btn.on {
+    background:rgba(46,98,130,0.55);
+    border-color:rgba(160,235,255,0.75);
+    color:#e2f9ff;
+    box-shadow:0 0 26px rgba(90,195,255,0.24);
+  }
+  #btn-pause { right:28px; bottom:28px; }
+  #btn-rand  { right:28px; bottom:82px; }
+  #btn-clear { right:28px; bottom:136px; }
+
+  #hint {
+    position:fixed; bottom:36px; left:30px; z-index:5;
+    font-size:11px; letter-spacing:0.1em;
+    color:rgba(120,166,198,0.4);
+    pointer-events:none; transition:opacity 0.9s;
+  }
+  #hint.hide { opacity:0; }
+
+  @media (max-width:640px) {
+    #hud { top:16px; left:16px; font-size:11.5px; }
+    #hud .title { font-size:15px; letter-spacing:0.22em; }
+    #hud .track { width:110px; }
+    .btn { padding:9px 15px; font-size:11.5px; }
+    #btn-pause { right:14px; bottom:18px; }
+    #btn-rand  { right:14px; bottom:64px; }
+    #btn-clear { right:14px; bottom:110px; }
+    #hint { left:16px; bottom:22px; font-size:10px; }
+  }
+</style>
+</head>
+<body>
+
+<canvas id="cv"></canvas>
+
+<div id="hud">
+  <div class="title">元胞 · 水墨</div>
+  <div class="sub">CELLULAR AUTOMATON · 晕染</div>
+  <div class="row"><span class="k">活胞</span><span class="v" id="v-alive">0</span></div>
+  <div class="row"><span class="k">代数</span><span class="v" id="v-gen">0</span></div>
+  <div class="row"><span class="k">墨量</span><span class="v hi" id="v-ink">0%</span></div>
+  <div class="sec">
+    <div class="sec-title">晕染浓度</div>
+    <div class="track"><div class="fill" id="v-fill"></div></div>
+    <div class="sec-title">规则 B2/S23</div>
+    <div class="row"><span class="k">网格</span><span class="v" id="v-grid">—</span></div>
+  </div>
+</div>
+
+<button class="btn on" id="btn-pause">暂停扩散</button>
+<button class="btn" id="btn-rand">随机落墨</button>
+<button class="btn" id="btn-clear">清纸重置</button>
+<div id="hint">点击或拖动 · 在宣纸上落墨</div>
+
+<script>
+(() => {
+'use strict';
+
+// ============================================================
+//  画布与网格
+// ============================================================
+const canvas = document.getElementById('cv');
+const ctx = canvas.getContext('2d');
+
+let W = 0, H = 0, DPR = 1;
+let COLS = 0, ROWS = 0, CELL = 10;
+
+// 元胞状态
+let alive, nextAlive;
+let ink, inkNoise;
+
+// 离屏渲染
+let offCanvas, offCtx, offImageData;
+
+// 纸纹
+let paperCanvas = null;
+
+const clamp = (v,a,b) => v < a ? a : v > b ? b : v;
+
+function makePaper() {
+  const pw = Math.max(2, Math.floor(W / 2));
+  const ph = Math.max(2, Math.floor(H / 2));
+  const pc = document.createElement('canvas');
+  pc.width = pw; pc.height = ph;
+  const pctx = pc.getContext('2d');
+  const img = pctx.createImageData(pw, ph);
+  const d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const v = 115 + Math.random() * 140;
+    d[i] = d[i+1] = d[i+2] = v;
+    d[i+3] = 6 + Math.random() * 10;
+  }
+  pctx.putImageData(img, 0, 0);
+
+  paperCanvas = document.createElement('canvas');
+  paperCanvas.width = W;
+  paperCanvas.height = H;
+  const c = paperCanvas.getContext('2d');
+  c.imageSmoothingEnabled = true;
+  c.drawImage(pc, 0, 0, W, H);
+}
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+
+  canvas.width  = Math.round(W * DPR);
+  canvas.height = Math.round(H * DPR);
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  // 保存旧场
+  const oldAlive = alive;
+  const oldInk   = ink;
+  const oldCols  = COLS, oldRows = ROWS;
+
+  COLS = Math.max(20, Math.ceil(W / CELL));
+  ROWS = Math.max(20, Math.ceil(H / CELL));
+
+  const len = COLS * ROWS;
+  alive     = new Uint8Array(len);
+  nextAlive = new Uint8Array(len);
+  ink       = new Float32Array(len);
+  inkNoise  = new Float32Array(len);
+  for (let i = 0; i < len; i++) inkNoise[i] = Math.random();
+
+  // 重采样旧场
+  if (oldAlive && oldCols > 0) {
+    for (let y = 0; y < ROWS; y++) {
+      for (let x = 0; x < COLS; x++) {
+        const ox = Math.min(oldCols - 1, Math.floor(x * oldCols / COLS));
+        const oy = Math.min(oldRows - 1, Math.floor(y * oldRows / ROWS));
+        const oi = oy * oldCols + ox;
+        const ni = y * COLS + x;
+        alive[ni] = oldAlive[oi];
+        ink[ni]   = oldInk[oi];
+      }
+    }
+  } else {
+    seedCenter();
+  }
+
+  // 离屏
+  offCanvas = document.createElement('canvas');
+  offCanvas.width  = COLS;
+  offCanvas.height = ROWS;
+  offCtx = offCanvas.getContext('2d');
+  offImageData = offCtx.createImageData(COLS, ROWS);
+
+  makePaper();
+  updateHUD(true);
+}
+
+// ============================================================
+//  种子
+// ============================================================
+function seedAt(gx, gy, strength = 1.0) {
+  const radius = 3;
+  for (let dy = -radius; dy <= radius; dy++) {
+    for (let dx = -radius; dx <= radius; dx++) {
+      const d2 = dx*dx + dy*dy;
+      if (d2 > radius * radius) continue;
+      const x = gx + dx, y = gy + dy;
+      if (x < 0 || x >= COLS || y < 0 || y >= ROWS) continue;
+      const i = y * COLS + x;
+      const fall = 1 - Math.sqrt(d2) / radius;
+      if (Math.random() < fall * 0.9) {
+        alive[i] = 1;
+        ink[i] = Math.min(1, ink[i] + fall * strength);
+      }
+    }
+  }
+}
+
+function seedCenter() {
+  const cxp = Math.floor(COLS / 2);
+  const cyp = Math.floor(ROWS / 2);
+  for (let dy = -2; dy <= 2; dy++) {
+    for (let dx = -2; dx <= 2; dx++) {
+      if (Math.random() < 0.6) {
+        const x = cxp + dx, y = cyp + dy;
+        if (x < 0 || x >= COLS || y < 0 || y >= ROWS) continue;
+        alive[y * COLS + x] = 1;
+        ink[y * COLS + x]   = 1;
+      }
+    }
+  }
+}
+
+function seedRandom() {
+  const n = 3 + Math.floor(Math.random() * 3);
+  for (let k = 0; k < n; k++) {
+    const x = 4 + Math.floor(Math.random() * (COLS - 8));
+    const y = 4 + Math.floor(Math.random() * (ROWS - 8));
+    seedAt(x, y, 0.8 + Math.random() * 0.4);
+  }
+}
+
+// ============================================================
+//  音频引擎
+// ============================================================
+const audio = { ctx:null, bus:null, ready:false };
+
+function makeIR(actx, dur, decay) {
+  const rate = actx.sampleRate;
+  const len = Math.floor(rate * dur);
+  const buf = actx.createBuffer(2, len, rate);
+  for (let ch = 0; ch < 2; ch++) {
+    const d = buf.getChannelData(ch);
+    for (let i = 0; i < len; i++) {
+      const t = i / len;
+      d[i] = (Math.random()*2 - 1) * Math.pow(1 - t, decay);
+    }
+  }
+  return buf;
+}
+
+function initAudio() {
+  if (audio.ctx) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  const actx = new AC();
+  audio.ctx = actx;
+
+  const master = actx.createGain();
+  master.gain.value = 0.5;
+  master.connect(actx.destination);
+
+  const conv = actx.createConvolver();
+  conv.buffer = makeIR(actx, 4.2, 2.8);
+  const wet = actx.createGain();
+  wet.gain.value = 0.58;
+  conv.connect(wet); wet.connect(master);
+
+  const bus = actx.createGain();
+  bus.gain.value = 1;
+  bus.connect(master);
+  bus.connect(conv);
+  audio.bus = bus;
+  audio.ready = true;
+}
+
+function ensureAudio() {
+  initAudio();
+  if (audio.ctx && audio.ctx.state === 'suspended') audio.ctx.resume();
+}
+
+/** 钟磬音色 */
+function playNote(freq, vel) {
+  ensureAudio();
+  if (!audio.ready) return;
+  const actx = audio.ctx;
+  const t0 = actx.currentTime;
+  const v = clamp(vel, 0.05, 1);
+
+  const dur = 3.2;
+
+  const lp = actx.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.frequency.value = clamp(freq * 7 + 1400, 800, 9000);
+  lp.Q.value = 0.4;
+  lp.connect(audio.bus);
+
+  const partials = [
+    { m:1.000, g:1.00, d:dur },
+    { m:2.005, g:0.34, d:dur*0.72 },
+    { m:3.015, g:0.13, d:dur*0.48 },
+    { m:4.530, g:0.050, d:dur*0.30 },
+    { m:6.120, g:0.020, d:dur*0.19 },
+  ];
+
+  for (const p of partials) {
+    const o = actx.createOscillator();
+    o.type = 'sine';
+    o.frequency.value = freq * p.m;
+    o.detune.value = (Math.random() - 0.5) * 7;
+
+    const g = actx.createGain();
+    const peak = 0.13 * v * p.g;
+    g.gain.setValueAtTime(0, t0);
+    g.gain.linearRampToValueAtTime(peak, t0 + 0.008);
+    g.gain.exponentialRampToValueAtTime(0.00005, t0 + p.d);
+
+    o.connect(g); g.connect(lp);
+    o.start(t0); o.stop(t0 + p.d + 0.15);
+  }
+}
+
+// 五声音阶
+const PENTA = [0, 2, 4, 7, 9];
+function freqFromCell(x, y) {
+  const nx = x / COLS;
+  const ny = y / ROWS;
+  const idx = Math.floor(nx * 12 + ny * 4);
+  const oct = Math.floor(idx / 5);
+  const st  = PENTA[idx % 5];
+  const midi = 50 + st + oct * 12;
+  return 440 * Math.pow(2, (midi - 69) / 12);
+}
+
+// 音符节流
+let lastNoteTime = 0;
+let birthList = [];
+
+function triggerBirthSound() {
+  if (birthList.length === 0) return;
+  const now = performance.now() / 1000;
+  if (now - lastNoteTime < 0.09) return;
+  lastNoteTime = now;
+
+  // 随机选一个出生点
+  const idx = birthList[Math.floor(Math.random() * birthList.length)];
+  const x = idx % COLS;
+  const y = Math.floor(idx / COLS);
+  const f = freqFromCell(x, y);
+
+  playNote(f, 0.22 + Math.random() * 0.18);
+}
+
+// ============================================================
+//  元胞自动机 —— 修改版生命规则（B2/S23），适合水墨扩散
+// ============================================================
+let generation = 0;
+
+function stepCA() {
+  birthList.length = 0;
+
+  for (let y = 0; y < ROWS; y++) {
+    for (let x = 0; x < COLS; x++) {
+      const i = y * COLS + x;
+
+      // 统计邻居
+      let n = 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        const ny = y + dy;
+        if (ny < 0 || ny >= ROWS) continue;
+        const rowOff = ny * COLS;
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const nx = x + dx;
+          if (nx < 0 || nx >= COLS) continue;
+          n += alive[rowOff + nx];
+        }
+      }
+
+      const a = alive[i];
+      let next;
+
+      // 规则 B2/S23 —— 比标准生命更容易扩散，形成晕染
+      if (a === 1) {
+        next = (n === 2 || n === 3) ? 1 : 0;
+      } else {
+        next = (n === 2 || n === 3) ? 1 : 0;
+      }
+
+      // 额外：若周围墨量极高，则带动晕染（模拟墨汁渗透）
+      if (next === 0 && ink[i] > 0.62) {
+        // 墨量高的地方更容易向外渗透
+        if (n >= 1 && Math.random() < 0.06) next = 1;
+      }
+
+      nextAlive[i] = next;
+      if (next === 1 && a === 0) birthList.push(i);
+    }
+  }
+
+  // 交换
+  const tmp = alive;
+  alive = nextAlive;
+  nextAlive = tmp;
+
+  // 墨量演化
+  const len = COLS * ROWS;
+  for (let i = 0; i < len; i++) {
+    if (alive[i]) {
+      ink[i] += (1 - ink[i]) * 0.22;
+    } else {
+      ink[i] *= 0.955;
+      if (ink[i] < 0.006) ink[i] = 0;
+    }
+  }
+
+  generation++;
+
+  if (birthList.length > 0) triggerBirthSound();
+}
+
+// ============================================================
+//  渲染
+// ============================================================
+function render() {
+  const data = offImageData.data;
+  const len = COLS * ROWS;
+
+  for (let i = 0; i < len; i++) {
+    const base = ink[i];
+    const j = i * 4;
+
+    if (base < 0.005) {
+      data[j] = 0;
+      data[j+1] = 0;
+      data[j+2] = 0;
+      data[j+3] = 0;
+      continue;
+    }
+
+    // 纸纹扰动
+    const v = base * (0.94 + 0.12 * inkNoise[i]);
+    const vv = clamp(v, 0, 1);
+
+    // 墨色：深蓝灰 → 冷白
+    const r = Math.round( 22 + vv * 182);
+    const g = Math.round( 32 + vv * 178);
+    const b = Math.round( 48 + vv * 182);
+
+    // Alpha 非线性，让边缘更柔
+    const a = Math.round(Math.pow(vv, 1.28) * 238);
+
+    data[j]   = r;
+    data[j+1] = g;
+    data[j+2] = b;
+    data[j+3] = a;
+  }
+
+  offCtx.putImageData(offImageData, 0, 0);
+
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'medium';
+  ctx.drawImage(offCanvas, 0, 0, COLS, ROWS, 0, 0, W, H);
+}
+
+function drawBackdrop() {
+  ctx.fillStyle = '#08090c';
+  ctx.fillRect(0, 0, W, H);
+
+  const g = ctx.createRadialGradient(
+    W * 0.5, H * 0.48, 0,
+    W * 0.5, H * 0.48, Math.max(W, H) * 0.78
+  );
+  g.addColorStop(0,    'rgba(28, 42, 62, 0.55)');
+  g.addColorStop(0.48, 'rgba(16, 26, 40, 0.28)');
+  g.addColorStop(1,    'rgba(8, 9, 12, 0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+
+  if (paperCanvas) ctx.drawImage(paperCanvas, 0, 0);
+}
+
+function drawVignette() {
+  const g = ctx.createRadialGradient(
+    W * 0.5, H * 0.5, Math.min(W, H) * 0.28,
+    W * 0.5, H * 0.5, Math.max(W, H) * 0.82
+  );
+  g.addColorStop(0, 'rgba(0,0,0,0)');
+  g.addColorStop(1, 'rgba(0,0,0,0.52)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+}
+
+// ============================================================
+//  HUD
+// ============================================================
+const elAlive = document.getElementById('v-alive');
+const elGen   = document.getElementById('v-gen');
+const elInk   = document.getElementById('v-ink');
+const elFill  = document.getElementById('v-fill');
+const elGrid  = document.getElementById('v-grid');
+
+let hudTimer = 0;
+
+function updateHUD(force) {
+  let cnt = 0, inkSum = 0;
+  const len = COLS * ROWS;
+  for (let i = 0; i < len; i++) {
+    if (alive[i]) cnt++;
+    inkSum += ink[i];
+  }
+  const inkAvg = inkSum / len;
+
+  elAlive.textContent = cnt;
+  elGen.textContent   = generation;
+  elInk.textContent   = (inkAvg * 100).toFixed(1) + '%';
+  elFill.style.width  = clamp(inkAvg * 260, 0, 100).toFixed(1) + '%';
+  elGrid.textContent  = COLS + ' × ' + ROWS;
+}
+
+// ============================================================
+//  交互
+// ============================================================
+let dragging = false;
+let lastCellX = -1, lastCellY = -1;
+
+function cellFromEvent(e) {
+  const rect = canvas.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+  return {
+    x: Math.floor(x / CELL),
+    y: Math.floor(y / CELL)
+  };
+}
+
+canvas.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  ensureAudio();
+  document.getElementById('hint').classList.add('hide');
+  canvas.setPointerCapture(e.pointerId);
+
+  dragging = true;
+  const c = cellFromEvent(e);
+  seedAt(c.x, c.y, 1.0);
+  lastCellX = c.x;
+  lastCellY = c.y;
+
+  // 落墨音
+  playNote(freqFromCell(c.x, c.y), 0.55);
+});
+
+canvas.addEventListener('pointermove', e => {
+  if (!dragging) return;
+  e.preventDefault();
+  const c = cellFromEvent(e);
+  if (c.x === lastCellX && c.y === lastCellY) return;
+
+  // 沿途补点，避免拖拽过快断墨
+  const dx = c.x - lastCellX;
+  const dy = c.y - lastCellY;
+  const steps = Math.max(1, Math.ceil(Math.hypot(dx, dy)));
+  for (let s = 1; s <= steps; s++) {
+    const k = s / steps;
+    seedAt(
+      Math.round(lastCellX + dx * k),
+      Math.round(lastCellY + dy * k),
+      0.55
+    );
+  }
+  lastCellX = c.x;
+  lastCellY = c.y;
+}, { passive: false });
+
+function endDrag() {
+  dragging = false;
+  lastCellX = -1;
+  lastCellY = -1;
+}
+canvas.addEventListener('pointerup', endDrag);
+canvas.addEventListener('pointercancel', endDrag);
+window.addEventListener('blur', endDrag);
+
+// ============================================================
+//  按钮
+// ============================================================
+const btnPause = document.getElementById('btn-pause');
+let paused = false;
+
+btnPause.addEventListener('click', () => {
+  paused = !paused;
+  btnPause.classList.toggle('on', !paused);
+  btnPause.textContent = paused ? '继续扩散' : '暂停扩散';
+});
+
+document.getElementById('btn-rand').addEventListener('click', () => {
+  ensureAudio();
+  document.getElementById('hint').classList.add('hide');
+  seedRandom();
+  playNote(freqFromCell(COLS/2, ROWS/2), 0.4);
+});
+
+document.getElementById('btn-clear').addEventListener('click', () => {
+  alive.fill(0);
+  ink.fill(0);
+  generation = 0;
+  seedCenter();
+  playNote(freqFromCell(COLS/2, ROWS/2), 0.5);
+});
+
+window.addEventListener('keydown', e => {
+  if (e.key === ' ') { e.preventDefault(); btnPause.click(); }
+  if (e.key === 'r' || e.key === 'R') document.getElementById('btn-rand').click();
+  if (e.key === 'c' || e.key === 'C') document.getElementById('btn-clear').click();
+});
+
+window.addEventListener('resize', resize);
+
+// ============================================================
+//  主循环
+// ============================================================
+let lastT = performance.now() / 1000;
+let lastStepT = lastT;
+const STEP_INTERVAL = 0.115;   // 秒
+
+function frame(nowMs) {
+  const t = nowMs / 1000;
+  const dt = Math.min(t - lastT, 0.05);
+  lastT = t;
+
+  if (!paused && t - lastStepT >= STEP_INTERVAL) {
+    lastStepT = t;
+    stepCA();
+  }
+
+  drawBackdrop();
+  render();
+  drawVignette();
+
+  hudTimer += dt;
+  if (hudTimer > 0.12) {
+    hudTimer = 0;
+    updateHUD();
+  }
+
+  requestAnimationFrame(frame);
+}
+
+// ============================================================
+//  启动
+// ============================================================
+resize();
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

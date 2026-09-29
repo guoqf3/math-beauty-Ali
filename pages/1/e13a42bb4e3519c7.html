@@ -1,0 +1,828 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>蒙特卡洛围棋定式 · MCTS Win-Rate</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{width:100%;height:100%;overflow:hidden;background:#0a0704;}
+  canvas{display:block;width:100%;height:100%;cursor:crosshair;touch-action:none;}
+
+  .panel{
+    position:fixed;left:26px;bottom:24px;
+    font-family:"Songti SC","STSong","SimSun",serif;
+    color:#c9b78a;user-select:none;pointer-events:none;
+    letter-spacing:.08em;
+  }
+  .panel h1{
+    font-size:16px;font-weight:600;letter-spacing:.30em;
+    color:#e6d5a8;margin-bottom:7px;
+  }
+  .panel .formula{
+    font-family:"Times New Roman",Georgia,serif;
+    font-size:12.5px;color:#9a8b6a;margin-bottom:9px;line-height:1.6;
+  }
+  .panel .formula i{color:#c8622e;font-style:italic;}
+  .panel .hint{
+    font-size:11.5px;color:#8a7c5e;line-height:1.9;opacity:.9;
+  }
+  .panel .hint b{color:#b8a578;font-weight:500;}
+
+  .sound-btn{
+    position:fixed;right:22px;top:20px;
+    width:42px;height:42px;border-radius:50%;
+    border:1px solid rgba(180,160,110,.28);
+    background:rgba(30,24,18,.60);
+    backdrop-filter:blur(6px);
+    color:#c9b78a;font-size:17px;line-height:1;
+    cursor:pointer;user-select:none;
+    display:flex;align-items:center;justify-content:center;
+    transition:all .28s ease;
+    font-family:"Songti SC",serif;
+  }
+  .sound-btn:hover{background:rgba(60,48,32,.92);transform:scale(1.06);}
+  .sound-btn.off{opacity:.35;}
+
+  .fade-in{animation:fi 1.8s ease both;}
+  @keyframes fi{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:none;}}
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+
+<div class="panel fade-in">
+  <h1>蒙特卡洛 · 定式</h1>
+  <p class="formula">
+    <i>Q</i>(<i>s,a</i>) = <i>W</i>(<i>s,a</i>) / <i>N</i>(<i>s,a</i>)
+  </p>
+  <p class="hint">
+    <b>点击</b> · 从落点扩散，模拟展开<br>
+    <b>移动</b> · 靠近交点，读其胜率
+  </p>
+</div>
+
+<button class="sound-btn" id="sndBtn" title="声音开关">♪</button>
+
+<script>
+(() => {
+"use strict";
+
+/* ============================================================
+   画布
+   ============================================================ */
+const cv  = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+
+let W = 0, H = 0, DPR = 1;
+let bgCanvas = null;
+let boardTexCanvas = null;
+
+let time = 0, prevT = performance.now();
+
+/* ============================================================
+   棋盘
+   ============================================================ */
+const BN = 13;              // 13×13
+const board = { ox:0, oy:0, cell:0, size:0 };
+
+function computeBoard(){
+  const usable = Math.min(W, H) * 0.80;
+  board.cell = usable / (BN - 1);
+  board.size = board.cell * (BN - 1);
+  board.ox = (W - board.size) / 2;
+  board.oy = (H - board.size) / 2;
+}
+
+function boardToScreen(i, j){
+  return {
+    x: board.ox + i * board.cell,
+    y: board.oy + j * board.cell
+  };
+}
+
+/* ============================================================
+   音频 —— 古琴拨弦 + 山谷回响
+   ============================================================ */
+let actx = null, master = null, delayNode = null;
+let audioOn = true;
+let lastNoteTime = 0;
+
+const PENTA = [0, 2, 4, 7, 9];
+const BASE_FREQ = 174.61;
+
+function noteFreq(step){
+  const oct = Math.floor(step / 5);
+  const deg = ((step % 5) + 5) % 5;
+  return BASE_FREQ * Math.pow(2, (PENTA[deg] + oct * 12) / 12);
+}
+
+function initAudio(){
+  if (actx) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  actx = new AC();
+
+  master = actx.createGain();
+  master.gain.setValueAtTime(0, actx.currentTime);
+  master.gain.linearRampToValueAtTime(audioOn ? 0.80 : 0, actx.currentTime + 1.2);
+  master.connect(actx.destination);
+
+  const delay = actx.createDelay(2.5);
+  delay.delayTime.value = 0.30;
+
+  const fb = actx.createGain();
+  fb.gain.value = 0.42;
+
+  const damp = actx.createBiquadFilter();
+  damp.type = 'lowpass';
+  damp.frequency.value = 2000;
+
+  const wet = actx.createGain();
+  wet.gain.value = 0.36;
+
+  delay.connect(damp);
+  damp.connect(fb);
+  fb.connect(delay);
+  damp.connect(wet);
+  wet.connect(master);
+
+  delayNode = delay;
+}
+
+function resumeAudio(){
+  if (!actx) initAudio();
+  if (actx && actx.state === 'suspended') actx.resume();
+}
+
+function playNote(freq, vel = 0.16, dur = 2.2){
+  if (!actx || !audioOn) return;
+  const now = actx.currentTime;
+  if (now - lastNoteTime < 0.028) return;
+  lastNoteTime = now;
+
+  const out = actx.createGain();
+  out.gain.value = vel;
+
+  const filt = actx.createBiquadFilter();
+  filt.type = 'lowpass';
+  filt.Q.value = 0.65;
+  filt.frequency.setValueAtTime(5400, now);
+  filt.frequency.exponentialRampToValueAtTime(760, now + dur * 0.9);
+
+  const env = actx.createGain();
+  env.gain.setValueAtTime(0.0001, now);
+  env.gain.exponentialRampToValueAtTime(1, now + 0.007);
+  env.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+
+  filt.connect(env);
+  env.connect(out);
+  out.connect(master);
+  if (delayNode) out.connect(delayNode);
+
+  const partials = [
+    [1.00, 1.00], [2.00, 0.42], [3.01, 0.17], [4.20, 0.085],
+    [5.40, 0.042], [6.80, 0.021], [8.10, 0.010]
+  ];
+
+  for (const [m, a] of partials){
+    const o = actx.createOscillator();
+    o.type = 'sine';
+    o.frequency.value = freq * m;
+    o.detune.value = (Math.random() - 0.5) * 6;
+
+    const og = actx.createGain();
+    og.gain.value = a;
+
+    o.connect(og);
+    og.connect(filt);
+    o.start(now);
+    o.stop(now + dur + 0.25);
+  }
+}
+
+/* ============================================================
+   背景
+   ============================================================ */
+function makeBackground(){
+  bgCanvas = document.createElement('canvas');
+  bgCanvas.width  = Math.max(1, Math.round(W));
+  bgCanvas.height = Math.max(1, Math.round(H));
+  const b = bgCanvas.getContext('2d');
+
+  b.fillStyle = '#0a0704';
+  b.fillRect(0, 0, W, H);
+
+  // 中心暖光
+  const g = b.createRadialGradient(
+    W*0.5, H*0.5, 0,
+    W*0.5, H*0.5, Math.max(W, H) * 0.72
+  );
+  g.addColorStop(0.00, 'rgba(52, 36, 18, 0.42)');
+  g.addColorStop(0.55, 'rgba(20, 14, 8, 0.18)');
+  g.addColorStop(1.00, 'rgba(0, 0, 0, 0.58)');
+  b.fillStyle = g;
+  b.fillRect(0, 0, W, H);
+
+  // 细粒
+  const n = Math.floor((W*H) / 2400);
+  for (let i = 0; i < n; i++){
+    b.fillStyle = `rgba(170, 140, 88, ${Math.random() * 0.028})`;
+    b.fillRect(Math.random()*W, Math.random()*H, Math.random()*1.6+0.3, Math.random()*1.1+0.3);
+  }
+
+  // 暗角
+  const v = b.createRadialGradient(
+    W*0.5, H*0.5, Math.min(W, H) * 0.30,
+    W*0.5, H*0.5, Math.max(W, H) * 0.82
+  );
+  v.addColorStop(0, 'rgba(0,0,0,0)');
+  v.addColorStop(1, 'rgba(0,0,0,0.74)');
+  b.fillStyle = v;
+  b.fillRect(0, 0, W, H);
+}
+
+/* ============================================================
+   棋盘纹理（离屏）
+   ============================================================ */
+function makeBoardTex(){
+  boardTexCanvas = document.createElement('canvas');
+  boardTexCanvas.width  = Math.max(1, Math.round(W));
+  boardTexCanvas.height = Math.max(1, Math.round(H));
+  const b = boardTexCanvas.getContext('2d');
+
+  const { ox, oy, cell, size } = board;
+  const margin = cell * 0.90;
+  const bx = ox - margin, by = oy - margin;
+  const bw = size + margin * 2;
+  const bh = size + margin * 2;
+
+  // 棋墩木板
+  const woodG = b.createLinearGradient(bx, by, bx + bw, by + bh);
+  woodG.addColorStop(0.00, '#3d2a18');
+  woodG.addColorStop(0.45, '#2f2012');
+  woodG.addColorStop(1.00, '#1c120a');
+  b.fillStyle = woodG;
+  b.fillRect(bx, by, bw, bh);
+
+  // 木纹
+  for (let i = 0; i < 200; i++){
+    const yy = by + Math.random() * bh;
+    b.beginPath();
+    b.moveTo(bx, yy);
+    const seg = bw / 12;
+    for (let k = 1; k <= 12; k++){
+      b.lineTo(bx + k * seg, yy + (Math.random() - 0.5) * 4.2);
+    }
+    b.strokeStyle = `rgba(150, 110, 62, ${0.014 + Math.random() * 0.030})`;
+    b.lineWidth = 0.4 + Math.random() * 1.4;
+    b.stroke();
+  }
+
+  // 中心提亮
+  const glowG = b.createRadialGradient(W/2, H/2, 0, W/2, H/2, size * 0.75);
+  glowG.addColorStop(0.00, 'rgba(160, 118, 62, 0.16)');
+  glowG.addColorStop(1.00, 'rgba(160, 118, 62, 0)');
+  b.fillStyle = glowG;
+  b.fillRect(bx, by, bw, bh);
+
+  // 棋盘内边框
+  b.strokeStyle = 'rgba(200, 162, 104, 0.16)';
+  b.lineWidth = 1.3;
+  b.strokeRect(bx + 2.5, by + 2.5, bw - 5, bh - 5);
+
+  // 网格
+  b.strokeStyle = 'rgba(210, 172, 116, 0.30)';
+  b.lineWidth = 0.75;
+  for (let i = 0; i < BN; i++){
+    const x = ox + i * cell;
+    b.beginPath();
+    b.moveTo(x, oy);
+    b.lineTo(x, oy + size);
+    b.stroke();
+
+    const y = oy + i * cell;
+    b.beginPath();
+    b.moveTo(ox, y);
+    b.lineTo(ox + size, y);
+    b.stroke();
+  }
+
+  // 星位
+  const stars = [[3,3], [9,3], [3,9], [9,9], [6,6]];
+  for (const [si, sj] of stars){
+    const x = ox + si * cell;
+    const y = oy + sj * cell;
+    b.beginPath();
+    b.arc(x, y, Math.max(1.9, cell * 0.10), 0, Math.PI * 2);
+    b.fillStyle = 'rgba(220, 182, 122, 0.48)';
+    b.fill();
+  }
+}
+
+/* ============================================================
+   蒙特卡洛状态
+   ============================================================ */
+const TICKS = 12;            // 每个交点 12 次模拟
+const TICK_INTERVAL = 70;    // ms 每次模拟
+const MAX_RADIUS_GRID = 5;   // 扩散半径（格）
+
+let candidates = [];
+let clickPoint = null;
+let clickPulse = 0;
+
+let globalTickSoundTime = 0;
+
+/* ============================================================
+   构建候选点
+   ============================================================ */
+function buildCandidates(ci, cj){
+  candidates = [];
+  clickPoint = { i: ci, j: cj };
+  const now = performance.now();
+
+  // 记录需要播放的模拟声音
+  for (let i = 0; i < BN; i++){
+    for (let j = 0; j < BN; j++){
+      const d = Math.hypot(i - ci, j - cj);
+      if (d > MAX_RADIUS_GRID) continue;
+
+      // 影响力：距离高斯衰减
+      const influence = Math.exp(-(d * d) / 5.0);
+
+      // 位置偏好：中心与角部微调
+      const cx = (i - (BN - 1) / 2) / ((BN - 1) / 2);
+      const cy = (j - (BN - 1) / 2) / ((BN - 1) / 2);
+      const rr = Math.hypot(cx, cy);
+      const centerBias = 0.05 * (1 - rr);
+
+      // 基础胜率
+      const rawBase = 0.42 + influence * 0.42 + centerBias + (Math.random() - 0.5) * 0.06;
+      const baseWinRate = Math.max(0.12, Math.min(0.90, rawBase));
+
+      candidates.push({
+        i, j,
+        x: board.ox + i * board.cell,
+        y: board.oy + j * board.cell,
+        influence,
+        baseWinRate,
+        results: [],
+        revealed: 0,
+        startTime: now + d * 130,
+        hover: 0,
+        flash: 0,
+        noteStep: (i + (BN - 1 - j)) % 10
+      });
+    }
+  }
+
+  // 按距离排序，让视觉扩散更自然
+  candidates.sort((a, b) => {
+    const da = Math.hypot(a.i - ci, a.j - cj);
+    const db = Math.hypot(b.i - ci, b.j - cj);
+    return da - db;
+  });
+}
+
+/* ============================================================
+   更新
+   ============================================================ */
+const mouse = { x: 0, y: 0, active: false, lastMove: 0 };
+let hoverCand = null;
+let lastHoverSound = 0;
+
+function update(dt, t){
+  const now = performance.now();
+
+  // 空闲游移
+  if (!mouse.active || now - mouse.lastMove > 3500){
+    mouse.x = W * 0.5 + Math.sin(t * 0.22) * W * 0.20;
+    mouse.y = H * 0.5 + Math.cos(t * 0.17) * H * 0.16;
+    mouse.active = false;
+  }
+
+  // —— 模拟推进 ——
+  for (const c of candidates){
+    const elapsed = now - c.startTime;
+    if (elapsed < 0) continue;
+
+    const target = Math.min(TICKS, Math.floor(elapsed / TICK_INTERVAL));
+
+    while (c.revealed < target){
+      const r = Math.random();
+      const win = r < c.baseWinRate;
+      c.results.push(win);
+      c.revealed++;
+
+      // 每次模拟仅在地域集中时出一点音
+      if (now - globalTickSoundTime > 220 && Math.random() < 0.20){
+        globalTickSoundTime = now;
+        playNote(noteFreq(c.noteStep + 4), 0.030, 1.5);
+      }
+    }
+
+    // flash 衰减
+    c.flash *= Math.pow(0.08, dt);
+  }
+
+  // 点击脉冲衰减
+  clickPulse *= Math.pow(0.10, dt);
+
+  // —— 悬停 ——
+  hoverCand = null;
+  if (mouse.active){
+    let best = Infinity;
+    for (const c of candidates){
+      const d = Math.hypot(mouse.x - c.x, mouse.y - c.y);
+      if (d < board.cell * 0.62 && d < best){
+        best = d;
+        hoverCand = c;
+      }
+    }
+  }
+
+  // 悬停音
+  if (hoverCand && now - lastHoverSound > 200){
+    lastHoverSound = now;
+    playNote(noteFreq(hoverCand.noteStep + 3), 0.06, 1.8);
+  }
+
+  // 悬停渐变
+  for (const c of candidates){
+    const target = (c === hoverCand) ? 1 : 0;
+    c.hover += (target - c.hover) * Math.min(1, dt * 8);
+  }
+}
+
+/* ============================================================
+   绘制：棋盘
+   ============================================================ */
+function drawBoard(){
+  if (boardTexCanvas){
+    ctx.drawImage(boardTexCanvas, 0, 0, W, H);
+  }
+}
+
+/* ============================================================
+   绘制：候选点
+   ============================================================ */
+function winRateColor(win, alpha = 1){
+  // 低 → 冷蓝；高 → 暖金
+  const t = Math.max(0, Math.min(1, (win - 0.30) / 0.40));
+  const r = Math.round(110 + t * 130);
+  const g = Math.round(140 + t * 60);
+  const b = Math.round(180 - t * 90);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+function drawCandidate(c){
+  // 计算当前胜率
+  let winRate = 0.5;
+  if (c.results.length > 0){
+    let w = 0;
+    for (const r of c.results) if (r) w++;
+    winRate = w / c.results.length;
+  }
+
+  // 圆环半径随胜率变化
+  const baseR = board.cell * 0.62;
+  const radius = baseR * (0.55 + winRate * 0.60);
+
+  // —— 虚线占位圆环 ——
+  ctx.beginPath();
+  ctx.arc(c.x, c.y, radius, 0, Math.PI * 2);
+  ctx.setLineDash([2, 5]);
+  ctx.strokeStyle = 'rgba(180, 148, 96, 0.13)';
+  ctx.lineWidth = 0.8;
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // —— 已揭示的弧段 ——
+  const segStep = (Math.PI * 2) / TICKS;
+  const lineW = 1.4 + winRate * 2.4;
+
+  for (let i = 0; i < c.revealed; i++){
+    const win = c.results[i];
+
+    const a0 = -Math.PI / 2 + i * segStep + segStep * 0.14;
+    const a1 = -Math.PI / 2 + (i + 1) * segStep - segStep * 0.14;
+
+    const alpha = 0.62 + win * 0.30;
+
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, radius, a0, a1);
+    ctx.strokeStyle = win
+      ? `rgba(232, 186, 100, ${alpha})`
+      : `rgba(96, 136, 190, ${alpha * 0.85})`;
+    ctx.lineWidth = lineW;
+    ctx.lineCap = 'round';
+    ctx.stroke();
+  }
+
+  // —— 中心圆点 ——
+  const dotR = 1.4 + winRate * 1.6;
+  ctx.fillStyle = `rgba(220, 186, 122, ${0.22 + winRate * 0.30})`;
+  ctx.beginPath();
+  ctx.arc(c.x, c.y, dotR, 0, Math.PI * 2);
+  ctx.fill();
+
+  // —— 悬停高亮 ——
+  if (c.hover > 0.03){
+    // 外圈光
+    const gr = radius * (1.9 + c.hover * 0.5);
+    const gg = ctx.createRadialGradient(c.x, c.y, radius * 0.4, c.x, c.y, gr);
+    gg.addColorStop(0, `rgba(255, 224, 148, ${c.hover * 0.22})`);
+    gg.addColorStop(1, 'rgba(255, 224, 148, 0)');
+    ctx.fillStyle = gg;
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, gr, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 胜率数字
+    ctx.font = '600 11px "Times New Roman", Georgia, serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = `rgba(246, 222, 162, ${0.55 + c.hover * 0.45})`;
+    ctx.fillText(
+      (winRate * 100).toFixed(0) + '%',
+      c.x,
+      c.y - radius - 9
+    );
+  }
+
+  // —— 揭示中的闪光 ——
+  if (c.flash > 0.03){
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, radius * (1 + c.flash * 0.4), 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(255, 236, 180, ${c.flash * 0.55})`;
+    ctx.lineWidth = 1.4;
+    ctx.stroke();
+  }
+}
+
+/* ============================================================
+   绘制：点击脉冲
+   ============================================================ */
+function drawClickPoint(){
+  if (!clickPoint || clickPulse < 0.02) return;
+
+  const p = boardToScreen(clickPoint.i, clickPoint.j);
+
+  const maxR = board.cell * (1 + clickPulse * 4.2);
+  const r = maxR * (1 - clickPulse);
+
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+  ctx.strokeStyle = `rgba(232, 190, 112, ${clickPulse * 0.65})`;
+  ctx.lineWidth = 1.6 + clickPulse * 1.6;
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, r * 0.62, 0, Math.PI * 2);
+  ctx.strokeStyle = `rgba(232, 190, 112, ${clickPulse * 0.38})`;
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // 中心十字
+  const s = board.cell * 0.22;
+  ctx.strokeStyle = `rgba(255, 234, 176, ${clickPulse * 0.9})`;
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  ctx.moveTo(p.x - s, p.y);
+  ctx.lineTo(p.x + s, p.y);
+  ctx.moveTo(p.x, p.y - s);
+  ctx.lineTo(p.x, p.y + s);
+  ctx.stroke();
+}
+
+/* ============================================================
+   绘制：统计信息
+   ============================================================ */
+function drawStats(){
+  if (!candidates.length) return;
+
+  let totalSims = 0;
+  let totalWins = 0;
+  for (const c of candidates){
+    totalSims += c.results.length;
+    for (const r of c.results) if (r) totalWins++;
+  }
+
+  if (totalSims === 0) return;
+
+  const avgWin = totalWins / totalSims;
+  const progress = totalSims / (candidates.length * TICKS);
+
+  const x = W - 34;
+  const y = 84;
+
+  // 标题
+  ctx.font = '400 10px "Songti SC","SimSun",serif';
+  ctx.fillStyle = 'rgba(180, 158, 110, 0.48)';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'top';
+  ctx.fillText('模拟进度', x, y);
+
+  // 进度条
+  const bw = 130, bh = 3;
+  const bx = x - bw;
+  const by = y + 16;
+
+  ctx.fillStyle = 'rgba(120, 100, 60, 0.25)';
+  ctx.fillRect(bx, by, bw, bh);
+
+  const grad = ctx.createLinearGradient(bx, 0, bx + bw, 0);
+  grad.addColorStop(0.00, 'rgba(96, 136, 190, 0.85)');
+  grad.addColorStop(1.00, 'rgba(232, 186, 100, 0.90)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(bx, by, bw * progress, bh);
+
+  // 数值
+  ctx.font = '500 13px "Times New Roman", Georgia, serif';
+  ctx.fillStyle = 'rgba(220, 186, 122, 0.80)';
+  ctx.textAlign = 'right';
+  ctx.fillText('Q̄ = ' + avgWin.toFixed(3), x, y + 26);
+
+  ctx.font = '400 11px "Times New Roman", Georgia, serif';
+  ctx.fillStyle = 'rgba(180, 158, 110, 0.56)';
+  ctx.fillText('N = ' + totalSims, x, y + 46);
+}
+
+/* ============================================================
+   渲染
+   ============================================================ */
+function render(t, dt){
+  ctx.clearRect(0, 0, W, H);
+
+  if (bgCanvas) ctx.drawImage(bgCanvas, 0, 0, W, H);
+  else { ctx.fillStyle = '#0a0704'; ctx.fillRect(0, 0, W, H); }
+
+  drawBoard();
+
+  // 候选点（先画影响小的）
+  for (const c of candidates){
+    if (c.revealed === 0 && c.influence < 0.1) continue;
+    drawCandidate(c);
+  }
+
+  // 点击脉冲
+  drawClickPoint();
+
+  // 统计
+  drawStats();
+
+  // 鼠标柔光
+  if (mouse.active){
+    const mg = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, 100);
+    mg.addColorStop(0, 'rgba(255, 228, 160, 0.08)');
+    mg.addColorStop(1, 'rgba(255, 228, 160, 0)');
+    ctx.fillStyle = mg;
+    ctx.beginPath();
+    ctx.arc(mouse.x, mouse.y, 100, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+/* ============================================================
+   主循环
+   ============================================================ */
+function loop(){
+  const now = performance.now();
+  const dt = Math.min((now - prevT) / 1000, 0.05);
+  prevT = now;
+  time = now / 1000;
+
+  update(dt, time);
+  render(time, dt);
+
+  requestAnimationFrame(loop);
+}
+
+/* ============================================================
+   尺寸
+   ============================================================ */
+function resize(){
+  const nw = window.innerWidth;
+  const nh = window.innerHeight;
+  if (nw === W && nh === H) return;
+
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = nw; H = nh;
+
+  cv.width  = Math.round(W * DPR);
+  cv.height = Math.round(H * DPR);
+  cv.style.width  = W + 'px';
+  cv.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  computeBoard();
+  makeBackground();
+  makeBoardTex();
+
+  mouse.x = W / 2;
+  mouse.y = H / 2;
+}
+
+/* ============================================================
+   交互
+   ============================================================ */
+function pointerPos(e){
+  const r = cv.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+
+cv.addEventListener('pointermove', e => {
+  const p = pointerPos(e);
+  mouse.x = p.x;
+  mouse.y = p.y;
+  mouse.active = true;
+  mouse.lastMove = performance.now();
+  resumeAudio();
+}, { passive: true });
+
+cv.addEventListener('pointerdown', e => {
+  resumeAudio();
+
+  const p = pointerPos(e);
+  mouse.x = p.x;
+  mouse.y = p.y;
+  mouse.active = true;
+  mouse.lastMove = performance.now();
+
+  // 棋盘坐标
+  const gx = (p.x - board.ox) / board.cell;
+  const gy = (p.y - board.oy) / board.cell;
+
+  let ci = Math.round(gx);
+  let cj = Math.round(gy);
+  ci = Math.max(0, Math.min(BN - 1, ci));
+  cj = Math.max(0, Math.min(BN - 1, cj));
+
+  // 距离太远忽略
+  if (Math.hypot(gx - ci, gy - cj) > 0.62) return;
+
+  buildCandidates(ci, cj);
+  clickPulse = 1;
+
+  // 起始音
+  const step = (ci + (BN - 1 - cj)) % 10 + 2;
+  playNote(noteFreq(step), 0.24, 2.8);
+  setTimeout(() => playNote(noteFreq(step + 3), 0.10, 2.2), 140);
+}, { passive: true });
+
+cv.addEventListener('pointerleave', () => {
+  mouse.active = false;
+  hoverCand = null;
+});
+
+/* ============================================================
+   声音开关
+   ============================================================ */
+const sndBtn = document.getElementById('sndBtn');
+sndBtn.addEventListener('click', () => {
+  audioOn = !audioOn;
+  sndBtn.classList.toggle('off', !audioOn);
+  sndBtn.textContent = audioOn ? '♪' : '✕';
+
+  if (audioOn){
+    resumeAudio();
+    if (master && actx){
+      master.gain.cancelScheduledValues(actx.currentTime);
+      master.gain.setValueAtTime(master.gain.value, actx.currentTime);
+      master.gain.linearRampToValueAtTime(0.80, actx.currentTime + 0.5);
+    }
+    playNote(noteFreq(4), 0.18, 2.4);
+  } else if (master && actx){
+    master.gain.cancelScheduledValues(actx.currentTime);
+    master.gain.setValueAtTime(master.gain.value, actx.currentTime);
+    master.gain.linearRampToValueAtTime(0, actx.currentTime + 0.35);
+  }
+});
+
+/* ============================================================
+   窗口变化
+   ============================================================ */
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(resize, 200);
+});
+
+/* ============================================================
+   启动
+   ============================================================ */
+resize();
+
+// 开场：默认在天元处展开一次模拟
+setTimeout(() => {
+  buildCandidates(Math.floor(BN / 2), Math.floor(BN / 2));
+  clickPulse = 1;
+  playNote(noteFreq(4), 0.20, 2.8);
+}, 500);
+
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>

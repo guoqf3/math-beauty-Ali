@@ -1,0 +1,992 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>量子力学 · 水墨实验</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body {
+    width:100%; height:100%; overflow:hidden;
+    background:#e8e2d5;
+    font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;
+    color:#3a3226; user-select:none; -webkit-tap-highlight-color:transparent;
+    cursor:crosshair;
+  }
+  canvas { position:fixed; inset:0; display:block; touch-action:none; }
+
+  #hud {
+    position:fixed; top:26px; left:30px; z-index:5;
+    pointer-events:none; font-size:12.5px; line-height:1.75;
+    letter-spacing:0.03em;
+    text-shadow:0 0 18px rgba(255,255,255,0.75);
+  }
+  #hud .title {
+    font-size:19px; font-weight:300; letter-spacing:0.3em;
+    color:#2a241c; margin-bottom:3px;
+  }
+  #hud .sub {
+    font-size:10.5px; letter-spacing:0.26em;
+    color:rgba(90,76,58,0.5); margin-bottom:20px;
+  }
+  #hud .row { display:flex; gap:10px; font-variant-numeric:tabular-nums; }
+  #hud .k { color:rgba(110,92,70,0.5); width:52px; }
+  #hud .v { color:#4a3e2e; }
+  #hud .v.hi { color:#a8502a; }
+  #hud .v.state-sup { color:#2b6b8a; }
+  #hud .v.state-col { color:#a8502a; }
+
+  #hud .sec {
+    margin-top:15px; padding-top:13px;
+    border-top:1px solid rgba(130,110,84,0.18);
+  }
+  #hud .sec-title {
+    font-size:10px; letter-spacing:0.18em;
+    color:rgba(110,92,70,0.5); margin-bottom:9px;
+  }
+  #hud .track {
+    width:150px; height:4px; border-radius:3px;
+    background:rgba(130,110,84,0.16);
+    margin-bottom:12px; position:relative; overflow:hidden;
+  }
+  #hud .track .fill {
+    position:absolute; inset:0 auto 0 0;
+    height:100%; border-radius:3px;
+    background:linear-gradient(90deg,#8a9bb0,#3d5a78,#1a2230);
+    transition:width 0.15s linear;
+  }
+
+  .btn {
+    position:fixed; z-index:6;
+    padding:11px 21px;
+    background:rgba(252,249,242,0.78);
+    border:1px solid rgba(120,100,74,0.3);
+    border-radius:999px;
+    color:#4a3e2e; font-size:12.5px; letter-spacing:0.14em;
+    font-family:inherit; cursor:pointer;
+    backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
+    box-shadow:0 2px 12px rgba(90,74,54,0.09);
+    transition:all 0.3s cubic-bezier(0.4,0,0.2,1);
+  }
+  .btn:hover {
+    background:rgba(255,253,248,0.95);
+    border-color:rgba(120,100,74,0.55);
+    box-shadow:0 4px 18px rgba(90,74,54,0.16);
+  }
+  .btn.on {
+    background:rgba(56,80,104,0.85);
+    border-color:rgba(56,80,104,0.9);
+    color:#eef4f8;
+    box-shadow:0 4px 20px rgba(56,80,104,0.32);
+  }
+  #btn-observe { right:28px; bottom:28px; }
+  #btn-super   { right:28px; bottom:82px; }
+  #btn-pause   { right:28px; bottom:136px; }
+
+  #hint {
+    position:fixed; bottom:36px; left:30px; z-index:5;
+    font-size:11px; letter-spacing:0.1em;
+    color:rgba(110,92,70,0.45);
+    pointer-events:none; transition:opacity 0.9s;
+    text-shadow:0 0 14px rgba(255,255,255,0.8);
+  }
+  #hint.hide { opacity:0; }
+
+  @media (max-width:640px) {
+    #hud { top:16px; left:16px; font-size:11.5px; }
+    #hud .title { font-size:15px; letter-spacing:0.22em; }
+    #hud .track { width:110px; }
+    .btn { padding:9px 15px; font-size:11.5px; }
+    #btn-observe { right:14px; bottom:18px; }
+    #btn-super   { right:14px; bottom:64px; }
+    #btn-pause   { right:14px; bottom:110px; }
+    #hint { left:16px; bottom:22px; font-size:10px; }
+  }
+</style>
+</head>
+<body>
+
+<canvas id="cv"></canvas>
+
+<div id="hud">
+  <div class="title">量子水墨</div>
+  <div class="sub">SCHRÖDINGER · 波函数</div>
+  <div class="row"><span class="k">态</span><span class="v state-sup" id="v-state">叠加态</span></div>
+  <div class="row"><span class="k">峰值</span><span class="v" id="v-peak">0.0000</span></div>
+  <div class="row"><span class="k">展宽</span><span class="v" id="v-spread">—</span></div>
+  <div class="row"><span class="k">能量</span><span class="v hi" id="v-energy">—</span></div>
+  <div class="sec">
+    <div class="sec-title">墨迹浓度</div>
+    <div class="track"><div class="fill" id="v-fill"></div></div>
+    <div class="sec-title">网格 64 × 64 · 分裂步傅里叶</div>
+  </div>
+</div>
+
+<button class="btn" id="btn-observe">观 测</button>
+<button class="btn on" id="btn-super">叠加态</button>
+<button class="btn" id="btn-pause">暂停演化</button>
+<div id="hint">点击落墨 · 叠加波函数 · 观测量子坍缩</div>
+
+<script>
+(() => {
+'use strict';
+
+// ============================================================
+//  画布与布局
+// ============================================================
+const canvas = document.getElementById('cv');
+const ctx = canvas.getContext('2d');
+
+let W = 0, H = 0, DPR = 1;
+let paperX = 0, paperY = 0, paperSize = 0;
+
+const clamp = (v,a,b) => v < a ? a : v > b ? b : v;
+const lerp  = (a,b,t) => a + (b-a)*t;
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+
+  canvas.width  = Math.round(W * DPR);
+  canvas.height = Math.round(H * DPR);
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  paperSize = Math.min(W * 0.86, H * 0.78);
+  paperX = (W - paperSize) * 0.5;
+  paperY = (H - paperSize) * 0.5 + (H > 720 ? 8 : 0);
+
+  makePaperTexture();
+}
+
+// ============================================================
+//  波函数网格
+// ============================================================
+const N = 64;
+const LEN = N * N;
+
+const psiR = new Float64Array(LEN);
+const psiI = new Float64Array(LEN);
+
+// 势能相位（实/虚）与动能相位
+const potR = new Float64Array(LEN);
+const potI = new Float64Array(LEN);
+const kinR = new Float64Array(LEN);
+const kinI = new Float64Array(LEN);
+
+const kSq = new Float64Array(LEN);
+
+const DT = 0.42;
+
+function buildPotential() {
+  const c = (N - 1) * 0.5;
+  const omega = 0.00023;
+
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      const dx = x - c, dy = y - c;
+      const V = omega * (dx*dx + dy*dy);
+      const idx = y*N + x;
+      // 实空间势能半相位 exp(-i V dt/2)
+      const th = -V * DT * 0.5;
+      potR[idx] = Math.cos(th);
+      potI[idx] = Math.sin(th);
+    }
+  }
+}
+
+function buildKinetic() {
+  for (let my = 0; my < N; my++) {
+    const ky = (my < N/2 ? my : my - N) * 2 * Math.PI / N;
+    for (let mx = 0; mx < N; mx++) {
+      const kx = (mx < N/2 ? mx : mx - N) * 2 * Math.PI / N;
+      const k2 = kx*kx + ky*ky;
+      const idx = my*N + mx;
+      kSq[idx] = k2;
+      // 动能相位 exp(-i * 0.5 * k^2 * dt)
+      const th = -0.5 * k2 * DT;
+      kinR[idx] = Math.cos(th);
+      kinI[idx] = Math.sin(th);
+    }
+  }
+}
+
+// ============================================================
+//  FFT —— 迭代 radix-2，支持步长
+// ============================================================
+function fft1d(re, im, offset, stride, n, inverse) {
+  // 位反转置换
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) {
+      const ai = offset + i*stride;
+      const bi = offset + j*stride;
+      let t = re[ai]; re[ai] = re[bi]; re[bi] = t;
+      t = im[ai]; im[ai] = im[bi]; im[bi] = t;
+    }
+  }
+
+  for (let len = 2; len <= n; len <<= 1) {
+    const ang = 2 * Math.PI / len * (inverse ? 1 : -1);
+    const wr = Math.cos(ang), wi = Math.sin(ang);
+    const half = len >> 1;
+
+    for (let i = 0; i < n; i += len) {
+      let cr = 1, ci = 0;
+      for (let k = 0; k < half; k++) {
+        const ai = offset + (i + k) * stride;
+        const bi = offset + (i + k + half) * stride;
+
+        const ur = re[ai], ui = im[ai];
+        const vr = re[bi]*cr - im[bi]*ci;
+        const vi = re[bi]*ci + im[bi]*cr;
+
+        re[ai] = ur + vr;
+        im[ai] = ui + vi;
+        re[bi] = ur - vr;
+        im[bi] = ui - vi;
+
+        const ncr = cr*wr - ci*wi;
+        ci = cr*wi + ci*wr;
+        cr = ncr;
+      }
+    }
+  }
+
+  if (inverse) {
+    const inv = 1 / n;
+    for (let i = 0; i < n; i++) {
+      const idx = offset + i*stride;
+      re[idx] *= inv;
+      im[idx] *= inv;
+    }
+  }
+}
+
+function fft2d(re, im, inverse) {
+  // 行
+  for (let y = 0; y < N; y++) {
+    fft1d(re, im, y*N, 1, N, inverse);
+  }
+  // 列
+  for (let x = 0; x < N; x++) {
+    fft1d(re, im, x, N, N, inverse);
+  }
+}
+
+// ============================================================
+//  分裂步傅里叶演化
+// ============================================================
+function evolve() {
+  // 半势能
+  for (let i = 0; i < LEN; i++) {
+    const r = psiR[i], im = psiI[i];
+    psiR[i] = r*potR[i] - im*potI[i];
+    psiI[i] = r*potI[i] + im*potR[i];
+  }
+
+  // 正变换 → 动能 → 逆变换
+  fft2d(psiR, psiI, false);
+
+  for (let i = 0; i < LEN; i++) {
+    const r = psiR[i], im = psiI[i];
+    psiR[i] = r*kinR[i] - im*kinI[i];
+    psiI[i] = r*kinI[i] + im*kinR[i];
+  }
+
+  fft2d(psiR, psiI, true);
+
+  // 半势能
+  for (let i = 0; i < LEN; i++) {
+    const r = psiR[i], im = psiI[i];
+    psiR[i] = r*potR[i] - im*potI[i];
+    psiI[i] = r*potI[i] + im*potR[i];
+  }
+}
+
+// ============================================================
+//  归一化
+// ============================================================
+function normalize() {
+  let sum = 0;
+  for (let i = 0; i < LEN; i++) {
+    sum += psiR[i]*psiR[i] + psiI[i]*psiI[i];
+  }
+  if (sum < 1e-14) return;
+  const s = 1 / Math.sqrt(sum);
+  for (let i = 0; i < LEN; i++) {
+    psiR[i] *= s;
+    psiI[i] *= s;
+  }
+}
+
+// ============================================================
+//  高斯波包注入
+// ============================================================
+function addPacket(cxg, cyg, sigma, kx, ky, amp) {
+  const rng = Math.ceil(sigma * 3.2);
+  const x0 = Math.max(0, Math.floor(cxg - rng));
+  const x1 = Math.min(N - 1, Math.ceil(cxg + rng));
+  const y0 = Math.max(0, Math.floor(cyg - rng));
+  const y1 = Math.min(N - 1, Math.ceil(cyg + rng));
+
+  const inv2s2 = 1 / (2 * sigma * sigma);
+
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const dx = x - cxg, dy = y - cyg;
+      const g = amp * Math.exp(-(dx*dx + dy*dy) * inv2s2);
+      const ph = kx*dx + ky*dy;
+      const c = Math.cos(ph), s = Math.sin(ph);
+      const idx = y*N + x;
+      psiR[idx] += g * c;
+      psiI[idx] += g * s;
+    }
+  }
+  normalize();
+}
+
+// ============================================================
+//  量子态
+// ============================================================
+const qState = {
+  collapsed: false,
+  collapsedAt: 0,
+  energy: 0,
+};
+
+function setSuperposition() {
+  psiR.fill(0);
+  psiI.fill(0);
+
+  const cy = (N - 1) * 0.5;
+  // 左波包 → 向右
+  addPacket(N * 0.30, cy, 5.2,  0.36, 0, 1.0);
+  // 右波包 → 向左
+  addPacket(N * 0.70, cy, 5.2, -0.36, 0, 1.0);
+
+  qState.collapsed = false;
+  qState.collapsedAt = 0;
+  updateEnergy();
+}
+
+function collapse() {
+  // 找 |ψ|² 峰值
+  let maxD = -1, maxI = 0;
+  for (let i = 0; i < LEN; i++) {
+    const d = psiR[i]*psiR[i] + psiI[i]*psiI[i];
+    if (d > maxD) { maxD = d; maxI = i; }
+  }
+
+  const mx = maxI % N;
+  const my = (maxI / N) | 0;
+
+  // 保留局部平均相位（视觉上无所谓，但物理上更合理）
+  let phaseR = 1, phaseI = 0;
+  if (maxD > 1e-14) {
+    const s = 1 / Math.sqrt(maxD);
+    phaseR = psiR[maxI] * s;
+    phaseI = psiI[maxI] * s;
+  }
+
+  psiR.fill(0);
+  psiI.fill(0);
+
+  const sigma = 3.4;
+  const rng = Math.ceil(sigma * 4);
+  for (let y = Math.max(0, my - rng); y <= Math.min(N-1, my + rng); y++) {
+    for (let x = Math.max(0, mx - rng); x <= Math.min(N-1, mx + rng); x++) {
+      const dx = x - mx, dy = y - my;
+      const g = Math.exp(-(dx*dx + dy*dy) / (2*sigma*sigma));
+      const idx = y*N + x;
+      psiR[idx] = g * phaseR;
+      psiI[idx] = g * phaseI;
+    }
+  }
+
+  normalize();
+
+  qState.collapsed = true;
+  qState.collapsedAt = performance.now() / 1000;
+  qState.collapseX = mx;
+  qState.collapseY = my;
+
+  updateEnergy();
+  playCollapse();
+}
+
+// ============================================================
+//  能量期望值
+// ============================================================
+function updateEnergy() {
+  // 动能：用相邻差分近似（简化计算）
+  let T = 0;
+  for (let y = 1; y < N-1; y++) {
+    for (let x = 1; x < N-1; x++) {
+      const idx = y*N + x;
+      const dxr = (psiR[idx+1] - psiR[idx-1]) * 0.5;
+      const dxi = (psiI[idx+1] - psiI[idx-1]) * 0.5;
+      const dyr = (psiR[idx+N] - psiR[idx-N]) * 0.5;
+      const dyi = (psiI[idx+N] - psiI[idx-N]) * 0.5;
+      T += dxr*dxr + dxi*dxi + dyr*dyr + dyi*dyi;
+    }
+  }
+
+  let V = 0;
+  const c = (N - 1) * 0.5;
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      const dx = x - c, dy = y - c;
+      const vv = 0.00023 * (dx*dx + dy*dy);
+      const idx = y*N + x;
+      V += vv * (psiR[idx]*psiR[idx] + psiI[idx]*psiI[idx]);
+    }
+  }
+
+  qState.energy = 0.5 * T + V;
+}
+
+// ============================================================
+//  渲染
+// ============================================================
+const offCanvas = document.createElement('canvas');
+offCanvas.width = N;
+offCanvas.height = N;
+const offCtx = offCanvas.getContext('2d');
+const imgData = offCtx.createImageData(N, N);
+const imgD = imgData.data;
+
+let dispMax = 0.001;
+let peakDensity = 0;
+let spreadRadius = 0;
+
+function renderField() {
+  let maxD = 1e-12;
+  let sumW = 0, sumR = 0;
+  const c = (N - 1) * 0.5;
+
+  for (let i = 0; i < LEN; i++) {
+    const d = psiR[i]*psiR[i] + psiI[i]*psiI[i];
+    if (d > maxD) maxD = d;
+
+    const y = (i / N) | 0;
+    const x = i - y*N;
+    const dx = x - c, dy = y - c;
+    const r = Math.hypot(dx, dy);
+
+    sumW += d;
+    sumR += d * r;
+  }
+
+  peakDensity = maxD;
+  spreadRadius = sumW > 1e-12 ? sumR / sumW : 0;
+
+  // 自适应显示最大值（快升慢降）
+  if (maxD > dispMax) dispMax += (maxD - dispMax) * 0.28;
+  else dispMax += (maxD - dispMax) * 0.035;
+  if (dispMax < 1e-11) dispMax = 1e-11;
+
+  const inv = 1 / dispMax;
+
+  for (let i = 0; i < LEN; i++) {
+    const d = psiR[i]*psiR[i] + psiI[i]*psiI[i];
+    let v = d * inv;
+    if (v > 1) v = 1;
+
+    // 非线性映射：让淡墨也可见
+    const a = Math.pow(v, 0.58);
+
+    const j = i * 4;
+    imgD[j]     = 24;
+    imgD[j + 1] = 26;
+    imgD[j + 2] = 34;
+    imgD[j + 3] = Math.round(a * 246);
+  }
+
+  offCtx.putImageData(imgData, 0, 0);
+}
+
+// ============================================================
+//  纸张纹理
+// ============================================================
+let paperPattern = null;
+let paperTexCanvas = null;
+
+function makePaperTexture() {
+  const size = 160;
+  const pc = document.createElement('canvas');
+  pc.width = size; pc.height = size;
+  const pctx = pc.getContext('2d');
+  const img = pctx.createImageData(size, size);
+  const d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const v = 235 + Math.random() * 20;
+    d[i] = v; d[i+1] = v - 2; d[i+2] = v - 8;
+    d[i+3] = 24;
+  }
+  pctx.putImageData(img, 0, 0);
+  paperTexCanvas = pc;
+}
+
+// ============================================================
+//  绘制
+// ============================================================
+let bgGrad = null;
+let bgKey = '';
+
+function drawPaper() {
+  const key = W + 'x' + H;
+  if (key !== bgKey) {
+    bgGrad = ctx.createRadialGradient(
+      W * 0.5, H * 0.45, 0,
+      W * 0.5, H * 0.5, Math.max(W, H) * 0.78
+    );
+    bgGrad.addColorStop(0.00, '#f4efe4');
+    bgGrad.addColorStop(0.45, '#ece5d7');
+    bgGrad.addColorStop(1.00, '#d6cdbb');
+    bgKey = key;
+  }
+
+  ctx.fillStyle = bgGrad;
+  ctx.fillRect(0, 0, W, H);
+
+  // 纸纹
+  if (paperTexCanvas) {
+    if (!paperPattern) paperPattern = ctx.createPattern(paperTexCanvas, 'repeat');
+    if (paperPattern) {
+      ctx.save();
+      ctx.globalAlpha = 0.55;
+      ctx.fillStyle = paperPattern;
+      ctx.fillRect(0, 0, W, H);
+      ctx.restore();
+    }
+  }
+}
+
+function drawInk() {
+  ctx.save();
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(
+    offCanvas,
+    0, 0, N, N,
+    paperX, paperY, paperSize, paperSize
+  );
+  ctx.restore();
+}
+
+function drawPaperEdge() {
+  ctx.save();
+  ctx.strokeStyle = 'rgba(120,100,74,0.16)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(paperX - 0.5, paperY - 0.5, paperSize + 1, paperSize + 1);
+  ctx.restore();
+}
+
+function drawCollapseRipple(t) {
+  if (!qState.collapsed) return;
+  const age = t - qState.collapsedAt;
+  if (age > 1.4) return;
+
+  const p = age / 1.4;
+  const px = paperX + (qState.collapseX / N) * paperSize;
+  const py = paperY + (qState.collapseY / N) * paperSize;
+  const r = p * paperSize * 0.36;
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(px, py, r, 0, Math.PI * 2);
+  ctx.strokeStyle = `rgba(168, 80, 42, ${(1 - p) * 0.42})`;
+  ctx.lineWidth = 2.2 * (1 - p);
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.arc(px, py, r * 0.62, 0, Math.PI * 2);
+  ctx.strokeStyle = `rgba(60, 90, 130, ${(1 - p) * 0.32})`;
+  ctx.lineWidth = 1.4 * (1 - p);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawVignette() {
+  const g = ctx.createRadialGradient(
+    W * 0.5, H * 0.5, Math.min(W, H) * 0.32,
+    W * 0.5, H * 0.5, Math.max(W, H) * 0.86
+  );
+  g.addColorStop(0, 'rgba(90,74,54,0)');
+  g.addColorStop(1, 'rgba(90,74,54,0.24)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+}
+
+// ============================================================
+//  音频
+// ============================================================
+const audio = { ctx:null, bus:null, drone:null, droneGain:null, ready:false };
+
+function makeIR(actx, dur, decay) {
+  const rate = actx.sampleRate;
+  const len = Math.floor(rate * dur);
+  const buf = actx.createBuffer(2, len, rate);
+  for (let ch = 0; ch < 2; ch++) {
+    const d = buf.getChannelData(ch);
+    for (let i = 0; i < len; i++) {
+      const tt = i / len;
+      d[i] = (Math.random()*2 - 1) * Math.pow(1 - tt, decay);
+    }
+  }
+  return buf;
+}
+
+function initAudio() {
+  if (audio.ctx) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  const actx = new AC();
+  audio.ctx = actx;
+
+  const master = actx.createGain();
+  master.gain.value = 0.5;
+  master.connect(actx.destination);
+
+  const conv = actx.createConvolver();
+  conv.buffer = makeIR(actx, 4.2, 2.8);
+  const wet = actx.createGain();
+  wet.gain.value = 0.62;
+  conv.connect(wet); wet.connect(master);
+
+  const bus = actx.createGain();
+  bus.gain.value = 1;
+  bus.connect(master);
+  bus.connect(conv);
+  audio.bus = bus;
+
+  // 持续低音（环境）
+  const drone = actx.createOscillator();
+  drone.type = 'sine';
+  drone.frequency.value = 55;
+
+  const drone2 = actx.createOscillator();
+  drone2.type = 'sine';
+  drone2.frequency.value = 82.5;
+  drone2.detune.value = 7;
+
+  const dg = actx.createGain();
+  dg.gain.value = 0;
+
+  const dlp = actx.createBiquadFilter();
+  dlp.type = 'lowpass';
+  dlp.frequency.value = 380;
+
+  drone.connect(dg);
+  drone2.connect(dg);
+  dg.connect(dlp);
+  dlp.connect(bus);
+
+  drone.start();
+  drone2.start();
+
+  audio.drone = dg;
+  audio.ready = true;
+}
+
+function ensureAudio() {
+  initAudio();
+  if (audio.ctx && audio.ctx.state === 'suspended') audio.ctx.resume();
+}
+
+/** 钟磬音色 */
+function playNote(freq, vel, dur) {
+  ensureAudio();
+  if (!audio.ready) return;
+  const actx = audio.ctx;
+  const t0 = actx.currentTime;
+  const v = clamp(vel, 0.05, 1);
+  const D = dur || 3.0;
+
+  const lp = actx.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.frequency.value = clamp(freq * 8 + 1600, 900, 11000);
+  lp.Q.value = 0.42;
+  lp.connect(audio.bus);
+
+  const partials = [
+    { m: 1.000, g: 1.00, d: D },
+    { m: 2.005, g: 0.36, d: D * 0.72 },
+    { m: 3.015, g: 0.14, d: D * 0.48 },
+    { m: 4.530, g: 0.055, d: D * 0.30 },
+    { m: 6.120, g: 0.022, d: D * 0.19 },
+  ];
+
+  for (const p of partials) {
+    const o = actx.createOscillator();
+    o.type = 'sine';
+    o.frequency.value = freq * p.m;
+    o.detune.value = (Math.random() - 0.5) * 6;
+
+    const g = actx.createGain();
+    const peak = 0.13 * v * p.g;
+    g.gain.setValueAtTime(0, t0);
+    g.gain.linearRampToValueAtTime(peak, t0 + 0.008);
+    g.gain.exponentialRampToValueAtTime(0.00005, t0 + p.d);
+
+    o.connect(g); g.connect(lp);
+    o.start(t0); o.stop(t0 + p.d + 0.12);
+  }
+}
+
+function playCollapse() {
+  ensureAudio();
+  if (!audio.ready) return;
+  const actx = audio.ctx;
+  const t0 = actx.currentTime;
+
+  // 下行的五声音阶簇
+  const notes = [220, 261.63, 329.63, 392];
+  notes.forEach((f, i) => {
+    setTimeout(() => playNote(f, 0.6 - i*0.08, 4.2), i * 55);
+  });
+
+  // 低频冲击
+  const o = actx.createOscillator();
+  o.type = 'sine';
+  o.frequency.setValueAtTime(160, t0);
+  o.frequency.exponentialRampToValueAtTime(42, t0 + 0.7);
+
+  const g = actx.createGain();
+  g.gain.setValueAtTime(0.28, t0);
+  g.gain.exponentialRampToValueAtTime(0.0005, t0 + 1.6);
+
+  o.connect(g); g.connect(audio.bus);
+  o.start(t0); o.stop(t0 + 1.7);
+}
+
+// 五声音阶映射
+const PENTA = [0, 2, 4, 7, 9];
+function freqFromGrid(x, y) {
+  const nx = x / N;
+  const ny = y / N;
+  const idx = Math.floor(nx * 14 + ny * 4);
+  const oct = Math.floor(idx / 5) % 3;
+  const st  = PENTA[((idx % 5) + 5) % 5];
+  const midi = 52 + st + oct * 12;
+  return 440 * Math.pow(2, (midi - 69) / 12);
+}
+
+let lastNoteTime = 0;
+function throttleNote(freq, vel) {
+  const now = performance.now() / 1000;
+  if (now - lastNoteTime < 0.08) return;
+  lastNoteTime = now;
+  playNote(freq, vel, 2.6);
+}
+
+function updateDrone() {
+  if (!audio.ready) return;
+  const now = audio.ctx.currentTime;
+  // 展宽越大，低音越明显
+  const target = clamp(0.008 + spreadRadius / N * 0.045, 0.008, 0.055);
+  audio.drone.gain.setTargetAtTime(target, now, 0.35);
+}
+
+// ============================================================
+//  HUD
+// ============================================================
+const elState  = document.getElementById('v-state');
+const elPeak   = document.getElementById('v-peak');
+const elSpread = document.getElementById('v-spread');
+const elEnergy = document.getElementById('v-energy');
+const elFill   = document.getElementById('v-fill');
+
+let hudT = 0;
+function updateHUD(dt) {
+  hudT += dt;
+  if (hudT < 0.1) return;
+  hudT = 0;
+
+  if (qState.collapsed) {
+    elState.textContent = '坍缩态';
+    elState.className = 'v state-col';
+  } else {
+    elState.textContent = '叠加态';
+    elState.className = 'v state-sup';
+  }
+
+  elPeak.textContent = peakDensity.toFixed(5);
+  elSpread.textContent = spreadRadius.toFixed(1) + ' 格';
+  elEnergy.textContent = qState.energy.toFixed(4);
+
+  const fillPct = clamp(peakDensity * 220, 2, 100);
+  elFill.style.width = fillPct.toFixed(1) + '%';
+}
+
+// ============================================================
+//  交互
+// ============================================================
+let dragging = false;
+let lastDropT = 0;
+let paused = false;
+
+function screenToGrid(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  const x = (clientX - rect.left - paperX) / paperSize * N;
+  const y = (clientY - rect.top  - paperY) / paperSize * N;
+  return { x, y };
+}
+
+function inPaper(x, y) {
+  return x >= 0 && x < N && y >= 0 && y < N;
+}
+
+function dropInk(gx, gy, strength) {
+  const cxg = (N - 1) * 0.5;
+  const cyg = (N - 1) * 0.5;
+
+  const dx = cxg - gx;
+  const dy = cyg - gy;
+  const dist = Math.hypot(dx, dy);
+  const ux = dist > 0.5 ? dx / dist : 0;
+  const uy = dist > 0.5 ? dy / dist : 0;
+
+  // 波包向中心漂移，便于干涉
+  const k = 0.30;
+  addPacket(gx, gy, 4.6, ux * k, uy * k, 1.0);
+
+  qState.collapsed = false;
+  updateEnergy();
+
+  const f = freqFromGrid(Math.round(gx), Math.round(gy));
+  throttleNote(f, 0.42 + strength * 0.32);
+}
+
+canvas.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  ensureAudio();
+  document.getElementById('hint').classList.add('hide');
+
+  const g = screenToGrid(e.clientX, e.clientY);
+  if (!inPaper(g.x, g.y)) return;
+
+  canvas.setPointerCapture(e.pointerId);
+  dragging = true;
+  lastDropT = performance.now() / 1000;
+
+  dropInk(g.x, g.y, 1.0);
+}, { passive: false });
+
+canvas.addEventListener('pointermove', e => {
+  if (!dragging) return;
+  e.preventDefault();
+
+  const now = performance.now() / 1000;
+  if (now - lastDropT < 0.13) return;
+  lastDropT = now;
+
+  const g = screenToGrid(e.clientX, e.clientY);
+  if (!inPaper(g.x, g.y)) return;
+
+  dropInk(g.x, g.y, 0.65);
+}, { passive: false });
+
+function endDrag() {
+  dragging = false;
+}
+canvas.addEventListener('pointerup', endDrag);
+canvas.addEventListener('pointercancel', endDrag);
+window.addEventListener('blur', endDrag);
+
+// ============================================================
+//  按钮
+// ============================================================
+document.getElementById('btn-observe').addEventListener('click', () => {
+  ensureAudio();
+  document.getElementById('hint').classList.add('hide');
+  collapse();
+});
+
+document.getElementById('btn-super').addEventListener('click', () => {
+  ensureAudio();
+  document.getElementById('hint').classList.add('hide');
+  setSuperposition();
+
+  const btnS = document.getElementById('btn-super');
+  btnS.classList.add('on');
+
+  playNote(261.63, 0.5, 3.4);
+  setTimeout(() => playNote(392.00, 0.42, 3.4), 90);
+
+  document.getElementById('hint').classList.add('hide');
+});
+
+const btnPause = document.getElementById('btn-pause');
+btnPause.addEventListener('click', () => {
+  paused = !paused;
+  btnPause.classList.toggle('on', paused);
+  btnPause.textContent = paused ? '继续演化' : '暂停演化';
+});
+
+window.addEventListener('keydown', e => {
+  if (e.key === ' ') { e.preventDefault(); btnPause.click(); }
+  if (e.key === 'o' || e.key === 'O') document.getElementById('btn-observe').click();
+  if (e.key === 's' || e.key === 'S') document.getElementById('btn-super').click();
+});
+
+window.addEventListener('resize', resize);
+
+// ============================================================
+//  主循环
+// ============================================================
+let lastT = performance.now() / 1000;
+let simAccum = 0;
+
+function frame(nowMs) {
+  const t = nowMs / 1000;
+  const dt = Math.min(t - lastT, 0.05);
+  lastT = t;
+
+  // 演化：固定每帧 1 步，dt 恒定
+  if (!paused) {
+    evolve();
+    // 长间隔重新归一化，防止数值漂移
+    simAccum += 1;
+    if (simAccum >= 30) {
+      simAccum = 0;
+      normalize();
+      updateEnergy();
+    }
+  }
+
+  // 绘制
+  drawPaper();
+  renderField();
+  drawInk();
+  drawPaperEdge();
+  drawCollapseRipple(t);
+  drawVignette();
+
+  updateDrone();
+  updateHUD(dt);
+
+  requestAnimationFrame(frame);
+}
+
+// ============================================================
+//  启动
+// ============================================================
+resize();
+buildPotential();
+buildKinetic();
+setSuperposition();
+
+document.getElementById('btn-super').classList.add('on');
+
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,666 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>抛物线飞白笔法 · y = x²</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{width:100%;height:100%;overflow:hidden;background:#efe9dd;}
+  canvas{display:block;width:100%;height:100%;cursor:crosshair;touch-action:none;}
+
+  .panel{
+    position:fixed;left:26px;bottom:24px;
+    font-family:"Songti SC","STSong","SimSun",serif;
+    color:#4a4438;user-select:none;pointer-events:none;
+    letter-spacing:.08em;
+  }
+  .panel h1{
+    font-size:16px;font-weight:600;letter-spacing:.34em;
+    color:#2e2921;margin-bottom:7px;
+  }
+  .panel .formula{
+    font-family:"Times New Roman",Georgia,serif;
+    font-size:14px;color:#8a8172;letter-spacing:.06em;
+    margin-bottom:9px;
+  }
+  .panel .formula i{color:#a05a3c;font-style:italic;}
+  .panel .hint{
+    font-size:11.5px;color:#9a917f;line-height:1.9;opacity:.9;
+  }
+  .panel .hint b{color:#7a7263;font-weight:500;}
+
+  .sound-btn{
+    position:fixed;right:22px;top:20px;
+    width:42px;height:42px;border-radius:50%;
+    border:1px solid rgba(90,84,72,.28);
+    background:rgba(252,250,244,.55);
+    backdrop-filter:blur(6px);
+    color:#5c5648;font-size:17px;line-height:1;
+    cursor:pointer;user-select:none;
+    display:flex;align-items:center;justify-content:center;
+    transition:all .28s ease;
+    font-family:"Songti SC",serif;
+  }
+  .sound-btn:hover{background:rgba(255,253,248,.9);transform:scale(1.06);}
+  .sound-btn.off{opacity:.4;}
+
+  .fade-in{animation:fi 1.8s ease both;}
+  @keyframes fi{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:none;}}
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+
+<div class="panel fade-in">
+  <h1>抛物线 · 飞白</h1>
+  <p class="formula">y = x²  ·  <i>提按随曲率</i></p>
+  <p class="hint">
+    <b>移动</b> · 近笔处，墨气微动<br>
+    <b>点击</b> · 落笔成弧，提按生白
+  </p>
+</div>
+
+<button class="sound-btn" id="sndBtn" title="声音开关">♪</button>
+
+<script>
+(() => {
+"use strict";
+
+/* ============================================================
+   工具 —— 确定性随机
+   ============================================================ */
+function mulberry32(a){
+  return function(){
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+/* ============================================================
+   画布
+   ============================================================ */
+const cv  = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+
+let W = 0, H = 0, DPR = 1;
+
+// 已完成的笔画缓存层
+const committed = document.createElement('canvas');
+const cctx = committed.getContext('2d');
+
+let paperCanvas = null;
+
+let time = 0, prevT = performance.now();
+
+/* ============================================================
+   音频 —— 古琴拨弦 + 山谷回响
+   ============================================================ */
+let actx = null, master = null, delayNode = null;
+let audioOn = true;
+let lastNoteTime = 0;
+
+const PENTA = [0, 2, 4, 7, 9];
+const BASE_FREQ = 196.00;            // G3
+
+function noteFreq(step){
+  const oct = Math.floor(step / 5);
+  const deg = ((step % 5) + 5) % 5;
+  return BASE_FREQ * Math.pow(2, (PENTA[deg] + oct * 12) / 12);
+}
+
+function initAudio(){
+  if (actx) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  actx = new AC();
+
+  master = actx.createGain();
+  master.gain.setValueAtTime(0, actx.currentTime);
+  master.gain.linearRampToValueAtTime(audioOn ? 0.85 : 0, actx.currentTime + 1.4);
+  master.connect(actx.destination);
+
+  const delay = actx.createDelay(2.5);
+  delay.delayTime.value = 0.30;
+
+  const fb = actx.createGain();
+  fb.gain.value = 0.40;
+
+  const damp = actx.createBiquadFilter();
+  damp.type = 'lowpass';
+  damp.frequency.value = 1900;
+
+  const wet = actx.createGain();
+  wet.gain.value = 0.36;
+
+  delay.connect(damp);
+  damp.connect(fb);
+  fb.connect(delay);
+  damp.connect(wet);
+  wet.connect(master);
+
+  delayNode = delay;
+}
+
+function resumeAudio(){
+  if (!actx) initAudio();
+  if (actx && actx.state === 'suspended') actx.resume();
+}
+
+/* 拨弦音色：基频 + 谐波列 + 快速的起振与衰减 */
+function pluck(freq, vel = 0.2, dur = 2.4){
+  if (!actx || !audioOn) return;
+  const now = actx.currentTime;
+  if (now - lastNoteTime < 0.030) return;
+  lastNoteTime = now;
+
+  const out = actx.createGain();
+  out.gain.value = vel;
+
+  const filt = actx.createBiquadFilter();
+  filt.type = 'lowpass';
+  filt.Q.value = 0.65;
+  filt.frequency.setValueAtTime(5600, now);
+  filt.frequency.exponentialRampToValueAtTime(720, now + dur * 0.9);
+
+  const env = actx.createGain();
+  env.gain.setValueAtTime(0.0001, now);
+  env.gain.exponentialRampToValueAtTime(1, now + 0.007);
+  env.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+
+  filt.connect(env);
+  env.connect(out);
+  out.connect(master);
+  if (delayNode) out.connect(delayNode);
+
+  const partials = [
+    [1.00, 1.00], [2.00, 0.42], [3.01, 0.17], [4.20, 0.085],
+    [5.40, 0.042], [6.80, 0.021], [8.10, 0.010], [10.5, 0.005]
+  ];
+
+  for (const [m, a] of partials){
+    const o = actx.createOscillator();
+    o.type = 'sine';
+    o.frequency.value = freq * m;
+    o.detune.value = (Math.random() - 0.5) * 6;
+
+    const og = actx.createGain();
+    og.gain.value = a;
+
+    o.connect(og);
+    og.connect(filt);
+    o.start(now);
+    o.stop(now + dur + 0.25);
+  }
+}
+
+/* ============================================================
+   宣纸
+   ============================================================ */
+function makePaper(){
+  paperCanvas = document.createElement('canvas');
+  paperCanvas.width  = Math.max(1, Math.round(W));
+  paperCanvas.height = Math.max(1, Math.round(H));
+  const p = paperCanvas.getContext('2d');
+
+  // 底色渐变
+  const g = p.createRadialGradient(
+    W * 0.5, H * 0.44, Math.min(W, H) * 0.05,
+    W * 0.5, H * 0.52, Math.max(W, H) * 0.90
+  );
+  g.addColorStop(0.00, '#fdfcf8');
+  g.addColorStop(0.55, '#f7f2e8');
+  g.addColorStop(1.00, '#e9e1d1');
+  p.fillStyle = g;
+  p.fillRect(0, 0, W, H);
+
+  // 纸纤维
+  const n = Math.floor((W * H) / 850);
+  for (let i = 0; i < n; i++){
+    p.fillStyle = `rgba(120,108,86,${Math.random() * 0.034})`;
+    p.fillRect(
+      Math.random() * W,
+      Math.random() * H,
+      Math.random() * 2 + 0.4,
+      Math.random() * 1.2 + 0.3
+    );
+  }
+
+  // 淡墨晕
+  for (let i = 0; i < 12; i++){
+    const x = Math.random() * W;
+    const y = Math.random() * H;
+    const r = 90 + Math.random() * 250;
+    const rg = p.createRadialGradient(x, y, 0, x, y, r);
+    rg.addColorStop(0, `rgba(148,138,116,${0.016 + Math.random() * 0.022})`);
+    rg.addColorStop(1, 'rgba(148,138,116,0)');
+    p.fillStyle = rg;
+    p.beginPath();
+    p.arc(x, y, r, 0, Math.PI * 2);
+    p.fill();
+  }
+
+  // 四角暗角
+  const v = p.createRadialGradient(
+    W * 0.5, H * 0.5, Math.min(W, H) * 0.34,
+    W * 0.5, H * 0.5, Math.max(W, H) * 0.82
+  );
+  v.addColorStop(0, 'rgba(0,0,0,0)');
+  v.addColorStop(1, 'rgba(92,80,60,0.14)');
+  p.fillStyle = v;
+  p.fillRect(0, 0, W, H);
+}
+
+/* ============================================================
+   笔画 —— 抛物线 y = a·x²  ·  压力 = 曲率 = 提按
+   ============================================================ */
+const MAX_STROKES = 20;
+const INK = [36, 44, 58];      // 深墨色
+
+class Stroke {
+  constructor(opt){
+    this.cx     = opt.cx;
+    this.cy     = opt.cy;
+    this.angle  = opt.angle;
+    this.a      = opt.a;
+    this.L      = opt.L;
+    this.wMin   = opt.wMin;
+    this.wMax   = opt.wMax;
+    this.duration = opt.duration;
+    this.seed   = opt.seed;
+    this.delay  = opt.delay || 0;
+
+    this.progress = 0;
+    this.active   = false;
+    this.done     = false;
+
+    this.notes = [];              // 生长过程中要奏的音
+    this.nextNote = 0;
+
+    this.buildStamps();
+  }
+
+  /* —— 采样：沿抛物线生成墨点 —— */
+  buildStamps(){
+    const rand = mulberry32(this.seed);
+    const N = 170;                       // 采样点数
+    const raw = [];
+
+    for (let i = 0; i <= N; i++){
+      const t = i / N;
+      const u = t * 2 - 1;               // -1 → 1
+      const lx = u * this.L;
+      const ly = this.a * lx * lx;       // y = a·x²
+
+      // —— 压力：顶点为 0（提），两端为 1（按） ——
+      const press = Math.pow(Math.abs(u), 1.45);
+      const w = this.wMin + (this.wMax - this.wMin) * press;
+
+      // 局部切线 → 法线
+      const dydx = 2 * this.a * lx;
+      const tl   = Math.hypot(1, dydx);
+      const lnx  = -dydx / tl;
+      const lny  = 1 / tl;
+
+      // 旋转到世界坐标
+      const c = Math.cos(this.angle), s = Math.sin(this.angle);
+      const wx  = this.cx + lx * c - ly * s;
+      const wy  = this.cy + lx * s + ly * c;
+      const wnx = lnx * c - lny * s;
+      const wny = lnx * s + lny * c;
+
+      // —— 飞白：压力越低，墨点越散越少 ——
+      const dryness = Math.max(0, 1 - press * 1.55);
+      const nDrops  = 1 + Math.floor(dryness * 3);   // 1 ~ 4
+
+      for (let k = 0; k < nDrops; k++){
+        let off;
+        if (nDrops === 1){
+          off = 0;
+        } else {
+          off = ((k + 0.5) / nDrops - 0.5) * w * (0.80 + dryness * 0.65);
+        }
+        off += (rand() - 0.5) * w * 0.38;
+
+        const px = wx + wnx * off;
+        const py = wy + wny * off;
+
+        let dr = w * 0.46 / Math.sqrt(nDrops);
+        dr *= 0.62 + rand() * 0.72;
+        dr = Math.max(0.38, dr);
+
+        const alpha = 0.32 + rand() * 0.46;
+
+        raw.push({
+          x: px, y: py, r: dr, a: alpha,
+          t, press
+        });
+      }
+    }
+
+    // —— 按透明度分桶，渲染时快速批量画 ——
+    this.buckets = [];
+    for (let i = 0; i < 8; i++) this.buckets.push([]);
+
+    for (const s of raw){
+      const bi = Math.min(7, Math.floor(s.a * 8));
+      this.buckets[bi].push(s);
+    }
+
+    // —— 预排音符 ——
+    const base = Math.floor(rand() * 5);
+    for (let p = 0.12; p < 0.95; p += 0.13){
+      this.notes.push({
+        at: p,
+        step: base + Math.floor(p * 6) + Math.floor(rand() * 3)
+      });
+    }
+  }
+
+  /* —— 渲染到指定 ctx —— */
+  renderTo(target, progress, extraInk = 0){
+    const ink = 1 + extraInk;
+
+    for (let bi = 0; bi < 8; bi++){
+      const bucket = this.buckets[bi];
+      if (!bucket.length) continue;
+
+      const alpha = ((bi + 0.5) / 8) * 0.82 * ink;
+      target.fillStyle = `rgba(${INK[0]},${INK[1]},${INK[2]},${alpha})`;
+
+      for (let i = 0; i < bucket.length; i++){
+        const s = bucket[i];
+        if (s.t > progress) continue;
+        target.fillRect(s.x - s.r, s.y - s.r, s.r * 2, s.r * 2);
+      }
+    }
+  }
+
+  /* —— 当前笔尖位置 —— */
+  tipPoint(){
+    const u = this.progress * 2 - 1;
+    const lx = u * this.L;
+    const ly = this.a * lx * lx;
+    const c = Math.cos(this.angle), s = Math.sin(this.angle);
+    return {
+      x: this.cx + lx * c - ly * s,
+      y: this.cy + lx * s + ly * c
+    };
+  }
+}
+
+/* ============================================================
+   笔画集合
+   ============================================================ */
+let strokes = [];
+let hoverGlow = { x: 0, y: 0, a: 0 };
+
+/* —— 生成一条笔画的参数 —— */
+function makeStrokeParams(cx, cy, seedOffset = 0){
+  const L    = Math.min(W, H) * (0.20 + Math.random() * 0.14);
+  const K    = 0.16 + Math.random() * 0.46;      // 弧度比
+  const sign = Math.random() < 0.5 ? 1 : -1;
+  const a    = sign * K / L;
+
+  return {
+    cx, cy,
+    angle:    (Math.random() - 0.5) * 0.62,
+    a, L,
+    wMin:     0.75,
+    wMax:     6.8 + Math.random() * 3.2,
+    duration: 2.1 + Math.random() * 1.6,
+    seed:     (Date.now() + seedOffset * 7919 + Math.floor(Math.random() * 99999)) >>> 0,
+    delay:    0
+  };
+}
+
+/* —— 自动生成首屏笔画 —— */
+function initStrokes(){
+  strokes = [];
+  const count = 4;
+  for (let i = 0; i < count; i++){
+    const cx = W * (0.24 + Math.random() * 0.52);
+    const cy = H * (0.22 + Math.random() * 0.56);
+    const params = makeStrokeParams(cx, cy, i);
+    params.delay = i * 0.85;
+    strokes.push(new Stroke(params));
+  }
+}
+
+/* —— 添加新笔画 —— */
+function addStroke(cx, cy){
+  const params = makeStrokeParams(cx, cy, strokes.length);
+  const st = new Stroke(params);
+  strokes.push(st);
+
+  // 超出上限则移除最旧的
+  while (strokes.length > MAX_STROKES){
+    strokes.shift();
+  }
+
+  return st;
+}
+
+/* ============================================================
+   更新
+   ============================================================ */
+function update(dt, t){
+  const now = performance.now();
+
+  for (const st of strokes){
+    if (st.done) continue;
+
+    // 延迟启动
+    if (!st.active){
+      st.delay -= dt;
+      if (st.delay <= 0){
+        st.active = true;
+        st.delay = 0;
+      } else continue;
+    }
+
+    st.progress += dt / st.duration;
+
+    // 生长过程中奏音
+    while (st.nextNote < st.notes.length &&
+           st.progress >= st.notes[st.nextNote].at){
+      const n = st.notes[st.nextNote];
+      pluck(noteFreq(n.step), 0.075 + Math.random() * 0.04, 2.0);
+      st.nextNote++;
+    }
+
+    // 完成 → 提交到缓存层
+    if (st.progress >= 1){
+      st.progress = 1;
+      st.done = true;
+      st.active = false;
+      st.renderTo(cctx, 1);
+    }
+  }
+
+  // 悬停柔光：靠近笔尖
+  let nearest = null, bestD = Infinity;
+  for (const st of strokes){
+    if (!st.active) continue;
+    const tip = st.tipPoint();
+    const d = Math.hypot(tip.x - mouse.x, tip.y - mouse.y);
+    if (d < bestD){ bestD = d; nearest = tip; }
+  }
+
+  if (nearest && bestD < 90){
+    hoverGlow.x += (nearest.x - hoverGlow.x) * Math.min(1, dt * 8);
+    hoverGlow.y += (nearest.y - hoverGlow.y) * Math.min(1, dt * 8);
+    hoverGlow.a += ((1 - bestD / 90) * 0.55 - hoverGlow.a) * Math.min(1, dt * 6);
+  } else {
+    hoverGlow.a += (0 - hoverGlow.a) * Math.min(1, dt * 5);
+  }
+}
+
+/* ============================================================
+   渲染
+   ============================================================ */
+function render(t){
+  ctx.clearRect(0, 0, W, H);
+
+  // 宣纸
+  if (paperCanvas) ctx.drawImage(paperCanvas, 0, 0, W, H);
+  else { ctx.fillStyle = '#f6f1e6'; ctx.fillRect(0, 0, W, H); }
+
+  // 已完成笔画
+  ctx.drawImage(committed, 0, 0, W, H);
+
+  // 正在生长的笔画
+  for (const st of strokes){
+    if (st.done || !st.active) continue;
+    st.renderTo(ctx, st.progress);
+  }
+
+  // 笔尖柔光
+  if (hoverGlow.a > 0.01){
+    const g = ctx.createRadialGradient(
+      hoverGlow.x, hoverGlow.y, 0,
+      hoverGlow.x, hoverGlow.y, 110
+    );
+    g.addColorStop(0, `rgba(214,180,120,${hoverGlow.a * 0.28})`);
+    g.addColorStop(0.6, `rgba(214,180,120,${hoverGlow.a * 0.08})`);
+    g.addColorStop(1, 'rgba(214,180,120,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(hoverGlow.x, hoverGlow.y, 110, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // 鼠标柔光
+  if (mouse.active){
+    const mg = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, 130);
+    mg.addColorStop(0, 'rgba(255,250,235,0.13)');
+    mg.addColorStop(1, 'rgba(255,250,235,0)');
+    ctx.fillStyle = mg;
+    ctx.beginPath();
+    ctx.arc(mouse.x, mouse.y, 130, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+/* ============================================================
+   主循环
+   ============================================================ */
+function loop(){
+  const now = performance.now();
+  const dt = Math.min((now - prevT) / 1000, 0.05);
+  prevT = now;
+  time = now / 1000;
+
+  update(dt, time);
+  render(time);
+
+  requestAnimationFrame(loop);
+}
+
+/* ============================================================
+   尺寸
+   ============================================================ */
+function resize(){
+  const nw = window.innerWidth;
+  const nh = window.innerHeight;
+  if (nw === W && nh === H) return;
+
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = nw; H = nh;
+
+  cv.width  = Math.round(W * DPR);
+  cv.height = Math.round(H * DPR);
+  cv.style.width  = W + 'px';
+  cv.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  committed.width  = cv.width;
+  committed.height = cv.height;
+  cctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  makePaper();
+  initStrokes();
+
+  mouse.x = W / 2;
+  mouse.y = H / 2;
+}
+
+/* ============================================================
+   交互
+   ============================================================ */
+const mouse = { x: 0, y: 0, active: false };
+
+function pointerPos(e){
+  const r = cv.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+
+cv.addEventListener('pointermove', e => {
+  const p = pointerPos(e);
+  mouse.x = p.x;
+  mouse.y = p.y;
+  mouse.active = true;
+  resumeAudio();
+}, { passive: true });
+
+cv.addEventListener('pointerdown', e => {
+  resumeAudio();
+
+  const p = pointerPos(e);
+  mouse.x = p.x;
+  mouse.y = p.y;
+  mouse.active = true;
+
+  // 新笔画
+  const st = addStroke(p.x, p.y);
+
+  // 起始音：顶点处压力最轻 → 取中高音
+  pluck(noteFreq(5), 0.24, 2.8);
+  setTimeout(() => pluck(noteFreq(7), 0.10, 2.2), 180);
+}, { passive: true });
+
+cv.addEventListener('pointerleave', () => {
+  mouse.active = false;
+});
+
+/* 声音开关 */
+const sndBtn = document.getElementById('sndBtn');
+sndBtn.addEventListener('click', () => {
+  audioOn = !audioOn;
+  sndBtn.classList.toggle('off', !audioOn);
+  sndBtn.textContent = audioOn ? '♪' : '✕';
+
+  if (audioOn){
+    resumeAudio();
+    if (master && actx){
+      master.gain.cancelScheduledValues(actx.currentTime);
+      master.gain.setValueAtTime(master.gain.value, actx.currentTime);
+      master.gain.linearRampToValueAtTime(0.85, actx.currentTime + 0.5);
+    }
+    pluck(noteFreq(4), 0.2, 2.4);
+  } else if (master && actx){
+    master.gain.cancelScheduledValues(actx.currentTime);
+    master.gain.setValueAtTime(master.gain.value, actx.currentTime);
+    master.gain.linearRampToValueAtTime(0, actx.currentTime + 0.35);
+  }
+});
+
+/* 窗口变化 */
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(resize, 200);
+});
+
+/* ============================================================
+   启动
+   ============================================================ */
+resize();
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>

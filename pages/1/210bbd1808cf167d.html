@@ -1,0 +1,791 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>信息熵围棋 · 布局</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden;
+    background: #05070c;
+    font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+    color: #bcd6e8; user-select: none; -webkit-tap-highlight-color: transparent;
+  }
+  canvas { display: block; touch-action: none; cursor: crosshair; }
+
+  #hud {
+    position: fixed; top: 26px; left: 30px; pointer-events: none;
+    font-size: 13px; line-height: 1.75; letter-spacing: 0.03em;
+    text-shadow: 0 0 20px rgba(0,0,0,0.95);
+  }
+  #hud .title {
+    font-size: 19px; font-weight: 300; letter-spacing: 0.3em;
+    color: #d8eefc; margin-bottom: 2px;
+  }
+  #hud .sub {
+    font-size: 10.5px; letter-spacing: 0.24em;
+    color: rgba(130, 180, 210, 0.5); margin-bottom: 20px;
+  }
+  #hud .row { display: flex; gap: 10px; font-variant-numeric: tabular-nums; }
+  #hud .k { color: rgba(120, 175, 205, 0.45); width: 20px; }
+  #hud .v { color: #9fd8ee; }
+  #hud .v.hot { color: #ffc46a; }
+
+  #hud .bar {
+    margin-top: 16px; padding-top: 14px;
+    border-top: 1px solid rgba(100, 160, 190, 0.12);
+  }
+  #hud .bar-label {
+    font-size: 10.5px; letter-spacing: 0.16em;
+    color: rgba(130, 180, 210, 0.45); margin-bottom: 7px;
+  }
+  #hud .grad {
+    width: 168px; height: 7px; border-radius: 4px;
+    background: linear-gradient(90deg,
+      rgb(18,40,90), rgb(24,95,155), rgb(46,175,185),
+      rgb(170,205,115), rgb(255,195,95));
+    box-shadow: 0 0 14px rgba(90,180,220,0.22);
+  }
+  #hud .grad-ends {
+    display: flex; justify-content: space-between;
+    font-size: 9.5px; color: rgba(120, 175, 205, 0.4);
+    margin-top: 4px; width: 168px;
+  }
+
+  .btn {
+    position: fixed;
+    padding: 11px 22px;
+    background: rgba(14, 24, 36, 0.72);
+    border: 1px solid rgba(105, 185, 220, 0.26);
+    border-radius: 999px;
+    color: #9fd4e8; font-size: 12.5px; letter-spacing: 0.14em;
+    font-family: inherit; cursor: pointer;
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .btn:hover {
+    background: rgba(30, 60, 80, 0.8);
+    border-color: rgba(140, 220, 255, 0.6);
+    color: #d6f4ff;
+  }
+  .btn.on {
+    background: rgba(48, 104, 134, 0.55);
+    border-color: rgba(160, 240, 255, 0.75);
+    color: #e2f9ff;
+    box-shadow: 0 0 26px rgba(90, 200, 255, 0.22);
+  }
+  #btn-auto { right: 28px; bottom: 28px; }
+  #btn-reset { right: 28px; bottom: 82px; }
+
+  #hint {
+    position: fixed; bottom: 34px; left: 30px;
+    font-size: 11px; letter-spacing: 0.1em;
+    color: rgba(125, 175, 200, 0.4);
+    pointer-events: none; transition: opacity 0.8s;
+  }
+  #hint.hide { opacity: 0; }
+
+  @media (max-width: 640px) {
+    #hud { top: 16px; left: 16px; font-size: 12px; }
+    #hud .title { font-size: 15px; letter-spacing: 0.22em; }
+    #hud .grad, #hud .grad-ends { width: 124px; }
+    .btn { padding: 9px 16px; font-size: 11.5px; }
+    #btn-auto { right: 14px; bottom: 18px; }
+    #btn-reset { right: 14px; bottom: 66px; }
+    #hint { left: 16px; bottom: 22px; font-size: 10px; }
+  }
+</style>
+</head>
+<body>
+
+<canvas id="cv"></canvas>
+
+<div id="hud">
+  <div class="title">信息熵围棋</div>
+  <div class="sub">SHANNON ENTROPY · 布局</div>
+  <div class="row"><span class="k">H</span><span class="v" id="v-h">1.000</span></div>
+  <div class="row"><span class="k">手</span><span class="v" id="v-n">0</span></div>
+  <div class="row"><span class="k">热</span><span class="v hot" id="v-hot">—</span></div>
+  <div class="bar">
+    <div class="bar-label">信息熵 低 → 高</div>
+    <div class="grad"></div>
+    <div class="grad-ends"><span>确定</span><span>不确定</span></div>
+  </div>
+</div>
+
+<button class="btn" id="btn-reset">重置</button>
+<button class="btn" id="btn-auto">自动布局</button>
+<div id="hint">点击落子 · 观察高熵区域如何吸引棋子</div>
+
+<script>
+(() => {
+'use strict';
+
+// ============================================================
+//  基础
+// ============================================================
+const canvas = document.getElementById('cv');
+const ctx = canvas.getContext('2d');
+
+const N = 19;
+const EMPTY = 0, BLACK = 1, WHITE = -1;
+
+let W, H, DPR, cx, cy;
+let boardPx, cell, bx0, by0, heatSize;
+
+const heatCanvas = document.createElement('canvas');
+const heatCtx = heatCanvas.getContext('2d');
+
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+
+function easeOutBack(x) {
+  const c1 = 1.70158, c3 = c1 + 1;
+  return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
+}
+function easeOutCubic(x) { return 1 - Math.pow(1 - x, 3); }
+
+// ============================================================
+//  棋盘数据
+// ============================================================
+const board = new Int8Array(N * N);       // 0 空, 1 黑, -1 白
+const phi   = new Float32Array(N * N);    // 影响力场
+const ent   = new Float32Array(N * N);    // 逐点香农熵
+const born  = new Float32Array(N * N);    // 落子时间（做动画用）
+
+const SIGMA = 3.0;
+const INV2S2 = 1 / (2 * SIGMA * SIGMA);
+const R_EFF = Math.ceil(SIGMA * 3.5);
+
+let moveCount = 0;
+let nextColor = BLACK;
+
+// ============================================================
+//  音频引擎
+// ============================================================
+const audio = { ctx: null, master: null, bus: null, ready: false };
+
+function makeImpulse(actx, duration, decay) {
+  const rate = actx.sampleRate;
+  const len = Math.floor(rate * duration);
+  const buf = actx.createBuffer(2, len, rate);
+  for (let ch = 0; ch < 2; ch++) {
+    const d = buf.getChannelData(ch);
+    for (let i = 0; i < len; i++) {
+      const t = i / len;
+      d[i] = (Math.random() * 2 - 1) * Math.pow(1 - t, decay);
+    }
+  }
+  return buf;
+}
+
+function initAudio() {
+  if (audio.ctx) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  const actx = new AC();
+  audio.ctx = actx;
+
+  const master = actx.createGain();
+  master.gain.value = 0.62;
+  master.connect(actx.destination);
+  audio.master = master;
+
+  const bus = actx.createGain();
+  bus.gain.value = 1;
+  audio.bus = bus;
+
+  const dry = actx.createGain();
+  dry.gain.value = 0.72;
+  bus.connect(dry); dry.connect(master);
+
+  const conv = actx.createConvolver();
+  conv.buffer = makeImpulse(actx, 2.8, 2.2);
+  bus.connect(conv);
+  const wet = actx.createGain();
+  wet.gain.value = 0.5;
+  conv.connect(wet); wet.connect(master);
+
+  audio.ready = true;
+}
+
+function ensureAudio() {
+  initAudio();
+  if (audio.ctx && audio.ctx.state === 'suspended') audio.ctx.resume();
+}
+
+/** 落子音：钟磬质感的泛音列 */
+function playStone(freq, vel) {
+  ensureAudio();
+  if (!audio.ready) return;
+  const actx = audio.ctx;
+  const t0 = actx.currentTime;
+  const v = clamp(vel, 0.08, 1);
+
+  const lp = actx.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.frequency.value = clamp(freq * 9 + 1800, 800, 14000);
+  lp.Q.value = 0.5;
+  lp.connect(audio.bus);
+
+  const partials = [
+    { m: 1.000, g: 1.00, d: 2.6 },
+    { m: 2.000, g: 0.40, d: 1.6 },
+    { m: 3.010, g: 0.16, d: 1.0 },
+    { m: 4.020, g: 0.07, d: 0.65 },
+    { m: 5.430, g: 0.03, d: 0.45 },
+  ];
+
+  for (const p of partials) {
+    const osc = actx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.value = freq * p.m;
+    osc.detune.value = (Math.random() - 0.5) * 5;
+
+    const g = actx.createGain();
+    const peak = 0.24 * v * p.g;
+    g.gain.setValueAtTime(0, t0);
+    g.gain.linearRampToValueAtTime(peak, t0 + 0.004);
+    g.gain.exponentialRampToValueAtTime(0.00005, t0 + p.d);
+
+    osc.connect(g); g.connect(lp);
+    osc.start(t0); osc.stop(t0 + p.d + 0.1);
+  }
+
+  // 落子瞬态
+  const nlen = Math.floor(actx.sampleRate * 0.05);
+  const nbuf = actx.createBuffer(1, nlen, actx.sampleRate);
+  const nd = nbuf.getChannelData(0);
+  for (let i = 0; i < nlen; i++) {
+    nd[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / nlen, 4);
+  }
+  const ns = actx.createBufferSource();
+  ns.buffer = nbuf;
+
+  const bp = actx.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.frequency.value = clamp(freq * 4, 500, 6000);
+  bp.Q.value = 1.5;
+
+  const ng = actx.createGain();
+  ng.gain.value = 0.085 * v;
+
+  ns.connect(bp); bp.connect(ng); ng.connect(audio.bus);
+  ns.start(t0);
+}
+
+// 五声音阶映射
+const PENTA = [0, 2, 4, 7, 9];
+function noteFor(x, y) {
+  const idx = (x * 3 + y * 5) % 5;
+  const oct = Math.floor((x + y) / 12); // 0,1,2
+  const midi = 50 + PENTA[idx] + oct * 12;
+  return 440 * Math.pow(2, (midi - 69) / 12);
+}
+
+// ============================================================
+//  熵场计算
+// ============================================================
+function computeField() {
+  phi.fill(0);
+  for (let i = 0; i < N * N; i++) {
+    const s = board[i];
+    if (s === 0) continue;
+    const xi = i % N, yi = (i / N) | 0;
+    for (let dy = -R_EFF; dy <= R_EFF; dy++) {
+      const y = yi + dy;
+      if (y < 0 || y >= N) continue;
+      for (let dx = -R_EFF; dx <= R_EFF; dx++) {
+        const x = xi + dx;
+        if (x < 0 || x >= N) continue;
+        phi[y * N + x] += s * Math.exp(-(dx * dx + dy * dy) * INV2S2);
+      }
+    }
+  }
+}
+
+function computeEntropy() {
+  for (let i = 0; i < N * N; i++) {
+    if (board[i] !== 0) { ent[i] = 0; continue; }
+    // p = 黑棋占据该点的概率
+    let p = 1 / (1 + Math.exp(-phi[i] * 1.5));
+    p = clamp(p, 1e-6, 1 - 1e-6);
+    ent[i] = -(p * Math.log2(p) + (1 - p) * Math.log2(1 - p));
+  }
+}
+
+// 星位先验（用于空盘打破平局）
+const STAR_POS = [3, 9, 15];
+function starWeight(x, y) {
+  let best = 1e9;
+  for (let a = 0; a < 3; a++) {
+    for (let b = 0; b < 3; b++) {
+      const dx = x - STAR_POS[a], dy = y - STAR_POS[b];
+      const d2 = dx * dx + dy * dy;
+      if (d2 < best) best = d2;
+    }
+  }
+  return Math.exp(-best / 20);
+}
+
+// ============================================================
+//  热力图渲染（离屏）
+// ============================================================
+const STOPS = [
+  { t: 0.00, c: [ 16,  36,  86] },
+  { t: 0.30, c: [ 24,  95, 155] },
+  { t: 0.55, c: [ 46, 175, 185] },
+  { t: 0.78, c: [170, 205, 115] },
+  { t: 1.00, c: [255, 195,  95] },
+];
+
+function heatColor(h) {
+  h = clamp(h, 0, 1);
+  for (let i = 0; i < STOPS.length - 1; i++) {
+    const a = STOPS[i], b = STOPS[i + 1];
+    if (h <= b.t) {
+      const k = (h - a.t) / (b.t - a.t || 1);
+      return [
+        Math.round(a.c[0] + (b.c[0] - a.c[0]) * k),
+        Math.round(a.c[1] + (b.c[1] - a.c[1]) * k),
+        Math.round(a.c[2] + (b.c[2] - a.c[2]) * k),
+      ];
+    }
+  }
+  return STOPS[STOPS.length - 1].c;
+}
+
+function renderHeatmap() {
+  heatCtx.clearRect(0, 0, heatSize, heatSize);
+  heatCtx.globalCompositeOperation = 'lighter';
+
+  const off = 2 * cell;
+  const rad = cell * 1.15;
+
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      const i = y * N + x;
+      const h = ent[i];
+      if (h < 0.02) continue;
+
+      const px = x * cell + off;
+      const py = y * cell + off;
+      const c = heatColor(h);
+
+      const g = heatCtx.createRadialGradient(px, py, 0, px, py, rad);
+      g.addColorStop(0, `rgba(${c[0]},${c[1]},${c[2]},${0.50 * h})`);
+      g.addColorStop(0.55, `rgba(${c[0]},${c[1]},${c[2]},${0.16 * h})`);
+      g.addColorStop(1, `rgba(${c[0]},${c[1]},${c[2]},0)`);
+      heatCtx.fillStyle = g;
+      heatCtx.beginPath();
+      heatCtx.arc(px, py, rad, 0, Math.PI * 2);
+      heatCtx.fill();
+    }
+  }
+  heatCtx.globalCompositeOperation = 'source-over';
+}
+
+// ============================================================
+//  落子
+// ============================================================
+function placeStone(idx, color) {
+  if (idx < 0 || board[idx] !== 0) return false;
+
+  const x = idx % N, y = (idx / N) | 0;
+  const e = ent[idx];
+
+  board[idx] = color;
+  born[idx] = performance.now() / 1000;
+  moveCount++;
+
+  playStone(noteFor(x, y), 0.45 + 0.55 * e);
+
+  computeField();
+  computeEntropy();
+  renderHeatmap();
+
+  return true;
+}
+
+/** 选熵最高且带星位先验的点 */
+function pickBest() {
+  let best = -1, bestScore = -1;
+  for (let i = 0; i < N * N; i++) {
+    if (board[i] !== 0) continue;
+    const x = i % N, y = (i / N) | 0;
+    const w = 0.72 + 0.28 * starWeight(x, y);
+    const score = ent[i] * w + (Math.random() - 0.5) * 0.0025;
+    if (score > bestScore) { bestScore = score; best = i; }
+  }
+  return best;
+}
+
+// ============================================================
+//  尺寸
+// ============================================================
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+
+  canvas.width = Math.round(W * DPR);
+  canvas.height = Math.round(H * DPR);
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  cx = W * 0.5;
+  cy = H * 0.5 + (W < 640 ? 6 : 8);
+
+  boardPx = Math.min(W * 0.88, H * 0.80);
+  cell = boardPx / (N - 1);
+  bx0 = cx - boardPx / 2;
+  by0 = cy - boardPx / 2;
+
+  heatSize = boardPx + cell * 4;
+  heatCanvas.width = Math.round(heatSize * DPR);
+  heatCanvas.height = Math.round(heatSize * DPR);
+  heatCtx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  renderHeatmap();
+}
+
+const sx = x => bx0 + x * cell;
+const sy = y => by0 + y * cell;
+
+// ============================================================
+//  绘制
+// ============================================================
+function drawBackground(t) {
+  ctx.fillStyle = '#05070c';
+  ctx.fillRect(0, 0, W, H);
+
+  const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, boardPx * 0.95);
+  g.addColorStop(0, 'rgba(26, 50, 74, 0.55)');
+  g.addColorStop(0.6, 'rgba(14, 26, 40, 0.28)');
+  g.addColorStop(1, 'rgba(5, 7, 12, 0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+}
+
+function drawBoardFrame() {
+  ctx.save();
+  ctx.strokeStyle = 'rgba(110, 180, 215, 0.13)';
+  ctx.lineWidth = 1;
+  const pad = cell * 1.5;
+  ctx.beginPath();
+  ctx.roundRect(bx0 - pad, by0 - pad, boardPx + pad * 2, boardPx + pad * 2, 14);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawGrid() {
+  ctx.save();
+  ctx.strokeStyle = 'rgba(150, 200, 225, 0.115)';
+  ctx.lineWidth = 1;
+
+  for (let i = 0; i < N; i++) {
+    const p = i * cell;
+    ctx.beginPath();
+    ctx.moveTo(bx0 + p, by0);
+    ctx.lineTo(bx0 + p, by0 + boardPx);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(bx0, by0 + p);
+    ctx.lineTo(bx0 + boardPx, by0 + p);
+    ctx.stroke();
+  }
+
+  // 星位
+  ctx.fillStyle = 'rgba(160, 210, 235, 0.35)';
+  for (let a = 0; a < 3; a++) {
+    for (let b = 0; b < 3; b++) {
+      ctx.beginPath();
+      ctx.arc(sx(STAR_POS[a]), sy(STAR_POS[b]), 2.1, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  ctx.restore();
+}
+
+function drawHeatmap(t) {
+  ctx.save();
+  ctx.globalAlpha = 0.80 + 0.10 * Math.sin(t * 1.3);
+  ctx.drawImage(
+    heatCanvas,
+    bx0 - 2 * cell, by0 - 2 * cell,
+    heatSize, heatSize
+  );
+  ctx.restore();
+}
+
+function drawStone(px, py, color, radius, scale) {
+  ctx.save();
+  ctx.translate(px, py);
+  ctx.scale(scale, scale);
+
+  // 阴影
+  ctx.beginPath();
+  ctx.arc(1.2, 2.2, radius, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(0,0,0,0.42)';
+  ctx.filter = 'blur(2px)';
+  ctx.fill();
+  ctx.filter = 'none';
+
+  const g = ctx.createRadialGradient(
+    -radius * 0.34, -radius * 0.38, radius * 0.04,
+    0, 0, radius
+  );
+
+  if (color === BLACK) {
+    g.addColorStop(0.00, '#565664');
+    g.addColorStop(0.35, '#26262f');
+    g.addColorStop(1.00, '#07070b');
+  } else {
+    g.addColorStop(0.00, '#ffffff');
+    g.addColorStop(0.48, '#e9eff6');
+    g.addColorStop(1.00, '#a3adba');
+  }
+
+  ctx.beginPath();
+  ctx.arc(0, 0, radius, 0, Math.PI * 2);
+  ctx.fillStyle = g;
+  ctx.fill();
+
+  // 高光
+  ctx.beginPath();
+  ctx.arc(-radius * 0.30, -radius * 0.34, radius * 0.28, 0, Math.PI * 2);
+  ctx.fillStyle = color === BLACK
+    ? 'rgba(160, 175, 200, 0.22)'
+    : 'rgba(255, 255, 255, 0.85)';
+  ctx.fill();
+
+  ctx.restore();
+}
+
+function drawStones(t) {
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      const i = y * N + x;
+      const s = board[i];
+      if (s === 0) continue;
+
+      const px = sx(x), py = sy(y);
+      const bt = born[i];
+      const age = t - bt;
+      let scale = 1;
+
+      if (age < 0.36) {
+        scale = easeOutBack(clamp(age / 0.36, 0, 1));
+      }
+
+      // 落子涟漪
+      if (age < 0.85) {
+        const p = age / 0.85;
+        const r = radiusOf(1) * (1 + p * 2.4);
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(px, py, r, 0, Math.PI * 2);
+        ctx.strokeStyle = s === BLACK
+          ? `rgba(150, 210, 255, ${(1 - p) * 0.55})`
+          : `rgba(255, 225, 170, ${(1 - p) * 0.6})`;
+        ctx.lineWidth = 2.2 * (1 - p);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      drawStone(px, py, s, radiusOf(scale === 1 ? 1 : Math.max(scale, 0.01)) , 1);
+    }
+  }
+}
+
+function radiusOf(k) { return cell * 0.455 * k; }
+
+// 悬停高亮
+let hoverIdx = -1;
+
+function drawHover(t) {
+  if (hoverIdx < 0) return;
+  const x = hoverIdx % N, y = (hoverIdx / N) | 0;
+  const px = sx(x), py = sy(y);
+
+  ctx.save();
+  const r = cell * 0.52 + Math.sin(t * 4) * 1.5;
+  ctx.beginPath();
+  ctx.arc(px, py, r, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(160, 225, 255, 0.55)';
+  ctx.lineWidth = 1.3;
+  ctx.stroke();
+
+  if (board[hoverIdx] === 0) {
+    const h = ent[hoverIdx];
+    // 熵环
+    ctx.beginPath();
+    ctx.arc(px, py, cell * 0.42, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * h);
+    ctx.strokeStyle = `rgba(255, 200, 110, ${0.35 + 0.5 * h})`;
+    ctx.lineWidth = 2.2;
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// ============================================================
+//  自动布局
+// ============================================================
+const auto = { on: false, timer: 0, interval: 0.72 };
+
+function toggleAuto() {
+  auto.on = !auto.on;
+  auto.timer = 0;
+  document.getElementById('btn-auto').classList.toggle('on', auto.on);
+  document.getElementById('btn-auto').textContent = auto.on ? '暂停布局' : '自动布局';
+  if (auto.on) ensureAudio();
+}
+
+function updateAuto(dt) {
+  if (!auto.on) return;
+  auto.timer += dt;
+  if (auto.timer >= auto.interval) {
+    auto.timer = 0;
+    const idx = pickBest();
+    if (idx < 0) { toggleAuto(); return; }
+    placeStone(idx, nextColor);
+    nextColor = -nextColor;
+  }
+}
+
+// ============================================================
+//  HUD
+// ============================================================
+const elH = document.getElementById('v-h');
+const elN = document.getElementById('v-n');
+const elHot = document.getElementById('v-hot');
+let hudT = 0;
+
+function updateHUD(dt) {
+  hudT += dt;
+  if (hudT < 0.08) return;
+  hudT = 0;
+
+  let sum = 0, maxE = -1, maxI = -1;
+  for (let i = 0; i < N * N; i++) {
+    sum += ent[i];
+    if (ent[i] > maxE) { maxE = ent[i]; maxI = i; }
+  }
+  const avg = sum / (N * N);
+
+  elH.textContent = avg.toFixed(4);
+  elN.textContent = moveCount;
+
+  if (maxI >= 0) {
+    const x = maxI % N, y = (maxI / N) | 0;
+    const letters = 'ABCDEFGHJKLMNOPQRST';
+    elHot.textContent = `${letters[x]}${N - y} · ${maxE.toFixed(3)}`;
+  } else {
+    elHot.textContent = '—';
+  }
+}
+
+// ============================================================
+//  主循环
+// ============================================================
+let lastT = performance.now() / 1000;
+
+function frame(nowMs) {
+  const t = nowMs / 1000;
+  const dt = Math.min(t - lastT, 0.05);
+  lastT = t;
+
+  updateAuto(dt);
+  updateHUD(dt);
+
+  drawBackground(t);
+  drawBoardFrame();
+  drawHeatmap(t);
+  drawGrid();
+  drawStones(t);
+  drawHover(t);
+
+  requestAnimationFrame(frame);
+}
+
+// ============================================================
+//  交互
+// ============================================================
+function pickPoint(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  const px = clientX - rect.left;
+  const py = clientY - rect.top;
+  const x = Math.round((px - bx0) / cell);
+  const y = Math.round((py - by0) / cell);
+  if (x < 0 || x >= N || y < 0 || y >= N) return -1;
+  const dx = px - sx(x), dy = py - sy(y);
+  if (Math.hypot(dx, dy) > cell * 0.85) return -1;
+  return y * N + x;
+}
+
+canvas.addEventListener('pointermove', e => {
+  hoverIdx = pickPoint(e.clientX, e.clientY);
+});
+
+canvas.addEventListener('pointerleave', () => {
+  hoverIdx = -1;
+});
+
+canvas.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  ensureAudio();
+  document.getElementById('hint').classList.add('hide');
+
+  const idx = pickPoint(e.clientX, e.clientY);
+  if (idx < 0 || board[idx] !== 0) return;
+
+  placeStone(idx, nextColor);
+  nextColor = -nextColor;
+});
+
+document.getElementById('btn-auto').addEventListener('click', () => {
+  toggleAuto();
+  document.getElementById('hint').classList.add('hide');
+});
+
+document.getElementById('btn-reset').addEventListener('click', () => {
+  board.fill(0);
+  born.fill(0);
+  moveCount = 0;
+  nextColor = BLACK;
+  auto.on = false;
+  auto.timer = 0;
+  document.getElementById('btn-auto').classList.remove('on');
+  document.getElementById('btn-auto').textContent = '自动布局';
+
+  computeField();
+  computeEntropy();
+  renderHeatmap();
+});
+
+window.addEventListener('keydown', e => {
+  if (e.key === ' ') { e.preventDefault(); toggleAuto(); }
+  if (e.key === 'r' || e.key === 'R') {
+    document.getElementById('btn-reset').click();
+  }
+});
+
+window.addEventListener('resize', () => {
+  resize();
+});
+
+// ============================================================
+//  启动
+// ============================================================
+resize();
+computeField();
+computeEntropy();
+renderHeatmap();
+
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

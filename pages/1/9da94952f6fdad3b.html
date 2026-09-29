@@ -1,0 +1,1068 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>弦长频率古琴谱 · String Frequency</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{width:100%;height:100%;overflow:hidden;background:#14100c;}
+  canvas{display:block;width:100%;height:100%;cursor:crosshair;touch-action:none;}
+
+  .panel{
+    position:fixed;left:26px;bottom:24px;
+    font-family:"Songti SC","STSong","SimSun",serif;
+    color:#c9b78a;user-select:none;pointer-events:none;
+    letter-spacing:.08em;
+    z-index:2;
+  }
+  .panel h1{
+    font-size:16px;font-weight:600;letter-spacing:.34em;
+    color:#e6d5a8;margin-bottom:7px;
+  }
+  .panel .formula{
+    font-family:"Times New Roman",Georgia,serif;
+    font-size:14px;color:#9a8b6a;letter-spacing:.04em;
+    margin-bottom:9px;
+  }
+  .panel .formula i{color:#c8622e;font-style:italic;}
+  .panel .hint{
+    font-size:11.5px;color:#8a7c5e;line-height:1.9;opacity:.9;
+  }
+  .panel .hint b{color:#b8a578;font-weight:500;}
+
+  .sound-btn{
+    position:fixed;right:22px;top:20px;
+    width:42px;height:42px;border-radius:50%;
+    border:1px solid rgba(180,160,110,.28);
+    background:rgba(30,24,18,.55);
+    backdrop-filter:blur(6px);
+    color:#c9b78a;font-size:17px;line-height:1;
+    cursor:pointer;user-select:none;
+    display:flex;align-items:center;justify-content:center;
+    transition:all .28s ease;
+    font-family:"Songti SC",serif;
+    z-index:3;
+  }
+  .sound-btn:hover{background:rgba(50,40,28,.9);transform:scale(1.06);}
+  .sound-btn.off{opacity:.35;}
+
+  .fade-in{animation:fi 1.8s ease both;}
+  @keyframes fi{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:none;}}
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+
+<div class="panel fade-in">
+  <h1>弦长 · 古琴谱</h1>
+  <p class="formula">
+    <i>f</i> = 1/(2<i>L</i>) · √(<i>T</i>/<i>ρ</i>)
+  </p>
+  <p class="hint">
+    <b>移动</b> · 丝弦微颤，徽位生辉<br>
+    <b>点击</b> · 按弦取音；左谱轻触即鸣
+  </p>
+</div>
+
+<button class="sound-btn" id="sndBtn" title="声音开关">♪</button>
+
+<script>
+(() => {
+"use strict";
+
+/* ============================================================
+   画布
+   ============================================================ */
+const cv  = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+
+let W = 0, H = 0, DPR = 1;
+let woodCanvas = null;
+
+let time = 0, prevT = performance.now();
+
+/* ============================================================
+   弦配置
+   ============================================================ */
+const STRING_DATA = [
+  { name:'宫',   num:'一', freq:130.81 },
+  { name:'商',   num:'二', freq:146.83 },
+  { name:'角',   num:'三', freq:164.81 },
+  { name:'徵',   num:'四', freq:196.00 },
+  { name:'羽',   num:'五', freq:220.00 },
+  { name:'少宫', num:'六', freq:261.63 },
+  { name:'少商', num:'七', freq:293.66 }
+];
+
+/* 徽位（从右端算起的比例） */
+const HUI_RATIOS = [
+  1/8, 1/6, 1/5, 1/4, 1/3, 2/5, 1/2,
+  3/5, 2/3, 3/4, 4/5, 5/6, 7/8
+];
+
+const strings = [];
+const labels = [];
+const ripples = [];
+
+let geo = { leftX:0, rightX:0, topY:0, spacing:0, bodyTop:0, bodyBottom:0 };
+
+/* ============================================================
+   《沧海一声笑》简谱
+   1 = C  (1 2 3 5 6 = 五声音阶：宫 商 角 徵 羽)
+   数字 → 琴弦索引：1→宫(0)  2→商(1)  3→角(2)  5→徵(3)  6→羽(4)
+   ============================================================ */
+const SCORE = [
+  {
+    notes: [
+      { num: 6, lyric: '沧', str: 4 },
+      { num: 6, lyric: '海', str: 4 },
+      { num: 6, lyric: '一', str: 4 },
+      { num: 5, lyric: '声', str: 3 },
+      { num: 3, lyric: '笑', str: 2 },
+      { num: 2, lyric: '',   str: 1 },
+      { num: 1, lyric: '',   str: 0 }
+    ]
+  },
+  {
+    notes: [
+      { num: 2, lyric: '滔', str: 1 },
+      { num: 2, lyric: '滔', str: 1 },
+      { num: 2, lyric: '两', str: 1 },
+      { num: 1, lyric: '岸', str: 0 },
+      { num: 6, lyric: '潮', str: 4 },
+      { num: 5, lyric: '',   str: 3 },
+      { num: 6, lyric: '',   str: 4 }
+    ]
+  },
+  {
+    notes: [
+      { num: 1, lyric: '浮', str: 0 },
+      { num: 1, lyric: '沉', str: 0 },
+      { num: 1, lyric: '随', str: 0 },
+      { num: 2, lyric: '浪', str: 1 },
+      { num: 3, lyric: '记', str: 2 },
+      { num: 5, lyric: '今', str: 3 },
+      { num: 3, lyric: '朝', str: 2 }
+    ]
+  },
+  {
+    notes: [
+      { num: 2, lyric: '苍', str: 1 },
+      { num: 2, lyric: '天', str: 1 },
+      { num: 3, lyric: '笑', str: 2 },
+      { num: 5, lyric: '纷', str: 3 },
+      { num: 6, lyric: '纷', str: 4 },
+      { num: 5, lyric: '',   str: 3 },
+      { num: 6, lyric: '',   str: 4 }
+    ]
+  }
+];
+
+/* 曲谱面板几何 */
+const scorePanel = {
+  x: 0, y: 0, w: 0, h: 0,
+  rowH: 0, padX: 22,
+  titleY: 0, divY: 0, startY: 0
+};
+
+/* 音符命中区域 */
+let noteHitAreas = [];
+
+/* ============================================================
+   音频 —— 古琴拨弦（加法合成）
+   ============================================================ */
+let actx = null, master = null, delayNode = null;
+let audioOn = true;
+
+const lastPluck = new Array(7).fill(0);
+
+function initAudio(){
+  if (actx) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  actx = new AC();
+
+  master = actx.createGain();
+  master.gain.setValueAtTime(0, actx.currentTime);
+  master.gain.linearRampToValueAtTime(audioOn ? 0.80 : 0, actx.currentTime + 1.2);
+  master.connect(actx.destination);
+
+  const delay = actx.createDelay(2.5);
+  delay.delayTime.value = 0.28;
+
+  const fb = actx.createGain();
+  fb.gain.value = 0.40;
+
+  const damp = actx.createBiquadFilter();
+  damp.type = 'lowpass';
+  damp.frequency.value = 2100;
+
+  const wet = actx.createGain();
+  wet.gain.value = 0.32;
+
+  delay.connect(damp);
+  damp.connect(fb);
+  fb.connect(delay);
+  damp.connect(wet);
+  wet.connect(master);
+
+  delayNode = delay;
+}
+
+function resumeAudio(){
+  if (!actx) initAudio();
+  if (actx && actx.state === 'suspended') actx.resume();
+}
+
+function pluckString(freq, vel = 0.22, idx = 0){
+  if (!actx || !audioOn) return;
+  const now = actx.currentTime;
+  if (now - lastPluck[idx] < 0.06) return;
+  lastPluck[idx] = now;
+
+  const out = actx.createGain();
+  out.gain.value = vel;
+
+  const filt = actx.createBiquadFilter();
+  filt.type = 'lowpass';
+  filt.Q.value = 0.6;
+  filt.frequency.setValueAtTime(5200, now);
+  filt.frequency.exponentialRampToValueAtTime(700, now + 2.4);
+
+  filt.connect(out);
+  out.connect(master);
+  if (delayNode) out.connect(delayNode);
+
+  const partials = [
+    [1, 1.00], [2, 0.46], [3, 0.24], [4, 0.135],
+    [5, 0.078], [6, 0.046], [7, 0.028], [8, 0.017],
+    [9, 0.011], [10, 0.007]
+  ];
+
+  for (const [n, a] of partials){
+    const osc = actx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.value = freq * n;
+    osc.detune.value = (Math.random() - 0.5) * 5;
+
+    const g = actx.createGain();
+    const decay = 3.2 / (1 + n * 0.22);
+
+    g.gain.setValueAtTime(0.0001, now);
+    g.gain.linearRampToValueAtTime(a, now + 0.004);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + decay);
+
+    osc.connect(g);
+    g.connect(filt);
+    osc.start(now);
+    osc.stop(now + decay + 0.1);
+  }
+}
+
+/* ============================================================
+   木质纹理背景
+   ============================================================ */
+function makeWood(){
+  woodCanvas = document.createElement('canvas');
+  woodCanvas.width  = Math.max(1, Math.round(W));
+  woodCanvas.height = Math.max(1, Math.round(H));
+  const w = woodCanvas.getContext('2d');
+
+  const g = w.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0.00, '#1e1610');
+  g.addColorStop(0.45, '#181210');
+  g.addColorStop(1.00, '#100c09');
+  w.fillStyle = g;
+  w.fillRect(0, 0, W, H);
+
+  for (let i = 0; i < 380; i++){
+    const y = Math.random() * H;
+    const len = W * (0.4 + Math.random() * 0.6);
+    const x = Math.random() * W - len * 0.3;
+    w.strokeStyle = `rgba(${58 + Math.random()*40},${40 + Math.random()*26},${24 + Math.random()*18},${0.03 + Math.random()*0.055})`;
+    w.lineWidth = 0.5 + Math.random() * 1.8;
+    w.beginPath();
+    w.moveTo(x, y);
+    w.bezierCurveTo(
+      x + len * 0.3, y + (Math.random()-0.5)*6,
+      x + len * 0.7, y + (Math.random()-0.5)*6,
+      x + len, y
+    );
+    w.stroke();
+  }
+
+  const n = Math.floor((W * H) / 1400);
+  for (let i = 0; i < n; i++){
+    w.fillStyle = `rgba(120,100,70,${Math.random() * 0.022})`;
+    w.fillRect(Math.random()*W, Math.random()*H, Math.random()*1.6+0.3, Math.random()*1.1+0.3);
+  }
+
+  const v = w.createRadialGradient(
+    W*0.5, H*0.5, Math.min(W,H)*0.20,
+    W*0.5, H*0.5, Math.max(W,H)*0.85
+  );
+  v.addColorStop(0, 'rgba(0,0,0,0)');
+  v.addColorStop(1, 'rgba(0,0,0,0.72)');
+  w.fillStyle = v;
+  w.fillRect(0, 0, W, H);
+}
+
+/* ============================================================
+   曲谱面板 —— 布局
+   ============================================================ */
+function computeScorePanel(){
+  const pw = Math.min(300, Math.max(190, W * 0.255));
+  scorePanel.w = pw;
+  scorePanel.x = Math.max(14, W * 0.025);
+
+  scorePanel.rowH = Math.max(40, Math.min(54, (H - 200) / SCORE.length));
+  scorePanel.h = 96 + scorePanel.rowH * SCORE.length + 14;
+  scorePanel.y = (H - scorePanel.h) / 2;
+
+  scorePanel.titleY = scorePanel.y + 30;
+  scorePanel.divY   = scorePanel.titleY + 40;
+  scorePanel.startY = scorePanel.divY + 14;
+}
+
+function layoutNotes(){
+  noteHitAreas = [];
+
+  const innerW = scorePanel.w - scorePanel.padX * 2;
+  const noteW = innerW / 7;
+  const rowH = scorePanel.rowH;
+
+  for (let i = 0; i < SCORE.length; i++){
+    const phrase = SCORE[i];
+    const ry = scorePanel.startY + i * rowH;
+
+    for (let j = 0; j < phrase.notes.length; j++){
+      const note = phrase.notes[j];
+      const cx = scorePanel.x + scorePanel.padX + j * noteW + noteW / 2;
+
+      note.px = cx;
+      note.py = ry + rowH * 0.42;
+      note.ly = ry + rowH * 0.80;
+      note.hw = noteW / 2;
+      note.flash = 0;
+      note.hover = 0;
+
+      noteHitAreas.push({
+        x: cx - noteW / 2,
+        y: ry + 4,
+        w: noteW,
+        h: rowH - 6,
+        note
+      });
+    }
+  }
+}
+
+/* ============================================================
+   几何
+   ============================================================ */
+function computeGeo(){
+  geo.leftX   = scorePanel.x + scorePanel.w + Math.max(28, W * 0.035);
+  geo.rightX  = W * 0.94;
+
+  if (geo.rightX - geo.leftX < 180){
+    geo.leftX = Math.min(geo.leftX, W * 0.44);
+  }
+
+  geo.spacing = Math.min(H * 0.052, 34);
+  geo.topY    = H * 0.5 - geo.spacing * 3;
+  geo.bodyTop = geo.topY - geo.spacing * 2.4;
+  geo.bodyBottom = geo.topY + geo.spacing * 6 + geo.spacing * 2.4;
+}
+
+/* ============================================================
+   构建弦
+   ============================================================ */
+function buildStrings(){
+  strings.length = 0;
+  STRING_DATA.forEach((d, i) => {
+    strings.push({
+      name: d.name,
+      num: d.num,
+      baseFreq: d.freq,
+      baseY: geo.topY + i * geo.spacing,
+      thickness: 2.9 - i * 0.24,
+      amp: 0,
+      phase: 0,
+      vibFreq: d.freq,
+      pressPos: 0,
+      pressActive: false,
+      pressX: 0,
+      hover: 0
+    });
+  });
+}
+
+/* ============================================================
+   标签
+   ============================================================ */
+function addLabel(x, y, line1, line2){
+  labels.push({ x, y, l1: line1, l2: line2, life: 1, vy: -28 });
+}
+
+/* ============================================================
+   悬停状态
+   ============================================================ */
+const mouse = { x:0, y:0, active:false, lastMove:0 };
+let hoverNote = null;
+
+/* ============================================================
+   更新
+   ============================================================ */
+function update(dt, t){
+  const now = performance.now();
+
+  for (let i = 0; i < strings.length; i++){
+    const s = strings[i];
+
+    if (s.amp > 0.0005){
+      s.amp *= Math.pow(0.06, dt);
+    } else {
+      s.amp = 0;
+    }
+
+    s.phase += 2 * Math.PI * s.vibFreq * dt;
+    if (s.phase > 1e6) s.phase = s.phase % (Math.PI * 2);
+
+    const dist = Math.abs(mouse.y - s.baseY);
+    const inRange = mouse.x > geo.leftX - 20 && mouse.x < geo.rightX + 20;
+    s.hover += (((dist < 22 && inRange) ? 1 : 0) - s.hover) * Math.min(1, dt * 8);
+  }
+
+  /* 音符状态 */
+  hoverNote = null;
+  if (mouse.active){
+    for (const area of noteHitAreas){
+      if (mouse.x >= area.x && mouse.x <= area.x + area.w &&
+          mouse.y >= area.y && mouse.y <= area.y + area.h){
+        hoverNote = area.note;
+        break;
+      }
+    }
+  }
+
+  for (const area of noteHitAreas){
+    const n = area.note;
+    const targetHover = (n === hoverNote) ? 1 : 0;
+    n.hover += (targetHover - n.hover) * Math.min(1, dt * 9);
+    n.flash *= Math.pow(0.08, dt);
+  }
+
+  for (let i = labels.length - 1; i >= 0; i--){
+    const l = labels[i];
+    l.life -= dt * 0.62;
+    l.y += l.vy * dt;
+    l.vy *= 0.96;
+    if (l.life <= 0) labels.splice(i, 1);
+  }
+
+  for (let i = ripples.length - 1; i >= 0; i--){
+    const r = ripples[i];
+    r.life -= dt * 0.55;
+    r.r += (r.max - r.r) * Math.min(1, dt * 2.2);
+    if (r.life <= 0) ripples.splice(i, 1);
+  }
+
+  if (!mouse.active || now - mouse.lastMove > 3200){
+    mouse.x = W * 0.5 + Math.sin(t * 0.22) * W * 0.18;
+    mouse.y = H * 0.5 + Math.cos(t * 0.17) * H * 0.14;
+    mouse.active = false;
+  }
+}
+
+/* ============================================================
+   绘制：曲谱面板
+   ============================================================ */
+function drawScorePanel(){
+  const p = scorePanel;
+
+  /* 面板背景 */
+  const bg = ctx.createLinearGradient(p.x, p.y, p.x, p.y + p.h);
+  bg.addColorStop(0.00, 'rgba(32, 24, 15, 0.88)');
+  bg.addColorStop(0.55, 'rgba(22, 16, 10, 0.90)');
+  bg.addColorStop(1.00, 'rgba(14, 10, 7, 0.94)');
+
+  roundRect(ctx, p.x, p.y, p.w, p.h, 14);
+  ctx.fillStyle = bg;
+  ctx.fill();
+
+  ctx.strokeStyle = 'rgba(180, 148, 96, 0.28)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  /* 内细边 */
+  roundRect(ctx, p.x + 6, p.y + 6, p.w - 12, p.h - 12, 10);
+  ctx.strokeStyle = 'rgba(180, 148, 96, 0.10)';
+  ctx.lineWidth = 0.7;
+  ctx.stroke();
+
+  /* 标题 */
+  ctx.font = `600 ${Math.round(p.w * 0.070)}px "KaiTi","STKaiti","楷体","Songti SC",serif`;
+  ctx.fillStyle = 'rgba(232, 206, 148, 0.92)';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('沧海一声笑', p.x + p.w / 2, p.titleY);
+
+  /* 副标题 */
+  ctx.font = `400 ${Math.round(p.w * 0.038)}px "Times New Roman",Georgia,serif`;
+  ctx.fillStyle = 'rgba(160, 134, 88, 0.55)';
+  ctx.fillText('1 = C   4 / 4', p.x + p.w / 2, p.titleY + 21);
+
+  /* 分隔线 */
+  ctx.beginPath();
+  ctx.moveTo(p.x + 22, p.divY);
+  ctx.lineTo(p.x + p.w - 22, p.divY);
+  ctx.strokeStyle = 'rgba(180, 148, 96, 0.20)';
+  ctx.lineWidth = 0.8;
+  ctx.stroke();
+
+  /* 乐句 */
+  for (let i = 0; i < SCORE.length; i++){
+    const phrase = SCORE[i];
+
+    for (const note of phrase.notes){
+      const h = note.hover;
+      const f = note.flash;
+      const glowA = h * 0.5 + f * 0.9;
+
+      /* 光晕 */
+      if (glowA > 0.02){
+        const gr = note.hw * (2.2 + glowA * 1.6);
+        const gg = ctx.createRadialGradient(note.px, note.py, 0, note.px, note.py, gr);
+        gg.addColorStop(0, `rgba(255, 220, 140, ${glowA * 0.40})`);
+        gg.addColorStop(0.55, `rgba(255, 200, 110, ${glowA * 0.12})`);
+        gg.addColorStop(1, 'rgba(255, 200, 110, 0)');
+        ctx.fillStyle = gg;
+        ctx.beginPath();
+        ctx.arc(note.px, note.py, gr, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      /* 简谱数字 */
+      const numSize = Math.round(note.hw * 0.95);
+      ctx.font = `600 ${numSize}px "Times New Roman", Georgia, serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+
+      ctx.fillStyle = f > 0.1
+        ? `rgba(255, 244, 218, ${0.78 + f * 0.22})`
+        : (h > 0.1
+            ? 'rgba(250, 226, 168, 0.96)'
+            : 'rgba(222, 192, 132, 0.82)');
+      ctx.fillText(String(note.num), note.px, note.py);
+
+      /* 高八度点标记（本曲未用，保留语义） */
+      // 本曲全部为低八度，无需点
+
+      /* 歌词 */
+      if (note.lyric){
+        const lyricSize = Math.round(note.hw * 0.62);
+        ctx.font = `500 ${lyricSize}px "KaiTi","STKaiti","楷体","Songti SC",serif`;
+        ctx.fillStyle = f > 0.1
+          ? `rgba(255, 232, 184, ${0.65 + f * 0.35})`
+          : (h > 0.1
+              ? 'rgba(240, 212, 152, 0.92)'
+              : 'rgba(186, 158, 110, 0.66)');
+        ctx.fillText(note.lyric, note.px, note.ly);
+      }
+    }
+  }
+
+  /* 底部小注 */
+  ctx.font = `400 ${Math.round(p.w * 0.034)}px "Songti SC","SimSun",serif`;
+  ctx.fillStyle = 'rgba(150, 124, 82, 0.42)';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('点击简谱音符即可拨弦', p.x + p.w / 2, p.y + p.h - 14);
+}
+
+/* ============================================================
+   绘制：琴身
+   ============================================================ */
+function drawBody(){
+  const { leftX, rightX, bodyTop, bodyBottom } = geo;
+  const pad = 26;
+
+  const g = ctx.createLinearGradient(0, bodyTop, 0, bodyBottom);
+  g.addColorStop(0.00, 'rgba(48,34,24,0.94)');
+  g.addColorStop(0.38, 'rgba(34,24,17,0.96)');
+  g.addColorStop(0.72, 'rgba(28,19,13,0.97)');
+  g.addColorStop(1.00, 'rgba(20,13,9,0.98)');
+
+  ctx.beginPath();
+  roundRect(
+    ctx,
+    leftX - pad, bodyTop,
+    (rightX - leftX) + pad * 2,
+    bodyBottom - bodyTop,
+    18
+  );
+  ctx.fillStyle = g;
+  ctx.fill();
+
+  ctx.strokeStyle = 'rgba(150,120,74,0.20)';
+  ctx.lineWidth = 1.2;
+  ctx.stroke();
+
+  ctx.beginPath();
+  roundRect(
+    ctx,
+    leftX - pad + 10, bodyTop + 10,
+    (rightX - leftX) + pad * 2 - 20,
+    bodyBottom - bodyTop - 20,
+    12
+  );
+  ctx.strokeStyle = 'rgba(180,146,90,0.12)';
+  ctx.lineWidth = 0.8;
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(leftX - 6, bodyTop + 6);
+  ctx.lineTo(leftX - 6, bodyBottom - 6);
+  ctx.strokeStyle = 'rgba(196,164,106,0.38)';
+  ctx.lineWidth = 2.2;
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(rightX + 6, bodyTop + 6);
+  ctx.lineTo(rightX + 6, bodyBottom - 6);
+  ctx.strokeStyle = 'rgba(196,164,106,0.28)';
+  ctx.lineWidth = 2.2;
+  ctx.stroke();
+}
+
+function roundRect(c, x, y, w, h, r){
+  c.beginPath();
+  c.moveTo(x + r, y);
+  c.arcTo(x + w, y, x + w, y + h, r);
+  c.arcTo(x + w, y + h, x, y + h, r);
+  c.arcTo(x, y + h, x, y, r);
+  c.arcTo(x, y, x + w, y, r);
+  c.closePath();
+}
+
+/* ============================================================
+   绘制：徽位
+   ============================================================ */
+function drawHui(){
+  const { leftX, rightX } = geo;
+  const span = rightX - leftX;
+  const midY = (geo.bodyTop + geo.bodyBottom) / 2;
+
+  for (let i = 0; i < HUI_RATIOS.length; i++){
+    const r = HUI_RATIOS[i];
+    const x = rightX - r * span;
+
+    ctx.beginPath();
+    ctx.arc(x, midY, 3.2, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(210,180,116,0.30)';
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.arc(x, midY, 1.4, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(230,205,150,0.50)';
+    ctx.fill();
+
+    if ((i + 1) % 2 === 1 || i === 6){
+      ctx.font = '400 9px "Songti SC","SimSun",serif';
+      ctx.fillStyle = 'rgba(190,162,110,0.32)';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      ctx.fillText(String(i + 1), x, midY + 8);
+    }
+  }
+}
+
+/* ============================================================
+   绘制：弦
+   ============================================================ */
+function drawString(s, idx){
+  const { leftX, rightX } = geo;
+  const span = rightX - leftX;
+  const N = 90;
+
+  const pressU = s.pressActive ? s.pressPos : 0;
+
+  ctx.beginPath();
+
+  for (let i = 0; i <= N; i++){
+    const u = i / N;
+    const x = leftX + u * span;
+
+    let y = s.baseY;
+    y += Math.sin(Math.PI * u) * 1.6;
+
+    if (s.amp > 0.0008 && u > pressU){
+      const localU = (u - pressU) / Math.max(0.001, 1 - pressU);
+      const mode   = Math.sin(Math.PI * localU);
+      const disp   = s.amp * mode * Math.cos(s.phase);
+      y += disp * 16;
+    }
+
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+
+  const h = s.hover;
+  const base = 200 + h * 40;
+  const a = 0.62 + h * 0.32;
+
+  ctx.strokeStyle = `rgba(${base|0},${(base*0.94)|0},${(base*0.76)|0},${a})`;
+  ctx.lineWidth = s.thickness;
+  ctx.lineCap = 'round';
+  ctx.stroke();
+
+  if (h > 0.05){
+    ctx.strokeStyle = `rgba(240,210,140,${h * 0.22})`;
+    ctx.lineWidth = s.thickness + 2.4;
+    ctx.stroke();
+  }
+
+  if (s.pressActive && s.amp > 0.01){
+    const px = leftX + s.pressPos * span;
+    const py = s.baseY + Math.sin(Math.PI * s.pressPos) * 1.6;
+
+    ctx.beginPath();
+    ctx.arc(px, py, 4.2, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(200,80,48,${0.72 * s.amp})`;
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.arc(px, py, 7.5, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(200,80,48,${0.28 * s.amp})`;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+}
+
+/* ============================================================
+   绘制：涟漪
+   ============================================================ */
+function drawRipples(){
+  for (const r of ripples){
+    const a = r.life * 0.28;
+    ctx.save();
+    ctx.translate(r.x, r.y);
+
+    ctx.strokeStyle = `rgba(210,175,110,${a})`;
+    ctx.lineWidth = 1.4;
+    ctx.beginPath(); ctx.arc(0, 0, r.r, 0, Math.PI * 2); ctx.stroke();
+
+    ctx.strokeStyle = `rgba(210,175,110,${a * 0.55})`;
+    ctx.lineWidth = 0.9;
+    ctx.beginPath(); ctx.arc(0, 0, r.r * 0.62, 0, Math.PI * 2); ctx.stroke();
+
+    ctx.restore();
+  }
+}
+
+/* ============================================================
+   绘制：标签
+   ============================================================ */
+function drawLabels(){
+  for (const l of labels){
+    const a = Math.min(1, l.life * 1.6);
+
+    ctx.font = '600 13px "Songti SC","STSong","SimSun",serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+
+    const pad = 8;
+    const w1 = ctx.measureText(l.l1).width;
+    const w2 = ctx.measureText(l.l2).width;
+    const wMax = Math.max(w1, w2);
+
+    ctx.fillStyle = `rgba(24,18,12,${a * 0.72})`;
+    roundRect(ctx, l.x - pad, l.y - 17, wMax + pad * 2, 36, 5);
+    ctx.fill();
+
+    ctx.strokeStyle = `rgba(196,164,106,${a * 0.38})`;
+    ctx.lineWidth = 0.8;
+    ctx.stroke();
+
+    ctx.fillStyle = `rgba(230,210,164,${a * 0.94})`;
+    ctx.font = '600 13px "Songti SC","STSong","SimSun",serif';
+    ctx.fillText(l.l1, l.x, l.y - 6);
+
+    ctx.fillStyle = `rgba(190,165,116,${a * 0.78})`;
+    ctx.font = '400 11px "Times New Roman",Georgia,serif';
+    ctx.fillText(l.l2, l.x, l.y + 8);
+  }
+}
+
+/* ============================================================
+   渲染
+   ============================================================ */
+function render(t){
+  ctx.clearRect(0, 0, W, H);
+
+  if (woodCanvas) ctx.drawImage(woodCanvas, 0, 0, W, H);
+  else { ctx.fillStyle = '#181210'; ctx.fillRect(0, 0, W, H); }
+
+  /* 中心柔光 */
+  const halo = ctx.createRadialGradient(
+    W * 0.5, H * 0.5, 0,
+    W * 0.5, H * 0.5, Math.min(W, H) * 0.60
+  );
+  halo.addColorStop(0.00, 'rgba(120,92,52,0.16)');
+  halo.addColorStop(0.60, 'rgba(120,92,52,0.04)');
+  halo.addColorStop(1.00, 'rgba(120,92,52,0)');
+  ctx.fillStyle = halo;
+  ctx.fillRect(0, 0, W, H);
+
+  /* 曲谱面板 */
+  drawScorePanel();
+
+  /* 琴身 */
+  drawBody();
+
+  /* 徽位 */
+  drawHui();
+
+  /* 弦 */
+  for (let i = 0; i < strings.length; i++){
+    drawString(strings[i], i);
+  }
+
+  /* 弦名 */
+  for (let i = 0; i < strings.length; i++){
+    const s = strings[i];
+    ctx.font = '500 11px "Songti SC","SimSun",serif';
+    ctx.fillStyle = `rgba(196,164,106,${0.30 + s.hover * 0.42})`;
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(s.num, geo.leftX - 20, s.baseY);
+  }
+
+  /* 涟漪 */
+  drawRipples();
+
+  /* 标签 */
+  drawLabels();
+
+  /* 鼠标柔光 */
+  if (mouse.active){
+    const mg = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, 120);
+    mg.addColorStop(0, 'rgba(230,200,140,0.10)');
+    mg.addColorStop(1, 'rgba(230,200,140,0)');
+    ctx.fillStyle = mg;
+    ctx.beginPath();
+    ctx.arc(mouse.x, mouse.y, 120, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+/* ============================================================
+   主循环
+   ============================================================ */
+function loop(){
+  const now = performance.now();
+  const dt = Math.min((now - prevT) / 1000, 0.05);
+  prevT = now;
+  time = now / 1000;
+
+  update(dt, time);
+  render(time);
+
+  requestAnimationFrame(loop);
+}
+
+/* ============================================================
+   尺寸
+   ============================================================ */
+function resize(){
+  const nw = window.innerWidth;
+  const nh = window.innerHeight;
+  if (nw === W && nh === H) return;
+
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = nw; H = nh;
+
+  cv.width  = Math.round(W * DPR);
+  cv.height = Math.round(H * DPR);
+  cv.style.width  = W + 'px';
+  cv.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  makeWood();
+  computeScorePanel();
+  computeGeo();
+  buildStrings();
+  layoutNotes();
+
+  mouse.x = W / 2;
+  mouse.y = H / 2;
+}
+
+/* ============================================================
+   交互
+   ============================================================ */
+function pointerPos(e){
+  const r = cv.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+
+cv.addEventListener('pointermove', e => {
+  const p = pointerPos(e);
+  mouse.x = p.x;
+  mouse.y = p.y;
+  mouse.active = true;
+  mouse.lastMove = performance.now();
+  resumeAudio();
+}, { passive:true });
+
+/* —— 点击曲谱音符 —— */
+function triggerScoreNote(note){
+  if (!note || note.num === 0) return;
+  const idx = note.str;
+  const s = strings[idx];
+  if (!s) return;
+
+  s.pressActive = false;
+  s.vibFreq = s.baseFreq;
+  s.amp = 1;
+  s.phase = 0;
+  s.hover = 1;
+
+  pluckString(s.baseFreq, 0.26, idx);
+
+  note.flash = 1;
+
+  // 高八度泛音尾
+  setTimeout(() => {
+    if (audioOn) pluckString(s.baseFreq * 2, 0.06, idx);
+  }, 120);
+}
+
+/* —— 点击 —— */
+cv.addEventListener('pointerdown', e => {
+  resumeAudio();
+
+  const p = pointerPos(e);
+  mouse.x = p.x;
+  mouse.y = p.y;
+  mouse.active = true;
+  mouse.lastMove = performance.now();
+
+  /* 先检查曲谱面板 */
+  for (const area of noteHitAreas){
+    if (p.x >= area.x && p.x <= area.x + area.w &&
+        p.y >= area.y && p.y <= area.y + area.h){
+      triggerScoreNote(area.note);
+      return;
+    }
+  }
+
+  /* 再检查琴弦 */
+  let hit = null, best = Infinity;
+  for (const s of strings){
+    const d = Math.abs(p.y - s.baseY);
+    if (d < best){ best = d; hit = s; }
+  }
+  if (!hit || best > 26) return;
+  if (p.x < geo.leftX - 20 || p.x > geo.rightX + 20) return;
+
+  const idx = strings.indexOf(hit);
+
+  const span = geo.rightX - geo.leftX;
+  let u = (p.x - geo.leftX) / span;
+  u = Math.max(0, Math.min(0.72, u));
+
+  const effectiveL = 1 - u;
+  const freq = hit.baseFreq / effectiveL;
+
+  hit.pressActive = u > 0.012;
+  hit.pressPos = u;
+  hit.pressX = p.x;
+  hit.vibFreq = freq;
+  hit.amp = 1;
+  hit.phase = 0;
+
+  const vel = 0.20 + Math.min(0.12, freq / 2400);
+  pluckString(freq, vel, idx);
+
+  ripples.push({
+    x: p.x, y: p.y,
+    r: 6,
+    max: 70 + Math.random() * 50,
+    life: 1
+  });
+
+  const labelY = hit.baseY - 46;
+
+  const rightDist = 1 - u;
+  let nearestHui = 0, huiDist = Infinity;
+  for (let i = 0; i < HUI_RATIOS.length; i++){
+    const d = Math.abs(HUI_RATIOS[i] - rightDist);
+    if (d < huiDist){ huiDist = d; nearestHui = i + 1; }
+  }
+  const isHui = huiDist < 0.035 && u > 0.02;
+  const huiText = isHui ? `徽${nearestHui}` : (u > 0.012 ? '按' : '散');
+
+  addLabel(
+    Math.min(W - 130, p.x + 16),
+    labelY,
+    `${hit.num}弦 · ${hit.name} · ${huiText}`,
+    `f = ${freq.toFixed(1)} Hz`
+  );
+
+  setTimeout(() => {
+    if (strings[idx] === hit){
+      if (freq < 400) pluckString(freq * 2, 0.05, idx);
+    }
+  }, 130);
+
+}, { passive:true });
+
+cv.addEventListener('pointerleave', () => {
+  mouse.active = false;
+});
+
+/* ============================================================
+   声音开关
+   ============================================================ */
+const sndBtn = document.getElementById('sndBtn');
+sndBtn.addEventListener('click', () => {
+  audioOn = !audioOn;
+  sndBtn.classList.toggle('off', !audioOn);
+  sndBtn.textContent = audioOn ? '♪' : '✕';
+
+  if (audioOn){
+    resumeAudio();
+    if (master && actx){
+      master.gain.cancelScheduledValues(actx.currentTime);
+      master.gain.setValueAtTime(master.gain.value, actx.currentTime);
+      master.gain.linearRampToValueAtTime(0.80, actx.currentTime + 0.5);
+    }
+    pluckString(196.00, 0.18, 3);
+  } else if (master && actx){
+    master.gain.cancelScheduledValues(actx.currentTime);
+    master.gain.setValueAtTime(master.gain.value, actx.currentTime);
+    master.gain.linearRampToValueAtTime(0, actx.currentTime + 0.35);
+  }
+});
+
+/* ============================================================
+   窗口变化
+   ============================================================ */
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(resize, 200);
+});
+
+/* ============================================================
+   启动
+   ============================================================ */
+resize();
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>

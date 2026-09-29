@@ -1,0 +1,757 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>向量场书法 · 飞白</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body {
+    width:100%; height:100%; overflow:hidden;
+    background:#06070a;
+    font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;
+    color:#b8d4e6; user-select:none; -webkit-tap-highlight-color:transparent;
+    cursor:crosshair;
+  }
+  canvas { position:fixed; inset:0; display:block; touch-action:none; }
+  #bg  { z-index:1; }
+  #ink { z-index:2; }
+
+  #hud {
+    position:fixed; top:26px; left:30px; z-index:5;
+    pointer-events:none; font-size:13px; line-height:1.8;
+    letter-spacing:0.03em; text-shadow:0 0 20px rgba(0,0,0,0.95);
+  }
+  #hud .title {
+    font-size:19px; font-weight:300; letter-spacing:0.3em;
+    color:#dceffb; margin-bottom:3px;
+  }
+  #hud .sub {
+    font-size:10.5px; letter-spacing:0.26em;
+    color:rgba(126,176,206,0.48); margin-bottom:20px;
+  }
+  #hud .row {
+    display:flex; gap:10px; font-variant-numeric:tabular-nums;
+  }
+  #hud .k { color:rgba(116,170,200,0.42); width:42px; }
+  #hud .v { color:#9fd4ea; }
+  #hud .v.hi { color:#ffcf8a; }
+
+  #hud .inkbar {
+    margin-top:15px; padding-top:13px;
+    border-top:1px solid rgba(98,156,188,0.13);
+    width:170px;
+  }
+  #hud .inkbar .lb {
+    font-size:10px; letter-spacing:0.18em;
+    color:rgba(126,176,206,0.42); margin-bottom:6px;
+  }
+  #hud .track {
+    width:100%; height:4px; border-radius:3px;
+    background:rgba(90,140,175,0.14); overflow:hidden;
+  }
+  #hud .fill {
+    height:100%; width:100%; border-radius:3px;
+    background:linear-gradient(90deg,#2f7ba8,#6fd6e0,#ffe2b0);
+    transition:width 0.12s linear;
+    box-shadow:0 0 12px rgba(110,200,230,0.45);
+  }
+
+  .btn {
+    position:fixed; z-index:6;
+    padding:11px 21px;
+    background:rgba(13,22,33,0.7);
+    border:1px solid rgba(102,180,215,0.25);
+    border-radius:999px;
+    color:#96cee4; font-size:12.5px; letter-spacing:0.14em;
+    font-family:inherit; cursor:pointer;
+    backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
+    transition:all 0.3s cubic-bezier(0.4,0,0.2,1);
+  }
+  .btn:hover {
+    background:rgba(28,58,78,0.8);
+    border-color:rgba(140,220,255,0.6);
+    color:#d6f4ff;
+  }
+  .btn.on {
+    background:rgba(46,100,130,0.55);
+    border-color:rgba(160,240,255,0.75);
+    color:#e2f9ff;
+    box-shadow:0 0 26px rgba(90,200,255,0.24);
+  }
+  #btn-auto  { right:28px; bottom:28px; }
+  #btn-clear { right:28px; bottom:82px; }
+
+  #hint {
+    position:fixed; bottom:36px; left:30px; z-index:5;
+    font-size:11px; letter-spacing:0.1em;
+    color:rgba(120,172,198,0.4);
+    pointer-events:none; transition:opacity 0.9s;
+  }
+  #hint.hide { opacity:0; }
+
+  @media (max-width:640px) {
+    #hud { top:16px; left:16px; font-size:12px; }
+    #hud .title { font-size:15px; letter-spacing:0.22em; }
+    #hud .inkbar { width:126px; }
+    .btn { padding:9px 16px; font-size:11.5px; }
+    #btn-auto  { right:14px; bottom:18px; }
+    #btn-clear { right:14px; bottom:66px; }
+    #hint { left:16px; bottom:24px; font-size:10px; }
+  }
+</style>
+</head>
+<body>
+
+<canvas id="bg"></canvas>
+<canvas id="ink"></canvas>
+
+<div id="hud">
+  <div class="title">向量场书法</div>
+  <div class="sub">VECTOR FIELD · 飞白</div>
+  <div class="row"><span class="k">速度</span><span class="v" id="v-spd">0.00</span></div>
+  <div class="row"><span class="k">笔锋</span><span class="v" id="v-dir">—</span></div>
+  <div class="row"><span class="k">场向</span><span class="v" id="v-fld">—</span></div>
+  <div class="row"><span class="k">偏差</span><span class="v hi" id="v-dev">—</span></div>
+  <div class="inkbar">
+    <div class="lb">笔毫含墨</div>
+    <div class="track"><div class="fill" id="v-ink"></div></div>
+  </div>
+</div>
+
+<button class="btn" id="btn-clear">清空</button>
+<button class="btn" id="btn-auto">自动运笔</button>
+<div id="hint">按住拖动 · 笔锋将随向量场流转</div>
+
+<script>
+(() => {
+'use strict';
+
+// ============================================================
+//  基础
+// ============================================================
+const bgCanvas  = document.getElementById('bg');
+const inkCanvas = document.getElementById('ink');
+const bgCtx  = bgCanvas.getContext('2d');
+const inkCtx = inkCanvas.getContext('2d');
+
+let W, H, DPR, cx, cy, S;
+let paper = null;
+
+const clamp = (v,a,b) => v < a ? a : v > b ? b : v;
+const lerp  = (a,b,t) => a + (b-a)*t;
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+
+  for (const c of [bgCanvas, inkCanvas]) {
+    c.width  = Math.round(W * DPR);
+    c.height = Math.round(H * DPR);
+    c.style.width  = W + 'px';
+    c.style.height = H + 'px';
+    c.getContext('2d').setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+
+  cx = W * 0.5;
+  cy = H * 0.5;
+  S  = Math.min(W, H) * 0.46;
+
+  makePaper();
+  inkCtx.clearRect(0, 0, W, H);
+}
+
+// ============================================================
+//  向量场公式
+//  两个偏移涡旋 + 多频正弦扰动 —— 决定笔锋的"流势"
+// ============================================================
+function fieldAngle(x, y, t) {
+  const nx = (x - cx) / S;
+  const ny = (y - cy) / S;
+
+  // 双涡旋（奇点偏离中心，避免中央跳变）
+  const a1 = Math.atan2(ny - 0.62, nx + 0.45);
+  const a2 = Math.atan2(ny + 0.58, nx - 0.52) + Math.PI;
+  const swirl = a1 + a2 * 0.72;
+
+  // 多频扰动
+  const w1 = Math.sin(nx * 1.90 + t * 0.21) * Math.cos(ny * 1.55 - t * 0.17);
+  const w2 = Math.sin(nx * 3.70 - t * 0.13) * Math.cos(ny * 3.10 + t * 0.19);
+  const w3 = Math.sin((nx + ny) * 2.40 + t * 0.09);
+
+  return swirl + w1 * 1.28 + w2 * 0.56 + w3 * 0.44 + t * 0.05;
+}
+
+// ============================================================
+//  纸张噪点
+// ============================================================
+function makePaper() {
+  const pw = Math.max(2, Math.floor(W / 2));
+  const ph = Math.max(2, Math.floor(H / 2));
+  const pc = document.createElement('canvas');
+  pc.width = pw; pc.height = ph;
+  const pctx = pc.getContext('2d');
+  const img = pctx.createImageData(pw, ph);
+  const d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const v = 120 + Math.random() * 135;
+    d[i] = d[i+1] = d[i+2] = v;
+    d[i+3] = 9 + Math.random() * 12;
+  }
+  pctx.putImageData(img, 0, 0);
+
+  paper = document.createElement('canvas');
+  paper.width = W; paper.height = H;
+  const c = paper.getContext('2d');
+  c.imageSmoothingEnabled = true;
+  c.drawImage(pc, 0, 0, W, H);
+}
+
+// ============================================================
+//  音频
+// ============================================================
+const sound = {
+  ctx:null, bus:null, ready:false,
+  noiseSrc:null, noiseFilter:null, noiseGain:null,
+};
+
+function impulseBuffer(ctx, dur, decay) {
+  const rate = ctx.sampleRate;
+  const len = Math.floor(rate * dur);
+  const buf = ctx.createBuffer(2, len, rate);
+  for (let ch = 0; ch < 2; ch++) {
+    const d = buf.getChannelData(ch);
+    for (let i = 0; i < len; i++) {
+      const t = i / len;
+      d[i] = (Math.random()*2 - 1) * Math.pow(1 - t, decay);
+    }
+  }
+  return buf;
+}
+
+function noiseBuffer(ctx, dur) {
+  const rate = ctx.sampleRate;
+  const len = Math.floor(rate * dur);
+  const buf = ctx.createBuffer(1, len, rate);
+  const d = buf.getChannelData(0);
+  let b0=0,b1=0,b2=0;
+  for (let i = 0; i < len; i++) {
+    const w = Math.random()*2 - 1;
+    // 轻微粉噪化，更接近纸面摩擦
+    b0 = 0.99765*b0 + w*0.0990460;
+    b1 = 0.96300*b1 + w*0.2965164;
+    b2 = 0.57000*b2 + w*1.0526913;
+    d[i] = (b0 + b1 + b2 + w*0.1848) * 0.18;
+  }
+  return buf;
+}
+
+function initSound() {
+  if (sound.ctx) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  const ctx = new AC();
+  sound.ctx = ctx;
+
+  const master = ctx.createGain();
+  master.gain.value = 0.58;
+  master.connect(ctx.destination);
+
+  const conv = ctx.createConvolver();
+  conv.buffer = impulseBuffer(ctx, 3.0, 2.4);
+  const wet = ctx.createGain();
+  wet.gain.value = 0.42;
+  conv.connect(wet); wet.connect(master);
+
+  const bus = ctx.createGain();
+  bus.gain.value = 1;
+  bus.connect(master);
+  bus.connect(conv);
+  sound.bus = bus;
+  sound.master = master;
+
+  // 笔刷摩擦声
+  const src = ctx.createBufferSource();
+  src.buffer = noiseBuffer(ctx, 3);
+  src.loop = true;
+
+  const bp = ctx.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.frequency.value = 1000;
+  bp.Q.value = 1.2;
+
+  const ng = ctx.createGain();
+  ng.gain.value = 0;
+
+  src.connect(bp); bp.connect(ng); ng.connect(bus);
+  src.start();
+
+  sound.noiseSrc = src;
+  sound.noiseFilter = bp;
+  sound.noiseGain = ng;
+  sound.ready = true;
+}
+
+function ensureSound() {
+  initSound();
+  if (sound.ctx && sound.ctx.state === 'suspended') sound.ctx.resume();
+}
+
+function playPluck(freq, vel) {
+  ensureSound();
+  if (!sound.ready) return;
+  const ctx = sound.ctx;
+  const t0 = ctx.currentTime;
+
+  const partials = [
+    { m:1.000, g:1.00, d:2.4 },
+    { m:2.010, g:0.34, d:1.5 },
+    { m:3.020, g:0.12, d:0.95 },
+    { m:4.530, g:0.05, d:0.62 },
+  ];
+
+  const lp = ctx.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.frequency.value = clamp(freq * 10 + 1200, 800, 12000);
+  lp.connect(sound.bus);
+
+  for (const p of partials) {
+    const o = ctx.createOscillator();
+    o.type = 'sine';
+    o.frequency.value = freq * p.m;
+    o.detune.value = (Math.random() - 0.5) * 6;
+
+    const g = ctx.createGain();
+    const peak = 0.15 * vel * p.g;
+    g.gain.setValueAtTime(0, t0);
+    g.gain.linearRampToValueAtTime(peak, t0 + 0.007);
+    g.gain.exponentialRampToValueAtTime(0.00005, t0 + p.d);
+
+    o.connect(g); g.connect(lp);
+    o.start(t0); o.stop(t0 + p.d + 0.1);
+  }
+}
+
+// 五声音阶
+const PENTA = [0, 2, 4, 7, 9];
+let pluckIndex = 0;
+function nextPluckFreq() {
+  const n = pluckIndex++;
+  const oct = Math.floor(n / 5) % 3;
+  const step = PENTA[n % 5];
+  return 261.63 * Math.pow(2, (step + oct * 12) / 12);
+}
+
+function updateBrushSound(t, speedNorm, active) {
+  if (!sound.ready) return;
+  const now = sound.ctx.currentTime;
+  const target = active ? (0.010 + speedNorm * 0.042) : 0;
+  sound.noiseGain.gain.setTargetAtTime(target, now, 0.05);
+  sound.noiseFilter.frequency.setTargetAtTime(680 + speedNorm * 3200, now, 0.08);
+  sound.noiseFilter.Q.setTargetAtTime(1.1 + speedNorm * 2.6, now, 0.1);
+}
+
+// ============================================================
+//  笔刷状态
+// ============================================================
+const BRISTLE_COUNT = 16;
+
+const brush = {
+  active: false,
+  dirInit: false,
+  dirX: 0, dirY: 0,
+  lastX: 0, lastY: 0,
+  speedNorm: 0,
+  lastMoveT: -10,
+  bristles: [],
+  inkLevel: 1,
+  fieldAngle: 0,
+  devAngle: 0,
+};
+
+function initBristles() {
+  brush.bristles.length = 0;
+  for (let i = 0; i < BRISTLE_COUNT; i++) {
+    const u = BRISTLE_COUNT === 1 ? 0 : (i / (BRISTLE_COUNT - 1)) * 2 - 1;
+    brush.bristles.push({
+      off: u,
+      m: 0.72 + Math.random() * 0.28,
+      w: 0.85 + Math.random() * 0.85,
+    });
+  }
+}
+
+function startStroke(x, y, t) {
+  brush.active = true;
+  brush.dirInit = false;
+  brush.lastX = x;
+  brush.lastY = y;
+  brush.lastMoveT = t;
+  brush.speedNorm = 0;
+  brush.inkLevel = 1;
+  initBristles();
+
+  // 落笔墨点
+  inkCtx.save();
+  inkCtx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < 7; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const r = Math.random() * 5;
+    inkCtx.beginPath();
+    inkCtx.arc(x + Math.cos(a)*r, y + Math.sin(a)*r, 0.7 + Math.random()*1.5, 0, Math.PI*2);
+    inkCtx.fillStyle = `rgba(255,240,214,${0.03 + Math.random()*0.05})`;
+    inkCtx.fill();
+  }
+  inkCtx.restore();
+
+  playPluck(nextPluckFreq(), 0.7);
+}
+
+function endStroke() {
+  brush.active = false;
+}
+
+// ============================================================
+//  核心：绘制一段笔迹
+// ============================================================
+function strokeTo(x, y, t) {
+  if (!brush.active) return;
+
+  let x1 = brush.lastX, y1 = brush.lastY;
+  let dx = x - x1, dy = y - y1;
+  let len = Math.hypot(dx, dy);
+
+  // 过滤微小抖动
+  if (len < 0.7) return;
+
+  // 超长跳变（快速甩动）拆分处理
+  if (len > 90) {
+    const steps = Math.ceil(len / 60);
+    for (let s = 1; s <= steps; s++) {
+      const k = s / steps;
+      strokeTo(lerp(x1, x, k), lerp(y1, y, k), t);
+    }
+    return;
+  }
+
+  const rawAngle = Math.atan2(dy, dx);
+  const fa = fieldAngle(x1, y1, t);
+  brush.fieldAngle = fa;
+
+  // 场向量对笔锋的牵引
+  let diff = fa - rawAngle;
+  while (diff >  Math.PI) diff -= Math.PI * 2;
+  while (diff < -Math.PI) diff += Math.PI * 2;
+
+  const speedNorm = clamp(len / 22, 0, 1);
+  brush.speedNorm = speedNorm;
+
+  const pull = 0.30 + 0.26 * speedNorm;   // 越快越顺场
+  const finalAngle = rawAngle + diff * pull;
+
+  brush.devAngle = Math.abs(diff) * 180 / Math.PI;
+
+  const ddx = Math.cos(finalAngle);
+  const ddy = Math.sin(finalAngle);
+
+  // 方向平滑
+  if (!brush.dirInit) {
+    brush.dirX = ddx;
+    brush.dirY = ddy;
+    brush.dirInit = true;
+  } else {
+    const sm = 0.38;
+    brush.dirX += (ddx - brush.dirX) * sm;
+    brush.dirY += (ddy - brush.dirY) * sm;
+    const dl = Math.hypot(brush.dirX, brush.dirY) || 1;
+    brush.dirX /= dl;
+    brush.dirY /= dl;
+  }
+
+  const nxp = -brush.dirY;
+  const nyp =  brush.dirX;
+
+  // 笔宽：速度越快越细
+  const width = 30 * (1 - 0.55 * speedNorm) * (0.62 + 0.38 * brush.inkLevel);
+  const halfW = width * 0.5;
+
+  // 含墨量
+  brush.inkLevel = clamp(brush.inkLevel - len * 0.00035 + 0.0009, 0, 1);
+
+  // ---- 渲染 ----
+  inkCtx.save();
+  inkCtx.globalCompositeOperation = 'lighter';
+  inkCtx.lineCap = 'round';
+
+  // 底层墨晕
+  inkCtx.beginPath();
+  inkCtx.moveTo(x1, y1);
+  inkCtx.lineTo(x, y);
+  inkCtx.lineWidth = width * 1.5;
+  inkCtx.strokeStyle = 'rgba(120,170,235,0.0055)';
+  inkCtx.stroke();
+
+  // 逐根鬃毛
+  for (const b of brush.bristles) {
+    const edge = Math.abs(b.off);
+
+    // 墨量动态：外侧干得快
+    const drain = (0.0015 + speedNorm * 0.0050)
+                * (0.5 + edge * 1.0)
+                * (0.4 + Math.random() * 1.4);
+    b.m -= drain;
+    b.m += 0.020 * (1 - b.m) * (1.1 - edge * 0.4);
+    b.m = clamp(b.m, 0, 1);
+
+    if (b.m < 0.08) continue;   // 全干 —— 飞白
+
+    const off = b.off * halfW;
+    const ox = nxp * off;
+    const oy = nyp * off;
+
+    const jx1 = (Math.random() - 0.5) * 1.3;
+    const jy1 = (Math.random() - 0.5) * 1.3;
+    const jx2 = (Math.random() - 0.5) * 1.3;
+    const jy2 = (Math.random() - 0.5) * 1.3;
+
+    inkCtx.beginPath();
+    inkCtx.moveTo(x1 + ox + jx1, y1 + oy + jy1);
+    inkCtx.lineTo(x  + ox + jx2, y  + oy + jy2);
+
+    inkCtx.lineWidth = (1.05 + b.w * 1.25) * (0.5 + 0.8 * b.m);
+
+    const a = (0.015 + 0.078 * b.m) * (1 - edge * 0.30);
+    const gCh = Math.round(238 - edge * 42);
+    const bCh = Math.round(206 - edge * 76);
+    inkCtx.strokeStyle = `rgba(255,${gCh},${bCh},${a})`;
+    inkCtx.stroke();
+  }
+
+  inkCtx.restore();
+
+  brush.lastX = x;
+  brush.lastY = y;
+  brush.lastMoveT = t;
+}
+
+// ============================================================
+//  背景绘制
+// ============================================================
+function drawBackground(t) {
+  bgCtx.fillStyle = '#06070a';
+  bgCtx.fillRect(0, 0, W, H);
+
+  const g = bgCtx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(W, H) * 0.72);
+  g.addColorStop(0,   'rgba(26,40,62,0.52)');
+  g.addColorStop(0.55,'rgba(14,24,38,0.26)');
+  g.addColorStop(1,   'rgba(6,7,10,0)');
+  bgCtx.fillStyle = g;
+  bgCtx.fillRect(0, 0, W, H);
+
+  // 流场指示线
+  const step = 66;
+  const L = 12;
+  bgCtx.lineWidth = 1;
+  bgCtx.lineCap = 'round';
+
+  for (let y = step * 0.5; y < H; y += step) {
+    for (let x = step * 0.5; x < W; x += step) {
+      const a = fieldAngle(x, y, t);
+      const dx = Math.cos(a) * L;
+      const dy = Math.sin(a) * L;
+
+      const pulse = 0.5 + 0.5 * Math.sin(x * 0.013 + y * 0.011 - t * 0.9);
+      bgCtx.beginPath();
+      bgCtx.moveTo(x - dx, y - dy);
+      bgCtx.lineTo(x + dx, y + dy);
+      bgCtx.strokeStyle = `rgba(116,168,218,${0.032 + pulse * 0.030})`;
+      bgCtx.stroke();
+
+      bgCtx.beginPath();
+      bgCtx.arc(x, y, 0.9, 0, Math.PI * 2);
+      bgCtx.fillStyle = `rgba(130,185,230,${0.05 + pulse * 0.05})`;
+      bgCtx.fill();
+    }
+  }
+
+  if (paper) bgCtx.drawImage(paper, 0, 0);
+}
+
+// ============================================================
+//  自动运笔
+// ============================================================
+const auto = { on:false, t:0 };
+
+function toggleAuto() {
+  auto.on = !auto.on;
+  const btn = document.getElementById('btn-auto');
+  btn.classList.toggle('on', auto.on);
+  btn.textContent = auto.on ? '停止运笔' : '自动运笔';
+
+  if (auto.on) {
+    ensureSound();
+    auto.t = Math.random() * 60;
+    const x = cx + Math.cos(auto.t * 0.7) * W * 0.24;
+    const y = cy + Math.sin(auto.t * 0.95) * H * 0.22;
+    startStroke(x, y, performance.now() / 1000);
+  } else {
+    endStroke();
+  }
+}
+
+function autoStep(dt, t) {
+  auto.t += dt * 0.85;
+  const x = cx
+    + Math.cos(auto.t * 0.70) * W * 0.30
+    + Math.sin(auto.t * 1.90) * W * 0.075;
+  const y = cy
+    + Math.sin(auto.t * 0.95) * H * 0.28
+    + Math.cos(auto.t * 2.30) * H * 0.065;
+  strokeTo(x, y, t);
+}
+
+// ============================================================
+//  HUD
+// ============================================================
+const elSpd = document.getElementById('v-spd');
+const elDir = document.getElementById('v-dir');
+const elFld = document.getElementById('v-fld');
+const elDev = document.getElementById('v-dev');
+const elInk = document.getElementById('v-ink');
+
+let hudT = 0;
+function updateHUD(t, dt) {
+  hudT += dt;
+  if (hudT < 0.06) return;
+  hudT = 0;
+
+  const spd = brush.speedNorm;
+  elSpd.textContent = spd.toFixed(3);
+
+  const dirDeg = Math.atan2(brush.dirY, brush.dirX) * 180 / Math.PI;
+  elDir.textContent = brush.dirInit ? dirDeg.toFixed(1) + '°' : '—';
+
+  const fldDeg = brush.fieldAngle * 180 / Math.PI;
+  elFld.textContent = brush.dirInit ? (((fldDeg % 360) + 360) % 360).toFixed(1) + '°' : '—';
+
+  elDev.textContent = brush.dirInit ? brush.devAngle.toFixed(1) + '°' : '—';
+
+  // 平均含墨
+  let sum = 0;
+  for (const b of brush.bristles) sum += b.m;
+  const avg = brush.bristles.length ? sum / brush.bristles.length : 0;
+  elInk.style.width = (avg * 100).toFixed(1) + '%';
+}
+
+// ============================================================
+//  主循环
+// ============================================================
+let lastT = performance.now() / 1000;
+
+function loop(nowMs) {
+  const t = nowMs / 1000;
+  const dt = Math.min(t - lastT, 0.05);
+  lastT = t;
+
+  drawBackground(t);
+
+  if (auto.on) {
+    autoStep(dt, t);
+  } else {
+    // 停顿后速度衰减
+    if (brush.active) {
+      const idle = t - brush.lastMoveT;
+      if (idle > 0.06) {
+        brush.speedNorm *= Math.pow(0.02, dt);
+        if (brush.speedNorm < 0.001) brush.speedNorm = 0;
+      }
+    }
+  }
+
+  const soundActive = brush.active && (t - brush.lastMoveT) < 0.16;
+  updateBrushSound(t, soundActive ? brush.speedNorm : 0, soundActive);
+
+  updateHUD(t, dt);
+
+  requestAnimationFrame(loop);
+}
+
+// ============================================================
+//  交互
+// ============================================================
+window.addEventListener('pointerdown', e => {
+  if (e.target.closest('button')) return;
+  e.preventDefault();
+  ensureSound();
+  document.getElementById('hint').classList.add('hide');
+  if (auto.on) toggleAuto();
+  startStroke(e.clientX, e.clientY, performance.now() / 1000);
+}, { passive: false });
+
+window.addEventListener('pointermove', e => {
+  if (!brush.active) return;
+  e.preventDefault();
+  const t = performance.now() / 1000;
+
+  const events = (e.getCoalescedEvents && e.getCoalescedEvents().length)
+    ? e.getCoalescedEvents()
+    : [e];
+
+  for (const ev of events) {
+    strokeTo(ev.clientX, ev.clientY, t);
+  }
+}, { passive: false });
+
+window.addEventListener('pointerup', () => {
+  if (brush.active) endStroke();
+});
+window.addEventListener('pointercancel', () => {
+  if (brush.active) endStroke();
+});
+window.addEventListener('blur', () => {
+  if (brush.active) endStroke();
+});
+
+document.getElementById('btn-auto').addEventListener('click', () => {
+  ensureSound();
+  document.getElementById('hint').classList.add('hide');
+  toggleAuto();
+});
+
+document.getElementById('btn-clear').addEventListener('click', () => {
+  // 渐隐清空
+  const start = performance.now();
+  const from = 1;
+  const fade = () => {
+    const p = Math.min((performance.now() - start) / 420, 1);
+    inkCanvas.style.opacity = (1 - p).toFixed(3);
+    if (p < 1) requestAnimationFrame(fade);
+    else {
+      inkCtx.clearRect(0, 0, W, H);
+      inkCanvas.style.transition = 'opacity 0.25s';
+      inkCanvas.style.opacity = '1';
+      setTimeout(() => { inkCanvas.style.transition = ''; }, 280);
+    }
+  };
+  fade();
+});
+
+window.addEventListener('keydown', e => {
+  if (e.key === ' ') { e.preventDefault(); toggleAuto(); }
+  if (e.key === 'c' || e.key === 'C') document.getElementById('btn-clear').click();
+});
+
+window.addEventListener('resize', resize);
+
+// ============================================================
+//  启动
+// ============================================================
+resize();
+initBristles();
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>

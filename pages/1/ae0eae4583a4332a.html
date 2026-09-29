@@ -1,0 +1,864 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>微分方程古筝流水 · Flowing Water</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{width:100%;height:100%;overflow:hidden;background:#060a0a;}
+  canvas{display:block;width:100%;height:100%;cursor:crosshair;touch-action:none;}
+
+  .panel{
+    position:fixed;left:26px;bottom:24px;
+    font-family:"Songti SC","STSong","SimSun",serif;
+    color:#8ba9a0;user-select:none;pointer-events:none;
+    letter-spacing:.08em;
+  }
+  .panel h1{
+    font-size:16px;font-weight:600;letter-spacing:.30em;
+    color:#c8dbd2;margin-bottom:7px;
+  }
+  .panel .formula{
+    font-family:"Times New Roman",Georgia,serif;
+    font-size:12.5px;color:#6d8a82;margin-bottom:9px;line-height:1.7;
+  }
+  .panel .formula i{color:#c8894e;font-style:italic;}
+  .panel .hint{
+    font-size:11.5px;color:#5e7a72;line-height:1.9;opacity:.9;
+  }
+  .panel .hint b{color:#88a89e;font-weight:500;}
+
+  .sound-btn{
+    position:fixed;right:22px;top:20px;
+    width:42px;height:42px;border-radius:50%;
+    border:1px solid rgba(120,160,148,.28);
+    background:rgba(16,26,24,.60);
+    backdrop-filter:blur(6px);
+    color:#8ba9a0;font-size:17px;line-height:1;
+    cursor:pointer;user-select:none;
+    display:flex;align-items:center;justify-content:center;
+    transition:all .28s ease;
+    font-family:"Songti SC",serif;
+  }
+  .sound-btn:hover{background:rgba(36,56,52,.92);transform:scale(1.06);}
+  .sound-btn.off{opacity:.35;}
+
+  .fade-in{animation:fi 1.8s ease both;}
+  @keyframes fi{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:none;}}
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+
+<div class="panel fade-in">
+  <h1>微分 · 流水</h1>
+  <p class="formula">
+    ∂²<i>h</i>/∂<i>t</i>² = <i>k</i>·∂²<i>h</i>/∂<i>x</i>² − <i>c</i>·∂<i>h</i>/∂<i>t</i>
+  </p>
+  <p class="hint">
+    <b>点击</b> · 落水成波，波速成曲<br>
+    <b>水速</b> · 决定刮奏快慢；<b>加速度</b> · 决定力度
+  </p>
+</div>
+
+<button class="sound-btn" id="sndBtn" title="声音开关">♪</button>
+
+<script>
+(() => {
+"use strict";
+
+/* ============================================================
+   画布
+   ============================================================ */
+const cv  = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+
+let W = 0, H = 0, DPR = 1;
+let bgCanvas = null;
+let time = 0, prevT = performance.now();
+
+/* ============================================================
+   音频 —— 古筝拨弦 + 压缩 + 复音限制
+   ============================================================ */
+let actx = null, master = null, compressor = null, delayNode = null;
+let audioOn = true;
+let lastNoteTime = 0;
+
+/* 复音限制 */
+let activeVoices = 0;
+const MAX_VOICES = 12;
+
+const PENTA = [0, 2, 4, 7, 9];
+const BASE_MIDI = 50;
+
+function midiToFreq(m){
+  return 440 * Math.pow(2, (m - 69) / 12);
+}
+
+function initAudio(){
+  if (actx) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  actx = new AC();
+
+  /* —— 压缩器：防止多音叠加削波（消“滋滋”声） —— */
+  compressor = actx.createDynamicsCompressor();
+  compressor.threshold.value = -18;
+  compressor.knee.value = 12;
+  compressor.ratio.value = 6;
+  compressor.attack.value = 0.003;
+  compressor.release.value = 0.22;
+  compressor.connect(actx.destination);
+
+  /* master 通过压缩器输出 */
+  master = actx.createGain();
+  master.gain.setValueAtTime(0, actx.currentTime);
+  master.gain.linearRampToValueAtTime(audioOn ? 0.55 : 0, actx.currentTime + 1.2);
+  master.connect(compressor);
+
+  /* 水边回响 */
+  const delay = actx.createDelay(2.5);
+  delay.delayTime.value = 0.31;
+
+  const fb = actx.createGain();
+  fb.gain.value = 0.38;
+
+  const damp = actx.createBiquadFilter();
+  damp.type = 'lowpass';
+  damp.frequency.value = 2000;
+
+  const wet = actx.createGain();
+  wet.gain.value = 0.30;
+
+  delay.connect(damp);
+  damp.connect(fb);
+  fb.connect(delay);
+  damp.connect(wet);
+  wet.connect(master);
+
+  delayNode = delay;
+}
+
+function resumeAudio(){
+  if (!actx) initAudio();
+  if (actx && actx.state === 'suspended') actx.resume();
+}
+
+function playNote(freq, vel = 0.16, dur = 2.2){
+  if (!actx || !audioOn) return;
+
+  const now = actx.currentTime;
+
+  /* 间隔阈值：避免同帧内多个音叠加（原 0.020 → 0.045） */
+  if (now - lastNoteTime < 0.045) return;
+  lastNoteTime = now;
+
+  /* 复音数限制 */
+  if (activeVoices >= MAX_VOICES) return;
+  activeVoices++;
+
+  const out = actx.createGain();
+  out.gain.value = vel;
+
+  const filt = actx.createBiquadFilter();
+  filt.type = 'lowpass';
+  filt.Q.value = 0.65;
+  filt.frequency.setValueAtTime(5200, now);
+  filt.frequency.exponentialRampToValueAtTime(820, now + dur * 0.9);
+
+  const env = actx.createGain();
+  env.gain.setValueAtTime(0.0001, now);
+  env.gain.exponentialRampToValueAtTime(1, now + 0.006);
+  env.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+
+  filt.connect(env);
+  env.connect(out);
+  out.connect(master);
+  if (delayNode) out.connect(delayNode);
+
+  /* 泛音列：从 10 个减到 7 个，减少叠加复杂度 */
+  const partials = [
+    [1.00, 1.00], [2.00, 0.42], [3.01, 0.16],
+    [4.20, 0.075], [5.40, 0.036], [6.80, 0.017], [8.10, 0.008]
+  ];
+
+  for (const [m, a] of partials){
+    const o = actx.createOscillator();
+    o.type = 'sine';
+    o.frequency.value = freq * m;
+    o.detune.value = (Math.random() - 0.5) * 5;
+
+    const og = actx.createGain();
+    og.gain.value = a;
+
+    o.connect(og);
+    og.connect(filt);
+    o.start(now);
+    o.stop(now + dur + 0.2);
+  }
+
+  /* 释放复音计数 */
+  setTimeout(() => {
+    activeVoices = Math.max(0, activeVoices - 1);
+  }, dur * 1000 + 50);
+}
+
+/* ============================================================
+   背景 —— 夜色水畔
+   ============================================================ */
+function makeBackground(){
+  bgCanvas = document.createElement('canvas');
+  bgCanvas.width  = Math.max(1, Math.round(W));
+  bgCanvas.height = Math.max(1, Math.round(H));
+  const b = bgCanvas.getContext('2d');
+
+  const g = b.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0.00, '#060a0a');
+  g.addColorStop(0.45, '#08110f');
+  g.addColorStop(0.78, '#0a1815');
+  g.addColorStop(1.00, '#061010');
+  b.fillStyle = g;
+  b.fillRect(0, 0, W, H);
+
+  const rg = b.createRadialGradient(
+    W * 0.5, H * 0.62, 0,
+    W * 0.5, H * 0.62, Math.max(W, H) * 0.75
+  );
+  rg.addColorStop(0.00, 'rgba(60, 110, 100, 0.14)');
+  rg.addColorStop(0.55, 'rgba(30, 60, 55, 0.06)');
+  rg.addColorStop(1.00, 'rgba(0, 0, 0, 0)');
+  b.fillStyle = rg;
+  b.fillRect(0, 0, W, H);
+
+  const n = Math.floor((W * H) / 2600);
+  for (let i = 0; i < n; i++){
+    b.fillStyle = `rgba(140, 180, 170, ${Math.random() * 0.026})`;
+    b.fillRect(Math.random()*W, Math.random()*H, Math.random()*1.5+0.3, Math.random()*1.0+0.3);
+  }
+
+  const v = b.createRadialGradient(
+    W*0.5, H*0.5, Math.min(W, H) * 0.30,
+    W*0.5, H*0.5, Math.max(W, H) * 0.85
+  );
+  v.addColorStop(0, 'rgba(0,0,0,0)');
+  v.addColorStop(1, 'rgba(0,0,0,0.72)');
+  b.fillStyle = v;
+  b.fillRect(0, 0, W, H);
+}
+
+/* ============================================================
+   水波场 —— 一维波动方程
+   ============================================================ */
+const WATER_N = 90;
+const waterH = new Float32Array(WATER_N);
+const waterV = new Float32Array(WATER_N);
+const waterA = new Float32Array(WATER_N);
+
+const WK = 380;
+const WC = 0.65;
+
+let rmsSmooth = 0;
+let rmsPrev = 0;
+
+function waterStep(dt){
+  for (let i = 1; i < WATER_N - 1; i++){
+    const lap = waterH[i-1] + waterH[i+1] - 2 * waterH[i];
+    waterA[i] = WK * lap - WC * waterV[i];
+  }
+  waterA[0] = WK * 2 * (waterH[1] - waterH[0]) - WC * waterV[0];
+  waterA[WATER_N-1] = WK * 2 * (waterH[WATER_N-2] - waterH[WATER_N-1]) - WC * waterV[WATER_N-1];
+
+  for (let i = 0; i < WATER_N; i++){
+    waterV[i] += waterA[i] * dt;
+    waterH[i] += waterV[i] * dt;
+
+    /* 限幅：防止脉冲叠加造成数值爆炸 */
+    if (waterV[i] >  1500) waterV[i] =  1500;
+    if (waterV[i] < -1500) waterV[i] = -1500;
+    if (waterH[i] >  60) waterH[i] =  60;
+    if (waterH[i] < -60) waterH[i] = -60;
+  }
+}
+
+function waterPulse(normX, strength){
+  const idx = normX * (WATER_N - 1);
+  const sigma = 3.2;
+  for (let i = 0; i < WATER_N; i++){
+    const d = i - idx;
+    const g = Math.exp(-d * d / (2 * sigma * sigma));
+    waterV[i] += strength * g;
+  }
+}
+
+function waterRms(){
+  let s = 0;
+  for (let i = 0; i < WATER_N; i++) s += waterV[i] * waterV[i];
+  return Math.sqrt(s / WATER_N);
+}
+
+/* ============================================================
+   古筝 —— 21 弦
+   ============================================================ */
+const N_STRINGS = 21;
+const strings = [];
+
+const stringTopRatio = 0.10;
+const stringBotRatio = 0.62;
+
+function buildStrings(){
+  strings.length = 0;
+  const marginX = W * 0.055;
+  const span = W - marginX * 2;
+
+  for (let i = 0; i < N_STRINGS; i++){
+    const oct = Math.floor(i / 5);
+    const deg = i % 5;
+    const midi = BASE_MIDI + PENTA[deg] + 12 * oct;
+
+    strings.push({
+      i,
+      x: marginX + (i / (N_STRINGS - 1)) * span,
+      normX: i / (N_STRINGS - 1),
+      freq: midiToFreq(midi),
+      midi,
+      flash: 0,
+      vib: 0,
+      phase: 0,
+      w: 0.55 + (1 - i / N_STRINGS) * 0.6
+    });
+  }
+}
+
+/* ============================================================
+   刮奏
+   ============================================================ */
+const glissandos = [];
+
+let glissSpeedDisp = 0;
+
+function addGlissando(force){
+  glissandos.push({
+    pos: 0,
+    speed: 0.4,
+    force,
+    triggered: new Set()
+  });
+  if (glissandos.length > 5) glissandos.shift();
+}
+
+function updateGlissandos(dt, targetSpeed, force){
+  for (let i = glissandos.length - 1; i >= 0; i--){
+    const g = glissandos[i];
+
+    g.speed += (targetSpeed - g.speed) * Math.min(1, dt * 5.5);
+
+    const prev = g.pos;
+    g.pos += g.speed * dt;
+
+    /* —— 收集本帧要触发的弦 —— */
+    const toTrigger = [];
+    for (const s of strings){
+      if (!g.triggered.has(s.i) && prev < s.normX && g.pos >= s.normX){
+        g.triggered.add(s.i);
+        toTrigger.push(s);
+      }
+    }
+
+    /* —— 分摊触发：每根弦间隔 18ms，避免瞬时叠加 —— */
+    if (toTrigger.length === 1){
+      triggerString(toTrigger[0], g.force);
+    } else {
+      toTrigger.forEach((s, k) => {
+        setTimeout(() => {
+          /* 确保刮奏头未被移除时才发声 */
+          if (glissandos.indexOf(g) !== -1 || true){
+            triggerString(s, g.force);
+          }
+        }, k * 18);
+      });
+    }
+
+    if (g.pos > 1.12) glissandos.splice(i, 1);
+  }
+}
+
+function triggerString(s, force){
+  s.flash = 1;
+  s.vib = 0.35 + force * 0.85;
+  s.phase = 0;
+
+  const vel = 0.045 + force * 0.16;   /* 略降，减少叠加音量 */
+  playNote(s.freq, vel, 2.0 + force * 0.8);
+}
+
+/* ============================================================
+   涟漪
+   ============================================================ */
+const splashes = [];
+
+function addSplash(x, y){
+  splashes.push({
+    x, y,
+    r: 0,
+    max: 40 + Math.random() * 60,
+    life: 1
+  });
+}
+
+/* ============================================================
+   鼠标
+   ============================================================ */
+const mouse = { x:0, y:0, active:false, lastMove:0 };
+
+/* ============================================================
+   更新
+   ============================================================ */
+function update(dt, t){
+  const now = performance.now();
+
+  waterStep(dt);
+
+  const rms = waterRms();
+  rmsSmooth += (rms - rmsSmooth) * Math.min(1, dt * 8);
+
+  const accel = (rmsSmooth - rmsPrev) / Math.max(dt, 0.0001);
+  rmsPrev = rmsSmooth;
+
+  /* 刮奏速度：水流速度决定（上限降低，避免弦触发过密） */
+  const targetSpeed = 0.10 + Math.min(1.55, rmsSmooth * 0.045);
+  glissSpeedDisp += (targetSpeed - glissSpeedDisp) * Math.min(1, dt * 4);
+
+  /* 力度：导数决定 */
+  const force = Math.min(1, Math.max(0.12,
+    Math.abs(accel) * 0.30 / 60 + rmsSmooth * 0.014
+  ));
+
+  updateGlissandos(dt, targetSpeed, force);
+
+  for (const s of strings){
+    s.flash *= Math.pow(0.10, dt);
+    if (s.vib > 0.001){
+      s.vib *= Math.pow(0.30, dt);
+      s.phase += dt * 42;
+    } else {
+      s.vib = 0;
+    }
+  }
+
+  for (let i = splashes.length - 1; i >= 0; i--){
+    const sp = splashes[i];
+    sp.r += (sp.max - sp.r) * Math.min(1, dt * 4);
+    sp.life -= dt * 1.6;
+    if (sp.life <= 0) splashes.splice(i, 1);
+  }
+
+  if (!mouse.active || now - mouse.lastMove > 3800){
+    mouse.x = W * 0.5 + Math.sin(t * 0.21) * W * 0.24;
+    mouse.y = H * 0.5 + Math.cos(t * 0.16) * H * 0.18;
+    mouse.active = false;
+  }
+}
+
+/* ============================================================
+   渲染 —— 水
+   ============================================================ */
+function drawWater(t){
+  const yBase = H * 0.70;
+  const scale = Math.min(H * 0.0035, 5.2);
+
+  ctx.beginPath();
+  ctx.moveTo(0, H);
+  ctx.lineTo(0, yBase + waterH[0] * scale);
+
+  for (let i = 1; i < WATER_N; i++){
+    const x = (i / (WATER_N - 1)) * W;
+    const y = yBase + waterH[i] * scale;
+    ctx.lineTo(x, y);
+  }
+  ctx.lineTo(W, H);
+  ctx.closePath();
+
+  const wg = ctx.createLinearGradient(0, yBase - 60, 0, H);
+  wg.addColorStop(0.00, 'rgba(52, 118, 108, 0.32)');
+  wg.addColorStop(0.35, 'rgba(32, 78, 72, 0.48)');
+  wg.addColorStop(0.78, 'rgba(18, 48, 46, 0.62)');
+  wg.addColorStop(1.00, 'rgba(6, 22, 22, 0.78)');
+  ctx.fillStyle = wg;
+  ctx.fill();
+
+  for (let k = 0; k < 3; k++){
+    const off = k * 12 + 4;
+    const alpha = 0.14 - k * 0.035;
+
+    ctx.beginPath();
+    for (let i = 0; i < WATER_N; i++){
+      const x = (i / (WATER_N - 1)) * W;
+      const y = yBase + waterH[i] * scale + off;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.strokeStyle = `rgba(140, 200, 186, ${alpha})`;
+    ctx.lineWidth = 0.9 - k * 0.15;
+    ctx.stroke();
+  }
+
+  ctx.beginPath();
+  for (let i = 0; i < WATER_N; i++){
+    const x = (i / (WATER_N - 1)) * W;
+    const y = yBase + waterH[i] * scale;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.strokeStyle = 'rgba(180, 230, 214, 0.30)';
+  ctx.lineWidth = 1.1;
+  ctx.stroke();
+
+  for (let k = 0; k < 40; k++){
+    const phase = k * 0.6180339887 + t * 0.13;
+    const nx = (phase % 1);
+    const idxF = nx * (WATER_N - 1);
+    const i0 = Math.floor(idxF);
+    const frac = idxF - i0;
+    const i1 = Math.min(WATER_N - 1, i0 + 1);
+    const hh = waterH[i0] * (1 - frac) + waterH[i1] * frac;
+
+    const px = nx * W;
+    const py = yBase + hh * scale + 3 + (k % 3) * 5;
+
+    const a = 0.06 + Math.abs(hh) * 0.004;
+    ctx.fillStyle = `rgba(180, 235, 220, ${Math.min(0.30, a)})`;
+    ctx.beginPath();
+    ctx.arc(px, py, 0.8 + (k % 3) * 0.35, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+/* ============================================================
+   渲染 —— 古筝弦
+   ============================================================ */
+function drawStrings(t){
+  const y0 = H * stringTopRatio;
+  const y1 = H * stringBotRatio;
+
+  for (const s of strings){
+    const x = s.x;
+
+    ctx.beginPath();
+    ctx.moveTo(x, y0);
+
+    const SEG = 18;
+    for (let k = 1; k <= SEG; k++){
+      const u = k / SEG;
+      const by = y0 + (y1 - y0) * u;
+      const env = Math.sin(Math.PI * u);
+      const disp = s.vib * env * Math.cos(s.phase) * 7;
+      ctx.lineTo(x + disp, by);
+    }
+
+    const baseAlpha = 0.32 + s.flash * 0.58;
+    ctx.strokeStyle = `rgba(212, 182, 130, ${baseAlpha})`;
+    ctx.lineWidth = s.w;
+    ctx.lineCap = 'round';
+    ctx.stroke();
+
+    if (s.flash > 0.03){
+      ctx.strokeStyle = `rgba(255, 232, 178, ${s.flash * 0.75})`;
+      ctx.lineWidth = s.w + 1.6;
+      ctx.stroke();
+    }
+
+    if (s.flash > 0.05){
+      const gl = ctx.createRadialGradient(x, (y0+y1)/2, 0, x, (y0+y1)/2, 42);
+      gl.addColorStop(0, `rgba(255, 224, 150, ${s.flash * 0.32})`);
+      gl.addColorStop(1, 'rgba(255, 224, 150, 0)');
+      ctx.fillStyle = gl;
+      ctx.beginPath();
+      ctx.arc(x, (y0+y1)/2, 42, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  ctx.strokeStyle = 'rgba(190, 158, 108, 0.22)';
+  ctx.lineWidth = 2.2;
+
+  ctx.beginPath();
+  ctx.moveTo(strings[0].x - 14, y0);
+  ctx.lineTo(strings[strings.length-1].x + 14, y0);
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(strings[0].x - 14, y1);
+  ctx.lineTo(strings[strings.length-1].x + 14, y1);
+  ctx.stroke();
+
+  ctx.strokeStyle = 'rgba(190, 158, 108, 0.10)';
+  ctx.lineWidth = 0.8;
+
+  ctx.beginPath();
+  ctx.moveTo(strings[0].x - 14, y0 - 5);
+  ctx.lineTo(strings[strings.length-1].x + 14, y0 - 5);
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(strings[0].x - 14, y1 + 5);
+  ctx.lineTo(strings[strings.length-1].x + 14, y1 + 5);
+  ctx.stroke();
+}
+
+/* ============================================================
+   渲染 —— 刮奏光带
+   ============================================================ */
+function drawGlissandos(t){
+  const y0 = H * stringTopRatio;
+  const y1 = H * stringBotRatio;
+  const marginX = W * 0.055;
+  const span = W - marginX * 2;
+
+  for (const g of glissandos){
+    if (g.pos < 0 || g.pos > 1.05) continue;
+
+    const x = marginX + g.pos * span;
+    const fade = g.pos > 1 ? (1.12 - g.pos) / 0.12 : 1;
+    const a = Math.min(1, Math.max(0, fade));
+
+    const grad = ctx.createLinearGradient(x, y0, x, y1);
+    grad.addColorStop(0.00, `rgba(180, 235, 220, 0)`);
+    grad.addColorStop(0.20, `rgba(200, 245, 228, ${0.55 * a})`);
+    grad.addColorStop(0.50, `rgba(255, 248, 220, ${0.88 * a})`);
+    grad.addColorStop(0.80, `rgba(200, 245, 228, ${0.55 * a})`);
+    grad.addColorStop(1.00, `rgba(180, 235, 220, 0)`);
+
+    ctx.strokeStyle = grad;
+    ctx.lineWidth = 2.6;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(x, y0);
+    ctx.lineTo(x, y1);
+    ctx.stroke();
+
+    const gg = ctx.createRadialGradient(x, (y0+y1)/2, 0, x, (y0+y1)/2, 60);
+    gg.addColorStop(0, `rgba(200, 240, 220, ${0.20 * a})`);
+    gg.addColorStop(1, 'rgba(200, 240, 220, 0)');
+    ctx.fillStyle = gg;
+    ctx.fillRect(x - 60, y0, 120, y1 - y0);
+  }
+}
+
+/* ============================================================
+   渲染 —— 水花
+   ============================================================ */
+function drawSplashes(){
+  for (const sp of splashes){
+    const a = sp.life * 0.42;
+
+    ctx.beginPath();
+    ctx.arc(sp.x, sp.y, sp.r, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(160, 220, 205, ${a})`;
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(sp.x, sp.y, sp.r * 0.62, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(160, 220, 205, ${a * 0.5})`;
+    ctx.lineWidth = 0.8;
+    ctx.stroke();
+  }
+}
+
+/* ============================================================
+   渲染 —— 状态面板
+   ============================================================ */
+function drawStats(){
+  const x = W - 34;
+  const y = 86;
+
+  ctx.font = '400 10px "Songti SC","SimSun",serif';
+  ctx.fillStyle = 'rgba(140, 170, 162, 0.48)';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'top';
+  ctx.fillText('水速 / 刮奏', x, y);
+
+  const bw = 130, bh = 3;
+  const bx = x - bw;
+
+  const speedNorm = Math.min(1, (glissSpeedDisp - 0.10) / 1.55);
+  ctx.fillStyle = 'rgba(80, 120, 112, 0.25)';
+  ctx.fillRect(bx, y + 16, bw, bh);
+
+  const sg = ctx.createLinearGradient(bx, 0, bx + bw, 0);
+  sg.addColorStop(0.00, 'rgba(120, 200, 180, 0.75)');
+  sg.addColorStop(1.00, 'rgba(220, 240, 200, 0.90)');
+  ctx.fillStyle = sg;
+  ctx.fillRect(bx, y + 16, bw * speedNorm, bh);
+
+  ctx.font = '500 13px "Times New Roman", Georgia, serif';
+  ctx.fillStyle = 'rgba(180, 220, 205, 0.82)';
+  ctx.fillText('v = ' + glissSpeedDisp.toFixed(2), x, y + 27);
+
+  ctx.font = '400 10px "Songti SC","SimSun",serif';
+  ctx.fillStyle = 'rgba(140, 170, 162, 0.42)';
+  ctx.fillText('活跃刮奏 ' + glissandos.length, x, y + 50);
+}
+
+/* ============================================================
+   渲染主入口
+   ============================================================ */
+function render(t, dt){
+  ctx.clearRect(0, 0, W, H);
+
+  if (bgCanvas) ctx.drawImage(bgCanvas, 0, 0, W, H);
+  else { ctx.fillStyle = '#060a0a'; ctx.fillRect(0, 0, W, H); }
+
+  drawWater(t);
+  drawStrings(t);
+  drawGlissandos(t);
+  drawSplashes();
+  drawStats();
+
+  if (mouse.active){
+    const mg = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, 110);
+    mg.addColorStop(0, 'rgba(180, 240, 220, 0.09)');
+    mg.addColorStop(1, 'rgba(180, 240, 220, 0)');
+    ctx.fillStyle = mg;
+    ctx.beginPath();
+    ctx.arc(mouse.x, mouse.y, 110, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+/* ============================================================
+   主循环
+   ============================================================ */
+function loop(){
+  const now = performance.now();
+  const dt = Math.min((now - prevT) / 1000, 0.05);
+  prevT = now;
+  time = now / 1000;
+
+  update(dt, time);
+  render(time, dt);
+
+  requestAnimationFrame(loop);
+}
+
+/* ============================================================
+   尺寸
+   ============================================================ */
+function resize(){
+  const nw = window.innerWidth;
+  const nh = window.innerHeight;
+  if (nw === W && nh === H) return;
+
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = nw; H = nh;
+
+  cv.width  = Math.round(W * DPR);
+  cv.height = Math.round(H * DPR);
+  cv.style.width  = W + 'px';
+  cv.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  makeBackground();
+  buildStrings();
+
+  waterH.fill(0);
+  waterV.fill(0);
+
+  mouse.x = W / 2;
+  mouse.y = H / 2;
+}
+
+/* ============================================================
+   交互
+   ============================================================ */
+function pointerPos(e){
+  const r = cv.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+
+cv.addEventListener('pointermove', e => {
+  const p = pointerPos(e);
+  mouse.x = p.x;
+  mouse.y = p.y;
+  mouse.active = true;
+  mouse.lastMove = performance.now();
+  resumeAudio();
+}, { passive: true });
+
+cv.addEventListener('pointerdown', e => {
+  resumeAudio();
+
+  const p = pointerPos(e);
+  mouse.x = p.x;
+  mouse.y = p.y;
+  mouse.active = true;
+  mouse.lastMove = performance.now();
+
+  const nx = Math.max(0, Math.min(1, p.x / W));
+
+  waterPulse(nx, 420);
+  addSplash(p.x, H * 0.70 + 6);
+
+  const force = Math.min(1, Math.max(0.25, Math.abs(p.y / H - 0.5) * 1.4 + 0.35));
+  addGlissando(force);
+
+  const step = Math.floor(nx * 12);
+  playNote(midiToFreq(BASE_MIDI + PENTA[step % 5] + 12 * Math.floor(step / 5)), 0.18, 2.4);
+}, { passive: true });
+
+cv.addEventListener('pointerleave', () => {
+  mouse.active = false;
+});
+
+/* ============================================================
+   声音开关
+   ============================================================ */
+const sndBtn = document.getElementById('sndBtn');
+sndBtn.addEventListener('click', () => {
+  audioOn = !audioOn;
+  sndBtn.classList.toggle('off', !audioOn);
+  sndBtn.textContent = audioOn ? '♪' : '✕';
+
+  if (audioOn){
+    resumeAudio();
+    if (master && actx){
+      master.gain.cancelScheduledValues(actx.currentTime);
+      master.gain.setValueAtTime(master.gain.value, actx.currentTime);
+      master.gain.linearRampToValueAtTime(0.55, actx.currentTime + 0.5);
+    }
+    playNote(midiToFreq(BASE_MIDI + 12), 0.16, 2.4);
+  } else if (master && actx){
+    master.gain.cancelScheduledValues(actx.currentTime);
+    master.gain.setValueAtTime(master.gain.value, actx.currentTime);
+    master.gain.linearRampToValueAtTime(0, actx.currentTime + 0.35);
+  }
+});
+
+/* ============================================================
+   窗口变化
+   ============================================================ */
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(resize, 200);
+});
+
+/* ============================================================
+   启动
+   ============================================================ */
+resize();
+
+setTimeout(() => {
+  waterPulse(0.35, 380);
+  addSplash(W * 0.35, H * 0.70 + 6);
+  addGlissando(0.65);
+  playNote(midiToFreq(BASE_MIDI + 7), 0.16, 2.4);
+}, 800);
+
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>

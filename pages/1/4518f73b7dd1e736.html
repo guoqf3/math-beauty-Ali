@@ -1,0 +1,823 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>群论对称古琴指法 · Symmetry Fingering</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{width:100%;height:100%;overflow:hidden;background:#0b0805;}
+  canvas{display:block;width:100%;height:100%;cursor:pointer;touch-action:none;}
+
+  .panel{
+    position:fixed;left:26px;bottom:24px;
+    font-family:"Songti SC","STSong","SimSun",serif;
+    color:#c9b78a;user-select:none;pointer-events:none;
+    letter-spacing:.08em;
+  }
+  .panel h1{
+    font-size:16px;font-weight:600;letter-spacing:.30em;
+    color:#e6d5a8;margin-bottom:7px;
+  }
+  .panel .formula{
+    font-family:"Times New Roman",Georgia,serif;
+    font-size:13px;color:#9a8b6a;margin-bottom:9px;letter-spacing:.04em;
+  }
+  .panel .formula i{color:#c8622e;font-style:italic;}
+  .panel .hint{
+    font-size:11.5px;color:#8a7c5e;line-height:1.9;opacity:.9;
+  }
+  .panel .hint b{color:#b8a578;font-weight:500;}
+
+  .sound-btn{
+    position:fixed;right:22px;top:20px;
+    width:42px;height:42px;border-radius:50%;
+    border:1px solid rgba(180,160,110,.28);
+    background:rgba(30,24,18,.60);
+    backdrop-filter:blur(6px);
+    color:#c9b78a;font-size:17px;line-height:1;
+    cursor:pointer;user-select:none;
+    display:flex;align-items:center;justify-content:center;
+    transition:all .28s ease;
+    font-family:"Songti SC",serif;
+  }
+  .sound-btn:hover{background:rgba(60,48,32,.92);transform:scale(1.06);}
+  .sound-btn.off{opacity:.35;}
+
+  .fade-in{animation:fi 1.8s ease both;}
+  @keyframes fi{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:none;}}
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+
+<div class="panel fade-in">
+  <h1>群论 · 指法</h1>
+  <p class="formula">
+    <i>D</i><sub>8</sub> = ⟨<i>r</i>, <i>σ</i> | <i>r</i><sup>8</sup> = <i>σ</i><sup>2</sup> = <i>e</i>⟩
+  </p>
+  <p class="hint">
+    <b>环外</b> · 点击对称轴，施加反射<br>
+    <b>环内</b> · 点击中心，旋转 45°
+  </p>
+</div>
+
+<button class="sound-btn" id="sndBtn" title="声音开关">♪</button>
+
+<script>
+(() => {
+"use strict";
+
+/* ============================================================
+   画布
+   ============================================================ */
+const cv  = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+
+let W = 0, H = 0, DPR = 1;
+let bgCanvas = null;
+
+let cx = 0, cy = 0, R = 0;
+
+/* ============================================================
+   音频 —— 古琴拨弦 + 山谷回响
+   ============================================================ */
+let actx = null, master = null, delayNode = null;
+let audioOn = true;
+let lastNoteTime = 0;
+
+const PENTA = [0, 2, 4, 7, 9];
+const BASE_FREQ = 174.61;      // F3
+
+function noteFreq(step){
+  const oct = Math.floor(step / 5);
+  const deg = ((step % 5) + 5) % 5;
+  return BASE_FREQ * Math.pow(2, (PENTA[deg] + oct * 12) / 12);
+}
+
+function initAudio(){
+  if (actx) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  actx = new AC();
+
+  master = actx.createGain();
+  master.gain.setValueAtTime(0, actx.currentTime);
+  master.gain.linearRampToValueAtTime(audioOn ? 0.80 : 0, actx.currentTime + 1.2);
+  master.connect(actx.destination);
+
+  const delay = actx.createDelay(2.5);
+  delay.delayTime.value = 0.30;
+
+  const fb = actx.createGain();
+  fb.gain.value = 0.42;
+
+  const damp = actx.createBiquadFilter();
+  damp.type = 'lowpass';
+  damp.frequency.value = 2000;
+
+  const wet = actx.createGain();
+  wet.gain.value = 0.35;
+
+  delay.connect(damp);
+  damp.connect(fb);
+  fb.connect(delay);
+  damp.connect(wet);
+  wet.connect(master);
+
+  delayNode = delay;
+}
+
+function resumeAudio(){
+  if (!actx) initAudio();
+  if (actx && actx.state === 'suspended') actx.resume();
+}
+
+function playNote(freq, vel = 0.18, dur = 2.4){
+  if (!actx || !audioOn) return;
+  const now = actx.currentTime;
+  if (now - lastNoteTime < 0.028) return;
+  lastNoteTime = now;
+
+  const out = actx.createGain();
+  out.gain.value = vel;
+
+  const filt = actx.createBiquadFilter();
+  filt.type = 'lowpass';
+  filt.Q.value = 0.65;
+  filt.frequency.setValueAtTime(5400, now);
+  filt.frequency.exponentialRampToValueAtTime(760, now + dur * 0.9);
+
+  const env = actx.createGain();
+  env.gain.setValueAtTime(0.0001, now);
+  env.gain.exponentialRampToValueAtTime(1, now + 0.007);
+  env.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+
+  filt.connect(env);
+  env.connect(out);
+  out.connect(master);
+  if (delayNode) out.connect(delayNode);
+
+  const partials = [
+    [1.00, 1.00], [2.00, 0.42], [3.01, 0.17], [4.20, 0.085],
+    [5.40, 0.042], [6.80, 0.021], [8.10, 0.010]
+  ];
+
+  for (const [m, a] of partials){
+    const o = actx.createOscillator();
+    o.type = 'sine';
+    o.frequency.value = freq * m;
+    o.detune.value = (Math.random() - 0.5) * 6;
+
+    const og = actx.createGain();
+    og.gain.value = a;
+
+    o.connect(og);
+    og.connect(filt);
+    o.start(now);
+    o.stop(now + dur + 0.25);
+  }
+}
+
+/* ============================================================
+   背景
+   ============================================================ */
+function makeBackground(){
+  bgCanvas = document.createElement('canvas');
+  bgCanvas.width  = Math.max(1, Math.round(W));
+  bgCanvas.height = Math.max(1, Math.round(H));
+  const b = bgCanvas.getContext('2d');
+
+  b.fillStyle = '#0b0805';
+  b.fillRect(0, 0, W, H);
+
+  const g = b.createRadialGradient(
+    W*0.5, H*0.48, 0,
+    W*0.5, H*0.52, Math.max(W, H) * 0.70
+  );
+  g.addColorStop(0.00, 'rgba(58, 40, 18, 0.40)');
+  g.addColorStop(0.55, 'rgba(22, 16, 8, 0.18)');
+  g.addColorStop(1.00, 'rgba(0, 0, 0, 0.58)');
+  b.fillStyle = g;
+  b.fillRect(0, 0, W, H);
+
+  // 细粒
+  const n = Math.floor((W*H) / 2400);
+  for (let i = 0; i < n; i++){
+    b.fillStyle = `rgba(170, 140, 88, ${Math.random() * 0.028})`;
+    b.fillRect(Math.random()*W, Math.random()*H, Math.random()*1.6+0.3, Math.random()*1.1+0.3);
+  }
+
+  // 暗角
+  const v = b.createRadialGradient(
+    W*0.5, H*0.5, Math.min(W, H) * 0.28,
+    W*0.5, H*0.5, Math.max(W, H) * 0.82
+  );
+  v.addColorStop(0, 'rgba(0,0,0,0)');
+  v.addColorStop(1, 'rgba(0,0,0,0.72)');
+  b.fillStyle = v;
+  b.fillRect(0, 0, W, H);
+}
+
+/* ============================================================
+   槽位与角度
+   ============================================================ */
+function slotAngle(i){
+  return -Math.PI / 2 + i * Math.PI / 4;
+}
+
+/* 4 条对称轴角度（对 π 取模） */
+const AXES = [
+  { ang: Math.PI / 2,   name: 'σ_v',  perm: s => (8 - s) % 8,        label: '竖' },
+  { ang: 0,             name: 'σ_h',  perm: s => (4 - s + 8) % 8,    label: '横' },
+  { ang: Math.PI / 4,   name: 'σ_d₁', perm: s => (6 - s + 8) % 8,    label: '斜' },
+  { ang: 3*Math.PI / 4, name: 'σ_d₂', perm: s => (2 - s + 8) % 8,    label: '斜' }
+];
+
+/* ============================================================
+   手指
+   ============================================================ */
+const CHAR_LIST = ['擘', '托', '抹', '挑', '勾', '剔', '打', '摘'];
+
+/* 每个手指固定音高（五声音阶） */
+const STEP_LIST = [0, 2, 4, 7, 9, 12, 14, 16];
+
+let fingers = [];
+let opHistory = [];        // 操作历史
+
+function buildFingers(){
+  fingers = CHAR_LIST.map((ch, i) => ({
+    char: ch,
+    slot: i,
+    angle: slotAngle(i),
+    targetAngle: slotAngle(i),
+    step: STEP_LIST[i],
+    freq: noteFreq(STEP_LIST[i]),
+    flash: 0,
+    breathe: Math.random() * Math.PI * 2,
+    scale: 1
+  }));
+  opHistory = [];
+}
+
+/* ============================================================
+   涟漪
+   ============================================================ */
+const waves = [];
+
+function spawnWave(angle){
+  waves.push({
+    a: angle,
+    r: R * 0.85,
+    max: R * 1.75,
+    life: 1,
+    width: 0.35
+  });
+}
+
+/* ============================================================
+   操作应用
+   ============================================================ */
+let opToken = 0;
+let lastOpName = '';
+let lastOpTimer = 0;
+
+function applyPerm(permFn, name, axisAngle){
+  for (const f of fingers){
+    f.slot = permFn(f.slot);
+    f.targetAngle = slotAngle(f.slot);
+    f.flash = 1;
+  }
+
+  lastOpName = name;
+  lastOpTimer = 0.9;
+  opHistory.push(name);
+  if (opHistory.length > 12) opHistory.shift();
+
+  // 轴线光效
+  if (axisAngle !== null) spawnWave(axisAngle);
+
+  // 琶音：按槽位顺序播放
+  playArpeggio();
+}
+
+function playArpeggio(){
+  const token = ++opToken;
+  const bySlot = new Array(8);
+  for (const f of fingers) bySlot[f.slot] = f;
+
+  for (let i = 0; i < 8; i++){
+    const f = bySlot[i];
+    if (!f) continue;
+    setTimeout(() => {
+      if (token !== opToken) return;
+      playNote(f.freq, 0.16 + (i % 2) * 0.02, 2.4);
+    }, i * 72);
+  }
+}
+
+/* ============================================================
+   悬停
+   ============================================================ */
+const mouse = { x: 0, y: 0, active: false, lastMove: 0 };
+let hoverAxis = -1;
+let hoverCenter = false;
+let hoverFinger = -1;
+
+/* ============================================================
+   更新
+   ============================================================ */
+let time = 0, prevT = performance.now();
+
+function update(dt, t){
+  const now = performance.now();
+
+  // 空闲游移
+  if (!mouse.active || now - mouse.lastMove > 3500){
+    mouse.x = W * 0.5 + Math.sin(t * 0.23) * W * 0.22;
+    mouse.y = H * 0.5 + Math.cos(t * 0.17) * H * 0.18;
+    mouse.active = false;
+  }
+
+  // —— 手指角度插值 ——
+  for (const f of fingers){
+    let d = f.targetAngle - f.angle;
+    d = ((d + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
+    f.angle += d * Math.min(1, dt * 6.5);
+
+    f.flash *= Math.pow(0.06, dt);
+    f.breathe += dt * 1.1;
+
+    const breathScale = 1 + Math.sin(f.breathe) * 0.025;
+    f.scale += ((1 + f.flash * 0.28) * breathScale - f.scale) * Math.min(1, dt * 8);
+  }
+
+  // —— 波 ——
+  for (let i = waves.length - 1; i >= 0; i--){
+    const w = waves[i];
+    w.r += (w.max - w.r) * Math.min(1, dt * 3.2);
+    w.life -= dt * 1.5;
+    if (w.life <= 0) waves.splice(i, 1);
+  }
+
+  // —— 悬停检测 ——
+  hoverAxis = -1;
+  hoverCenter = false;
+  hoverFinger = -1;
+
+  if (mouse.active){
+    const dx = mouse.x - cx;
+    const dy = mouse.y - cy;
+    const d = Math.hypot(dx, dy);
+
+    if (d < R * 0.72){
+      hoverCenter = true;
+    } else if (d > R * 1.18 && d < R * 1.75){
+      // 找最近的轴
+      let a = Math.atan2(dy, dx);
+      a = ((a % Math.PI) + Math.PI) % Math.PI;
+
+      let best = Infinity, bestIdx = -1;
+      for (let i = 0; i < AXES.length; i++){
+        let ax = ((AXES[i].ang % Math.PI) + Math.PI) % Math.PI;
+        let diff = Math.abs(a - ax);
+        if (diff > Math.PI / 2) diff = Math.PI - diff;
+        if (diff < best){ best = diff; bestIdx = i; }
+      }
+      if (best < 0.42){
+        hoverAxis = bestIdx;
+      }
+    } else if (d >= R * 0.72 && d <= R * 1.18){
+      // 找最近的手指
+      let best = Infinity;
+      for (let i = 0; i < fingers.length; i++){
+        const f = fingers[i];
+        const fx = cx + Math.cos(f.angle) * R;
+        const fy = cy + Math.sin(f.angle) * R;
+        const dd = Math.hypot(mouse.x - fx, mouse.y - fy);
+        if (dd < R * 0.20 && dd < best){
+          best = dd;
+          hoverFinger = i;
+        }
+      }
+    }
+  }
+
+  // 操作名称淡出
+  lastOpTimer = Math.max(0, lastOpTimer - dt);
+}
+
+/* ============================================================
+   渲染
+   ============================================================ */
+function render(t){
+  ctx.clearRect(0, 0, W, H);
+
+  if (bgCanvas) ctx.drawImage(bgCanvas, 0, 0, W, H);
+  else { ctx.fillStyle = '#0b0805'; ctx.fillRect(0, 0, W, H); }
+
+  /* —— 中心柔光 —— */
+  const halo = ctx.createRadialGradient(cx, cy, 0, cx, cy, R * 1.55);
+  halo.addColorStop(0.00, 'rgba(180, 130, 60, 0.10)');
+  halo.addColorStop(0.60, 'rgba(180, 130, 60, 0.03)');
+  halo.addColorStop(1.00, 'rgba(180, 130, 60, 0)');
+  ctx.fillStyle = halo;
+  ctx.beginPath();
+  ctx.arc(cx, cy, R * 1.55, 0, Math.PI * 2);
+  ctx.fill();
+
+  /* —— 参考圆 —— */
+  ctx.beginPath();
+  ctx.arc(cx, cy, R, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(180, 148, 96, 0.13)';
+  ctx.lineWidth = 0.8;
+  ctx.setLineDash([3, 7]);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // 内圈
+  ctx.beginPath();
+  ctx.arc(cx, cy, R * 0.60, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(180, 148, 96, 0.08)';
+  ctx.lineWidth = 0.7;
+  ctx.stroke();
+
+  /* —— 对称轴 —— */
+  for (let i = 0; i < AXES.length; i++){
+    const ax = AXES[i];
+    const isHover = (i === hoverAxis);
+
+    const dx = Math.cos(ax.ang);
+    const dy = Math.sin(ax.ang);
+
+    const r0 = R * 0.68;
+    const r1 = R * (isHover ? 1.78 : 1.66);
+
+    ctx.beginPath();
+    ctx.moveTo(cx + dx * r0, cy + dy * r0);
+    ctx.lineTo(cx + dx * r1, cy + dy * r1);
+    ctx.strokeStyle = isHover
+      ? 'rgba(232, 190, 110, 0.75)'
+      : 'rgba(180, 148, 96, 0.22)';
+    ctx.lineWidth = isHover ? 1.6 : 0.9;
+    ctx.stroke();
+
+    // 反向
+    ctx.beginPath();
+    ctx.moveTo(cx - dx * r0, cy - dy * r0);
+    ctx.lineTo(cx - dx * r1, cy - dy * r1);
+    ctx.strokeStyle = isHover
+      ? 'rgba(232, 190, 110, 0.75)'
+      : 'rgba(180, 148, 96, 0.22)';
+    ctx.lineWidth = isHover ? 1.6 : 0.9;
+    ctx.stroke();
+
+    // 端点标记 + 名称
+    const ex = cx + dx * r1;
+    const ey = cy + dy * r1;
+    const ex2 = cx - dx * r1;
+    const ey2 = cy - dy * r1;
+
+    ctx.font = '500 11px "Times New Roman", Georgia, serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    ctx.fillStyle = isHover
+      ? 'rgba(240, 208, 140, 0.92)'
+      : 'rgba(180, 148, 96, 0.36)';
+    ctx.fillText(ax.name, ex + dx * 18, ey + dy * 18);
+    ctx.fillText(ax.name, ex2 - dx * 18, ey2 - dy * 18);
+  }
+
+  /* —— 波（操作光效） —— */
+  for (const w of waves){
+    const a = w.life * 0.45;
+    if (a <= 0.01) continue;
+
+    const dx = Math.cos(w.a);
+    const dy = Math.sin(w.a);
+
+    for (const sgn of [1, -1]){
+      const x1 = cx + sgn * dx * R * 0.85;
+      const y1 = cy + sgn * dy * R * 0.85;
+      const x2 = cx + sgn * dx * w.r;
+      const y2 = cy + sgn * dy * w.r;
+
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.strokeStyle = `rgba(255, 220, 140, ${a})`;
+      ctx.lineWidth = 3.5 * w.life;
+      ctx.lineCap = 'round';
+      ctx.stroke();
+    }
+  }
+
+  /* —— 中心环 —— */
+  const cR = R * 0.42;
+  const centerGlow = hoverCenter ? 0.65 : 0.22;
+
+  const cg = ctx.createRadialGradient(cx, cy, 0, cx, cy, cR);
+  cg.addColorStop(0.00, `rgba(220, 170, 90, ${centerGlow * 0.30})`);
+  cg.addColorStop(1.00, `rgba(220, 170, 90, 0)`);
+  ctx.fillStyle = cg;
+  ctx.beginPath();
+  ctx.arc(cx, cy, cR, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.arc(cx, cy, cR, 0, Math.PI * 2);
+  ctx.strokeStyle = hoverCenter
+    ? 'rgba(232, 190, 110, 0.62)'
+    : 'rgba(180, 148, 96, 0.20)';
+  ctx.lineWidth = hoverCenter ? 1.5 : 0.9;
+  ctx.stroke();
+
+  // 中心文字：操作名 或 旋转符号
+  ctx.font = '500 18px "Times New Roman", Georgia, serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  if (lastOpTimer > 0){
+    ctx.fillStyle = `rgba(240, 208, 140, ${lastOpTimer})`;
+    ctx.fillText(lastOpName, cx, cy - 6);
+  } else {
+    ctx.fillStyle = hoverCenter
+      ? 'rgba(240, 208, 140, 0.85)'
+      : 'rgba(180, 148, 96, 0.32)';
+    ctx.fillText('r', cx, cy - 4);
+  }
+
+  // 小字提示
+  ctx.font = '400 9px "Songti SC","SimSun",serif';
+  ctx.fillStyle = hoverCenter
+    ? 'rgba(220, 180, 110, 0.62)'
+    : 'rgba(160, 134, 88, 0.28)';
+  ctx.fillText(hoverCenter ? '旋转' : '45°', cx, cy + 13);
+
+  /* —— 手指 —— */
+  const padR = R * 0.175;
+
+  for (let i = 0; i < fingers.length; i++){
+    const f = fingers[i];
+    const fx = cx + Math.cos(f.angle) * R;
+    const fy = cy + Math.sin(f.angle) * R;
+
+    const isHover = (i === hoverFinger);
+    const pr = padR * f.scale;
+
+    // 光晕
+    const glowA = f.flash * 0.85 + (isHover ? 0.35 : 0);
+    if (glowA > 0.03){
+      const gr = pr * (2.2 + glowA * 2.2);
+      const gg = ctx.createRadialGradient(fx, fy, 0, fx, fy, gr);
+      gg.addColorStop(0, `rgba(255, 224, 150, ${glowA * 0.48})`);
+      gg.addColorStop(0.55, `rgba(255, 200, 110, ${glowA * 0.16})`);
+      gg.addColorStop(1, 'rgba(255, 200, 110, 0)');
+      ctx.fillStyle = gg;
+      ctx.beginPath();
+      ctx.arc(fx, fy, gr, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // 垫底
+    const padG = ctx.createRadialGradient(
+      fx - pr * 0.35, fy - pr * 0.35, 0,
+      fx, fy, pr * 1.05
+    );
+    padG.addColorStop(0.00, `rgba(72, 54, 28, ${0.72 + f.flash * 0.22})`);
+    padG.addColorStop(1.00, `rgba(28, 20, 10, ${0.88 + f.flash * 0.12})`);
+    ctx.fillStyle = padG;
+    ctx.beginPath();
+    ctx.arc(fx, fy, pr, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 边框
+    ctx.beginPath();
+    ctx.arc(fx, fy, pr, 0, Math.PI * 2);
+    ctx.strokeStyle = f.flash > 0.05
+      ? `rgba(255, 224, 150, ${0.55 + f.flash * 0.42})`
+      : (isHover
+          ? 'rgba(220, 180, 110, 0.62)'
+          : 'rgba(180, 148, 96, 0.32)');
+    ctx.lineWidth = (isHover || f.flash > 0.05) ? 1.6 : 1.0;
+    ctx.stroke();
+
+    // 内圈细线
+    ctx.beginPath();
+    ctx.arc(fx, fy, pr * 0.74, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(200, 166, 110, ${0.14 + f.flash * 0.24})`;
+    ctx.lineWidth = 0.7;
+    ctx.stroke();
+
+    // 字符
+    const charSize = pr * 0.92;
+    ctx.font = `600 ${charSize.toFixed(1)}px "KaiTi","STKaiti","楷体","Songti SC","SimSun",serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    ctx.fillStyle = f.flash > 0.05
+      ? `rgba(255, 240, 210, ${0.72 + f.flash * 0.28})`
+      : (isHover
+          ? 'rgba(246, 222, 170, 0.92)'
+          : 'rgba(214, 186, 132, 0.68)');
+    ctx.fillText(f.char, fx, fy + charSize * 0.03);
+  }
+
+  /* —— 操作历史 —— */
+  if (opHistory.length > 0){
+    const startX = cx + R * 2.05;
+    const startY = cy - R * 1.1;
+    const gap = 22;
+
+    ctx.font = '500 11px "Times New Roman", Georgia, serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+
+    for (let i = 0; i < opHistory.length; i++){
+      const a = (i + 1) / opHistory.length;
+      const x = startX;
+      const y = startY + i * gap;
+
+      if (y > H - 40) break;
+
+      ctx.fillStyle = `rgba(200, 166, 110, ${0.18 + a * 0.42})`;
+      ctx.fillText(opHistory[i], x, y);
+    }
+
+    ctx.font = '400 9px "Songti SC","SimSun",serif';
+    ctx.fillStyle = 'rgba(160, 134, 88, 0.30)';
+    ctx.textAlign = 'left';
+    ctx.fillText('群元素', startX, startY - 20);
+  }
+
+  /* —— 鼠标柔光 —— */
+  if (mouse.active){
+    const mg = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, 100);
+    mg.addColorStop(0, 'rgba(255, 228, 160, 0.08)');
+    mg.addColorStop(1, 'rgba(255, 228, 160, 0)');
+    ctx.fillStyle = mg;
+    ctx.beginPath();
+    ctx.arc(mouse.x, mouse.y, 100, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+/* ============================================================
+   主循环
+   ============================================================ */
+function loop(){
+  const now = performance.now();
+  const dt = Math.min((now - prevT) / 1000, 0.05);
+  prevT = now;
+  time = now / 1000;
+
+  update(dt, time);
+  render(time);
+
+  requestAnimationFrame(loop);
+}
+
+/* ============================================================
+   尺寸
+   ============================================================ */
+function resize(){
+  const nw = window.innerWidth;
+  const nh = window.innerHeight;
+  if (nw === W && nh === H) return;
+
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = nw; H = nh;
+
+  cv.width  = Math.round(W * DPR);
+  cv.height = Math.round(H * DPR);
+  cv.style.width  = W + 'px';
+  cv.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  cx = W * 0.5;
+  cy = H * 0.5;
+  R = Math.min(W * 0.26, H * 0.26, 230);
+
+  makeBackground();
+  buildFingers();
+
+  mouse.x = W / 2;
+  mouse.y = H / 2;
+}
+
+/* ============================================================
+   交互
+   ============================================================ */
+function pointerPos(e){
+  const r = cv.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+
+cv.addEventListener('pointermove', e => {
+  const p = pointerPos(e);
+  mouse.x = p.x;
+  mouse.y = p.y;
+  mouse.active = true;
+  mouse.lastMove = performance.now();
+  resumeAudio();
+}, { passive: true });
+
+cv.addEventListener('pointerdown', e => {
+  resumeAudio();
+
+  const p = pointerPos(e);
+  mouse.x = p.x;
+  mouse.y = p.y;
+  mouse.active = true;
+  mouse.lastMove = performance.now();
+
+  const dx = p.x - cx;
+  const dy = p.y - cy;
+  const d = Math.hypot(dx, dy);
+
+  /* —— 环外：反射 —— */
+  if (d > R * 1.18 && d < R * 1.85){
+    let a = Math.atan2(dy, dx);
+    a = ((a % Math.PI) + Math.PI) % Math.PI;
+
+    let best = Infinity, bestIdx = 0;
+    for (let i = 0; i < AXES.length; i++){
+      let ax = ((AXES[i].ang % Math.PI) + Math.PI) % Math.PI;
+      let diff = Math.abs(a - ax);
+      if (diff > Math.PI / 2) diff = Math.PI - diff;
+      if (diff < best){ best = diff; bestIdx = i; }
+    }
+
+    const ax = AXES[bestIdx];
+    applyPerm(ax.perm, ax.name, ax.ang);
+    return;
+  }
+
+  /* —— 环内：旋转 —— */
+  if (d < R * 0.85){
+    applyPerm(s => (s + 1) % 8, 'r', null);
+    return;
+  }
+
+  /* —— 手指垫：单音 —— */
+  for (let i = 0; i < fingers.length; i++){
+    const f = fingers[i];
+    const fx = cx + Math.cos(f.angle) * R;
+    const fy = cy + Math.sin(f.angle) * R;
+    if (Math.hypot(p.x - fx, p.y - fy) < R * 0.20){
+      f.flash = 1;
+      playNote(f.freq, 0.26, 2.8);
+      setTimeout(() => playNote(f.freq * 2, 0.075, 1.9), 130);
+      return;
+    }
+  }
+}, { passive: true });
+
+cv.addEventListener('pointerleave', () => {
+  mouse.active = false;
+});
+
+/* ============================================================
+   声音开关
+   ============================================================ */
+const sndBtn = document.getElementById('sndBtn');
+sndBtn.addEventListener('click', () => {
+  audioOn = !audioOn;
+  sndBtn.classList.toggle('off', !audioOn);
+  sndBtn.textContent = audioOn ? '♪' : '✕';
+
+  if (audioOn){
+    resumeAudio();
+    if (master && actx){
+      master.gain.cancelScheduledValues(actx.currentTime);
+      master.gain.setValueAtTime(master.gain.value, actx.currentTime);
+      master.gain.linearRampToValueAtTime(0.80, actx.currentTime + 0.5);
+    }
+    playNote(noteFreq(4), 0.18, 2.4);
+  } else if (master && actx){
+    master.gain.cancelScheduledValues(actx.currentTime);
+    master.gain.setValueAtTime(master.gain.value, actx.currentTime);
+    master.gain.linearRampToValueAtTime(0, actx.currentTime + 0.35);
+  }
+});
+
+/* ============================================================
+   窗口变化
+   ============================================================ */
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(resize, 200);
+});
+
+/* ============================================================
+   启动
+   ============================================================ */
+resize();
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>

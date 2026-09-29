@@ -1,0 +1,946 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>遗传算法 · 围棋谱</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body {
+    width:100%; height:100%; overflow:hidden;
+    background:#08090c;
+    font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;
+    color:#b8c8d8; user-select:none; -webkit-tap-highlight-color:transparent;
+  }
+  canvas { position:fixed; inset:0; display:block; touch-action:none; }
+
+  #hud {
+    position:fixed; top:24px; left:28px; z-index:5;
+    pointer-events:none; font-size:12.5px; line-height:1.75;
+    letter-spacing:0.03em; text-shadow:0 0 22px rgba(0,0,0,0.95);
+  }
+  #hud .title {
+    font-size:18px; font-weight:300; letter-spacing:0.28em;
+    color:#dce8f4; margin-bottom:2px;
+  }
+  #hud .sub {
+    font-size:10px; letter-spacing:0.24em;
+    color:rgba(126,160,196,0.46); margin-bottom:16px;
+  }
+  #hud .row { display:flex; gap:9px; font-variant-numeric:tabular-nums; }
+  #hud .k { color:rgba(116,152,188,0.42); width:52px; }
+  #hud .v { color:#9fd4ea; }
+  #hud .v.g { color:#7ee0a8; }
+  #hud .v.d { color:#ffcf8a; }
+  #hud .v.hi { color:#ffb86a; }
+
+  #hud .sec {
+    margin-top:13px; padding-top:12px;
+    border-top:1px solid rgba(98,140,178,0.13);
+  }
+  #hud .sec-title {
+    font-size:9.5px; letter-spacing:0.18em;
+    color:rgba(126,160,196,0.42); margin-bottom:8px;
+  }
+  #hud .track {
+    width:150px; height:3.5px; border-radius:3px;
+    background:rgba(90,126,168,0.14);
+    margin-bottom:10px; position:relative; overflow:hidden;
+  }
+  #hud .track .fill {
+    position:absolute; inset:0 auto 0 0;
+    height:100%; border-radius:3px;
+    background:linear-gradient(90deg,#2f6ba8,#6fe0d8,#ffe2b0);
+    box-shadow:0 0 12px rgba(110,190,230,0.5);
+    transition:width 0.15s ease;
+  }
+
+  .btn {
+    position:fixed; z-index:6;
+    padding:11px 21px;
+    background:rgba(13,20,30,0.72);
+    border:1px solid rgba(102,166,215,0.25);
+    border-radius:999px;
+    color:#96c2e4; font-size:12.5px; letter-spacing:0.14em;
+    font-family:inherit; cursor:pointer;
+    backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
+    transition:all 0.3s cubic-bezier(0.4,0,0.2,1);
+  }
+  .btn:hover {
+    background:rgba(28,52,74,0.8);
+    border-color:rgba(140,215,255,0.6);
+    color:#d6f4ff;
+  }
+  .btn.on {
+    background:rgba(46,94,126,0.55);
+    border-color:rgba(160,235,255,0.75);
+    color:#e2f9ff;
+    box-shadow:0 0 26px rgba(90,190,255,0.24);
+  }
+  #btn-play  { right:26px; bottom:26px; }
+  #btn-speed { right:26px; bottom:80px; }
+  #btn-reset { right:26px; bottom:134px; }
+
+  #hint {
+    position:fixed; bottom:32px; left:28px; z-index:5;
+    font-size:10.5px; letter-spacing:0.1em;
+    color:rgba(120,160,196,0.38);
+    pointer-events:none; transition:opacity 0.9s;
+  }
+  #hint.hide { opacity:0; }
+
+  @media (max-width:640px) {
+    #hud { top:14px; left:14px; font-size:11px; }
+    #hud .title { font-size:14px; letter-spacing:0.2em; }
+    #hud .track { width:104px; }
+    .btn { padding:9px 14px; font-size:11px; }
+    #btn-play  { right:12px; bottom:16px; }
+    #btn-speed { right:12px; bottom:60px; }
+    #btn-reset { right:12px; bottom:104px; }
+    #hint { left:14px; bottom:20px; font-size:9.5px; }
+  }
+</style>
+</head>
+<body>
+
+<canvas id="cv"></canvas>
+
+<div id="hud">
+  <div class="title">遗传算法围棋谱</div>
+  <div class="sub">GENETIC · EVOLUTION</div>
+  <div class="row"><span class="k">世代</span><span class="v" id="v-gen">0</span></div>
+  <div class="row"><span class="k">适应度</span><span class="v g" id="v-fit">0.0</span></div>
+  <div class="row"><span class="k">平均</span><span class="v" id="v-avg">0.0</span></div>
+  <div class="row"><span class="k">有效子</span><span class="v hi" id="v-legal">0</span></div>
+  <div class="sec">
+    <div class="sec-title">进化进度</div>
+    <div class="track"><div class="fill" id="v-fill"></div></div>
+    <div class="sec-title" id="v-note">— 待奏 —</div>
+  </div>
+</div>
+
+<button class="btn" id="btn-play">播放最佳棋谱</button>
+<button class="btn" id="btn-speed">加速进化</button>
+<button class="btn" id="btn-reset">重置</button>
+<div id="hint">种群在每一代选择、交叉、变异 · 棋谱不断进化</div>
+
+<script>
+(() => {
+'use strict';
+
+// ============================================================
+//  配置
+// ============================================================
+const N = 13;
+const BOARD_SIZE = N * N;
+const GENOME_LENGTH = 50;      // 50 手（25 对落子）
+const POPULATION_SIZE = 40;    // 种群规模
+const ELITE_COUNT = 4;         // 精英保留
+const MUTATION_RATE = 0.10;    // 变异概率
+const TOURNAMENT_SIZE = 4;     // 锦标赛规模
+
+// 13 路星位
+const STARS = [[3,3],[9,3],[3,9],[9,9],[6,6]];
+
+// ============================================================
+//  画布
+// ============================================================
+const canvas = document.getElementById('cv');
+const ctx = canvas.getContext('2d');
+
+let W = 0, H = 0, DPR = 1;
+let boardSize = 0, cell = 0, boardX = 0, boardY = 0;
+
+const clamp = (v,a,b) => v < a ? a : v > b ? b : v;
+const lerp  = (a,b,t) => a + (b-a)*t;
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+
+  canvas.width  = Math.round(W * DPR);
+  canvas.height = Math.round(H * DPR);
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  boardSize = Math.min(W * 0.60, H * 0.78);
+  if (W < 640) boardSize = Math.min(W * 0.88, H * 0.62);
+
+  cell = boardSize / (N - 1);
+  boardX = (W - boardSize) * 0.5;
+  boardY = (H - boardSize) * 0.5 + (W < 640 ? 22 : 18);
+}
+
+const sx = x => boardX + x * cell;
+const sy = y => boardY + y * cell;
+
+// ============================================================
+//  音频 —— 五声音阶钟磬音色
+// ============================================================
+const audio = { ctx:null, bus:null, ready:false };
+
+function makeIR(actx, dur, decay) {
+  const rate = actx.sampleRate;
+  const len  = Math.floor(rate * dur);
+  const buf  = actx.createBuffer(2, len, rate);
+  for (let ch = 0; ch < 2; ch++) {
+    const d = buf.getChannelData(ch);
+    for (let i = 0; i < len; i++) {
+      const t = i / len;
+      d[i] = (Math.random()*2 - 1) * Math.pow(1 - t, decay);
+    }
+  }
+  return buf;
+}
+
+function initAudio() {
+  if (audio.ctx) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  const actx = new AC();
+  audio.ctx = actx;
+
+  const master = actx.createGain();
+  master.gain.value = 0.5;
+  master.connect(actx.destination);
+
+  const conv = actx.createConvolver();
+  conv.buffer = makeIR(actx, 3.4, 2.4);
+  const wet = actx.createGain();
+  wet.gain.value = 0.5;
+  conv.connect(wet); wet.connect(master);
+
+  const bus = actx.createGain();
+  bus.gain.value = 1;
+  bus.connect(master);
+  bus.connect(conv);
+  audio.bus = bus;
+  audio.ready = true;
+}
+
+function ensureAudio() {
+  initAudio();
+  if (audio.ctx && audio.ctx.state === 'suspended') audio.ctx.resume();
+}
+
+function playNote(freq, vel, dur) {
+  ensureAudio();
+  if (!audio.ready) return;
+  const actx = audio.ctx;
+  const t0 = actx.currentTime;
+  const v = clamp(vel, 0.04, 1);
+  const D = dur || 2.2;
+
+  const lp = actx.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.frequency.value = clamp(freq * 7 + 1400, 800, 10000);
+  lp.Q.value = 0.4;
+  lp.connect(audio.bus);
+
+  const partials = [
+    { m: 1.000, g: 1.00, d: D },
+    { m: 2.004, g: 0.42, d: D * 0.78 },
+    { m: 3.010, g: 0.20, d: D * 0.55 },
+    { m: 4.020, g: 0.095, d: D * 0.38 },
+    { m: 5.040, g: 0.042, d: D * 0.25 },
+    { m: 7.080, g: 0.018, d: D * 0.16 },
+  ];
+
+  for (const p of partials) {
+    const o = actx.createOscillator();
+    o.type = 'sine';
+    o.frequency.value = freq * p.m;
+    o.detune.value = (Math.random() - 0.5) * 5;
+
+    const g = actx.createGain();
+    const peak = 0.115 * v * p.g;
+    g.gain.setValueAtTime(0, t0);
+    g.gain.linearRampToValueAtTime(peak, t0 + 0.006);
+    g.gain.exponentialRampToValueAtTime(0.00005, t0 + p.d);
+
+    o.connect(g); g.connect(lp);
+    o.start(t0); o.stop(t0 + p.d + 0.1);
+  }
+}
+
+const PENTA = [0, 2, 4, 7, 9];
+function freqFromStep(step, x, y) {
+  const base = PENTA[step % 5];
+  const oct  = Math.floor(step / 5) % 3;
+  const midi = 50 + base + oct * 12;
+  return 440 * Math.pow(2, (midi - 69) / 12);
+}
+
+let lastPlayT = 0;
+function throttlePlay(freq, vel) {
+  const now = performance.now() / 1000;
+  if (now - lastPlayT < 0.055) return;
+  lastPlayT = now;
+  playNote(freq, vel, 1.8);
+}
+
+// ============================================================
+//  遗传算法
+// ============================================================
+const ga = {
+  population: [],
+  generation: 0,
+  bestEver: null,
+  history: [],       // 每代最佳适应度
+  avgHistory: [],    // 每代平均适应度
+  legalHistory: [],  // 最佳个体有效落子数
+};
+
+function randomGenome() {
+  const g = [];
+  for (let i = 0; i < GENOME_LENGTH; i++) {
+    g.push({
+      x: Math.floor(Math.random() * N),
+      y: Math.floor(Math.random() * N),
+    });
+  }
+  return g;
+}
+
+/** 按顺序落子，返回棋盘状态 */
+function genomeToBoard(genome, maxSteps) {
+  const board = new Int8Array(BOARD_SIZE);
+  const stones = [];
+  const limit = maxSteps !== undefined ? Math.min(maxSteps, genome.length) : genome.length;
+
+  for (let i = 0; i < limit; i++) {
+    const m = genome[i];
+    const idx = m.y * N + m.x;
+    if (board[idx] !== 0) continue;
+    const color = i % 2 === 0 ? 1 : -1;
+    board[idx] = color;
+    stones.push({ x:m.x, y:m.y, idx, color, step:i });
+  }
+  return { board, stones };
+}
+
+/** 适应度函数 */
+function evaluate(genome) {
+  const board = new Int8Array(BOARD_SIZE);
+  const stones = [];
+
+  for (let i = 0; i < genome.length; i++) {
+    const m = genome[i];
+    const idx = m.y * N + m.x;
+    if (board[idx] !== 0) continue;
+    const color = i % 2 === 0 ? 1 : -1;
+    board[idx] = color;
+    stones.push({ x:m.x, y:m.y, idx, color });
+  }
+
+  const nLegal = stones.length;
+
+  // ① 有效落子数量
+  let score = nLegal * 4.0;
+
+  // ② 邻里结构
+  let friendly = 0, enemy = 0;
+  for (const s of stones) {
+    for (const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+      const nx = s.x + dx, ny = s.y + dy;
+      if (nx < 0 || nx >= N || ny < 0 || ny >= N) continue;
+      const v = board[ny*N + nx];
+      if (v === s.color) friendly++;
+      else if (v !== 0) enemy++;
+    }
+  }
+  score += friendly * 2.0;
+  score -= enemy * 0.45;
+
+  // ③ 空间分布
+  if (stones.length > 1) {
+    let cx = 0, cy = 0;
+    for (const s of stones) { cx += s.x; cy += s.y; }
+    cx /= stones.length; cy /= stones.length;
+
+    let spread = 0;
+    for (const s of stones) spread += Math.hypot(s.x - cx, s.y - cy);
+    spread /= stones.length;
+    score += Math.min(spread * 4.5, 44);
+  }
+
+  // ④ 星位吸引
+  for (const s of stones) {
+    for (const [stx, sty] of STARS) {
+      const d = Math.hypot(s.x - stx, s.y - sty);
+      if (d < 1.5) score += 2.2;
+      else if (d < 3.0) score += 0.6;
+    }
+  }
+
+  return score;
+}
+
+function evaluateAll() {
+  let sum = 0;
+  for (const ind of ga.population) {
+    ind.fitness = evaluate(ind.genome);
+    sum += ind.fitness;
+  }
+  ga.population.sort((a,b) => b.fitness - a.fitness);
+
+  const best = ga.population[0];
+
+  if (!ga.bestEver || best.fitness > ga.bestEver.fitness) {
+    ga.bestEver = {
+      genome: best.genome.map(m => ({...m})),
+      fitness: best.fitness,
+      legal: genomeToBoard(best.genome).stones.length,
+    };
+  }
+
+  ga.history.push(best.fitness);
+  ga.avgHistory.push(sum / ga.population.length);
+  ga.legalHistory.push(genomeToBoard(best.genome).stones.length);
+
+  // 历史截断
+  if (ga.history.length > 400) {
+    ga.history.shift();
+    ga.avgHistory.shift();
+    ga.legalHistory.shift();
+  }
+}
+
+function tournamentSelect(size) {
+  let best = null;
+  for (let i = 0; i < size; i++) {
+    const c = ga.population[Math.floor(Math.random() * ga.population.length)];
+    if (!best || c.fitness > best.fitness) best = c;
+  }
+  return best;
+}
+
+function crossover(p1, p2) {
+  const child = [];
+  for (let i = 0; i < GENOME_LENGTH; i++) {
+    child.push(Math.random() < 0.5 ? {...p1[i]} : {...p2[i]});
+  }
+  return child;
+}
+
+function mutate(genome) {
+  for (let i = 0; i < genome.length; i++) {
+    if (Math.random() < MUTATION_RATE) {
+      genome[i].x = Math.floor(Math.random() * N);
+      genome[i].y = Math.floor(Math.random() * N);
+    }
+  }
+}
+
+function evolve() {
+  const newPop = [];
+
+  // 精英保留
+  for (let i = 0; i < ELITE_COUNT; i++) {
+    newPop.push({
+      genome: ga.population[i].genome.map(m => ({...m})),
+      fitness: ga.population[i].fitness,
+    });
+  }
+
+  // 产生后代
+  while (newPop.length < POPULATION_SIZE) {
+    const p1 = tournamentSelect(TOURNAMENT_SIZE).genome;
+    const p2 = tournamentSelect(TOURNAMENT_SIZE).genome;
+    const child = crossover(p1, p2);
+    mutate(child);
+    newPop.push({ genome: child, fitness: 0 });
+  }
+
+  ga.population = newPop;
+  ga.generation++;
+  evaluateAll();
+}
+
+function initGA() {
+  ga.population = [];
+  ga.generation = 0;
+  ga.bestEver = null;
+  ga.history.length = 0;
+  ga.avgHistory.length = 0;
+  ga.legalHistory.length = 0;
+
+  for (let i = 0; i < POPULATION_SIZE; i++) {
+    ga.population.push({ genome: randomGenome(), fitness: 0 });
+  }
+  evaluateAll();
+}
+
+// ============================================================
+//  渲染
+// ============================================================
+let bgGrad = null, bgKey = '';
+
+function drawBackdrop() {
+  const key = W + 'x' + H;
+  if (key !== bgKey) {
+    bgGrad = ctx.createRadialGradient(
+      W * 0.5, H * 0.45, 0,
+      W * 0.5, H * 0.5, Math.max(W, H) * 0.8
+    );
+    bgGrad.addColorStop(0,    '#10161f');
+    bgGrad.addColorStop(0.5,  '#0a0e15');
+    bgGrad.addColorStop(1,    '#06080c');
+    bgKey = key;
+  }
+  ctx.fillStyle = bgGrad;
+  ctx.fillRect(0, 0, W, H);
+}
+
+function drawBoardBase() {
+  // 棋盘底
+  const r = 10;
+  ctx.save();
+  ctx.beginPath();
+  roundRect(ctx, boardX - cell*1.6, boardY - cell*1.6,
+            boardSize + cell*3.2, boardSize + cell*3.2, r);
+  const wood = ctx.createLinearGradient(boardX, boardY, boardX + boardSize, boardY + boardSize);
+  wood.addColorStop(0,   '#2a2622');
+  wood.addColorStop(0.5, '#25211d');
+  wood.addColorStop(1,   '#1d1a17');
+  ctx.fillStyle = wood;
+  ctx.fill();
+
+  ctx.strokeStyle = 'rgba(190, 160, 110, 0.14)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.restore();
+
+  // 网格
+  ctx.save();
+  ctx.strokeStyle = 'rgba(200, 175, 130, 0.20)';
+  ctx.lineWidth = 1;
+  for (let i = 0; i < N; i++) {
+    ctx.beginPath();
+    ctx.moveTo(sx(i), sy(0));
+    ctx.lineTo(sx(i), sy(N-1));
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(sx(0), sy(i));
+    ctx.lineTo(sx(N-1), sy(i));
+    ctx.stroke();
+  }
+  // 边框加粗
+  ctx.strokeStyle = 'rgba(200, 175, 130, 0.36)';
+  ctx.lineWidth = 1.4;
+  ctx.strokeRect(sx(0), sy(0), boardSize, boardSize);
+  ctx.restore();
+
+  // 星位
+  ctx.save();
+  ctx.fillStyle = 'rgba(220, 190, 140, 0.55)';
+  for (const [px, py] of STARS) {
+    ctx.beginPath();
+    ctx.arc(sx(px), sy(py), 2.4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function roundRect(c, x, y, w, h, r) {
+  c.beginPath();
+  c.moveTo(x + r, y);
+  c.lineTo(x + w - r, y);
+  c.quadraticCurveTo(x + w, y, x + w, y + r);
+  c.lineTo(x + w, y + h - r);
+  c.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  c.lineTo(x + r, y + h);
+  c.quadraticCurveTo(x, y + h, x, y + h - r);
+  c.lineTo(x, y + r);
+  c.quadraticCurveTo(x, y, x + r, y);
+  c.closePath();
+}
+
+function drawStone(px, py, color, scale) {
+  const R = cell * 0.44 * scale;
+  if (R < 0.5) return;
+
+  ctx.save();
+
+  // 阴影
+  ctx.beginPath();
+  ctx.arc(px + R*0.10, py + R*0.16, R, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(0,0,0,0.42)';
+  ctx.filter = 'blur(1.5px)';
+  ctx.fill();
+  ctx.filter = 'none';
+
+  // 棋子
+  const g = ctx.createRadialGradient(
+    px - R*0.32, py - R*0.36, R*0.05,
+    px, py, R
+  );
+  if (color === 1) {
+    g.addColorStop(0.00, '#585e68');
+    g.addColorStop(0.42, '#22252b');
+    g.addColorStop(1.00, '#060709');
+  } else {
+    g.addColorStop(0.00, '#ffffff');
+    g.addColorStop(0.52, '#eef2f6');
+    g.addColorStop(1.00, '#aab4bf');
+  }
+  ctx.beginPath();
+  ctx.arc(px, py, R, 0, Math.PI * 2);
+  ctx.fillStyle = g;
+  ctx.fill();
+
+  // 高光
+  ctx.beginPath();
+  ctx.arc(px - R*0.30, py - R*0.34, R*0.26, 0, Math.PI * 2);
+  ctx.fillStyle = color === 1
+    ? 'rgba(170, 185, 205, 0.22)'
+    : 'rgba(255, 255, 255, 0.85)';
+  ctx.fill();
+
+  ctx.restore();
+}
+
+let displayGenome = null;
+let displaySteps = 0;
+let prevStoneCount = 0;
+
+function drawBoard() {
+  drawBoardBase();
+
+  if (!displayGenome) return;
+  const { stones } = genomeToBoard(displayGenome, displaySteps);
+
+  const now = performance.now() / 1000;
+  for (const s of stones) {
+    const age = now - s.born;
+    let scale = 1;
+    if (age < 0.32) scale = easeOutBack(clamp(age / 0.32, 0, 1));
+
+    drawStone(sx(s.x), sy(s.y), s.color, scale);
+  }
+}
+
+function easeOutBack(x) {
+  const c1 = 1.70158, c3 = c1 + 1;
+  return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
+}
+
+// ============================================================
+//  适应度曲线
+// ============================================================
+function drawFitnessChart() {
+  if (ga.history.length < 2) return;
+
+  const pw = Math.min(210, W * 0.30);
+  const ph = 86;
+  const px = W - pw - (W > 640 ? 28 : 12);
+  const py = W > 640 ? 28 : 14;
+
+  ctx.save();
+
+  roundRect(ctx, px, py, pw, ph, 8);
+  ctx.fillStyle = 'rgba(10, 16, 24, 0.72)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(102, 160, 205, 0.18)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  ctx.font = '9px -apple-system, "PingFang SC", sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  ctx.fillStyle = 'rgba(140, 180, 210, 0.55)';
+  ctx.fillText('适应度曲线', px + 10, py + 8);
+
+  const cx0 = px + 10, cy0 = py + 24;
+  const cw = pw - 20, ch = ph - 36;
+
+  ctx.beginPath();
+  ctx.rect(cx0, cy0, cw, ch);
+  ctx.clip();
+
+  // 参考线
+  ctx.strokeStyle = 'rgba(110, 160, 205, 0.08)';
+  for (let i = 0; i <= 2; i++) {
+    const y = cy0 + (i / 2) * ch;
+    ctx.beginPath();
+    ctx.moveTo(cx0, y);
+    ctx.lineTo(cx0 + cw, y);
+    ctx.stroke();
+  }
+
+  const hist = ga.history;
+  const avgHist = ga.avgHistory;
+  const nH = hist.length;
+
+  let maxV = 1;
+  for (let i = 0; i < nH; i++) {
+    if (hist[i] > maxV) maxV = hist[i];
+    if (avgHist[i] > maxV) maxV = avgHist[i];
+  }
+  maxV *= 1.08;
+
+  // 平均适应度
+  ctx.beginPath();
+  for (let i = 0; i < nH; i++) {
+    const x = cx0 + (i / (nH - 1)) * cw;
+    const y = cy0 + ch - (avgHist[i] / maxV) * ch;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.strokeStyle = 'rgba(110, 160, 205, 0.55)';
+  ctx.lineWidth = 1.2;
+  ctx.stroke();
+
+  // 最佳适应度
+  ctx.beginPath();
+  for (let i = 0; i < nH; i++) {
+    const x = cx0 + (i / (nH - 1)) * cw;
+    const y = cy0 + ch - (hist[i] / maxV) * ch;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.strokeStyle = 'rgba(120, 224, 168, 0.92)';
+  ctx.lineWidth = 1.6;
+  ctx.shadowColor = 'rgba(120, 224, 168, 0.55)';
+  ctx.shadowBlur = 8;
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  ctx.restore();
+}
+
+// ============================================================
+//  HUD
+// ============================================================
+const elGen   = document.getElementById('v-gen');
+const elFit   = document.getElementById('v-fit');
+const elAvg   = document.getElementById('v-avg');
+const elLegal = document.getElementById('v-legal');
+const elFill  = document.getElementById('v-fill');
+const elNote  = document.getElementById('v-note');
+
+let hudT = 0;
+function updateHUD(dt) {
+  hudT += dt;
+  if (hudT < 0.1) return;
+  hudT = 0;
+
+  elGen.textContent = ga.generation;
+
+  if (ga.history.length > 0) {
+    const last = ga.history[ga.history.length - 1];
+    const avg  = ga.avgHistory[ga.avgHistory.length - 1];
+    elFit.textContent = last.toFixed(1);
+    elAvg.textContent = avg.toFixed(1);
+
+    const legal = ga.legalHistory[ga.legalHistory.length - 1];
+    elLegal.textContent = legal + ' / ' + GENOME_LENGTH;
+
+    // 进度条：与理论最大值比较
+    const maxTheoretical = GENOME_LENGTH * 4 + GENOME_LENGTH * 2 * 2 + 44 + 10;
+    elFill.style.width = clamp(last / maxTheoretical * 100, 0, 100).toFixed(1) + '%';
+  }
+
+  if (player.playing) {
+    elNote.textContent = `播放中 · ${player.step + 1} / ${genomeLegalLength}`;
+  } else if (ga.bestEver) {
+    const legal = ga.bestEver.legal;
+    elNote.textContent = `最佳棋谱 · ${legal} 子有效`;
+  } else {
+    elNote.textContent = '— 待奏 —';
+  }
+}
+
+// ============================================================
+//  播放
+// ============================================================
+const player = {
+  playing: false,
+  step: 0,
+  timer: 0,
+  genome: null,
+};
+let genomeLegalLength = 0;
+
+function startPlayback() {
+  ensureAudio();
+
+  if (!ga.bestEver) return;
+
+  player.playing = true;
+  player.genome = ga.bestEver.genome.map(m => ({...m}));
+  player.step = 0;
+  player.timer = 0;
+
+  displayGenome = player.genome;
+  displaySteps = 0;
+  genomeLegalLength = ga.bestEver.legal;
+
+  const btn = document.getElementById('btn-play');
+  btn.classList.add('on');
+  btn.textContent = '停止播放';
+  document.getElementById('hint').classList.add('hide');
+}
+
+function stopPlayback() {
+  player.playing = false;
+  displaySteps = GENOME_LENGTH;
+  const btn = document.getElementById('btn-play');
+  btn.classList.remove('on');
+  btn.textContent = '播放最佳棋谱';
+}
+
+// ============================================================
+//  主循环
+// ============================================================
+let lastT = performance.now() / 1000;
+let genAccum = 0;
+let genInterval = 0.075;   // 每 75ms 进化一代
+let speedBoost = 1;
+
+// 为渲染保存出生时间
+const stoneBorn = new Map();
+
+function refreshDisplayGenome() {
+  // 用最新最佳个体
+  if (!player.playing && ga.bestEver) {
+    const g = ga.bestEver.genome;
+    if (displayGenome !== g) {
+      displayGenome = g;
+      displaySteps = GENOME_LENGTH;
+    }
+  }
+}
+
+function frame(nowMs) {
+  const t = nowMs / 1000;
+  const dt = Math.min(t - lastT, 0.05);
+  lastT = t;
+
+  // ── 进化 ──
+  if (!player.playing) {
+    genAccum += dt * speedBoost;
+    while (genAccum >= genInterval) {
+      genAccum -= genInterval;
+      evolve();
+      // 偶尔播放音效反馈
+      if (ga.bestEver && Math.random() < 0.08) {
+        const g = ga.bestEver.genome;
+        const i = Math.floor(Math.random() * g.length);
+        const m = g[i];
+        throttlePlay(freqFromStep(i, m.x, m.y), 0.10);
+      }
+    }
+    refreshDisplayGenome();
+  }
+
+  // ── 播放 ──
+  if (player.playing && player.genome) {
+    player.timer += dt;
+    const stepDur = 0.13;
+
+    while (player.timer >= stepDur && player.step < GENOME_LENGTH) {
+      player.timer -= stepDur;
+      player.step++;
+
+      const m = player.genome[player.step - 1];
+      const f = freqFromStep(player.step - 1, m.x, m.y);
+      playNote(f, 0.55, 1.9);
+
+      // 检查是否为有效落子（用于音高/视觉）
+      const { board } = genomeToBoard(player.genome, player.step - 1);
+      const idx = m.y * N + m.x;
+      if (board[idx] === 0) {
+        // 有效
+      }
+    }
+
+    displaySteps = player.step;
+
+    if (player.step >= GENOME_LENGTH) {
+      stopPlayback();
+    }
+  }
+
+  // ── 绘制 ──
+  drawBackdrop();
+  drawBoard();
+  drawFitnessChart();
+  updateHUD(dt);
+
+  requestAnimationFrame(frame);
+}
+
+// ============================================================
+//  按钮
+// ============================================================
+document.getElementById('btn-play').addEventListener('click', () => {
+  ensureAudio();
+  if (player.playing) {
+    stopPlayback();
+  } else {
+    startPlayback();
+  }
+});
+
+document.getElementById('btn-speed').addEventListener('click', () => {
+  ensureAudio();
+  document.getElementById('hint').classList.add('hide');
+
+  if (speedBoost === 1) {
+    speedBoost = 4;
+    genInterval = 0.032;
+    document.getElementById('btn-speed').classList.add('on');
+    document.getElementById('btn-speed').textContent = '正常速度';
+  } else {
+    speedBoost = 1;
+    genInterval = 0.075;
+    document.getElementById('btn-speed').classList.remove('on');
+    document.getElementById('btn-speed').textContent = '加速进化';
+  }
+});
+
+document.getElementById('btn-reset').addEventListener('click', () => {
+  stopPlayback();
+  initGA();
+  displayGenome = ga.bestEver ? ga.bestEver.genome : null;
+  displaySteps = GENOME_LENGTH;
+  speedBoost = 1;
+  genInterval = 0.075;
+  document.getElementById('btn-speed').classList.remove('on');
+  document.getElementById('btn-speed').textContent = '加速进化';
+});
+
+window.addEventListener('keydown', e => {
+  if (e.key === ' ') {
+    e.preventDefault();
+    document.getElementById('btn-play').click();
+  }
+  if (e.key === 'f' || e.key === 'F') {
+    document.getElementById('btn-speed').click();
+  }
+  if (e.key === 'r' || e.key === 'R') {
+    document.getElementById('btn-reset').click();
+  }
+});
+
+window.addEventListener('resize', resize);
+
+// ============================================================
+//  启动
+// ============================================================
+initGA();
+resize();
+
+// 初始显示
+displayGenome = ga.bestEver ? ga.bestEver.genome : null;
+displaySteps = GENOME_LENGTH;
+
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

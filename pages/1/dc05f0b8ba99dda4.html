@@ -1,0 +1,752 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>和声函数围棋布局 · Harmonic Resonance</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{width:100%;height:100%;overflow:hidden;background:#1a1208;}
+  canvas{display:block;width:100%;height:100%;cursor:crosshair;touch-action:none;}
+
+  .panel{
+    position:fixed;left:26px;bottom:24px;
+    font-family:"Songti SC","STSong","SimSun",serif;
+    color:#c9b78a;user-select:none;pointer-events:none;
+    letter-spacing:.08em;
+  }
+  .panel h1{
+    font-size:16px;font-weight:600;letter-spacing:.30em;
+    color:#e6d5a8;margin-bottom:7px;
+  }
+  .panel .formula{
+    font-family:"Times New Roman",Georgia,serif;
+    font-size:12.5px;color:#9a8b6a;letter-spacing:.03em;
+    margin-bottom:9px;line-height:1.6;
+  }
+  .panel .formula i{color:#c8622e;font-style:italic;}
+  .panel .hint{
+    font-size:11.5px;color:#8a7c5e;line-height:1.9;opacity:.9;
+  }
+  .panel .hint b{color:#b8a578;font-weight:500;}
+
+  .sound-btn{
+    position:fixed;right:22px;top:20px;
+    width:42px;height:42px;border-radius:50%;
+    border:1px solid rgba(180,160,110,.28);
+    background:rgba(30,24,18,.60);
+    backdrop-filter:blur(6px);
+    color:#c9b78a;font-size:17px;line-height:1;
+    cursor:pointer;user-select:none;
+    display:flex;align-items:center;justify-content:center;
+    transition:all .28s ease;
+    font-family:"Songti SC",serif;
+  }
+  .sound-btn:hover{background:rgba(60,48,32,.92);transform:scale(1.06);}
+  .sound-btn.off{opacity:.35;}
+
+  .fade-in{animation:fi 1.8s ease both;}
+  @keyframes fi{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:none;}}
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+
+<div class="panel fade-in">
+  <h1>和声 · 围棋</h1>
+  <p class="formula">
+    <i>f</i>(<i>x,y</i>) = Σ <i>A<sub>n</sub></i>·sin(<i>k<sub>x</sub>x</i> + <i>k<sub>y</sub>y</i> + <i>φ<sub>n</sub></i>)
+  </p>
+  <p class="hint">
+    <b>移动</b> · 靠近棋子，微光共振<br>
+    <b>点击</b> · 激起和声波，琴音随波而鸣
+  </p>
+</div>
+
+<button class="sound-btn" id="sndBtn" title="声音开关">♪</button>
+
+<script>
+(() => {
+"use strict";
+
+/* ============================================================
+   画布
+   ============================================================ */
+const cv  = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+
+let W = 0, H = 0, DPR = 1;
+let boardTex = null;
+
+const board = { ox:0, oy:0, cell:0, size:0 };
+const N = 19;
+
+let stones = [];
+let waves = [];
+
+let time = 0, prevT = performance.now();
+
+const mouse = { x:0, y:0, active:false, lastMove:0 };
+let hoverStone = null;
+let lastHoverStone = null;
+let lastHoverSound = 0;
+
+/* ============================================================
+   音频 —— 古琴拨弦 + 山谷回响
+   ============================================================ */
+let actx = null, master = null, delayNode = null;
+let audioOn = true;
+let lastNoteTime = 0;
+
+const PENTA = [0, 2, 4, 7, 9];
+const BASE_FREQ = 196.00;
+
+function noteFreq(step){
+  const oct = Math.floor(step / 5);
+  const deg = ((step % 5) + 5) % 5;
+  return BASE_FREQ * Math.pow(2, (PENTA[deg] + oct * 12) / 12);
+}
+
+function initAudio(){
+  if (actx) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  actx = new AC();
+
+  master = actx.createGain();
+  master.gain.setValueAtTime(0, actx.currentTime);
+  master.gain.linearRampToValueAtTime(audioOn ? 0.80 : 0, actx.currentTime + 1.2);
+  master.connect(actx.destination);
+
+  const delay = actx.createDelay(2.5);
+  delay.delayTime.value = 0.29;
+
+  const fb = actx.createGain();
+  fb.gain.value = 0.42;
+
+  const damp = actx.createBiquadFilter();
+  damp.type = 'lowpass';
+  damp.frequency.value = 2000;
+
+  const wet = actx.createGain();
+  wet.gain.value = 0.34;
+
+  delay.connect(damp);
+  damp.connect(fb);
+  fb.connect(delay);
+  damp.connect(wet);
+  wet.connect(master);
+
+  delayNode = delay;
+}
+
+function resumeAudio(){
+  if (!actx) initAudio();
+  if (actx && actx.state === 'suspended') actx.resume();
+}
+
+function playNote(freq, vel = 0.18, dur = 2.4){
+  if (!actx || !audioOn) return;
+  const now = actx.currentTime;
+  if (now - lastNoteTime < 0.028) return;
+  lastNoteTime = now;
+
+  const out = actx.createGain();
+  out.gain.value = vel;
+
+  const filt = actx.createBiquadFilter();
+  filt.type = 'lowpass';
+  filt.Q.value = 0.65;
+  filt.frequency.setValueAtTime(5400, now);
+  filt.frequency.exponentialRampToValueAtTime(760, now + dur * 0.9);
+
+  const env = actx.createGain();
+  env.gain.setValueAtTime(0.0001, now);
+  env.gain.exponentialRampToValueAtTime(1, now + 0.007);
+  env.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+
+  filt.connect(env);
+  env.connect(out);
+  out.connect(master);
+  if (delayNode) out.connect(delayNode);
+
+  const partials = [
+    [1.00, 1.00], [2.00, 0.42], [3.01, 0.17],
+    [4.20, 0.085], [5.40, 0.042], [6.80, 0.021], [8.10, 0.010]
+  ];
+
+  for (const [m, a] of partials){
+    const o = actx.createOscillator();
+    o.type = 'sine';
+    o.frequency.value = freq * m;
+    o.detune.value = (Math.random() - 0.5) * 6;
+
+    const og = actx.createGain();
+    og.gain.value = a;
+
+    o.connect(og);
+    og.connect(filt);
+    o.start(now);
+    o.stop(now + dur + 0.25);
+  }
+}
+
+/* 全局音符限流：每秒最多 9 个 */
+let noteTimestamps = [];
+function canPlay(){
+  const now = performance.now();
+  noteTimestamps = noteTimestamps.filter(t => now - t < 1000);
+  if (noteTimestamps.length >= 9) return false;
+  noteTimestamps.push(now);
+  return true;
+}
+
+/* ============================================================
+   和声函数
+   f(x,y) = A₁cos(r·k₁) + A₂sin(θ·m + r·k₂)
+          + A₃sin(x·a + y·b) + A₄cos(x·c − y·d) + A₅sin(r·k₃)
+   ============================================================ */
+function harmonyValue(i, j){
+  const x = (i - 9) / 9;
+  const y = (j - 9) / 9;
+  const r = Math.hypot(x, y);
+  const th = Math.atan2(y, x);
+
+  const v = (
+    0.62 * Math.cos(r * 4.0 - 0.4) +
+    0.55 * Math.sin(th * 4.0 + r * 1.2) +
+    0.45 * Math.sin(x * 3.2 + y * 2.0) +
+    0.35 * Math.cos(x * 2.4 - y * 3.4) +
+    0.28 * Math.sin(r * 6.8 + 1.0)
+  ) / 2.25;
+
+  return v;
+}
+
+/* ============================================================
+   棋盘几何
+   ============================================================ */
+function computeBoard(){
+  const usable = Math.min(W, H) * 0.76;
+  const cell = usable / 18;
+  const size = cell * 18;
+  board.cell = cell;
+  board.size = size;
+  board.ox = (W - size) / 2;
+  board.oy = (H - size) / 2;
+}
+
+/* ============================================================
+   棋盘纹理（离屏生成）
+   ============================================================ */
+function makeBoardTex(){
+  const bc = document.createElement('canvas');
+  bc.width  = Math.round(W * DPR);
+  bc.height = Math.round(H * DPR);
+  const b = bc.getContext('2d');
+  b.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  const { ox, oy, cell, size } = board;
+  const margin = cell * 0.85;
+  const bx = ox - margin;
+  const by = oy - margin;
+  const bw = size + margin * 2;
+  const bh = size + margin * 2;
+
+  // 底
+  b.fillStyle = '#170f06';
+  b.fillRect(0, 0, W, H);
+
+  // 棋墩木板
+  const woodG = b.createLinearGradient(bx, by, bx + bw, by + bh);
+  woodG.addColorStop(0.00, '#4a3520');
+  woodG.addColorStop(0.45, '#3b2a18');
+  woodG.addColorStop(1.00, '#2a1c10');
+  b.fillStyle = woodG;
+  b.fillRect(bx, by, bw, bh);
+
+  // 木纹
+  for (let i = 0; i < 170; i++){
+    const yy = by + Math.random() * bh;
+    b.beginPath();
+    b.moveTo(bx, yy);
+    const seg = bw / 12;
+    for (let k = 1; k <= 12; k++){
+      b.lineTo(bx + k * seg, yy + (Math.random() - 0.5) * 4.2);
+    }
+    b.strokeStyle = `rgba(158, 122, 76, ${0.018 + Math.random() * 0.034})`;
+    b.lineWidth = 0.4 + Math.random() * 1.5;
+    b.stroke();
+  }
+
+  // 中心提亮
+  const glowG = b.createRadialGradient(W/2, H/2, 0, W/2, H/2, size * 0.78);
+  glowG.addColorStop(0.00, 'rgba(170, 128, 74, 0.16)');
+  glowG.addColorStop(1.00, 'rgba(170, 128, 74, 0)');
+  b.fillStyle = glowG;
+  b.fillRect(bx, by, bw, bh);
+
+  // 棋盘内边线
+  b.strokeStyle = 'rgba(210, 172, 112, 0.18)';
+  b.lineWidth = 1.4;
+  b.strokeRect(bx + 2.5, by + 2.5, bw - 5, bh - 5);
+
+  // 网格
+  b.strokeStyle = 'rgba(215, 178, 122, 0.28)';
+  b.lineWidth = 0.75;
+  for (let i = 0; i < N; i++){
+    const x = ox + i * cell;
+    b.beginPath();
+    b.moveTo(x, oy);
+    b.lineTo(x, oy + size);
+    b.stroke();
+
+    const y = oy + i * cell;
+    b.beginPath();
+    b.moveTo(ox, y);
+    b.lineTo(ox + size, y);
+    b.stroke();
+  }
+
+  // 星位
+  const starPts = [3, 9, 15];
+  for (const si of starPts){
+    for (const sj of starPts){
+      const x = ox + si * cell;
+      const y = oy + sj * cell;
+      b.beginPath();
+      b.arc(x, y, Math.max(1.8, cell * 0.085), 0, Math.PI * 2);
+      b.fillStyle = 'rgba(226, 190, 132, 0.52)';
+      b.fill();
+    }
+  }
+
+  boardTex = bc;
+}
+
+/* ============================================================
+   棋子生成（由和声函数决定）
+   ============================================================ */
+function buildStones(){
+  stones = [];
+  const { ox, oy, cell } = board;
+  const baseR = cell * 0.44;
+
+  for (let i = 0; i < N; i++){
+    for (let j = 0; j < N; j++){
+      const v = harmonyValue(i, j);
+      if (Math.abs(v) < 0.34) continue;   // 留白
+
+      const step = Math.round(Math.abs(v) * 13);
+
+      stones.push({
+        i, j,
+        x: ox + i * cell,
+        y: oy + j * cell,
+        value: v,
+        isBlack: v > 0,          // 正为黑，负为白
+        baseR,
+        phase: (i * 0.7 + j * 1.3) % (Math.PI * 2),
+        freq: noteFreq(step),
+        disp: 0,
+        glow: 0,
+        dispX: 0,
+        dispY: 0,
+        soundCooldown: 0
+      });
+    }
+  }
+}
+
+/* ============================================================
+   棋子精灵（预渲染）
+   ============================================================ */
+const SPRITE_R = 64;
+let blackSprite = null, whiteSprite = null;
+
+function makeStoneSprite(isBlack){
+  const pad = 8;
+  const size = SPRITE_R * 2 + pad * 2;
+  const c = document.createElement('canvas');
+  c.width = size;
+  c.height = size;
+  const g = c.getContext('2d');
+
+  const cx = size / 2, cy = size / 2;
+  const r = SPRITE_R;
+
+  // 阴影
+  const shG = g.createRadialGradient(cx, cy + r * 0.10, r * 0.2, cx, cy + r * 0.10, r * 1.08);
+  shG.addColorStop(0, 'rgba(0,0,0,0.50)');
+  shG.addColorStop(0.6, 'rgba(0,0,0,0.22)');
+  shG.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = shG;
+  g.beginPath();
+  g.arc(cx, cy + r * 0.06, r * 1.04, 0, Math.PI * 2);
+  g.fill();
+
+  // 棋子本体
+  const gd = g.createRadialGradient(
+    cx - r * 0.35, cy - r * 0.38, r * 0.05,
+    cx, cy, r * 1.02
+  );
+
+  if (isBlack){
+    gd.addColorStop(0.00, '#63636a');
+    gd.addColorStop(0.32, '#38383e');
+    gd.addColorStop(0.72, '#17171b');
+    gd.addColorStop(1.00, '#050507');
+  } else {
+    gd.addColorStop(0.00, '#ffffff');
+    gd.addColorStop(0.32, '#f6f1e3');
+    gd.addColorStop(0.72, '#ded5bd');
+    gd.addColorStop(1.00, '#b6a98a');
+  }
+
+  g.beginPath();
+  g.arc(cx, cy, r, 0, Math.PI * 2);
+  g.fillStyle = gd;
+  g.fill();
+
+  // 边缘描边
+  g.beginPath();
+  g.arc(cx, cy, r * 0.98, 0, Math.PI * 2);
+  g.strokeStyle = isBlack
+    ? 'rgba(150,150,160,0.16)'
+    : 'rgba(140,124,90,0.32)';
+  g.lineWidth = r * 0.045;
+  g.stroke();
+
+  // 高光
+  const hg = g.createRadialGradient(
+    cx - r * 0.36, cy - r * 0.42, 0,
+    cx - r * 0.30, cy - r * 0.36, r * 0.55
+  );
+  if (isBlack){
+    hg.addColorStop(0, 'rgba(255,255,255,0.26)');
+    hg.addColorStop(1, 'rgba(255,255,255,0)');
+  } else {
+    hg.addColorStop(0, 'rgba(255,255,255,0.95)');
+    hg.addColorStop(1, 'rgba(255,255,255,0)');
+  }
+  g.fillStyle = hg;
+  g.beginPath();
+  g.arc(cx - r * 0.30, cy - r * 0.34, r * 0.48, 0, Math.PI * 2);
+  g.fill();
+
+  return c;
+}
+
+function makeSprites(){
+  blackSprite = makeStoneSprite(true);
+  whiteSprite = makeStoneSprite(false);
+}
+
+/* ============================================================
+   更新
+   ============================================================ */
+function update(dt, t){
+  const now = performance.now();
+
+  // 空闲游移
+  if (!mouse.active || now - mouse.lastMove > 3200){
+    mouse.x = W * 0.5 + Math.sin(t * 0.24) * W * 0.20;
+    mouse.y = H * 0.5 + Math.cos(t * 0.17) * H * 0.16;
+    mouse.active = false;
+  }
+
+  // 波
+  for (let i = waves.length - 1; i >= 0; i--){
+    const w = waves[i];
+    w.r += dt * w.speed;
+    w.life -= dt * w.decay;
+    if (w.life <= 0 || w.r > w.maxR) waves.splice(i, 1);
+  }
+
+  // 悬停检测
+  hoverStone = null;
+  let best = Infinity;
+  if (mouse.active){
+    for (const st of stones){
+      const d = Math.hypot(st.x - mouse.x, st.y - mouse.y);
+      if (d < st.baseR * 1.6 && d < best){
+        best = d;
+        hoverStone = st;
+      }
+    }
+  }
+
+  // 悬停音
+  if (hoverStone && hoverStone !== lastHoverStone){
+    if (now - lastHoverSound > 180){
+      lastHoverSound = now;
+      playNote(hoverStone.freq, 0.075, 1.7);
+    }
+  }
+  lastHoverStone = hoverStone;
+
+  // 棋子响应
+  for (const st of stones){
+    st.soundCooldown = Math.max(0, st.soundCooldown - dt);
+
+    let targetDisp = 0;
+    let targetGlow = 0;
+    let tx = 0, ty = 0;
+
+    for (const w of waves){
+      const dx = st.x - w.x;
+      const dy = st.y - w.y;
+      const d = Math.hypot(dx, dy) || 1;
+      const delta = d - w.r;
+      const hw = w.width;
+
+      if (Math.abs(delta) < hw){
+        const amt = Math.cos(delta / hw * Math.PI * 0.5);
+        const a = amt * w.life;
+
+        targetDisp += a;
+        targetGlow += a * 0.9;
+
+        const push = amt * w.life * 4.5;
+        tx += (dx / d) * push;
+        ty += (dy / d) * push;
+
+        // 触发琴音
+        if (amt > 0.58 && st.soundCooldown <= 0 && canPlay()){
+          playNote(st.freq, 0.045 + amt * 0.085, 1.7);
+          st.soundCooldown = 0.55;
+        }
+      }
+    }
+
+    if (st === hoverStone){
+      targetGlow = Math.max(targetGlow, 0.85);
+    }
+
+    const kD = Math.min(1, dt * 10);
+    const kG = Math.min(1, dt * 8);
+    const kP = Math.min(1, dt * 9);
+
+    st.disp += (targetDisp - st.disp) * kD;
+    st.glow += (targetGlow - st.glow) * kG;
+    st.dispX += (tx - st.dispX) * kP;
+    st.dispY += (ty - st.dispY) * kP;
+  }
+}
+
+/* ============================================================
+   渲染
+   ============================================================ */
+function render(t){
+  ctx.clearRect(0, 0, W, H);
+
+  // 棋盘
+  if (boardTex) ctx.drawImage(boardTex, 0, 0, W, H);
+  else { ctx.fillStyle = '#170f06'; ctx.fillRect(0, 0, W, H); }
+
+  // 和声波
+  for (const w of waves){
+    const a = w.life * 0.32;
+
+    ctx.beginPath();
+    ctx.arc(w.x, w.y, w.r, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(235, 192, 118, ${a})`;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(w.x, w.y, w.r * 0.955, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(235, 192, 118, ${a * 0.32})`;
+    ctx.lineWidth = w.width * 0.55;
+    ctx.stroke();
+  }
+
+  // 棋子
+  for (const st of stones){
+    const breath = 1 + Math.sin(t * 1.15 + st.phase) * 0.030;
+    const scale = breath * (1 + st.disp * 0.22);
+    const r = st.baseR * scale;
+    const x = st.x + st.dispX;
+    const y = st.y + st.dispY;
+
+    // 共振光晕
+    if (st.glow > 0.02){
+      const gr = r * (1.8 + st.glow * 1.4);
+      const gg = ctx.createRadialGradient(x, y, r * 0.5, x, y, gr);
+      gg.addColorStop(0, `rgba(255, 218, 145, ${st.glow * 0.42})`);
+      gg.addColorStop(0.5, `rgba(255, 200, 120, ${st.glow * 0.16})`);
+      gg.addColorStop(1, 'rgba(255, 200, 120, 0)');
+      ctx.fillStyle = gg;
+      ctx.beginPath();
+      ctx.arc(x, y, gr, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // 棋子精灵
+    const sprite = st.isBlack ? blackSprite : whiteSprite;
+    if (sprite){
+      const dw = (r / SPRITE_R) * sprite.width;
+      ctx.drawImage(sprite, x - dw / 2, y - dw / 2, dw, dw);
+    }
+  }
+
+  // 鼠标柔光
+  if (mouse.active){
+    const mg = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, 110);
+    mg.addColorStop(0, 'rgba(255, 228, 168, 0.10)');
+    mg.addColorStop(1, 'rgba(255, 228, 168, 0)');
+    ctx.fillStyle = mg;
+    ctx.beginPath();
+    ctx.arc(mouse.x, mouse.y, 110, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+/* ============================================================
+   主循环
+   ============================================================ */
+function loop(){
+  const now = performance.now();
+  const dt = Math.min((now - prevT) / 1000, 0.05);
+  prevT = now;
+  time = now / 1000;
+
+  update(dt, time);
+  render(time);
+
+  requestAnimationFrame(loop);
+}
+
+/* ============================================================
+   尺寸
+   ============================================================ */
+function resize(){
+  const nw = window.innerWidth;
+  const nh = window.innerHeight;
+  if (nw === W && nh === H) return;
+
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = nw; H = nh;
+
+  cv.width  = Math.round(W * DPR);
+  cv.height = Math.round(H * DPR);
+  cv.style.width  = W + 'px';
+  cv.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  computeBoard();
+  makeBoardTex();
+  buildStones();
+  makeSprites();
+
+  waves = [];
+
+  mouse.x = W / 2;
+  mouse.y = H / 2;
+}
+
+/* ============================================================
+   交互
+   ============================================================ */
+function pointerPos(e){
+  const r = cv.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+
+cv.addEventListener('pointermove', e => {
+  const p = pointerPos(e);
+  mouse.x = p.x;
+  mouse.y = p.y;
+  mouse.active = true;
+  mouse.lastMove = performance.now();
+  resumeAudio();
+}, { passive: true });
+
+cv.addEventListener('pointerdown', e => {
+  resumeAudio();
+
+  const p = pointerPos(e);
+  mouse.x = p.x;
+  mouse.y = p.y;
+  mouse.active = true;
+  mouse.lastMove = performance.now();
+
+  // 和声波
+  waves.push({
+    x: p.x,
+    y: p.y,
+    r: 0,
+    maxR: Math.hypot(W, H) * 1.05,
+    width: Math.max(36, board.cell * 1.7),
+    life: 1,
+    speed: Math.max(W, H) * 0.42,
+    decay: 0.36
+  });
+
+  // 起始音
+  const step = Math.round((1 - p.y / H) * 8) + 3;
+  playNote(noteFreq(step), 0.22, 2.7);
+  setTimeout(() => playNote(noteFreq(step + 2), 0.09, 2.0), 160);
+}, { passive: true });
+
+cv.addEventListener('pointerleave', () => {
+  mouse.active = false;
+  hoverStone = null;
+});
+
+/* ============================================================
+   声音开关
+   ============================================================ */
+const sndBtn = document.getElementById('sndBtn');
+sndBtn.addEventListener('click', () => {
+  audioOn = !audioOn;
+  sndBtn.classList.toggle('off', !audioOn);
+  sndBtn.textContent = audioOn ? '♪' : '✕';
+
+  if (audioOn){
+    resumeAudio();
+    if (master && actx){
+      master.gain.cancelScheduledValues(actx.currentTime);
+      master.gain.setValueAtTime(master.gain.value, actx.currentTime);
+      master.gain.linearRampToValueAtTime(0.80, actx.currentTime + 0.5);
+    }
+    playNote(noteFreq(4), 0.18, 2.4);
+  } else if (master && actx){
+    master.gain.cancelScheduledValues(actx.currentTime);
+    master.gain.setValueAtTime(master.gain.value, actx.currentTime);
+    master.gain.linearRampToValueAtTime(0, actx.currentTime + 0.35);
+  }
+});
+
+/* ============================================================
+   窗口变化
+   ============================================================ */
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(resize, 200);
+});
+
+/* ============================================================
+   启动
+   ============================================================ */
+resize();
+requestAnimationFrame(loop);
+
+/* 开场两道波，让棋盘先活起来 */
+setTimeout(() => {
+  waves.push({
+    x: W * 0.5, y: H * 0.5,
+    r: 0,
+    maxR: Math.hypot(W, H) * 1.05,
+    width: Math.max(36, board.cell * 1.7),
+    life: 1,
+    speed: Math.max(W, H) * 0.38,
+    decay: 0.34
+  });
+}, 700);
+
+})();
+</script>
+</body>
+</html>
