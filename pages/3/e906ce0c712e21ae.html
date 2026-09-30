@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>圆柱等距螺旋阵列 · 六重翠绿生机</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{
+    width:100%;height:100%;overflow:hidden;
+    background:#04140a;
+    -webkit-tap-highlight-color:transparent;
+  }
+  #gl{
+    position:fixed;inset:0;
+    width:100%;height:100%;
+    display:block;
+    filter:saturate(1.08) contrast(1.02);
+  }
+
+  /* ---------- 数学公式 HUD ---------- */
+  .hud{
+    position:fixed;
+    left:clamp(16px,4.2vw,56px);
+    bottom:clamp(16px,4.4vh,54px);
+    z-index:10;
+    pointer-events:none;
+    user-select:none;
+    max-width:min(94vw,900px);
+    color:#d6ff9c;
+    font-family:"Times New Roman","Songti SC","STSong",Georgia,serif;
+    text-shadow:
+      0 0 22px rgba(120,255,120,.45),
+      0 0 58px rgba(40,200,90,.25),
+      0 2px 8px rgba(0,0,0,.8);
+    animation:hudIn 1.7s cubic-bezier(.2,.8,.25,1) both;
+  }
+  @keyframes hudIn{
+    from{opacity:0;transform:translateY(20px);filter:blur(6px);}
+    to{opacity:1;transform:none;filter:blur(0);}
+  }
+  .hud .tag{
+    font-size:clamp(9px,1.32vw,13px);
+    letter-spacing:.44em;
+    text-transform:uppercase;
+    opacity:.72;
+    margin-bottom:.9em;
+    font-style:normal;
+    white-space:nowrap;
+  }
+  .hud .tag .dot{
+    display:inline-block;width:.44em;height:.44em;border-radius:50%;
+    background:#a8ff5e;
+    box-shadow:0 0 14px 4px rgba(140,255,80,.9);
+    vertical-align:.02em;margin-right:.65em;
+    animation:pulse 2.4s ease-in-out infinite;
+  }
+  @keyframes pulse{
+    0%,100%{opacity:.35;transform:scale(.7);}
+    50%    {opacity:1;  transform:scale(1.18);}
+  }
+  .hud .eq{
+    font-size:clamp(13px,2.0vw,22.5px);
+    line-height:1.9;
+    font-style:italic;
+    letter-spacing:.012em;
+    opacity:.96;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
+  .hud .eq.sm{
+    font-size:clamp(10.5px,1.42vw,15px);
+    opacity:.66;
+    margin-top:.5em;
+  }
+  .hud sub{font-size:.62em;font-style:normal;vertical-align:-.22em;letter-spacing:0;}
+  .hud sup{font-size:.6em;font-style:normal;vertical-align:.42em;}
+
+  /* ---------- 右上角角标 ---------- */
+  .corner{
+    position:fixed;
+    right:clamp(16px,4.2vw,56px);
+    top:clamp(16px,4.2vh,50px);
+    z-index:10;
+    pointer-events:none;
+    user-select:none;
+    text-align:right;
+    color:#c2f08a;
+    font-family:"Times New Roman","Songti SC",serif;
+    font-size:clamp(9px,1.22vw,12.5px);
+    letter-spacing:.32em;
+    line-height:2.05;
+    opacity:.55;
+    text-shadow:0 0 20px rgba(110,255,110,.55),0 2px 6px rgba(0,0,0,.75);
+  }
+
+  .nogl::after{
+    content:"当前环境不支持 WebGL";
+    position:fixed;inset:0;display:grid;place-items:center;
+    color:#bdf58a;font:16px/1.6 sans-serif;letter-spacing:.2em;
+  }
+</style>
+</head>
+<body>
+
+<canvas id="gl"></canvas>
+
+<div class="corner">
+  HELIX &nbsp;/&nbsp; R = 1.0 &nbsp;·&nbsp; K = 20<br>
+  SPIRAL ARRAY &nbsp;⊕&nbsp; AXIS SPIN
+</div>
+
+<div class="hud">
+  <div class="tag"><span class="dot"></span>CYLINDRICAL EQUI-SPACED HELIX ARRAY · GREEN SCAN</div>
+  <div class="eq">
+    P(r,&nbsp;θ,&nbsp;z) = ( r·cos&#8239;θ,&nbsp;&nbsp;r·sin&#8239;θ,&nbsp;&nbsp;z )&nbsp;&nbsp;,&nbsp;&nbsp;
+    θ = θ<sub>0</sub> + 2π&#8239;z&#8239;/&#8239;H<sub>p</sub>&nbsp;+&nbsp;2π&#8239;j&#8239;/&#8239;K
+  </div>
+  <div class="eq sm">
+    z<sub>m</sub> = m·Δz&nbsp;&nbsp;,&nbsp;&nbsp;Δz = H&#8239;/&#8239;20&nbsp;&nbsp;·&nbsp;&nbsp;
+    Λ(x,&nbsp;y,&nbsp;t) = Σ<sub>m</sub> exp&#8202;[ −(z − v&#8239;t)²&#8239;/&#8239;σ² ]
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var canvas = document.getElementById('gl');
+  var gl = canvas.getContext('webgl', {
+        alpha: false, antialias: false, depth: false, stencil: false,
+        premultipliedAlpha: false, preserveDrawingBuffer: false,
+        powerPreference: 'high-performance'
+      }) || canvas.getContext('experimental-webgl');
+
+  if (!gl) { document.body.classList.add('nogl'); return; }
+
+  /* ============================================================
+     顶点着色器：全屏大三角形
+     ============================================================ */
+  var VS = [
+    'attribute vec2 aPos;',
+    'void main(){ gl_Position = vec4(aPos, 0.0, 1.0); }'
+  ].join('\n');
+
+  /* ============================================================
+     片元着色器
+     ------------------------------------------------------------
+     · 光线与圆柱面解析求交
+     · 展开坐标 (θ, z) 上布置等距螺旋阵列
+     · 20 排叶片，叶脉纹理，法线扰动做立体感
+     · 柱体绕纵轴快速均匀自转
+     · 绿色扫描带逐层扫掠
+     ============================================================ */
+  var FS = [
+    'precision highp float;',
+    '',
+    'uniform vec2  uRes;',
+    'uniform float uTime;',
+    '',
+    '#define PI  3.14159265359',
+    '#define TAU 6.28318530718',
+    '',
+    'float hash21(vec2 p){',
+    '    p = fract(p * vec2(123.34, 345.45));',
+    '    p += dot(p, p + 34.345);',
+    '    return fract(p.x * p.y);',
+    '}',
+    '',
+    'void main(){',
+    '    vec2  uv = (gl_FragCoord.xy - 0.5 * uRes) / uRes.y;',
+    '    float t  = uTime;',
+    '',
+    '    /* ---------------- 相机（带缓慢环绕摆动） ---------------- */',
+    '    float ca  = sin(t * 0.25) * 0.16;',
+    '    vec3  ro  = vec3(sin(ca) * 3.2, 0.0, cos(ca) * 3.2);',
+    '    vec3  fwd = normalize(-ro);',
+    '    vec3  rgt = normalize(cross(fwd, vec3(0.0, 1.0, 0.0)));',
+    '    vec3  upv = cross(rgt, fwd);',
+    '    vec3  rd  = normalize(fwd + uv.x * 1.15 * rgt + uv.y * 1.15 * upv);',
+    '',
+    '    float R = 1.0;',
+    '    float H = 3.6;',
+    '',
+    '    /* ---------------- 光线 × 无限圆柱求交 ---------------- */',
+    '    float A = rd.x*rd.x + rd.z*rd.z;',
+    '    float B = 2.0 * (ro.x*rd.x + ro.z*rd.z);',
+    '    float C = ro.x*ro.x + ro.z*ro.z - R*R;',
+    '    float D = B*B - 4.0*A*C;',
+    '',
+    '    bool hit = false;',
+    '    vec3 hp  = vec3(0.0);',
+    '',
+    '    if (D > 0.0 && A > 1e-6) {',
+    '        float sq = sqrt(D);',
+    '        float tN = (-B - sq) / (2.0*A);',
+    '        float tF = (-B + sq) / (2.0*A);',
+    '        if (tN > 0.0) {',
+    '            vec3 p = ro + rd * tN;',
+    '            if (abs(p.y) <= H * 0.5) { hit = true; hp = p; }',
+    '        }',
+    '        if (!hit && tF > 0.0) {',
+    '            vec3 p = ro + rd * tF;',
+    '            if (abs(p.y) <= H * 0.5) { hit = true; hp = p; }',
+    '        }',
+    '    }',
+    '',
+    '    /* ---------------- 背景：浅草绿 ↔ 深林绿 渐变交错 ---------------- */',
+    '    vec3 bg = mix(',
+    '        vec3(0.030, 0.105, 0.055),',
+    '        vec3(0.300, 0.585, 0.235),',
+    '        smoothstep(-0.88, 0.88, uv.y + uv.x * 0.32)',
+    '    );',
+    '    bg += vec3(0.075, 0.185, 0.090) * exp(-dot(uv, uv) * 1.9);',
+    '    bg *= 0.88 + 0.22 * (0.5 + 0.5 * sin(uv.x * 3.1 + uv.y * 2.3 + t * 0.4));',
+    '',
+    '    vec3 col = bg;',
+    '',
+    '    /* ================= 圆柱面着色 ================= */',
+    '    if (hit) {',
+    '        float th0 = atan(hp.z, hp.x);',
+    '        float y   = hp.y;',
+    '',
+    '        /* ---- 柱体绕纵轴快速均匀旋转 ---- */',
+    '        float spin = t * 1.65;',
+    '        float th   = th0 - spin;',
+    '',
+    '        /* ---- 螺旋阵列参数 ---- */',
+    '        float P    = 2.0;              /* 螺距：高度每增加 P，螺旋绕行 2π */',
+    '        float K    = 20.0;             /* 圆周方向螺旋条数 */',
+    '        float dv   = H / 20.0;         /* 纵向：20 排 */',
+    '        float sAng = TAU / K;',
+    '',
+    '        /* 螺旋相位与到最近螺旋线的角距离 */',
+    '        float w  = th - TAU * y / P;',
+    '        float d1 = abs(fract(w / sAng) - 0.5) * sAng;',
+    '',
+    '        /* 到最近一排叶片的纵向距离 */',
+    '        float d2 = abs(fract(y / dv) - 0.5) * dv;',
+    '',
+    '        /* 叶片椭圆域 */',
+    '        float wa = 0.44 * sAng;',
+    '        float wb = 0.44 * dv;',
+    '        vec2  q  = vec2(d1 / wa, d2 / wb);',
+    '        float rr = length(q);',
+    '',
+    '        float blade = 1.0 - smoothstep(0.42, 1.0, rr);',
+    '        float dome  = smoothstep(1.05, 0.0, rr);',
+    '',
+    '        /* ---- 每片叶子的稳定随机 ID（不随旋转闪烁） ---- */',
+    '        float w0  = w + spin;          /* 还原到初始相位，锁定格子 */',
+    '        float idA = floor(w0 / sAng + 0.5);',
+    '        float idB = floor(y  / dv   + 0.5);',
+    '        float hsh = hash21(vec2(idA, idB));',
+    '',
+    '        /* ---- 叶片纹理（叶脉） ---- */',
+    '        float vein = 0.62 + 0.38 * sin(q.x * 13.0 + q.y * 3.4 + hsh * 6.2831);',
+    '        vein *= 0.75 + 0.25 * sin(q.y * 9.0 - 1.3);',
+    '',
+    '        /* ---- 颜色：翠绿 ↔ 嫩黄 交织 ---- */',
+    '        vec3 cylCol = vec3(0.035, 0.140, 0.058);',
+    '        vec3 leafA  = vec3(0.075, 0.560, 0.255);',
+    '        vec3 leafB  = vec3(0.700, 0.945, 0.300);',
+    '        float mixv  = 0.5 + 0.5 * sin(y * 3.4 + t * 0.95 + hsh * 6.2831);',
+    '        vec3 leafCol = mix(leafA, leafB, mixv);',
+    '',
+    '        /* ---- 法线：圆柱基底 + 叶片穹顶扰动 ---- */',
+    '        vec3 N = normalize(vec3(hp.x, 0.0, hp.z));',
+    '        vec3 eT = normalize(vec3(hp.z, 0.0, -hp.x));',
+    '        vec3 eY = vec3(0.0, 1.0, 0.0);',
+    '        vec3 nrm = normalize(N + (eT * q.x + eY * q.y) * dome * 0.90);',
+    '',
+    '        /* ---- 光照 ---- */',
+    '        vec3  Ld  = normalize(vec3(-0.55, 0.78, 0.62));',
+    '        float dif = max(dot(nrm, Ld), 0.0);',
+    '        float amb = 0.40 + 0.30 * clamp(nrm.y, 0.0, 1.0);',
+    '',
+    '        vec3 leafShade = leafCol * (amb + dif * 0.88) * vein;',
+    '        vec3 cylShade  = cylCol * (0.45 + 0.60 * max(dot(N, Ld), 0.0));',
+    '',
+    '        vec3 surf = mix(cylShade, leafShade, blade);',
+    '',
+    '        /* ---- 螺旋走向的柔光细线（强调平行等距） ---- */',
+    '        float spiralLine = exp(-d1 * d1 * 820.0);',
+    '        surf += vec3(0.16, 0.66, 0.30) * spiralLine * 0.30;',
+    '',
+    '        /* ---- 叶片轮廓辉光 ---- */',
+    '        float edge = exp(-pow((rr - 0.95) * 5.5, 2.0));',
+    '        surf += vec3(0.38, 0.88, 0.48) * edge * 0.55;',
+    '',
+    '        /* ---- 逐层扫描：绿色波纹扫掠 ---- */',
+    '        float scanY = (fract(t * 0.22) * 2.0 - 1.0) * H * 0.62;',
+    '        float sd    = abs(y - scanY);',
+    '        float scan  = exp(-sd * sd * 11.0);',
+    '        surf += vec3(0.42, 1.00, 0.56) * scan * 0.95;',
+    '        surf += vec3(0.30, 0.90, 0.42) * scan * vein * 0.40;',
+    '        /* 扫描线附近的“割离线”细锐边 */',
+    '        float cut = exp(-pow((y - scanY) * 9.5, 2.0));',
+    '        surf += vec3(0.75, 1.00, 0.80) * cut * 0.35;',
+    '',
+    '        /* ---- 菲涅尔边缘绿光（破界辉映） ---- */',
+    '        float fres = pow(1.0 - max(dot(nrm, -rd), 0.0), 3.0);',
+    '        surf += vec3(0.22, 0.78, 0.38) * fres * 0.70;',
+    '',
+    '        /* ---- 底部与顶部的柔和渐隐 ---- */',
+    '        float cap = smoothstep(H * 0.5, H * 0.5 - 0.55, abs(y));',
+    '        surf *= 0.35 + 0.65 * cap;',
+    '',
+    '        /* ---- 呼吸：整体生机律动 ---- */',
+    '        surf *= 0.90 + 0.14 * sin(t * 1.30 + y * 2.1);',
+    '',
+    '        col = surf;',
+    '    }',
+    '',
+    '    /* ---------------- 后处理 ---------------- */',
+    '    float vig = smoothstep(1.42, 0.12, length(uv));',
+    '    col *= 0.52 + 0.58 * vig;',
+    '',
+    '    /* 色调映射 */',
+    '    col = col / (1.0 + col * 0.34);',
+    '    col = pow(max(col, 0.0), vec3(0.90));',
+    '',
+    '    /* 抖动去色带 */',
+    '    col += (hash21(gl_FragCoord.xy + fract(t)) - 0.5) * 0.011;',
+    '',
+    '    gl_FragColor = vec4(col, 1.0);',
+    '}'
+  ].join('\n');
+
+  /* ---------------- 着色器编译 ---------------- */
+  function compile(type, src) {
+    var s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+      console.error('Shader error:\n' + gl.getShaderInfoLog(s));
+      gl.deleteShader(s);
+      return null;
+    }
+    return s;
+  }
+
+  var vs = compile(gl.VERTEX_SHADER, VS);
+  var fs = compile(gl.FRAGMENT_SHADER, FS);
+  if (!vs || !fs) return;
+
+  var prog = gl.createProgram();
+  gl.attachShader(prog, vs);
+  gl.attachShader(prog, fs);
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+    console.error('Link error:\n' + gl.getProgramInfoLog(prog));
+    return;
+  }
+  gl.useProgram(prog);
+
+  /* ---------------- 全屏三角形 ---------------- */
+  var buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER,
+    new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+
+  var aPos = gl.getAttribLocation(prog, 'aPos');
+  gl.enableVertexAttribArray(aPos);
+  gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+  var uRes  = gl.getUniformLocation(prog, 'uRes');
+  var uTime = gl.getUniformLocation(prog, 'uTime');
+
+  /* ---------------- 自适应尺寸 ---------------- */
+  var DPR_CAP = 1.75;
+  function resize() {
+    var dpr = Math.min(window.devicePixelRatio || 1, DPR_CAP);
+    var w = Math.max(1, Math.floor(window.innerWidth  * dpr));
+    var h = Math.max(1, Math.floor(window.innerHeight * dpr));
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width  = w;
+      canvas.height = h;
+      gl.viewport(0, 0, w, h);
+    }
+  }
+  window.addEventListener('resize', resize, { passive: true });
+  window.addEventListener('orientationchange', resize, { passive: true });
+  resize();
+
+  /* ---------------- 渲染循环 ---------------- */
+  var t0 = performance.now();
+  var paused = false;
+
+  document.addEventListener('visibilitychange', function () {
+    paused = document.hidden;
+    if (!paused) { t0 = performance.now() - elapsed * 1000; requestAnimationFrame(frame); }
+  });
+
+  var elapsed = 0;
+
+  function frame(now) {
+    if (paused) return;
+    resize();
+    elapsed = (now - t0) / 1000;
+
+    gl.uniform2f(uRes, canvas.width, canvas.height);
+    gl.uniform1f(uTime, elapsed);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

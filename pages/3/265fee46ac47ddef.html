@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>黄金对数螺旋 · 涡旋星系</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #000; overflow: hidden;
+  }
+  #c { display: block; width: 100vw; height: 100vh; }
+
+  .hud {
+    position: fixed; left: 20px; bottom: 16px;
+    font: 400 11px/1.7 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: rgba(230, 185, 120, 0.40);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    pointer-events: none; user-select: none;
+    text-shadow: 0 0 16px rgba(255, 170, 80, 0.55);
+  }
+  .hud b {
+    font-weight: 500;
+    color: rgba(255, 215, 150, 0.82);
+    letter-spacing: 0.26em;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud">θ = b · ln(r / a) &nbsp;·&nbsp; <b>SPIRA AUREA</b></div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ============================================================
+     WebGL 2.0 初始化
+     ============================================================ */
+  const canvas = document.getElementById('c');
+  const gl = canvas.getContext('webgl2', {
+    alpha: false,
+    antialias: false,
+    depth: false,
+    stencil: false,
+    premultipliedAlpha: false,
+    preserveDrawingBuffer: false,
+    powerPreference: 'high-performance'
+  });
+
+  if (!gl) {
+    document.body.innerHTML =
+      '<div style="color:#fc9;font:15px/2 system-ui;padding:3em;letter-spacing:.1em">' +
+      '当前浏览器不支持 WebGL 2.0，无法渲染该动画。</div>';
+    return;
+  }
+
+  /* ============================================================
+     片段着色器
+     ============================================================ */
+  const VERT_SRC = `#version 300 es
+in vec2 aPos;
+void main() {
+  gl_Position = vec4(aPos, 0.0, 1.0);
+}
+`;
+
+  const FRAG_SRC = `#version 300 es
+precision highp float;
+
+uniform vec2  uRes;       // 缓冲区尺寸
+uniform float uTime;      // 动画时间（秒）
+uniform float uProgress;  // 生长进度 0 → 1
+uniform float uAlpha;     // 整体淡入淡出
+
+out vec4 fragColor;
+
+/* ---------- 常数 ---------- */
+const float PI      = 3.14159265358979;
+const float INV_2PI = 0.15915494309189535;
+const float LN_PHI  = 0.48121182505960347;   // ln(黄金比例)
+
+/* |∇p| = GRAD_K / r  的解析推导结果：
+   sqrt( 1/ln²φ + 1/(2π)² ) */
+const float GRAD_K  = 2.08419;
+
+/* ---------- 工具 ---------- */
+float dint(float x) {              // 到最近整数的距离，范围 [0, 0.5]
+  float f = fract(x);
+  return min(f, 1.0 - f);
+}
+
+float hash11(float n) {
+  return fract(sin(n * 12.9898) * 43758.5453123);
+}
+
+void main() {
+  /* 以屏幕高度归一化的等比坐标 */
+  vec2 p = (gl_FragCoord.xy - 0.5 * uRes) / uRes.y;
+
+  float r     = length(p);
+  float rr    = max(r, 1e-5);
+  float theta = atan(p.y, p.x);
+
+  /* 缓慢自转 —— 整个星系的转动 */
+  theta += uTime * 0.055;
+
+  /* ============================================================
+     生长前沿
+     ============================================================ */
+  float Rfront = 0.020 * pow(50.0, uProgress);
+  float grow   = 1.0 - smoothstep(Rfront * 0.88, Rfront * 1.01, r);
+
+  /* ============================================================
+     对数螺旋相位
+        θ = b·ln(r/a)  ⟺  ln(r)/lnφ - θ/(2π) = 常数
+     黄金比例：每旋转一圈半径乘以 φ ≈ 1.618
+     ============================================================ */
+  float sp = log(rr) / LN_PHI - theta * INV_2PI;
+
+  /* 分叉波动 —— 生成细小的分支旋臂
+     仅用奇次谐波，保证 θ = ±π 处连续 */
+  float wob = 0.060 * sin(theta * 3.0 + 2.5 * rr + uTime * 0.26)
+            + 0.028 * sin(theta * 7.0 + 4.0 * rr + 2.4 - uTime * 0.17);
+  float spw = sp + wob;
+
+  /* 到最近螺旋臂的距离（p 空间） */
+  float dp = dint(spw);
+
+  /* 换算到屏幕空间距离 */
+  float sd = dp * rr / GRAD_K;
+
+  /* ============================================================
+     螺旋臂亮度剖面
+     ============================================================ */
+  float w = 0.0036;
+
+  float core = 1.0 - smoothstep(w * 0.70, w * 2.10, sd);   // 臂心
+  float glow = exp(-sd / (w * 5.5))  * 0.24;               // 内层辉光
+  float wide = exp(-sd / (w * 24.0)) * 0.07;               // 外层光晕
+
+  float lineI = core + glow + wide;
+
+  /* 中心过密区减光 */
+  lineI *= smoothstep(0.0, 0.035, r);
+
+  /* ============================================================
+     颜色：金色 → 暖橙
+     ============================================================ */
+  float cr = clamp(r * 1.35, 0.0, 1.0);
+
+  vec3 cIn  = vec3(1.00, 0.95, 0.78);   // 近核奶油金
+  vec3 cMid = vec3(1.00, 0.75, 0.30);   // 金
+  vec3 cOut = vec3(1.00, 0.46, 0.10);   // 暖橙
+
+  vec3 lineCol = mix(cIn, cMid, smoothstep(0.0, 0.38, cr));
+  lineCol = mix(lineCol, cOut, smoothstep(0.38, 1.0, cr));
+
+  /* ============================================================
+     金色粒子 —— 沿螺旋路径向外流动
+     ============================================================ */
+  float sr   = log(rr) / LN_PHI;        // 每圈增加 1
+  float flow = uTime * 0.40;            // 流动速度
+  float dsr  = fract(sr - flow);
+  float d1   = min(dsr, 1.0 - dsr);     // 到最近粒子的距离（sr 单位）
+
+  /* 沿螺旋线的弧长 ≈ 6.30 · r · Δsr */
+  float arcDist = d1 * 6.30 * rr;
+  float psz     = 0.0042;
+
+  float particle = exp(-(arcDist * arcDist) / (psz * psz));
+
+  /* 粒子闪烁 */
+  float pIdx = floor(sr - flow);
+  particle *= 0.55 + 0.75 * hash11(pIdx);
+
+  vec3 pCol = vec3(1.00, 0.93, 0.68);
+
+  /* ============================================================
+     合成
+     ============================================================ */
+  vec3 col = vec3(0.0035, 0.0030, 0.0075);     // 深黑底
+
+  col += lineCol * lineI;
+
+  /* 粒子只依附在螺旋臂上 */
+  col += pCol * particle * (core * 0.75 + glow * 0.45) * 1.35;
+
+  /* 生长波前的暖色辉光 */
+  col += vec3(1.00, 0.72, 0.32) * exp(-abs(r - Rfront) * 20.0) * 0.30 * grow;
+
+  /* 中心核光 */
+  col += vec3(1.00, 0.82, 0.45) * exp(-r * 26.0) * 0.22;
+
+  /* 生长遮罩 */
+  col *= grow;
+
+  /* 暗角 */
+  col *= 1.0 - 0.45 * smoothstep(0.30, 0.95, r);
+
+  /* 柔和色调映射，防止过曝 */
+  col = col / (1.0 + col * 0.28);
+
+  /* 入场 / 退场 */
+  col *= uAlpha;
+
+  /* 抖动，消除色带 */
+  float dither = hash11(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) - 0.5;
+  col += dither * 0.004;
+
+  fragColor = vec4(max(col, 0.0), 1.0);
+}
+`;
+
+  /* ============================================================
+     编译 / 链接
+     ============================================================ */
+  function compile(type, src) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+      console.error(gl.getShaderInfoLog(s));
+      throw new Error('Shader compile error');
+    }
+    return s;
+  }
+
+  const prog = gl.createProgram();
+  gl.attachShader(prog, compile(gl.VERTEX_SHADER, VERT_SRC));
+  gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FRAG_SRC));
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+    console.error(gl.getProgramInfoLog(prog));
+    return;
+  }
+  gl.useProgram(prog);
+
+  /* 覆盖全屏的大三角形 */
+  const vbo = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+    -1, -1,
+     3, -1,
+    -1,  3
+  ]), gl.STATIC_DRAW);
+
+  const aPos = gl.getAttribLocation(prog, 'aPos');
+  gl.enableVertexAttribArray(aPos);
+  gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+  /* uniform 位置 */
+  const U = {
+    res:      gl.getUniformLocation(prog, 'uRes'),
+    time:     gl.getUniformLocation(prog, 'uTime'),
+    progress: gl.getUniformLocation(prog, 'uProgress'),
+    alpha:    gl.getUniformLocation(prog, 'uAlpha')
+  };
+
+  /* ============================================================
+     自适应分辨率
+     ============================================================ */
+  const IS_MOBILE = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+  const PIXEL_BUDGET = IS_MOBILE ? 620000 : 1600000;
+
+  let quality = 1.0;
+  let curW = 0, curH = 0;
+
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.6);
+    const budget = PIXEL_BUDGET * quality;
+
+    let w = window.innerWidth  * dpr;
+    let h = window.innerHeight * dpr;
+
+    const total = w * h;
+    if (total > budget) {
+      const s = Math.sqrt(budget / total);
+      w *= s;
+      h *= s;
+    }
+
+    w = Math.max(2, Math.round(w));
+    h = Math.max(2, Math.round(h));
+
+    if (w !== curW || h !== curH) {
+      curW = w;
+      curH = h;
+      canvas.width  = w;
+      canvas.height = h;
+      gl.viewport(0, 0, w, h);
+    }
+  }
+
+  /* ============================================================
+     主循环
+     ============================================================ */
+  const CYCLE = 42.0;    // 单次生长周期（秒）
+
+  function smoothstep(a, b, x) {
+    let t = (x - a) / (b - a);
+    t = t < 0 ? 0 : (t > 1 ? 1 : t);
+    return t * t * (3 - 2 * t);
+  }
+
+  let last = performance.now();
+  let elapsed = 0;
+  let ftAcc = 0, ftCount = 0;
+
+  function frame(now) {
+    let dt = (now - last) / 1000;
+    last = now;
+    if (dt > 0.05) dt = 0.05;      // 防止切标签页后跳变
+    elapsed += dt;
+
+    /* ---------- 动态画质 ---------- */
+    ftAcc += dt;
+    ftCount++;
+    if (ftCount >= 90) {
+      const avg = ftAcc / ftCount;
+      ftAcc = 0;
+      ftCount = 0;
+      if (avg > 0.038 && quality > 0.55) {
+        quality = Math.max(0.55, quality * 0.86);
+      } else if (avg < 0.020 && quality < 1.0) {
+        quality = Math.min(1.0, quality * 1.08);
+      }
+    }
+
+    resize();
+
+    /* ---------- 生长进度（0 → 1 循环） ---------- */
+    const g = (elapsed % CYCLE) / CYCLE;
+
+    /* 两端的黑场过渡，掩盖循环复位 */
+    const alpha =
+      smoothstep(0.00, 0.05, g) * (1.0 - smoothstep(0.93, 1.00, g));
+
+    /* ---------- 上传 uniform ---------- */
+    gl.uniform2f(U.res, curW, curH);
+    gl.uniform1f(U.time, elapsed);
+    gl.uniform1f(U.progress, g);
+    gl.uniform1f(U.alpha, alpha);
+
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    requestAnimationFrame(frame);
+  }
+
+  requestAnimationFrame(function (t) {
+    last = t;
+    requestAnimationFrame(frame);
+  });
+
+})();
+</script>
+</body>
+</html>

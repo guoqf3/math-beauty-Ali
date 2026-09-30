@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>反向对数螺旋 · 双舞者交错</title>
+<style>
+  html, body {
+    margin: 0; padding: 0;
+    width: 100%; height: 100%;
+    overflow: hidden;
+    background: #050212;
+  }
+
+  /* 星空紫晕背景 */
+  #bg {
+    position: fixed; inset: 0; z-index: 0;
+    background: radial-gradient(ellipse 115% 105% at 50% 48%,
+      #1f0b3d 0%,
+      #170830 18%,
+      #0f0522 38%,
+      #090316 58%,
+      #04010c 78%,
+      #050212 100%);
+  }
+
+  /* 中心柔光晕 */
+  #glow {
+    position: fixed; inset: 0; z-index: 0;
+    pointer-events: none;
+    background: radial-gradient(circle 32vw at 50% 50%,
+      rgba(180, 110, 255, 0.075) 0%,
+      rgba(90, 40, 190, 0.032) 42%,
+      rgba(0, 0, 0, 0) 72%);
+  }
+
+  canvas { position: fixed; inset: 0; display: block; z-index: 1; }
+
+  #hint {
+    position: fixed;
+    left: 50%; bottom: 22px;
+    transform: translateX(-50%);
+    z-index: 2;
+    color: rgba(200, 160, 255, 0.26);
+    font: 12px/1.7 -apple-system, BlinkMacSystemFont, "PingFang SC",
+          "Microsoft YaHei", "Helvetica Neue", sans-serif;
+    letter-spacing: 0.24em;
+    white-space: nowrap;
+    pointer-events: none;
+    user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="bg"></div>
+<div id="glow"></div>
+<div id="hint">r = e^θ　&　r = e^(−θ)　·　反向对数螺旋</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+
+/* ============================================================
+   1. 基础环境
+   ============================================================ */
+const scene  = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(48, innerWidth / innerHeight, 0.1, 300);
+camera.position.set(0, 0, 11.5);
+camera.lookAt(0, 0, 0);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.setClearColor(0x000000, 0);
+document.body.appendChild(renderer.domElement);
+
+/* ============================================================
+   2. 两条反向对数螺旋  r = e^θ  /  r = e^(−θ)
+   ============================================================ */
+const B_COEF     = 0.12;     // 起始半径
+const K_COEF     = 0.24;     // 增长率
+const THETA_MAX  = 13.5;     // 最大角度（约 2.15 圈）
+const SCALE      = 1.25;
+const N_PER      = 7000;     // 每条螺旋采样点数
+
+const TOTAL = N_PER * 2;
+
+const positions = new Float32Array(TOTAL * 3);
+const aT        = new Float32Array(TOTAL);
+const aSpiral   = new Float32Array(TOTAL);
+const aRand     = new Float32Array(TOTAL);
+
+let idx = 0;
+
+for (let s = 0; s < 2; s++) {
+  for (let i = 0; i < N_PER; i++) {
+    const t     = i / (N_PER - 1);
+    const theta = t * THETA_MAX;
+    const r     = B_COEF * Math.exp(K_COEF * theta);
+
+    /* 螺旋 0：逆时针（暖橙）  螺旋 1：顺时针（冰蓝） */
+    const angle = (s === 0) ? theta : -theta;
+
+    const x = r * Math.cos(angle) * SCALE;
+    const y = r * Math.sin(angle) * SCALE;
+    const z = (Math.random() - 0.5) * 0.10;
+
+    positions[idx * 3]     = x;
+    positions[idx * 3 + 1] = y;
+    positions[idx * 3 + 2] = z;
+
+    aT[idx]      = t;
+    aSpiral[idx] = s;
+    aRand[idx]   = Math.random();
+    idx++;
+  }
+}
+
+const spiralGeo = new THREE.BufferGeometry();
+spiralGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+spiralGeo.setAttribute('aT',       new THREE.BufferAttribute(aT, 1));
+spiralGeo.setAttribute('aSpiral',  new THREE.BufferAttribute(aSpiral, 1));
+spiralGeo.setAttribute('aRand',    new THREE.BufferAttribute(aRand, 1));
+
+/* ============================================================
+   3. 螺旋着色器
+   ============================================================ */
+const SPIRAL_VERT = `
+  uniform float uTime;
+  uniform float uReveal;
+  uniform float uPR;
+
+  attribute float aT;
+  attribute float aSpiral;
+  attribute float aRand;
+
+  varying vec3  vColor;
+  varying float vAlpha;
+
+  void main() {
+    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    float dist = max(-mv.z, 0.001);
+
+    /* —— 从中心向外伸展的揭示 —— */
+    float vis = 1.0 - smoothstep(uReveal - 0.005, uReveal + 0.018, aT);
+
+    /* —— 向外流动的脉冲 —— */
+    float pulse = sin(aT * 24.0 - uTime * 3.6);
+    pulse = pow(max(pulse, 0.0), 2.2);
+
+    /* —— 整条螺旋的行波 —— */
+    float wave = 0.5 + 0.5 * sin(aT * 32.0 - uTime * 4.8);
+
+    /* —— 末端星光闪烁 —— */
+    float tipZone = smoothstep(0.72, 1.0, aT);
+    float flicker = 0.5 + 0.5 * sin(uTime * 6.5 + aRand * 6.28318);
+    float tipGlow = tipZone * flicker;
+
+    /* —— 中心核心增亮 —— */
+    float coreGlow = exp(-aT * aT * 34.0) * 1.4;
+
+    /* —— 颜色 —— */
+    vec3 warmCol = vec3(1.00, 0.52, 0.15);
+    vec3 warmHi  = vec3(1.00, 0.90, 0.62);
+    vec3 coolCol = vec3(0.28, 0.76, 1.00);
+    vec3 coolHi  = vec3(0.82, 0.96, 1.00);
+
+    vec3 col, hi;
+    if (aSpiral > 0.5) {
+      col = coolCol;
+      hi  = coolHi;
+    } else {
+      col = warmCol;
+      hi  = warmHi;
+    }
+
+    float hiMix = clamp(pulse * 0.65 + tipGlow * 0.55 + coreGlow * 0.4, 0.0, 1.0);
+    vec3 finalCol = mix(col, hi, hiMix);
+
+    /* —— 亮度 —— */
+    float baseBright = 1.0 - 0.38 * aT;
+    float brightness = vis * baseBright
+                     * (0.50 + 0.55 * wave + 0.85 * pulse)
+                     + vis * (tipGlow * 0.70 + coreGlow * 0.95);
+
+    vColor = finalCol * brightness;
+    vAlpha = vis * clamp(
+      0.32 + 0.68 * pulse + 0.40 * tipGlow + 0.55 * coreGlow,
+      0.0, 1.0
+    );
+
+    float size = 0.52 + 1.45 * pulse + 2.10 * tipGlow + 1.60 * coreGlow;
+    gl_PointSize = clamp(size * uPR * (34.0 / dist), 1.0, 22.0);
+
+    gl_Position = projectionMatrix * mv;
+  }
+`;
+
+const SPIRAL_FRAG = `
+  varying vec3  vColor;
+  varying float vAlpha;
+
+  void main() {
+    vec2 c = gl_PointCoord - vec2(0.5);
+    float d2 = dot(c, c);
+    if (d2 > 0.25) discard;
+
+    float a = smoothstep(0.25, 0.0, d2);
+    a = pow(a, 1.65);
+
+    gl_FragColor = vec4(vColor, vAlpha * a);
+  }
+`;
+
+const spiralMat = new THREE.ShaderMaterial({
+  uniforms: {
+    uTime:   { value: 0 },
+    uReveal: { value: 0 },
+    uPR:     { value: Math.min(devicePixelRatio, 2) }
+  },
+  vertexShader:   SPIRAL_VERT,
+  fragmentShader: SPIRAL_FRAG,
+  transparent: true,
+  depthWrite:  false,
+  blending:    THREE.AdditiveBlending
+});
+
+const spirals = new THREE.Points(spiralGeo, spiralMat);
+spirals.frustumCulled = false;
+
+/* ============================================================
+   4. 星光粒子系统（沿螺旋散发、向外漂移）
+   ============================================================ */
+const P_COUNT = 420;
+
+const pPositions = new Float32Array(P_COUNT * 3);
+const pLife      = new Float32Array(P_COUNT);
+const pSpiral    = new Float32Array(P_COUNT);
+const pRand      = new Float32Array(P_COUNT);
+
+const pGeo = new THREE.BufferGeometry();
+pGeo.setAttribute('position', new THREE.BufferAttribute(pPositions, 3));
+pGeo.setAttribute('aLife',    new THREE.BufferAttribute(pLife, 1));
+pGeo.setAttribute('aSpiral',  new THREE.BufferAttribute(pSpiral, 1));
+pGeo.setAttribute('aRand',    new THREE.BufferAttribute(pRand, 1));
+
+const pMat = new THREE.ShaderMaterial({
+  uniforms: {
+    uTime: { value: 0 },
+    uPR:   { value: Math.min(devicePixelRatio, 2) }
+  },
+  vertexShader: `
+    uniform float uTime;
+    uniform float uPR;
+
+    attribute float aLife;
+    attribute float aSpiral;
+    attribute float aRand;
+
+    varying vec3  vColor;
+    varying float vAlpha;
+
+    void main() {
+      vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      float dist = max(-mv.z, 0.001);
+
+      float fade = smoothstep(0.0, 0.12, aLife)
+                 * (1.0 - smoothstep(0.55, 1.0, aLife));
+
+      float flicker = 0.55 + 0.45 * sin(uTime * 9.0 + aRand * 6.28318);
+
+      vec3 warmCol = vec3(1.00, 0.76, 0.42);
+      vec3 coolCol = vec3(0.72, 0.93, 1.00);
+      vec3 col = aSpiral > 0.5 ? coolCol : warmCol;
+
+      vColor = col;
+      vAlpha = fade * flicker * 0.90;
+
+      float size = (1.4 + 2.6 * flicker) * (1.0 - aLife * 0.55);
+      gl_PointSize = clamp(size * uPR * (30.0 / dist), 1.0, 13.0);
+
+      gl_Position = projectionMatrix * mv;
+    }
+  `,
+  fragmentShader: `
+    varying vec3  vColor;
+    varying float vAlpha;
+
+    void main() {
+      vec2 c = gl_PointCoord - vec2(0.5);
+      float d2 = dot(c, c);
+      if (d2 > 0.25) discard;
+
+      float a = smoothstep(0.25, 0.0, d2);
+      a = pow(a, 1.8);
+
+      gl_FragColor = vec4(vColor, vAlpha * a);
+    }
+  `,
+  transparent: true,
+  depthWrite:  false,
+  blending:    THREE.AdditiveBlending
+});
+
+const particles = new THREE.Points(pGeo, pMat);
+particles.frustumCulled = false;
+
+/* 粒子私有状态 */
+const pData = [];
+for (let i = 0; i < P_COUNT; i++) {
+  pData.push({
+    t:      Math.random(),
+    spiral: Math.random() < 0.5 ? 0 : 1,
+    life:   Math.random(),
+    speed:  0.10 + Math.random() * 0.22,
+    rand:   Math.random()
+  });
+}
+
+function updateParticles(dt) {
+  for (let i = 0; i < P_COUNT; i++) {
+    const p = pData[i];
+
+    p.t    += p.speed * dt;
+    p.life += dt * 0.55;
+
+    if (p.t > 1.0 || p.life > 1.0) {
+      p.t      = Math.random() * 0.28;
+      p.life   = 0;
+      p.spiral = Math.random() < 0.5 ? 0 : 1;
+      p.speed  = 0.10 + Math.random() * 0.22;
+      p.rand   = Math.random();
+    }
+
+    const theta = p.t * THETA_MAX;
+    const r     = B_COEF * Math.exp(K_COEF * theta);
+    const angle = p.spiral > 0.5 ? -theta : theta;
+
+    /* 向外漂移 */
+    const outward = p.life * 0.38;
+    const rr = r * (1 + outward);
+
+    pPositions[i * 3]     = rr * Math.cos(angle) * SCALE;
+    pPositions[i * 3 + 1] = rr * Math.sin(angle) * SCALE;
+    pPositions[i * 3 + 2] = (p.rand - 0.5) * 0.55 * p.life;
+
+    pLife[i]   = p.life;
+    pSpiral[i] = p.spiral;
+    pRand[i]   = p.rand;
+  }
+
+  pGeo.attributes.position.needsUpdate = true;
+  pGeo.attributes.aLife.needsUpdate    = true;
+  pGeo.attributes.aSpiral.needsUpdate  = true;
+  pGeo.attributes.aRand.needsUpdate    = true;
+}
+
+/* ============================================================
+   5. 组与整体姿态
+   ============================================================ */
+const group = new THREE.Group();
+group.add(spirals);
+group.add(particles);
+scene.add(group);
+
+/* 轻微倾斜，突出 3D 空间中的交错 */
+group.rotation.x = 0.30;
+
+/* ============================================================
+   6. 动画循环
+   ============================================================ */
+const clock = new THREE.Clock();
+let elapsed = 0;
+
+function animate() {
+  requestAnimationFrame(animate);
+
+  const dt = Math.min(clock.getDelta(), 0.05);
+  elapsed += dt;
+
+  /* —— 从中心向外伸展（约 2.2 秒） —— */
+  let rv = Math.min(1, elapsed / 2.2);
+  rv = rv * rv * (3 - 2 * rv);
+  spiralMat.uniforms.uReveal.value = rv;
+
+  spiralMat.uniforms.uTime.value = elapsed;
+  pMat.uniforms.uTime.value      = elapsed;
+
+  /* —— 粒子更新 —— */
+  updateParticles(dt);
+
+  /* —— 整体极缓慢旋转，让两位舞者缓缓环绕 —— */
+  group.rotation.z = elapsed * 0.055;
+
+  /* —— 轻微 3D 摆动 —— */
+  group.rotation.x = 0.30 + Math.sin(elapsed * 0.26) * 0.06;
+  group.rotation.y = Math.sin(elapsed * 0.21) * 0.08;
+
+  /* —— 呼吸缩放 —— */
+  const breathe = 1.0 + Math.sin(elapsed * 0.62) * 0.020;
+  group.scale.setScalar(breathe);
+
+  /* —— 相机极缓慢游移 —— */
+  camera.position.x = Math.sin(elapsed * 0.15) * 0.55;
+  camera.position.y = Math.cos(elapsed * 0.19) * 0.42;
+  camera.position.z = 11.5 + Math.sin(elapsed * 0.12) * 0.45;
+  camera.lookAt(0, 0, 0);
+
+  renderer.render(scene, camera);
+}
+
+animate();
+
+/* ============================================================
+   7. 自适应
+   ============================================================ */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  spiralMat.uniforms.uPR.value = Math.min(devicePixelRatio, 2);
+  pMat.uniforms.uPR.value      = Math.min(devicePixelRatio, 2);
+});
+</script>
+</body>
+</html>

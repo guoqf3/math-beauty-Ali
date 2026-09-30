@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>混合正弦玫瑰曲线 · 波浪振荡</title>
+<style>
+  html, body {
+    margin: 0; padding: 0;
+    width: 100%; height: 100%;
+    overflow: hidden;
+    background: #020a18;
+  }
+
+  /* 潮汐蓝渐变海面背景 */
+  #bg {
+    position: fixed; inset: 0; z-index: 0;
+    background: radial-gradient(ellipse 120% 105% at 50% 48%,
+      #0e2f58 0%,
+      #0a2246 18%,
+      #071836 36%,
+      #041028 56%,
+      #030b1e 74%,
+      #020a18 100%);
+  }
+
+  /* 中心冷光晕 */
+  #glow {
+    position: fixed; inset: 0; z-index: 0;
+    pointer-events: none;
+    background: radial-gradient(circle 36vw at 50% 50%,
+      rgba(60, 190, 240, 0.075) 0%,
+      rgba(30, 90, 190, 0.032) 42%,
+      rgba(0, 0, 0, 0) 72%);
+  }
+
+  canvas { position: fixed; inset: 0; display: block; z-index: 1; }
+
+  #hint {
+    position: fixed;
+    left: 50%; bottom: 22px;
+    transform: translateX(-50%);
+    z-index: 2;
+    color: rgba(130, 215, 255, 0.24);
+    font: 12px/1.7 -apple-system, BlinkMacSystemFont, "PingFang SC",
+          "Microsoft YaHei", "Helvetica Neue", sans-serif;
+    letter-spacing: 0.22em;
+    white-space: nowrap;
+    pointer-events: none;
+    user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="bg"></div>
+<div id="glow"></div>
+<div id="hint">r = a·sin(bθ)·cos(cθ)　·　波浪振荡</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+
+/* ============================================================
+   1. 基础环境
+   ============================================================ */
+const scene  = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(48, innerWidth / innerHeight, 0.1, 200);
+camera.position.set(0, 2.9, 8.2);
+camera.lookAt(0, 0, 0);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.setClearColor(0x000000, 0);
+document.body.appendChild(renderer.domElement);
+
+/* ============================================================
+   2. 混合正弦玫瑰曲线  r = a·sin(bθ)·cos(cθ)
+   b = 3, c = 2  →  六瓣三角对称，波峰波谷规律交替
+   ============================================================ */
+const A_COEF = 1.0;
+const B_COEF = 3;      // sin(bθ)
+const C_COEF = 2;      // cos(cθ)
+const SCALE  = 3.0;
+const N      = 13000;
+
+const positions = new Float32Array(N * 3);
+const aTheta    = new Float32Array(N);
+const aR        = new Float32Array(N);
+const aRand     = new Float32Array(N);
+
+for (let i = 0; i < N; i++) {
+  const theta = (i / N) * Math.PI * 2;
+  const r = A_COEF * Math.sin(B_COEF * theta) * Math.cos(C_COEF * theta);
+
+  const x = r * Math.cos(theta);
+  const y = r * Math.sin(theta);
+
+  positions[i * 3]     = x * SCALE;
+  positions[i * 3 + 1] = y * SCALE;
+  positions[i * 3 + 2] = 0;
+
+  aTheta[i] = theta;
+  aR[i]     = r;
+  aRand[i]  = Math.random();
+}
+
+const geo = new THREE.BufferGeometry();
+geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+geo.setAttribute('aTheta',   new THREE.BufferAttribute(aTheta, 1));
+geo.setAttribute('aR',       new THREE.BufferAttribute(aR, 1));
+geo.setAttribute('aRand',    new THREE.BufferAttribute(aRand, 1));
+
+/* ============================================================
+   3. 着色器 —— 波浪起伏 + 呼吸 + 海蓝白水光渐变
+   ============================================================ */
+const VERT = `
+  uniform float uTime;
+  uniform float uPR;
+
+  attribute float aTheta;
+  attribute float aR;
+  attribute float aRand;
+
+  varying vec3  vColor;
+  varying float vAlpha;
+
+  void main() {
+    float radius = length(position.xy);
+
+    /* —— 主波浪：沿半径向外扩散 —— */
+    float waveA = sin(radius * 3.2 - uTime * 2.35);
+
+    /* —— 次波浪：沿角度方向，增加复杂层次 —— */
+    float waveB = sin(aTheta * 5.0 + uTime * 1.55) * 0.42;
+
+    /* —— 高频细纹：模拟水面细波 —— */
+    float waveC = sin(aTheta * 13.0 - uTime * 3.1 + aRand * 6.283) * 0.14;
+
+    float wave = waveA * 0.78 + waveB * 0.34 + waveC * 0.22;
+
+    /* —— 呼吸缩放 —— */
+    float breathe = 1.0 + sin(uTime * 0.72) * 0.038;
+
+    vec3 pos = position;
+    pos.xy *= breathe;
+    pos.z   = wave * 0.62;
+
+    vec4 mv = modelViewMatrix * vec4(pos, 1.0);
+    float dist = max(-mv.z, 0.001);
+
+    /* —— 颜色：深海蓝 → 海蓝 → 白水光 —— */
+    vec3 deepWater = vec3(0.03, 0.21, 0.58);
+    vec3 seaBlue   = vec3(0.12, 0.58, 0.93);
+    vec3 foam      = vec3(0.94, 0.99, 1.00);
+
+    float wn = clamp(wave * 0.5 + 0.5, 0.0, 1.0);
+
+    vec3 col = mix(deepWater, seaBlue, smoothstep(0.0, 0.62, wn));
+    col = mix(col, foam, smoothstep(0.70, 1.0, wn));
+
+    /* 中心核心增亮 */
+    col += vec3(0.09, 0.22, 0.38) * exp(-radius * radius * 0.30);
+
+    vColor = col;
+    vAlpha = 0.42 + 0.58 * wn;
+
+    float size = 0.52 + 1.35 * wn;
+    gl_PointSize = clamp(size * uPR * (42.0 / dist), 1.0, 20.0);
+
+    gl_Position = projectionMatrix * mv;
+  }
+`;
+
+const FRAG = `
+  varying vec3  vColor;
+  varying float vAlpha;
+
+  void main() {
+    vec2 c = gl_PointCoord - vec2(0.5);
+    float d2 = dot(c, c);
+    if (d2 > 0.25) discard;
+
+    float a = smoothstep(0.25, 0.0, d2);
+    a = pow(a, 1.55);
+
+    gl_FragColor = vec4(vColor, vAlpha * a);
+  }
+`;
+
+const material = new THREE.ShaderMaterial({
+  uniforms: {
+    uTime: { value: 0 },
+    uPR:   { value: Math.min(devicePixelRatio, 2) }
+  },
+  vertexShader:   VERT,
+  fragmentShader: FRAG,
+  transparent: true,
+  depthWrite:  false,
+  blending:    THREE.AdditiveBlending
+});
+
+const rose = new THREE.Points(geo, material);
+rose.frustumCulled = false;
+
+/* 组承载整体轻微漂移 */
+const group = new THREE.Group();
+group.add(rose);
+scene.add(group);
+
+/* ============================================================
+   4. 动画循环
+   ============================================================ */
+const clock = new THREE.Clock();
+let elapsed = 0;
+
+function animate() {
+  requestAnimationFrame(animate);
+
+  const dt = Math.min(clock.getDelta(), 0.05);
+  elapsed += dt;
+
+  material.uniforms.uTime.value = elapsed;
+
+  /* —— 极缓慢的整体旋转，几乎不可察觉 —— */
+  group.rotation.z = elapsed * 0.030;
+
+  /* —— 轻微的 3D 倾斜摆动，强化“海面”感 —— */
+  group.rotation.x = Math.sin(elapsed * 0.22) * 0.06;
+  group.rotation.y = Math.cos(elapsed * 0.18) * 0.06;
+
+  /* —— 组整体上下浮动 —— */
+  group.position.y = Math.sin(elapsed * 0.55) * 0.10;
+
+  /* —— 相机极缓慢游移 —— */
+  camera.position.x = Math.sin(elapsed * 0.16) * 0.55;
+  camera.position.y = 2.9 + Math.cos(elapsed * 0.21) * 0.35;
+  camera.position.z = 8.2 + Math.sin(elapsed * 0.13) * 0.45;
+  camera.lookAt(0, 0, 0);
+
+  renderer.render(scene, camera);
+}
+
+animate();
+
+/* ============================================================
+   5. 自适应
+   ============================================================ */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  material.uniforms.uPR.value = Math.min(devicePixelRatio, 2);
+});
+</script>
+</body>
+</html>

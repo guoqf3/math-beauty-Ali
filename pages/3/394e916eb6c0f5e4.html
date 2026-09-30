@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>抛物线族切线包络 · 面罩曲面</title>
+<style>
+  html, body {
+    margin: 0; padding: 0;
+    width: 100%; height: 100%;
+    overflow: hidden;
+    background: #1a0a04;
+  }
+
+  /* 暖阳橙色渐变暮色背景 */
+  #bg {
+    position: fixed; inset: 0; z-index: 0;
+    background: radial-gradient(ellipse 120% 110% at 50% 42%,
+      #4a1e08 0%,
+      #3a1506 16%,
+      #2b0e04 34%,
+      #1e0903 54%,
+      #130502 76%,
+      #1a0a04 100%);
+  }
+
+  /* 中心暖光晕 */
+  #glow {
+    position: fixed; inset: 0; z-index: 0;
+    pointer-events: none;
+    background: radial-gradient(circle 36vw at 50% 44%,
+      rgba(255, 180, 90, 0.075) 0%,
+      rgba(220, 120, 60, 0.032) 42%,
+      rgba(0, 0, 0, 0) 72%);
+  }
+
+  canvas { position: fixed; inset: 0; display: block; z-index: 1; }
+
+  /* 公式展示面板 */
+  #formula {
+    position: fixed;
+    left: 28px; top: 28px;
+    z-index: 2;
+    color: rgba(255, 200, 150, 0.72);
+    font: 13px/1.9 "Cambria Math", "Times New Roman", Georgia, serif;
+    letter-spacing: 0.04em;
+    pointer-events: none;
+    user-select: none;
+    text-shadow: 0 0 12px rgba(255, 160, 80, 0.35);
+  }
+
+  #formula .title {
+    display: block;
+    font-size: 11px;
+    letter-spacing: 0.28em;
+    color: rgba(255, 180, 120, 0.48);
+    margin-bottom: 10px;
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+  }
+
+  #formula .line {
+    display: block;
+    margin: 2px 0;
+  }
+
+  #formula .key {
+    color: rgba(255, 220, 170, 0.88);
+  }
+
+  #hint {
+    position: fixed;
+    left: 50%; bottom: 22px;
+    transform: translateX(-50%);
+    z-index: 2;
+    color: rgba(255, 200, 150, 0.24);
+    font: 12px/1.7 -apple-system, BlinkMacSystemFont, "PingFang SC",
+          "Microsoft YaHei", "Helvetica Neue", sans-serif;
+    letter-spacing: 0.24em;
+    white-space: nowrap;
+    pointer-events: none;
+    user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="bg"></div>
+<div id="glow"></div>
+
+<!-- 公式面板 -->
+<div id="formula">
+  <span class="title">抛物线族切线包络</span>
+  <span class="line"><span class="key">E</span>(t) = ( <span class="key">t</span> , <span class="key">H</span>(1 − t²) )</span>
+  <span class="line"><span class="key">T</span>(t) = ( 1 , −2<span class="key">H</span>t ) ⁄ |<span class="key">T</span>|</span>
+  <span class="line"><span class="key">N</span>(t) = ( <span class="key">T</span><sub>y</sub> , −<span class="key">T</span><sub>x</sub> )</span>
+  <span class="line"><span class="key">Q</span>(t,s) = <span class="key">E</span> + s·<span class="key">T</span> + a·s²·<span class="key">N</span></span>
+</div>
+
+<div id="hint">抛物线族切线包络　·　面罩曲面</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+
+/* ============================================================
+   1. 基础环境
+   ============================================================ */
+const scene  = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 200);
+camera.position.set(0, 1.2, 8.5);
+camera.lookAt(0, 0.3, 0);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.setClearColor(0x000000, 0);
+document.body.appendChild(renderer.domElement);
+
+/* ============================================================
+   2. 几何构造
+   E(t)   = (t, H(1−t²))            包络线
+   T(t)   = 单位切线
+   N(t)   = 法线（指向内侧）
+   Q(t,s) = E(t) + s·T + a·s²·N     相切抛物线族
+   ============================================================ */
+const N_CURVES = 80;
+const N_PTS    = 50;
+const N_LAYERS = 10;
+const DEPTH    = 1.5;
+const H        = 1.0;
+const A_CURV   = 0.45;
+const S_RANGE  = 0.68;
+const SCALE    = 2.1;
+
+const TOTAL = N_CURVES * N_PTS * N_LAYERS;
+
+const positions = new Float32Array(TOTAL * 3);
+const aCurve    = new Float32Array(TOTAL);
+const aPoint    = new Float32Array(TOTAL);
+const aLayer    = new Float32Array(TOTAL);
+const aRand     = new Float32Array(TOTAL);
+
+let idx = 0;
+
+for (let layer = 0; layer < N_LAYERS; layer++) {
+  const lz    = layer / (N_LAYERS - 1);
+  const lzC   = lz * 2 - 1;
+  const scale = 1.0 - 0.30 * lzC * lzC;
+  const z     = lzC * DEPTH * 0.5;
+
+  for (let i = 0; i < N_CURVES; i++) {
+    const t  = -1 + 2 * (i / (N_CURVES - 1));
+
+    const ex = t;
+    const ey = H * (1 - t * t);
+
+    let tx = 1;
+    let ty = -2 * H * t;
+    const tl = Math.hypot(tx, ty) || 1;
+    tx /= tl;
+    ty /= tl;
+
+    const nx = ty;
+    const ny = -tx;
+
+    for (let j = 0; j < N_PTS; j++) {
+      const sv = (j / (N_PTS - 1) - 0.5) * 2 * S_RANGE;
+
+      const qx = ex + sv * tx + A_CURV * sv * sv * nx;
+      const qy = ey + sv * ty + A_CURV * sv * sv * ny;
+
+      positions[idx * 3]     = qx * scale * SCALE;
+      positions[idx * 3 + 1] = qy * scale * SCALE;
+      positions[idx * 3 + 2] = z * SCALE;
+
+      aCurve[idx] = i / (N_CURVES - 1);
+      aPoint[idx] = j / (N_PTS - 1);
+      aLayer[idx] = lz;
+      aRand[idx]  = Math.random();
+
+      idx++;
+    }
+  }
+}
+
+const geo = new THREE.BufferGeometry();
+geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+geo.setAttribute('aCurve',   new THREE.BufferAttribute(aCurve, 1));
+geo.setAttribute('aPoint',   new THREE.BufferAttribute(aPoint, 1));
+geo.setAttribute('aLayer',   new THREE.BufferAttribute(aLayer, 1));
+geo.setAttribute('aRand',    new THREE.BufferAttribute(aRand, 1));
+
+/* ============================================================
+   3. 着色器 —— 暖金 / 玫瑰粉 双色，杜绝白色
+   ============================================================ */
+const VERT = `
+  uniform float uTime;
+  uniform float uPR;
+
+  attribute float aCurve;
+  attribute float aPoint;
+  attribute float aLayer;
+  attribute float aRand;
+
+  varying vec3  vColor;
+  varying float vAlpha;
+
+  void main() {
+    vec3 pos = position;
+
+    /* —— 波光形变 —— */
+    float wave = sin(aCurve * 12.566 + uTime * 1.35)
+               * cos(aPoint * 6.283 - uTime * 0.95)
+               * 0.055;
+    float wave2 = sin(aLayer * 6.283 + uTime * 0.75) * 0.035;
+
+    pos.x += wave * 0.7;
+    pos.y += wave * 0.5 + wave2;
+    pos.z += wave * 0.4;
+
+    pos.y += sin(uTime * 0.85 + aCurve * 3.0) * 0.028;
+
+    vec4 mv = modelViewMatrix * vec4(pos, 1.0);
+    float dist = max(-mv.z, 0.001);
+
+    /* —— 扫掠切痕 —— */
+    float sweep = fract(uTime * 0.22);
+    float diff = sweep - aCurve;
+    if (diff < 0.0) diff += 1.0;
+    float trace = exp(-diff * 5.5);
+
+    /* —— 基础亮度：整体降低 —— */
+    float base = 0.12 + 0.16 * exp(-aPoint * 1.6);
+
+    /* —— 波光闪烁 —— */
+    float shimmer = 0.5 + 0.5 * sin(uTime * 3.4 + aRand * 6.283);
+    float sparkle = pow(shimmer, 2.4);
+
+    /* —— 颜色：暖金 ↔ 玫瑰粉 ↔ 珊瑚橙，三色循环，无白 —— */
+    vec3 gold    = vec3(1.00, 0.78, 0.32);   // 暖金
+    vec3 rose    = vec3(1.00, 0.55, 0.62);   // 玫瑰粉
+    vec3 coral   = vec3(1.00, 0.62, 0.35);   // 珊瑚橙
+
+    /* 双频混合，形成丰富的色彩层次 */
+    float m1 = 0.5 + 0.5 * sin(aCurve * 6.283 + uTime * 0.30);
+    float m2 = 0.5 + 0.5 * cos(aPoint * 3.5 + uTime * 0.42 + aLayer * 2.0);
+
+    vec3 colA = mix(gold, rose, m1);
+    vec3 colB = mix(rose, coral, m2);
+    vec3 col  = mix(colA, colB, 0.5 + 0.5 * sin(aCurve * 9.0 + aPoint * 2.0));
+
+    /* —— 切痕：提亮但保持暖色，只用淡金 —— */
+    vec3 traceGlow = vec3(1.00, 0.88, 0.58);
+    col = mix(col, traceGlow, trace * 0.55);
+
+    /* —— 亮度合成 —— */
+    float bright = base
+                 + trace * 0.85
+                 + sparkle * 0.18;
+
+    vColor = col * bright;
+    vAlpha = clamp(base * 1.4 + trace * 0.78 + sparkle * 0.20, 0.0, 0.92);
+
+    /* —— 点尺寸 —— */
+    float size = 0.28 + trace * 1.20 + sparkle * 0.26;
+    gl_PointSize = clamp(size * uPR * (48.0 / dist), 0.7, 10.0);
+
+    gl_Position = projectionMatrix * mv;
+  }
+`;
+
+const FRAG = `
+  varying vec3  vColor;
+  varying float vAlpha;
+
+  void main() {
+    vec2 c = gl_PointCoord - vec2(0.5);
+    float d2 = dot(c, c);
+    if (d2 > 0.25) discard;
+
+    float a = smoothstep(0.25, 0.0, d2);
+    a = pow(a, 1.7);
+
+    gl_FragColor = vec4(vColor, vAlpha * a);
+  }
+`;
+
+const material = new THREE.ShaderMaterial({
+  uniforms: {
+    uTime: { value: 0 },
+    uPR:   { value: Math.min(devicePixelRatio, 2) }
+  },
+  vertexShader:   VERT,
+  fragmentShader: FRAG,
+  transparent: true,
+  depthWrite:  false,
+  blending:    THREE.AdditiveBlending
+});
+
+const envelope = new THREE.Points(geo, material);
+envelope.frustumCulled = false;
+
+const group = new THREE.Group();
+group.add(envelope);
+scene.add(group);
+
+group.rotation.x = -0.08;
+
+/* ============================================================
+   4. 动画循环
+   ============================================================ */
+const clock = new THREE.Clock();
+let elapsed = 0;
+
+function animate() {
+  requestAnimationFrame(animate);
+
+  const dt = Math.min(clock.getDelta(), 0.05);
+  elapsed += dt;
+
+  material.uniforms.uTime.value = elapsed;
+
+  group.rotation.y = Math.sin(elapsed * 0.18) * 0.28;
+  group.rotation.x = -0.08 + Math.sin(elapsed * 0.24) * 0.055;
+  group.rotation.z = Math.cos(elapsed * 0.15) * 0.035;
+
+  const breathe = 1.0 + Math.sin(elapsed * 0.62) * 0.020;
+  group.scale.setScalar(breathe);
+
+  camera.position.x = Math.sin(elapsed * 0.14) * 0.85;
+  camera.position.y = 1.2 + Math.cos(elapsed * 0.19) * 0.55;
+  camera.position.z = 8.5 + Math.sin(elapsed * 0.11) * 0.50;
+  camera.lookAt(0, 0.3, 0);
+
+  renderer.render(scene, camera);
+}
+
+animate();
+
+/* ============================================================
+   5. 自适应
+   ============================================================ */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  material.uniforms.uPR.value = Math.min(devicePixelRatio, 2);
+});
+</script>
+</body>
+</html>

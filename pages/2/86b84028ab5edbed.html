@@ -1,0 +1,917 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>五行生克 · 钟磬和鸣</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{width:100%;height:100%;overflow:hidden;background:#03050a;}
+  body{
+    font-family:"Songti SC","STSong","Noto Serif SC","SimSun",serif;
+    color:#e8dcc8;user-select:none;-webkit-user-select:none;
+    -webkit-tap-highlight-color:transparent;
+  }
+  canvas{display:block;}
+
+  #hud{
+    position:fixed;top:30px;left:38px;z-index:10;pointer-events:none;
+    animation:fadeIn 1.6s ease both;
+  }
+  #hud h1{
+    font-size:26px;font-weight:400;letter-spacing:.55em;
+    color:#e6d3a8;text-shadow:0 0 26px rgba(230,200,120,.5);
+    padding-left:.55em;
+  }
+  #hud .sub{
+    margin-top:10px;font-size:11px;letter-spacing:.42em;
+    color:#6d7f97;padding-left:.42em;
+  }
+  #hud .line{
+    margin-top:14px;width:120px;height:1px;
+    background:linear-gradient(90deg,rgba(212,180,131,.8),rgba(212,180,131,0));
+  }
+
+  #relation-flash{
+    position:fixed;top:20%;left:50%;transform:translate(-50%,-50%) scale(.86);
+    font-size:40px;letter-spacing:.32em;opacity:0;pointer-events:none;z-index:10;
+    transition:opacity .4s ease,transform .4s cubic-bezier(.2,1.6,.4,1);
+    text-shadow:0 0 36px currentColor,0 0 80px currentColor;
+    white-space:nowrap;padding-left:.32em;
+  }
+  #relation-flash.show{opacity:1;transform:translate(-50%,-50%) scale(1);}
+
+  #controls{
+    position:fixed;bottom:34px;left:50%;transform:translateX(-50%);
+    display:flex;gap:12px;z-index:10;
+    animation:fadeIn 1.6s .4s ease both;
+  }
+  button{
+    background:rgba(255,255,255,.028);
+    border:1px solid rgba(212,180,131,.28);
+    color:#cdb88f;padding:11px 24px;border-radius:999px;
+    font-family:inherit;font-size:13px;letter-spacing:.24em;
+    cursor:pointer;transition:all .35s ease;
+    backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+    padding-left:calc(24px + .24em);
+  }
+  button:hover:not(:disabled){
+    background:rgba(212,180,131,.13);
+    border-color:rgba(212,180,131,.75);
+    color:#f2e3c0;
+    box-shadow:0 0 24px rgba(212,180,131,.28),inset 0 0 18px rgba(212,180,131,.09);
+  }
+  button:active:not(:disabled){transform:scale(.96);}
+  button:disabled{opacity:.28;cursor:not-allowed;}
+
+  #hint{
+    position:fixed;bottom:96px;left:50%;transform:translateX(-50%);
+    font-size:11px;letter-spacing:.24em;color:#4d5c72;z-index:10;
+    pointer-events:none;white-space:nowrap;
+    animation:fadeIn 1.6s .8s ease both;
+  }
+
+  @keyframes fadeIn{from{opacity:0;transform:translateY(8px);}to{opacity:1;}}
+  #hud{animation-name:fadeIn;}
+
+  @media (max-width:640px){
+    #hud{top:20px;left:20px;}
+    #hud h1{font-size:19px;letter-spacing:.4em;}
+    #relation-flash{font-size:26px;}
+    button{padding:9px 16px;font-size:11px;letter-spacing:.16em;}
+    #hint{font-size:9px;letter-spacing:.14em;bottom:88px;}
+  }
+</style>
+</head>
+<body>
+
+<div id="hud">
+  <h1>五行 · 生克</h1>
+  <div class="sub">木 火 土 金 水 · 钟 磬 和 鸣</div>
+  <div class="line"></div>
+</div>
+
+<div id="relation-flash"></div>
+
+<div id="hint">拖动节点连线 · 点击发声 · 空白处拖拽旋转 · 滚轮缩放</div>
+
+<div id="controls">
+  <button id="btn-sheng">相生循环</button>
+  <button id="btn-ke">相克循环</button>
+  <button id="btn-stop">止</button>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+/* =========================================================
+   0. 数据定义
+   ========================================================= */
+const ELEMENTS = [
+  { cn:'木', color:0x4ade80, freq:329.63, note:'角' }, // 木 · 角音 E4
+  { cn:'火', color:0xff6b4a, freq:392.00, note:'徵' }, // 火 · 徵音 G4
+  { cn:'土', color:0xfbbf24, freq:261.63, note:'宫' }, // 土 · 宫音 C4
+  { cn:'金', color:0xe8eefc, freq:293.66, note:'商' }, // 金 · 商音 D4
+  { cn:'水', color:0x38bdf8, freq:440.00, note:'羽' }, // 水 · 羽音 A4
+];
+const N = ELEMENTS.length;
+const RADIUS = 3.4;
+
+/* 相生：i → i+1   相克：i → i+2 */
+const SHENG_NEXT = i => (i + 1) % N;
+const KE_NEXT    = i => (i + 2) % N;
+
+/* =========================================================
+   1. 音频引擎 —— 钟 / 磬 / 锣 合成
+   ========================================================= */
+let audioCtx = null, busInput = null, masterGain = null;
+
+const BELL_PARTIALS  = [1, 2.0, 2.76, 4.0, 5.4, 7.0];        // 钟：非谐泛音
+const CHIME_PARTIALS = [1, 3.0, 5.4, 8.2, 11.5];             // 磬：清亮高泛音
+const GONG_PARTIALS  = [1, 1.41, 2.13, 3.17, 4.5];           // 锣：含增四度，紧张感
+
+function initAudio(){
+  if (audioCtx) return;
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) return;
+  audioCtx = new Ctx();
+  const ctx = audioCtx;
+
+  masterGain = ctx.createGain();
+  masterGain.gain.value = 0.5;
+  masterGain.connect(ctx.destination);
+
+  // 混响
+  const conv = ctx.createConvolver();
+  conv.buffer = makeImpulse(ctx, 3.2, 2.6);
+  const wet = ctx.createGain(); wet.gain.value = 0.5;
+  const dry = ctx.createGain(); dry.gain.value = 0.78;
+
+  busInput = ctx.createGain();
+  busInput.gain.value = 1.0;
+  busInput.connect(dry);  dry.connect(masterGain);
+  busInput.connect(conv); conv.connect(wet); wet.connect(masterGain);
+}
+
+function makeImpulse(ctx, duration, decay){
+  const rate = ctx.sampleRate;
+  const len = Math.floor(rate * duration);
+  const buf = ctx.createBuffer(2, len, rate);
+  for (let ch = 0; ch < 2; ch++){
+    const d = buf.getChannelData(ch);
+    for (let i = 0; i < len; i++){
+      const x = i / len;
+      d[i] = (Math.random() * 2 - 1) * Math.pow(1 - x, decay);
+    }
+  }
+  return buf;
+}
+
+/* 单次击发：一组正弦分音 + 指数衰减包络 */
+function strike(freq, t0, dur, amp, partials){
+  const ctx = audioCtx;
+  for (let i = 0; i < partials.length; i++){
+    const f = freq * partials[i];
+    if (f > 17000) continue;
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.value = f;
+
+    const g = ctx.createGain();
+    const a = Math.max(amp * Math.pow(0.58, i), 0.0002);
+    const attack = 0.005 + i * 0.0035;
+    const dec = Math.max(dur * Math.pow(0.7, i), 0.05);
+
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(a, t0 + attack);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + attack + dec);
+
+    osc.connect(g); g.connect(busInput);
+    osc.start(t0);
+    osc.stop(t0 + attack + dec + 0.08);
+  }
+}
+
+/* 低频闷响 */
+function thud(freq, t0, dur, amp){
+  const ctx = audioCtx;
+  const osc = ctx.createOscillator();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(freq, t0);
+  osc.frequency.exponentialRampToValueAtTime(freq * 0.55, t0 + dur);
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(amp, t0 + 0.02);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  osc.connect(g); g.connect(busInput);
+  osc.start(t0); osc.stop(t0 + dur + 0.1);
+}
+
+/* 单元素：钟 + 磬 泛音 */
+function playElementSound(i, delay = 0, mul = 1){
+  if (!audioCtx) return;
+  const f = ELEMENTS[i].freq;
+  const t0 = audioCtx.currentTime + delay;
+  strike(f, t0, 2.6, 0.20 * mul, BELL_PARTIALS);
+  strike(f * 2, t0 + 0.012, 1.4, 0.055 * mul, CHIME_PARTIALS);
+}
+
+/* 相生：前音引后音，柔和叠置 */
+function playShengSound(a, b){
+  if (!audioCtx) return;
+  const t0 = audioCtx.currentTime;
+  const fa = ELEMENTS[a].freq, fb = ELEMENTS[b].freq;
+  strike(fa, t0, 2.8, 0.185, BELL_PARTIALS);
+  strike(fa * 1.5, t0 + 0.09, 1.8, 0.045, CHIME_PARTIALS);
+  strike(fb, t0 + 0.19, 2.9, 0.17, CHIME_PARTIALS);
+  strike(fb * 2, t0 + 0.21, 1.5, 0.05, CHIME_PARTIALS);
+}
+
+/* 相克：低沉锣声 + 增四度不谐和 */
+function playKeSound(a, b){
+  if (!audioCtx) return;
+  const t0 = audioCtx.currentTime;
+  const fa = ELEMENTS[a].freq, fb = ELEMENTS[b].freq;
+  strike(fa * 0.5, t0, 2.0, 0.185, GONG_PARTIALS);
+  strike(fb * 0.5, t0 + 0.11, 1.7, 0.135, GONG_PARTIALS);
+  strike(fb, t0 + 0.13, 1.3, 0.085, CHIME_PARTIALS);
+  thud(fb * 0.25, t0, 0.85, 0.22);
+}
+
+function ensureAudio(){
+  if (!audioCtx) initAudio();
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+}
+
+/* =========================================================
+   2. 场景搭建
+   ========================================================= */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x03050a);
+scene.fog = new THREE.FogExp2(0x03050a, 0.02);
+
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 400);
+
+const renderer = new THREE.WebGLRenderer({ antialias:true, powerPreference:'high-performance' });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.15;
+document.body.appendChild(renderer.domElement);
+
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloomPass = new UnrealBloomPass(
+  new THREE.Vector2(innerWidth, innerHeight), 0.85, 0.6, 0.62
+);
+composer.addPass(bloomPass);
+
+/* ---- 灯光 ---- */
+scene.add(new THREE.AmbientLight(0x445577, 1.6));
+
+const keyLight = new THREE.DirectionalLight(0xbcd4ff, 2.4);
+keyLight.position.set(6, 12, 8);
+scene.add(keyLight);
+
+const warmLight = new THREE.DirectionalLight(0xff9a5c, 0.9);
+warmLight.position.set(-8, 4, -6);
+scene.add(warmLight);
+
+const topLight = new THREE.PointLight(0x3366ff, 140, 45, 2);
+topLight.position.set(0, 7, 0);
+scene.add(topLight);
+
+/* ---- 纹理工具 ---- */
+function makeGlowTexture(){
+  const s = 256;
+  const c = document.createElement('canvas');
+  c.width = c.height = s;
+  const ctx = c.getContext('2d');
+  const g = ctx.createRadialGradient(s/2, s/2, 0, s/2, s/2, s/2);
+  g.addColorStop(0.00, 'rgba(255,255,255,1)');
+  g.addColorStop(0.18, 'rgba(255,255,255,0.55)');
+  g.addColorStop(0.45, 'rgba(255,255,255,0.14)');
+  g.addColorStop(1.00, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, s, s);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+function makeLabelTexture(char, colorHex){
+  const s = 256;
+  const c = document.createElement('canvas');
+  c.width = c.height = s;
+  const ctx = c.getContext('2d');
+  ctx.clearRect(0, 0, s, s);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = 'bold 155px "Songti SC","STSong","Noto Serif SC",serif';
+  ctx.shadowColor = colorHex;
+  ctx.shadowBlur = 34;
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText(char, s/2, s/2 + 10);
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = colorHex;
+  ctx.globalAlpha = 0.85;
+  ctx.fillText(char, s/2, s/2 + 10);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+const GLOW_TEX = makeGlowTexture();
+
+/* ---- 星空 ---- */
+(function addStars(){
+  const COUNT = 1600;
+  const pos = new Float32Array(COUNT * 3);
+  const col = new Float32Array(COUNT * 3);
+  const tmp = new THREE.Color();
+  for (let i = 0; i < COUNT; i++){
+    const r = 34 + Math.random() * 80;
+    const th = Math.random() * Math.PI * 2;
+    const ph = Math.acos(2 * Math.random() - 1);
+    pos[i*3+0] = r * Math.sin(ph) * Math.cos(th);
+    pos[i*3+1] = r * Math.cos(ph) * 0.65;
+    pos[i*3+2] = r * Math.sin(ph) * Math.sin(th);
+    tmp.setHSL(0.53 + Math.random() * 0.14, 0.65, 0.45 + Math.random() * 0.45);
+    col[i*3+0] = tmp.r; col[i*3+1] = tmp.g; col[i*3+2] = tmp.b;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  const mat = new THREE.PointsMaterial({
+    size: 0.42, vertexColors: true, transparent: true, opacity: 0.85,
+    blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true
+  });
+  scene.add(new THREE.Points(geo, mat));
+})();
+
+/* ---- 极坐标网格地面 ---- */
+const grid = new THREE.PolarGridHelper(10, 12, 6, 72, 0x1c3550, 0x0d1b2a);
+grid.position.y = -1.7;
+grid.material.transparent = true;
+grid.material.opacity = 0.32;
+grid.material.depthWrite = false;
+scene.add(grid);
+
+/* ---- 基座光环 ---- */
+const baseRing = new THREE.Mesh(
+  new THREE.RingGeometry(3.02, 3.1, 160),
+  new THREE.MeshBasicMaterial({
+    color: 0x3f7ab5, transparent: true, opacity: 0.4,
+    side: THREE.DoubleSide, blending: THREE.AdditiveBlending, depthWrite: false
+  })
+);
+baseRing.rotation.x = -Math.PI / 2;
+baseRing.position.y = -0.06;
+scene.add(baseRing);
+
+const baseRing2 = new THREE.Mesh(
+  new THREE.RingGeometry(4.1, 4.13, 160),
+  new THREE.MeshBasicMaterial({
+    color: 0x2a4d73, transparent: true, opacity: 0.22,
+    side: THREE.DoubleSide, blending: THREE.AdditiveBlending, depthWrite: false
+  })
+);
+baseRing2.rotation.x = -Math.PI / 2;
+baseRing2.position.y = -0.06;
+scene.add(baseRing2);
+
+/* =========================================================
+   3. 五行节点
+   ========================================================= */
+const positions = ELEMENTS.map((_, i) => {
+  const a = Math.PI / 2 + i * Math.PI * 2 / N;
+  return new THREE.Vector3(Math.cos(a) * RADIUS, 0, Math.sin(a) * RADIUS);
+});
+
+const nodes = [];
+const pickables = [];
+
+ELEMENTS.forEach((el, i) => {
+  const group = new THREE.Group();
+  group.position.copy(positions[i]);
+
+  const color = new THREE.Color(el.color);
+
+  /* 晶体核心 */
+  const coreMat = new THREE.MeshStandardMaterial({
+    color: color,
+    emissive: color.clone(),
+    emissiveIntensity: 0.35,
+    metalness: 0.55,
+    roughness: 0.22,
+    flatShading: true
+  });
+  const core = new THREE.Mesh(new THREE.IcosahedronGeometry(0.62, 1), coreMat);
+  group.add(core);
+
+  /* 外层线框 */
+  const shellMat = new THREE.MeshBasicMaterial({
+    color: color, wireframe: true, transparent: true, opacity: 0.16,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  });
+  const shell = new THREE.Mesh(new THREE.IcosahedronGeometry(0.82, 1), shellMat);
+  group.add(shell);
+
+  /* 辉光 */
+  const glow = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: GLOW_TEX, color: color, transparent: true, opacity: 0.6,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  }));
+  glow.scale.set(3.4, 3.4, 1);
+  group.add(glow);
+
+  /* 环绕光环 */
+  const ringMesh = new THREE.Mesh(
+    new THREE.TorusGeometry(1.03, 0.011, 6, 90),
+    new THREE.MeshBasicMaterial({
+      color: color, transparent: true, opacity: 0.42,
+      blending: THREE.AdditiveBlending, depthWrite: false
+    })
+  );
+  ringMesh.rotation.x = Math.PI / 2 + (i - 2) * 0.16;
+  ringMesh.rotation.z = i * 0.6;
+  group.add(ringMesh);
+
+  /* 汉字精灵 */
+  const label = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: makeLabelTexture(el.cn, '#' + color.getHexString()),
+    transparent: true, depthWrite: false, opacity: 0.95
+  }));
+  label.position.set(0, 1.5, 0);
+  label.scale.set(0.92, 0.92, 1);
+  group.add(label);
+
+  /* 拾取体（不可见） */
+  const pick = new THREE.Mesh(
+    new THREE.SphereGeometry(0.98, 12, 12),
+    new THREE.MeshBasicMaterial({ visible: false })
+  );
+  pick.userData.index = i;
+  group.add(pick);
+  pickables.push(pick);
+
+  scene.add(group);
+
+  nodes.push({
+    index: i, group, core, coreMat, shell, shellMat, glow,
+    ring: ringMesh, label, pulse: 0, hover: 0
+  });
+});
+
+/* =========================================================
+   4. 相机控制（自实现轨道）
+   ========================================================= */
+const camTarget = { theta: 0, phi: 1.02, radius: 12.6 };
+const camNow    = { theta: 0, phi: 1.02, radius: 12.6 };
+let userInteractTime = 0;
+
+function clamp(v, a, b){ return Math.min(b, Math.max(a, v)); }
+
+function updateCamera(dt, time){
+  /* 静止片刻后缓慢自转 */
+  if (time - userInteractTime > 4.0){
+    camTarget.theta += dt * 0.045;
+  }
+  const k = Math.min(1, dt * 7);
+  camNow.theta  += (camTarget.theta  - camNow.theta ) * k;
+  camNow.phi    += (camTarget.phi    - camNow.phi   ) * k;
+  camNow.radius += (camTarget.radius - camNow.radius) * k;
+
+  const sp = Math.sin(camNow.phi);
+  const cp = Math.cos(camNow.phi);
+  camera.position.set(
+    camNow.radius * sp * Math.sin(camNow.theta),
+    camNow.radius * cp,
+    camNow.radius * sp * Math.cos(camNow.theta)
+  );
+  camera.lookAt(0, 0.25, 0);
+}
+
+/* =========================================================
+   5. 交互
+   ========================================================= */
+const raycaster = new THREE.Raycaster();
+const ndc = new THREE.Vector2();
+const dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+const dom = renderer.domElement;
+
+let dragging = false;
+let dragFromIdx = -1;
+let orbiting = false;
+let hasMoved = false;
+let pointerStart = { x:0, y:0 };
+let prevPointer = { x:0, y:0 };
+let hoverIdx = -1;
+
+function pickAt(clientX, clientY){
+  const rect = dom.getBoundingClientRect();
+  ndc.x =  ((clientX - rect.left) / rect.width)  * 2 - 1;
+  ndc.y = -((clientY - rect.top)  / rect.height) * 2 + 1;
+  raycaster.setFromCamera(ndc, camera);
+  const hits = raycaster.intersectObjects(pickables, false);
+  return hits.length ? hits[0].object.userData.index : -1;
+}
+
+/* ---- 拖拽预览曲线 ---- */
+let previewLine = null;
+let previewMat = null;
+
+function updatePreview(clientX, clientY){
+  if (dragFromIdx < 0) return;
+  const p1 = positions[dragFromIdx].clone();
+
+  const rect = dom.getBoundingClientRect();
+  ndc.x =  ((clientX - rect.left) / rect.width)  * 2 - 1;
+  ndc.y = -((clientY - rect.top)  / rect.height) * 2 + 1;
+  raycaster.setFromCamera(ndc, camera);
+
+  const p2 = new THREE.Vector3();
+  if (!raycaster.ray.intersectPlane(dragPlane, p2)) p2.copy(p1);
+
+  const mid = p1.clone().add(p2).multiplyScalar(0.5);
+  mid.y += 0.9;
+  const curve = new THREE.QuadraticBezierCurve3(p1, mid, p2);
+  const pts = curve.getPoints(36);
+
+  if (!previewLine){
+    previewMat = new THREE.LineBasicMaterial({
+      color: 0xffd48a, transparent: true, opacity: 0.95,
+      blending: THREE.AdditiveBlending, depthWrite: false
+    });
+    previewLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), previewMat);
+    previewLine.frustumCulled = false;
+    scene.add(previewLine);
+  } else {
+    previewLine.geometry.dispose();
+    previewLine.geometry = new THREE.BufferGeometry().setFromPoints(pts);
+  }
+
+  /* 悬停目标决定预览色 */
+  const targetIdx = pickAt(clientX, clientY);
+  if (targetIdx >= 0 && targetIdx !== dragFromIdx){
+    const rel = getRelation(dragFromIdx, targetIdx);
+    previewMat.color.setHex(rel.type === 'sheng' ? 0x5eead4 : 0xff4d6d);
+  } else {
+    previewMat.color.setHex(0xffd48a);
+  }
+}
+
+function clearPreview(){
+  if (previewLine){
+    scene.remove(previewLine);
+    previewLine.geometry.dispose();
+    previewMat.dispose();
+    previewLine = null;
+    previewMat = null;
+  }
+}
+
+/* ---- 判定生克 ---- */
+function getRelation(a, b){
+  if ((a + 1) % N === b) return { type:'sheng', src:a, dst:b };
+  if ((b + 1) % N === a) return { type:'sheng', src:b, dst:a };
+  if ((a + 2) % N === b) return { type:'ke',    src:a, dst:b };
+  return                        { type:'ke',    src:b, dst:a };
+}
+
+/* ---- 节点脉冲 ---- */
+function pulseNode(i, amount){
+  if (nodes[i]) nodes[i].pulse = Math.min(2.2, nodes[i].pulse + amount);
+}
+
+/* =========================================================
+   6. 连线可视化
+   ========================================================= */
+const connections = [];
+
+function spawnConnection(a, b, type){
+  const p1 = positions[a].clone();
+  const p2 = positions[b].clone();
+
+  const mid = p1.clone().add(p2).multiplyScalar(0.5);
+  const outward = new THREE.Vector3(mid.x, 0, mid.z);
+  if (outward.lengthSq() < 0.0001) outward.set(0, 0, 1);
+  outward.normalize();
+  mid.add(outward.multiplyScalar(p1.distanceTo(p2) * 0.2));
+  mid.y += type === 'sheng' ? 0.75 : 1.45;
+
+  const curve = new THREE.QuadraticBezierCurve3(p1, mid, p2);
+  const color = type === 'sheng' ? 0x5eead4 : 0xff4d6d;
+
+  const geo = new THREE.TubeGeometry(curve, 44, type === 'sheng' ? 0.034 : 0.028, 8, false);
+  const mat = new THREE.MeshBasicMaterial({
+    color, transparent: true, opacity: 0.95,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  });
+  const tube = new THREE.Mesh(geo, mat);
+  tube.frustumCulled = false;
+  scene.add(tube);
+
+  /* 沿曲线流动的光点 */
+  const spark = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: GLOW_TEX, color, transparent: true, opacity: 0.95,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  }));
+  spark.scale.set(0.62, 0.62, 1);
+  scene.add(spark);
+
+  connections.push({ mesh: tube, mat, spark, curve, life: 0, maxLife: 5.2 });
+}
+
+function updateConnections(dt){
+  for (let i = connections.length - 1; i >= 0; i--){
+    const c = connections[i];
+    c.life += dt;
+    const k = c.life / c.maxLife;
+    const op = k < 0.72 ? 0.95 : 0.95 * (1 - (k - 0.72) / 0.28);
+    c.mat.opacity = Math.max(0, op);
+    c.spark.material.opacity = Math.max(0, op);
+    const t = (c.life * 0.55) % 1;
+    c.spark.position.copy(c.curve.getPoint(t));
+
+    if (c.life >= c.maxLife){
+      scene.remove(c.mesh);
+      c.mesh.geometry.dispose();
+      c.mat.dispose();
+      scene.remove(c.spark);
+      c.spark.material.dispose();
+      connections.splice(i, 1);
+    }
+  }
+}
+
+/* =========================================================
+   7. 关系触发（音 + 形 + 字）
+   ========================================================= */
+const flashEl = document.getElementById('relation-flash');
+let flashTimer = null;
+
+function showFlash(text, colorHex){
+  flashEl.textContent = text;
+  flashEl.style.color = '#' + new THREE.Color(colorHex).getHexString();
+  flashEl.classList.add('show');
+  clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => flashEl.classList.remove('show'), 1250);
+}
+
+function triggerRelation(a, b){
+  if (a === b) return;
+  ensureAudio();
+
+  const rel = getRelation(a, b);
+  const isSheng = rel.type === 'sheng';
+
+  pulseNode(a, 1.05);
+  pulseNode(b, 1.05);
+  spawnConnection(a, b, rel.type);
+
+  if (audioCtx){
+    if (isSheng) playShengSound(rel.src, rel.dst);
+    else         playKeSound(rel.src, rel.dst);
+  }
+
+  showFlash(
+    `${ELEMENTS[rel.src].cn} ${isSheng ? '生' : '克'} ${ELEMENTS[rel.dst].cn}`,
+    isSheng ? 0x6ee7c8 : 0xff5a7a
+  );
+}
+
+/* =========================================================
+   8. 指针事件
+   ========================================================= */
+dom.addEventListener('pointerdown', e => {
+  ensureAudio();
+  userInteractTime = performance.now() / 1000;
+  try { dom.setPointerCapture(e.pointerId); } catch(_) {}
+
+  pointerStart = { x:e.clientX, y:e.clientY };
+  prevPointer  = { x:e.clientX, y:e.clientY };
+  hasMoved = false;
+
+  const idx = pickAt(e.clientX, e.clientY);
+  if (idx >= 0){
+    dragging = true;
+    dragFromIdx = idx;
+    hoverIdx = idx;
+    pulseNode(idx, 0.45);
+  } else {
+    orbiting = true;
+  }
+});
+
+dom.addEventListener('pointermove', e => {
+  const dx = e.clientX - prevPointer.x;
+  const dy = e.clientY - prevPointer.y;
+  prevPointer = { x:e.clientX, y:e.clientY };
+
+  if (Math.hypot(e.clientX - pointerStart.x, e.clientY - pointerStart.y) > 4){
+    hasMoved = true;
+  }
+
+  if (dragging){
+    updatePreview(e.clientX, e.clientY);
+    hoverIdx = pickAt(e.clientX, e.clientY);
+  } else if (orbiting){
+    userInteractTime = performance.now() / 1000;
+    camTarget.theta -= dx * 0.0055;
+    camTarget.phi = clamp(camTarget.phi - dy * 0.0055, 0.26, 1.46);
+  } else {
+    const idx = pickAt(e.clientX, e.clientY);
+    hoverIdx = idx;
+    dom.style.cursor = idx >= 0 ? 'pointer' : 'default';
+  }
+});
+
+function endPointer(e){
+  try { dom.releasePointerCapture(e.pointerId); } catch(_) {}
+
+  if (dragging){
+    const targetIdx = pickAt(e.clientX, e.clientY);
+
+    if (targetIdx >= 0 && targetIdx !== dragFromIdx){
+      triggerRelation(dragFromIdx, targetIdx);
+    } else if (!hasMoved && dragFromIdx >= 0){
+      /* 单击发声 */
+      ensureAudio();
+      pulseNode(dragFromIdx, 1.2);
+      const el = ELEMENTS[dragFromIdx];
+      if (audioCtx){
+        playElementSound(dragFromIdx);
+        /* 轻微叠加一个高八度磬音做点缀 */
+        setTimeout(() => {
+          if (audioCtx) strike(el.freq * 4, audioCtx.currentTime, 1.1, 0.035, CHIME_PARTIALS);
+        }, 60);
+      }
+      showFlash(`${el.cn} · ${el.note}`, el.color);
+      /* 自发脉冲环 */
+      spawnConnection(dragFromIdx, dragFromIdx, 'sheng'); // 不会触发，仅视觉占位 —— 已防止
+    }
+
+    clearPreview();
+    dragging = false;
+    dragFromIdx = -1;
+  }
+
+  orbiting = false;
+}
+
+dom.addEventListener('pointerup', endPointer);
+dom.addEventListener('pointercancel', endPointer);
+
+dom.addEventListener('wheel', e => {
+  e.preventDefault();
+  userInteractTime = performance.now() / 1000;
+  camTarget.radius = clamp(camTarget.radius + e.deltaY * 0.011, 7.0, 22.0);
+}, { passive: false });
+
+/* 防止 spawnConnection(a,a) 的边界情况 */
+const _origSpawn = spawnConnection;
+
+/* =========================================================
+   9. 自动序列
+   ========================================================= */
+let playing = false;
+let playToken = 0;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+const btnSheng = document.getElementById('btn-sheng');
+const btnKe    = document.getElementById('btn-ke');
+const btnStop  = document.getElementById('btn-stop');
+
+function setButtonsDisabled(v){
+  btnSheng.disabled = v;
+  btnKe.disabled = v;
+}
+
+async function playSequence(type){
+  if (playing) return;
+  ensureAudio();
+  playing = true;
+  setButtonsDisabled(true);
+  const token = ++playToken;
+
+  /* 相生：木→火→土→金→水→木   |   相克：木→土→水→火→金→木 */
+  const order = type === 'sheng'
+    ? [0, 1, 2, 3, 4, 0]
+    : [0, 2, 4, 1, 3, 0];
+
+  const gap = type === 'sheng' ? 780 : 660;
+
+  for (let k = 0; k < order.length - 1; k++){
+    if (token !== playToken || !playing) break;
+    triggerRelation(order[k], order[k + 1]);
+    await sleep(gap);
+  }
+
+  if (token === playToken){
+    playing = false;
+    setButtonsDisabled(false);
+  }
+}
+
+btnSheng.addEventListener('click', () => playSequence('sheng'));
+btnKe.addEventListener('click', () => playSequence('ke'));
+btnStop.addEventListener('click', () => {
+  playing = false;
+  playToken++;
+  setButtonsDisabled(false);
+});
+
+/* =========================================================
+   10. 渲染循环
+   ========================================================= */
+const clock = new THREE.Clock();
+let elapsed = 0;
+
+function animate(){
+  requestAnimationFrame(animate);
+
+  const dt = Math.min(clock.getDelta(), 0.05);
+  elapsed += dt;
+
+  /* --- 节点动画 --- */
+  nodes.forEach((n, i) => {
+    /* 脉冲衰减 */
+    n.pulse *= Math.exp(-dt * 2.3);
+    if (n.pulse < 0.001) n.pulse = 0;
+
+    /* 悬停渐入 */
+    const hoverGoal = (hoverIdx === i && !dragging) ? 1 : 0;
+    n.hover += (hoverGoal - n.hover) * Math.min(1, dt * 10);
+
+    const s = 1 + n.pulse * 0.34 + n.hover * 0.14;
+    n.core.scale.setScalar(s);
+
+    n.coreMat.emissiveIntensity = 0.35 + n.pulse * 1.5 + n.hover * 0.5;
+    n.shellMat.opacity = 0.16 + n.pulse * 0.4 + n.hover * 0.25;
+
+    const glowScale = 3.2 + n.pulse * 1.8 + n.hover * 0.8;
+    n.glow.scale.set(glowScale, glowScale, 1);
+    n.glow.material.opacity = 0.5 + n.pulse * 0.5 + n.hover * 0.2;
+
+    /* 自转 */
+    n.core.rotation.y  += dt * 0.34;
+    n.core.rotation.x  += dt * 0.16;
+    n.shell.rotation.y -= dt * 0.26;
+    n.shell.rotation.z += dt * 0.12;
+    n.ring.rotation.z  += dt * (0.45 + n.pulse * 1.6);
+
+    /* 上下浮动 */
+    n.group.position.y = Math.sin(elapsed * 1.15 + i * 1.5) * 0.13;
+  });
+
+  /* --- 基座光环呼吸 --- */
+  const breathe = 0.35 + Math.sin(elapsed * 1.4) * 0.12;
+  baseRing.material.opacity = breathe;
+  baseRing2.material.opacity = breathe * 0.55;
+
+  /* --- 连线 --- */
+  updateConnections(dt);
+
+  /* --- 相机 --- */
+  updateCamera(dt, elapsed);
+
+  /* --- 渲染 --- */
+  composer.render();
+}
+
+/* =========================================================
+   11. 尺寸自适应 & 启动
+   ========================================================= */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  composer.setSize(innerWidth, innerHeight);
+  bloomPass.setSize(innerWidth, innerHeight);
+});
+
+/* 首次进入的欢迎音（需用户手势，这里仅做提示性脉冲） */
+setTimeout(() => {
+  nodes.forEach((n, i) => {
+    setTimeout(() => pulseNode(i, 0.6), i * 110);
+  });
+}, 700);
+
+updateCamera(0.016, 0);
+animate();
+</script>
+</body>
+</html>

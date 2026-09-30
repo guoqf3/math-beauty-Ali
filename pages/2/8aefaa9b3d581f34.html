@@ -1,0 +1,846 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>太极图参数化 · 古琴泛音</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{width:100%;height:100%;overflow:hidden;background:#04060c;}
+  body{
+    font-family:"Songti SC","STSong","Noto Serif SC","SimSun",serif;
+    color:#e8e4d8;user-select:none;-webkit-user-select:none;
+    -webkit-tap-highlight-color:transparent;
+  }
+  canvas{display:block;}
+
+  /* ---- 标题 ---- */
+  #hud{
+    position:fixed;top:34px;left:40px;z-index:10;pointer-events:none;
+    animation:fadeIn 1.8s ease both;
+  }
+  #hud h1{
+    font-size:24px;font-weight:400;letter-spacing:.5em;padding-left:.5em;
+    color:#e8dcc0;text-shadow:0 0 30px rgba(220,180,110,.45);
+  }
+  #hud .sub{
+    margin-top:11px;font-size:10.5px;letter-spacing:.4em;padding-left:.4em;
+    color:#5f6b80;
+  }
+  #hud .rule{
+    margin-top:15px;width:110px;height:1px;
+    background:linear-gradient(90deg,rgba(212,180,131,.7),rgba(212,180,131,0));
+  }
+
+  /* ---- 变体指示 ---- */
+  #variants{
+    position:fixed;top:40px;right:40px;z-index:10;
+    display:flex;flex-direction:column;gap:8px;align-items:flex-end;
+    animation:fadeIn 1.8s .3s ease both;
+  }
+  #variants .v{
+    font-size:11px;letter-spacing:.3em;color:#48566b;
+    padding:5px 0;transition:all .4s ease;padding-left:.3em;
+  }
+  #variants .v.on{
+    color:#e8c88a;
+    text-shadow:0 0 18px rgba(232,200,138,.6);
+  }
+
+  /* ---- 比例显示 ---- */
+  #ratio{
+    position:fixed;bottom:64px;left:50%;transform:translateX(-50%);
+    z-index:10;text-align:center;pointer-events:none;
+    animation:fadeIn 1.8s .5s ease both;
+  }
+  #ratio .label{
+    font-size:10px;letter-spacing:.36em;color:#3f4d63;padding-left:.36em;
+    margin-bottom:8px;
+  }
+  #ratio .bar{
+    width:min(420px,70vw);height:2px;border-radius:1px;
+    background:rgba(255,255,255,.06);position:relative;overflow:hidden;
+  }
+  #ratio .fill{
+    position:absolute;left:0;top:0;height:100%;width:50%;
+    background:linear-gradient(90deg,#3a6ea5,#ffc966);
+    box-shadow:0 0 14px rgba(255,200,100,.6);
+    transition:width .1s linear;
+  }
+  #ratio .num{
+    margin-top:9px;font-size:12px;letter-spacing:.2em;color:#8a9ab5;
+  }
+  #ratio .num b{color:#e8c88a;font-weight:400;}
+
+  /* ---- 提示 ---- */
+  #tip{
+    position:fixed;bottom:22px;left:50%;transform:translateX(-50%);
+    font-size:9.5px;letter-spacing:.22em;color:#2f3c50;
+    z-index:10;pointer-events:none;white-space:nowrap;
+    animation:fadeIn 1.8s .8s ease both;
+  }
+
+  @keyframes fadeIn{from{opacity:0;transform:translateY(9px);}to{opacity:1;}}
+
+  @media (max-width:640px){
+    #hud{top:20px;left:20px;}
+    #hud h1{font-size:17px;letter-spacing:.36em;}
+    #hud .sub{font-size:8.5px;letter-spacing:.24em;}
+    #variants{top:22px;right:18px;gap:5px;}
+    #variants .v{font-size:9px;letter-spacing:.16em;}
+    #ratio{bottom:54px;}
+    #ratio .label{font-size:8.5px;}
+    #ratio .num{font-size:10px;}
+    #tip{font-size:8px;letter-spacing:.1em;}
+  }
+</style>
+</head>
+<body>
+
+<div id="hud">
+  <h1>太极图</h1>
+  <div class="sub">参 数 化 · 阴 阳 消 长</div>
+  <div class="rule"></div>
+</div>
+
+<div id="variants">
+  <div class="v on" data-i="0">太 极</div>
+  <div class="v" data-i="1">反 旋</div>
+  <div class="v" data-i="2">三 生</div>
+  <div class="v" data-i="3">螺 旋</div>
+</div>
+
+<div id="ratio">
+  <div class="label">阴 阳 比 例</div>
+  <div class="bar"><div class="fill" id="ratio-fill"></div></div>
+  <div class="num">阴 <b id="num-yin">50</b> ： <b id="num-yang">50</b> 阳</div>
+</div>
+
+<div id="tip">拖动调整阴阳比例 · 点击切换变体 · 空白处旋转视角</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+/* =========================================================
+   一、音频引擎 —— 古琴泛音合成
+   ========================================================= */
+let audioCtx = null, busInput = null, masterGain = null, reverbNode = null;
+
+function makeImpulse(ctx, duration, decay){
+  const rate = ctx.sampleRate;
+  const len = Math.floor(rate * duration);
+  const buf = ctx.createBuffer(2, len, rate);
+  for (let ch = 0; ch < 2; ch++){
+    const d = buf.getChannelData(ch);
+    for (let i = 0; i < len; i++){
+      const x = i / len;
+      d[i] = (Math.random() * 2 - 1) * Math.pow(1 - x, decay);
+    }
+  }
+  return buf;
+}
+
+function audioInit(){
+  if (audioCtx) return;
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) return;
+  const ctx = new Ctx();
+  audioCtx = ctx;
+
+  masterGain = ctx.createGain();
+  masterGain.gain.value = 0.52;
+  masterGain.connect(ctx.destination);
+
+  /* 混响 —— 古琴空间感 */
+  const conv = ctx.createConvolver();
+  conv.buffer = makeImpulse(ctx, 2.8, 3.0);
+  const wet = ctx.createGain(); wet.gain.value = 0.42;
+  const dry = ctx.createGain(); dry.gain.value = 0.82;
+
+  busInput = ctx.createGain();
+  busInput.gain.value = 1.0;
+  busInput.connect(dry);  dry.connect(masterGain);
+  busInput.connect(conv); conv.connect(wet); wet.connect(masterGain);
+
+  /* 轻微低通，柔化高频 */
+  const lp = ctx.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.frequency.value = 8200;
+  lp.Q.value = 0.4;
+  busInput.disconnect();
+  busInput.connect(lp);
+  lp.connect(dry); dry.connect(masterGain);
+  lp.connect(conv); conv.connect(wet); wet.connect(masterGain);
+  reverbNode = conv;
+}
+
+function audioResume(){
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+}
+
+/* 泛音列 —— 古琴音色 */
+const GUQIN_PARTIALS = [
+  [1, 1.00, 4.2],
+  [2, 0.46, 3.0],
+  [3, 0.24, 2.1],
+  [4, 0.14, 1.6],
+  [5, 0.085, 1.25],
+  [6, 0.050, 1.0],
+  [7, 0.032, 0.82],
+  [9, 0.018, 0.62],
+  [11, 0.010, 0.48],
+];
+
+function playGuqin(freq, vol = 0.26, when = 0, bright = 1){
+  if (!audioCtx) return;
+  const ctx = audioCtx;
+  const t0 = ctx.currentTime + when;
+
+  GUQIN_PARTIALS.forEach(([m, g, d], idx) => {
+    const f = freq * m;
+    if (f > 14000) return;
+
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.value = f;
+    osc.detune.value = (Math.random() - 0.5) * 5;
+
+    const gain = ctx.createGain();
+    const amp = vol * g * (idx === 0 ? 1 : bright);
+    const decay = d * (idx === 0 ? 1 : 0.85);
+
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.exponentialRampToValueAtTime(Math.max(amp, 0.0002), t0 + 0.007);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + decay);
+
+    osc.connect(gain);
+    gain.connect(busInput);
+    osc.start(t0);
+    osc.stop(t0 + decay + 0.12);
+  });
+
+  /* 拨弦瞬态 —— 指甲触弦的细碎噪声 */
+  const noiseLen = Math.floor(ctx.sampleRate * 0.035);
+  const nbuf = ctx.createBuffer(1, noiseLen, ctx.sampleRate);
+  const nd = nbuf.getChannelData(0);
+  for (let i = 0; i < noiseLen; i++){
+    nd[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / noiseLen, 4);
+  }
+  const nsrc = ctx.createBufferSource();
+  nsrc.buffer = nbuf;
+  const nf = ctx.createBiquadFilter();
+  nf.type = 'bandpass';
+  nf.frequency.value = freq * 3.2;
+  nf.Q.value = 1.1;
+  const ng = ctx.createGain();
+  ng.gain.value = vol * 0.14;
+  nsrc.connect(nf); nf.connect(ng); ng.connect(busInput);
+  nsrc.start(t0);
+}
+
+/* 五声音阶：宫 商 角 徵 羽 */
+const PENTA = [130.81, 146.83, 164.81, 196.00, 220.00];
+
+function freqFromU(u, base){
+  const idx = Math.min(4, Math.floor(u * 4.999));
+  const f = PENTA[idx] * base;
+  return f;
+}
+
+/* =========================================================
+   二、场景搭建
+   ========================================================= */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x04060c);
+scene.fog = new THREE.FogExp2(0x04060c, 0.018);
+
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 400);
+camera.position.set(0, 0.6, 9.4);
+
+const renderer = new THREE.WebGLRenderer({ antialias:true, powerPreference:'high-performance' });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.15;
+document.body.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.minDistance = 5;
+controls.maxDistance = 22;
+controls.enablePan = false;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.28;
+controls.target.set(0, 0, 0);
+
+/* ---- 后处理 ---- */
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(
+  new THREE.Vector2(innerWidth, innerHeight), 0.92, 0.68, 0.42
+);
+composer.addPass(bloom);
+
+/* ---- 灯光 ---- */
+scene.add(new THREE.AmbientLight(0x404a60, 2.0));
+
+const keyLight = new THREE.DirectionalLight(0xffe6c0, 2.4);
+keyLight.position.set(5, 7, 8);
+scene.add(keyLight);
+
+const fillLight = new THREE.DirectionalLight(0x6a9aff, 1.5);
+fillLight.position.set(-7, -3, 5);
+scene.add(fillLight);
+
+const rimLight = new THREE.DirectionalLight(0xff9a4a, 0.9);
+rimLight.position.set(0, -8, -5);
+scene.add(rimLight);
+
+const coreLight = new THREE.PointLight(0xffc266, 60, 22, 2);
+coreLight.position.set(0, 0, 3);
+scene.add(coreLight);
+
+/* ---- 纹理工具 ---- */
+function makeGlowTexture(){
+  const S = 256;
+  const c = document.createElement('canvas');
+  c.width = c.height = S;
+  const ctx = c.getContext('2d');
+  const g = ctx.createRadialGradient(S/2, S/2, 0, S/2, S/2, S/2);
+  g.addColorStop(0.00, 'rgba(255,255,255,1)');
+  g.addColorStop(0.16, 'rgba(255,255,255,0.6)');
+  g.addColorStop(0.42, 'rgba(255,255,255,0.15)');
+  g.addColorStop(1.00, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, S, S);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+const GLOW_TEX = makeGlowTexture();
+
+/* ---- 星空 ---- */
+(function stars(){
+  const COUNT = 1800;
+  const pos = new Float32Array(COUNT * 3);
+  const col = new Float32Array(COUNT * 3);
+  const tmp = new THREE.Color();
+  for (let i = 0; i < COUNT; i++){
+    const r = 36 + Math.random() * 85;
+    const th = Math.random() * Math.PI * 2;
+    const ph = Math.acos(2 * Math.random() - 1);
+    pos[i*3+0] = r * Math.sin(ph) * Math.cos(th);
+    pos[i*3+1] = r * Math.cos(ph) * 0.75;
+    pos[i*3+2] = r * Math.sin(ph) * Math.sin(th);
+    tmp.setHSL(0.09 + Math.random() * 0.08, 0.4, 0.4 + Math.random() * 0.5);
+    col[i*3+0] = tmp.r; col[i*3+1] = tmp.g; col[i*3+2] = tmp.b;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  const mat = new THREE.PointsMaterial({
+    size:0.36, vertexColors:true, transparent:true, opacity:0.8,
+    blending:THREE.AdditiveBlending, depthWrite:false, sizeAttenuation:true
+  });
+  scene.add(new THREE.Points(geo, mat));
+})();
+
+/* ---- 背景光环 ---- */
+const bgRing = new THREE.Mesh(
+  new THREE.RingGeometry(4.6, 4.68, 200),
+  new THREE.MeshBasicMaterial({
+    color: 0x2a4a72, transparent:true, opacity:0.26,
+    side:THREE.DoubleSide, blending:THREE.AdditiveBlending, depthWrite:false
+  })
+);
+bgRing.position.z = -2.6;
+scene.add(bgRing);
+
+const bgRing2 = new THREE.Mesh(
+  new THREE.RingGeometry(5.6, 5.63, 200),
+  new THREE.MeshBasicMaterial({
+    color: 0x1e3450, transparent:true, opacity:0.16,
+    side:THREE.DoubleSide, blending:THREE.AdditiveBlending, depthWrite:false
+  })
+);
+bgRing2.position.z = -2.6;
+scene.add(bgRing2);
+
+/* =========================================================
+   三、太极参数化
+   ========================================================= */
+const R = 2.65;
+const DOME = 0.42;
+const THICK = 0.14;
+const BND_SEGS = 220;
+
+const taiChiGroup = new THREE.Group();
+scene.add(taiChiGroup);
+
+let currentVariant = 0;
+let currentU = 0.5;
+
+/* ---- 分界曲线：从 (0, R) 到 (0, -R) ---- */
+function buildBoundary(variant, u, segs){
+  const pts = [];
+  const r1 = Math.max(u, 0.0001) * R;
+  const r2 = Math.max(1 - u, 0.0001) * R;
+  const yc = R - 2 * r1;
+
+  if (variant === 0 || variant === 1){
+    const sgn = variant === 0 ? 1 : -1;
+    const n1 = Math.max(6, Math.floor(segs * 0.5));
+    /* 上半弧 */
+    for (let i = 0; i <= n1; i++){
+      const th = (i / n1) * Math.PI;
+      pts.push(new THREE.Vector2(
+        sgn * r1 * Math.sin(th),
+        (R - r1) + r1 * Math.cos(th)
+      ));
+    }
+    /* 下半弧 */
+    const n2 = Math.max(6, segs - n1);
+    for (let i = 1; i <= n2; i++){
+      const th = (i / n2) * Math.PI;
+      pts.push(new THREE.Vector2(
+        -sgn * r2 * Math.sin(th),
+        (-R + r2) + r2 * Math.cos(th)
+      ));
+    }
+  } else if (variant === 2){
+    /* 三生 —— 正弦波分界 */
+    const waves = 3;
+    for (let i = 0; i <= segs; i++){
+      const s = i / segs;
+      const y = R - 2 * R * s;
+      const env = Math.sin(Math.PI * s);
+      const x = R * 0.56 * env * Math.sin(Math.PI * waves * s);
+      pts.push(new THREE.Vector2(x, y));
+    }
+  } else {
+    /* 螺旋 */
+    for (let i = 0; i <= segs; i++){
+      const s = i / segs;
+      const y = R - 2 * R * s;
+      const env = Math.sin(Math.PI * s);
+      const x = R * 0.58 * env * Math.sin(Math.PI * 2 * s * 1.55);
+      pts.push(new THREE.Vector2(x, y));
+    }
+  }
+  return pts;
+}
+
+/* ---- 穹顶位移函数 ---- */
+function domeOffset(x, y){
+  const rr = Math.min(Math.sqrt(x * x + y * y) / R, 1);
+  return DOME * Math.cos(rr * Math.PI * 0.5);
+}
+
+function applyDome(geo){
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++){
+    const x = pos.getX(i);
+    const y = pos.getY(i);
+    const z = pos.getZ(i);
+    pos.setZ(i, z + domeOffset(x, y));
+  }
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
+}
+
+/* ---- 形状构建 ---- */
+function buildYangShape(bnd){
+  const shape = new THREE.Shape();
+  const arcSteps = 100;
+
+  shape.moveTo(0, R);
+  /* 右外弧 */
+  for (let i = 1; i <= arcSteps; i++){
+    const a = Math.PI / 2 - (i / arcSteps) * Math.PI;
+    shape.lineTo(Math.cos(a) * R, Math.sin(a) * R);
+  }
+  /* 沿分界反向返回 */
+  for (let i = bnd.length - 2; i >= 0; i--){
+    shape.lineTo(bnd[i].x, bnd[i].y);
+  }
+  return shape;
+}
+
+function buildYinShape(bnd){
+  const shape = new THREE.Shape();
+  const arcSteps = 100;
+
+  shape.moveTo(0, R);
+  /* 左外弧 */
+  for (let i = 1; i <= arcSteps; i++){
+    const a = Math.PI / 2 + (i / arcSteps) * Math.PI;
+    shape.lineTo(Math.cos(a) * R, Math.sin(a) * R);
+  }
+  /* 沿分界反向返回 */
+  for (let i = bnd.length - 2; i >= 0; i--){
+    shape.lineTo(bnd[i].x, bnd[i].y);
+  }
+  return shape;
+}
+
+/* ---- 材质 ---- */
+const yangMat = new THREE.MeshStandardMaterial({
+  color: 0xd8a44a,
+  emissive: 0xb8741a,
+  emissiveIntensity: 0.85,
+  metalness: 0.72,
+  roughness: 0.28,
+  flatShading: false,
+  side: THREE.DoubleSide
+});
+
+const yinMat = new THREE.MeshStandardMaterial({
+  color: 0x1e3a6e,
+  emissive: 0x0e2044,
+  emissiveIntensity: 0.9,
+  metalness: 0.65,
+  roughness: 0.36,
+  flatShading: false,
+  side: THREE.DoubleSide
+});
+
+/* ---- 当前对象引用 ---- */
+let yangMesh = null, yinMesh = null;
+let outerRing = null, boundaryTube = null;
+let eyes = [];
+
+function disposeAll(){
+  [yangMesh, yinMesh, outerRing, boundaryTube].forEach(m => {
+    if (m){
+      taiChiGroup.remove(m);
+      if (m.geometry) m.geometry.dispose();
+    }
+  });
+  eyes.forEach(e => { taiChiGroup.remove(e); if (e.geometry) e.geometry.dispose(); });
+  eyes = [];
+  yangMesh = yinMesh = outerRing = boundaryTube = null;
+}
+
+/* ---- 重建 ---- */
+function rebuild(variant, u){
+  disposeAll();
+
+  const bnd = buildBoundary(variant, u, BND_SEGS);
+
+  /* --- 阴阳两块曲面 --- */
+  const extOpt = {
+    depth: THICK,
+    bevelEnabled: true,
+    bevelThickness: 0.018,
+    bevelSize: 0.018,
+    bevelSegments: 2,
+    curveSegments: 1
+  };
+
+  const yangGeo = new THREE.ExtrudeGeometry(buildYangShape(bnd), extOpt);
+  applyDome(yangGeo);
+  yangMesh = new THREE.Mesh(yangGeo, yangMat);
+  yangMesh.position.z = -THICK * 0.5;
+  taiChiGroup.add(yangMesh);
+
+  const yinGeo = new THREE.ExtrudeGeometry(buildYinShape(bnd), extOpt);
+  applyDome(yinGeo);
+  yinMesh = new THREE.Mesh(yinGeo, yinMat);
+  yinMesh.position.z = -THICK * 0.5;
+  taiChiGroup.add(yinMesh);
+
+  /* --- 外圆光管 --- */
+  const outerPts = [];
+  const ORING_SEGS = 240;
+  for (let i = 0; i <= ORING_SEGS; i++){
+    const a = (i / ORING_SEGS) * Math.PI * 2;
+    const x = Math.cos(a) * R;
+    const y = Math.sin(a) * R;
+    outerPts.push(new THREE.Vector3(x, y, domeOffset(x, y)));
+  }
+  const outerCurve = new THREE.CatmullRomCurve3(outerPts, true);
+  const outerGeo = new THREE.TubeGeometry(outerCurve, 320, 0.036, 8, true);
+  const outerMat = new THREE.MeshBasicMaterial({
+    color: 0xffd48a, transparent: true, opacity: 0.88,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  });
+  outerRing = new THREE.Mesh(outerGeo, outerMat);
+  outerRing.position.z = THICK * 0.5;
+  taiChiGroup.add(outerRing);
+
+  /* --- 分界光管 --- */
+  const bndPts = bnd.map(p => new THREE.Vector3(
+    p.x, p.y, domeOffset(p.x, p.y) + THICK * 0.5 + 0.012
+  ));
+  const bndCurve = new THREE.CatmullRomCurve3(bndPts, false);
+  const bndGeo = new THREE.TubeGeometry(bndCurve, 320, 0.030, 8, false);
+  const bndMat = new THREE.MeshBasicMaterial({
+    color: 0xfff0cc, transparent: true, opacity: 0.82,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  });
+  boundaryTube = new THREE.Mesh(bndGeo, bndMat);
+  taiChiGroup.add(boundaryTube);
+
+  /* --- 鱼眼 --- */
+  const eyePositions = [
+    new THREE.Vector2(0, R * (1 - u)),
+    new THREE.Vector2(0, -R * u)
+  ];
+
+  /* 阴中阳点（亮） */
+  const eyeGeoA = new THREE.SphereGeometry(0.17, 24, 24);
+  const eyeMatA = new THREE.MeshBasicMaterial({ color: 0xffe0a0 });
+  const eyeA = new THREE.Mesh(eyeGeoA, eyeMatA);
+  eyeA.position.set(eyePositions[0].x, eyePositions[0].y,
+                    domeOffset(eyePositions[0].x, eyePositions[0].y) + THICK * 0.5 + 0.06);
+  taiChiGroup.add(eyeA);
+  eyes.push(eyeA);
+
+  const glowA = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: GLOW_TEX, color: 0xffc266, transparent: true, opacity: 0.85,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  }));
+  glowA.scale.set(1.5, 1.5, 1);
+  glowA.position.copy(eyeA.position);
+  taiChiGroup.add(glowA);
+  eyes.push(glowA);
+
+  /* 阳中阴点（暗） */
+  const eyeGeoB = new THREE.SphereGeometry(0.15, 24, 24);
+  const eyeMatB = new THREE.MeshBasicMaterial({ color: 0x2a4a8a });
+  const eyeB = new THREE.Mesh(eyeGeoB, eyeMatB);
+  eyeB.position.set(eyePositions[1].x, eyePositions[1].y,
+                    domeOffset(eyePositions[1].x, eyePositions[1].y) + THICK * 0.5 + 0.06);
+  taiChiGroup.add(eyeB);
+  eyes.push(eyeB);
+
+  const glowB = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: GLOW_TEX, color: 0x4a7fd8, transparent: true, opacity: 0.8,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  }));
+  glowB.scale.set(1.3, 1.3, 1);
+  glowB.position.copy(eyeB.position);
+  taiChiGroup.add(glowB);
+  eyes.push(glowB);
+
+  /* --- 更新 UI --- */
+  updateRatioUI(u);
+}
+
+/* =========================================================
+   四、UI 同步
+   ========================================================= */
+const fillEl = document.getElementById('ratio-fill');
+const numYin = document.getElementById('num-yin');
+const numYang = document.getElementById('num-yang');
+const variantEls = document.querySelectorAll('#variants .v');
+
+function updateRatioUI(u){
+  const yinPct = Math.round((1 - u) * 100);
+  const yangPct = 100 - yinPct;
+  fillEl.style.width = (u * 100) + '%';
+  numYin.textContent = yinPct;
+  numYang.textContent = yangPct;
+}
+
+function updateVariantUI(v){
+  variantEls.forEach(el => {
+    el.classList.toggle('on', parseInt(el.dataset.i) === v);
+  });
+}
+
+/* =========================================================
+   五、交互
+   ========================================================= */
+const raycaster = new THREE.Raycaster();
+const ndc = new THREE.Vector2();
+const dom = renderer.domElement;
+const dragPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+
+let isDragging = false;
+let dragStartX = 0;
+let dragStartY = 0;
+let dragStartU = 0.5;
+let hasMoved = false;
+let lastSoundU = 0.5;
+
+function projectToPlane(clientX, clientY){
+  const rect = dom.getBoundingClientRect();
+  ndc.x =  ((clientX - rect.left) / rect.width)  * 2 - 1;
+  ndc.y = -((clientY - rect.top)  / rect.height) * 2 + 1;
+  raycaster.setFromCamera(ndc, camera);
+  const out = new THREE.Vector3();
+  raycaster.ray.intersectPlane(dragPlane, out);
+  return out;
+}
+
+function hitTaiChi(clientX, clientY){
+  const p = projectToPlane(clientX, clientY);
+  if (!p) return false;
+  return Math.sqrt(p.x * p.x + p.y * p.y) < R * 1.25;
+}
+
+dom.addEventListener('pointerdown', e => {
+  audioInit();
+  audioResume();
+
+  dragStartX = e.clientX;
+  dragStartY = e.clientY;
+  dragStartU = currentU;
+  hasMoved = false;
+
+  if (hitTaiChi(e.clientX, e.clientY)){
+    isDragging = true;
+    controls.enabled = false;
+    dom.style.cursor = 'ew-resize';
+  }
+});
+
+dom.addEventListener('pointermove', e => {
+  if (!isDragging) return;
+
+  const dx = e.clientX - dragStartX;
+  const dy = e.clientY - dragStartY;
+  if (Math.hypot(dx, dy) > 4) hasMoved = true;
+
+  if (hasMoved){
+    const newU = Math.max(0.04, Math.min(0.96, dragStartU + dx / 380));
+    if (Math.abs(newU - currentU) > 0.004){
+      currentU = newU;
+      rebuild(currentVariant, currentU);
+
+      /* 音高随比例滑动 —— 节流触发 */
+      if (Math.abs(currentU - lastSoundU) > 0.09){
+        lastSoundU = currentU;
+        const base = 1 << Math.min(2, Math.floor(Math.abs(currentU - 0.5) * 5));
+        playGuqin(freqFromU(currentU, base), 0.16, 0, 0.8);
+      }
+    }
+  }
+});
+
+function endDrag(e){
+  if (!isDragging) return;
+  isDragging = false;
+  controls.enabled = true;
+  dom.style.cursor = 'default';
+
+  /* 未移动 → 点击切换变体 */
+  if (!hasMoved){
+    currentVariant = (currentVariant + 1) % 4;
+    updateVariantUI(currentVariant);
+    rebuild(currentVariant, currentU);
+
+    /* 变体切换音 */
+    const basePitch = [1, 1.2, 1.5, 0.75][currentVariant];
+    playGuqin(130.81 * basePitch, 0.3, 0, 1.15);
+    playGuqin(261.63 * basePitch, 0.14, 0.09, 1.0);
+    playGuqin(392.00 * basePitch, 0.07, 0.17, 0.9);
+  } else {
+    /* 拖动结束，根据最终比例弹一声 */
+    playGuqin(freqFromU(currentU, 2), 0.22, 0, 1);
+  }
+  lastSoundU = currentU;
+}
+
+dom.addEventListener('pointerup', endDrag);
+dom.addEventListener('pointercancel', endDrag);
+
+/* 变体标签点击 */
+variantEls.forEach(el => {
+  el.style.pointerEvents = 'auto';
+  el.style.cursor = 'pointer';
+  el.addEventListener('click', () => {
+    const v = parseInt(el.dataset.i);
+    if (v === currentVariant) return;
+    audioInit(); audioResume();
+    currentVariant = v;
+    updateVariantUI(v);
+    rebuild(v, currentU);
+    const basePitch = [1, 1.2, 1.5, 0.75][v];
+    playGuqin(130.81 * basePitch, 0.3, 0, 1.15);
+    playGuqin(261.63 * basePitch, 0.14, 0.09, 1.0);
+  });
+});
+
+/* =========================================================
+   六、动画循环
+   ========================================================= */
+const clock = new THREE.Clock();
+let elapsed = 0;
+
+function animate(){
+  requestAnimationFrame(animate);
+
+  const dt = Math.min(clock.getDelta(), 0.05);
+  elapsed += dt;
+
+  /* 太极组整体呼吸浮动 */
+  taiChiGroup.position.y = Math.sin(elapsed * 0.85) * 0.06;
+  taiChiGroup.rotation.z = Math.sin(elapsed * 0.42) * 0.012;
+
+  /* 外圈呼吸 */
+  if (outerRing) outerRing.material.opacity = 0.7 + Math.sin(elapsed * 1.6) * 0.18;
+  if (boundaryTube) boundaryTube.material.opacity = 0.66 + Math.sin(elapsed * 1.9 + 1) * 0.16;
+
+  /* 鱼眼脉动 */
+  eyes.forEach((e, i) => {
+    const k = 1 + Math.sin(elapsed * 2.6 + i * 1.3) * 0.13;
+    if (e.isSprite){
+      e.scale.set(1.4 * k, 1.4 * k, 1);
+    } else {
+      e.scale.setScalar(k);
+    }
+  });
+
+  /* 背景环 */
+  bgRing.rotation.z += dt * 0.06;
+  bgRing2.rotation.z -= dt * 0.04;
+  bgRing.material.opacity = 0.2 + Math.sin(elapsed * 0.9) * 0.07;
+  bgRing2.material.opacity = 0.12 + Math.sin(elapsed * 0.7 + 2) * 0.05;
+
+  /* 核心灯微动 */
+  coreLight.intensity = 55 + Math.sin(elapsed * 1.8) * 12;
+
+  controls.update();
+  composer.render();
+}
+
+/* =========================================================
+   七、自适应与启动
+   ========================================================= */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  composer.setSize(innerWidth, innerHeight);
+  bloom.setSize(innerWidth, innerHeight);
+});
+
+/* 初始构建 */
+rebuild(0, 0.5);
+updateVariantUI(0);
+
+/* 开场音（需用户手势，仅做视觉脉冲） */
+setTimeout(() => {
+  if (outerRing) outerRing.material.opacity = 1.0;
+}, 300);
+
+animate();
+</script>
+</body>
+</html>

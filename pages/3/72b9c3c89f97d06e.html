@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>太极 · 阴阳分割曲线</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #ffffff; overflow: hidden;
+  }
+  #c { display: block; width: 100vw; height: 100vh; }
+
+  .hud {
+    position: fixed; left: 20px; bottom: 16px;
+    font: 400 11px/1.7 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: rgba(60, 60, 80, 0.42);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    pointer-events: none; user-select: none;
+  }
+  .hud b {
+    font-weight: 500;
+    color: rgba(20, 20, 35, 0.78);
+    letter-spacing: 0.26em;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud">x² + y² = 1 &nbsp;·&nbsp; <b>TAIJI · YIN YANG</b></div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ============================================================
+     WebGL 2.0 初始化
+     ============================================================ */
+  const canvas = document.getElementById('c');
+  const gl = canvas.getContext('webgl2', {
+    alpha: false,
+    antialias: false,
+    depth: false,
+    stencil: false,
+    premultipliedAlpha: false,
+    preserveDrawingBuffer: false,
+    powerPreference: 'high-performance'
+  });
+
+  if (!gl) {
+    document.body.innerHTML =
+      '<div style="color:#334;font:15px/2 system-ui;padding:3em;letter-spacing:.1em">' +
+      '当前浏览器不支持 WebGL 2.0，无法渲染该动画。</div>';
+    return;
+  }
+
+  /* ============================================================
+     着色器源码
+     ============================================================ */
+
+  const VERT_SRC = `#version 300 es
+in vec2 aPos;
+void main() {
+  gl_Position = vec4(aPos, 0.0, 1.0);
+}
+`;
+
+  const FRAG_SRC = `#version 300 es
+precision highp float;
+
+uniform vec2  uRes;    // 缓冲区尺寸
+uniform float uTime;   // 动画时间（秒）
+uniform float uAlpha;  // 整体淡入
+
+out vec4 fragColor;
+
+const float PI = 3.14159265359;
+
+/* ---------- 哈希 ---------- */
+float hash21(vec2 p) {
+  p = fract(p * vec2(123.34, 456.21));
+  p += dot(p, p + 45.32);
+  return fract(p.x * p.y);
+}
+
+void main() {
+  /* 以屏幕高度归一化的等比坐标，y ∈ [-1, 1] */
+  vec2 p = (gl_FragCoord.xy - 0.5 * uRes) / uRes.y * 2.0;
+
+  /* ---------- 整体缓慢自转 ---------- */
+  float rot = uTime * 0.13;
+  float ca = cos(rot), sa = sin(rot);
+  vec2 rp = vec2(p.x * ca - p.y * sa, p.x * sa + p.y * ca);
+
+  float r = length(rp);
+
+  /* ---------- 主体圆 ---------- */
+  const float R  = 0.78;
+  const float R2 = R * 0.5;      // 两个内切小圆的半径
+
+  float inCircle = smoothstep(R, R - 0.0035, r);
+
+  /* ============================================================
+     阴阳分割：S 形曲线
+       上半段右凸（圆心 (0, +R/2)）
+       下半段左凸（圆心 (0, -R/2)）
+     黑白判据：
+       黑 = (x<0 且不在下小圆内) 或 (x>0 且在上小圆内)
+     ============================================================ */
+  float dTop = length(rp - vec2(0.0,  R2));
+  float dBot = length(rp - vec2(0.0, -R2));
+
+  float leftMask = smoothstep(0.0025, -0.0025, rp.x);
+  float topIn    = smoothstep(R2, R2 - 0.0035, dTop);
+  float botIn    = smoothstep(R2, R2 - 0.0035, dBot);
+
+  float black = leftMask * (1.0 - botIn) + (1.0 - leftMask) * topIn;
+
+  /* ============================================================
+     阴阳鱼眼：每个区域内反向圆点
+     ============================================================ */
+  float eyeR = R2 * 0.34;
+
+  float e1 = smoothstep(eyeR, eyeR - 0.0035, length(rp - vec2(0.0,  R2)));
+  float e2 = smoothstep(eyeR, eyeR - 0.0035, length(rp - vec2(0.0, -R2)));
+
+  /* 上鱼头（黑）中的白点 / 下鱼头（白）中的黑点 */
+  black = black * (1.0 - e1) + e2;
+
+  /* ============================================================
+     鳞光粒子：极坐标网格 + 沿角向流动
+     ============================================================ */
+  float NR = 11.0;      // 径向环数
+  float NA = 42.0;      // 每环角向格数
+
+  float rr = r * NR;
+  float aa = (atan(rp.y, rp.x) / (2.0 * PI) + 0.5) * NA;
+
+  vec2 cell = vec2(floor(aa), floor(rr));
+  vec2 fr   = vec2(fract(aa), fract(rr));
+
+  float h = hash21(cell);
+
+  /* 沿角向流动 —— 粒子绕中心缓缓移动 */
+  fr.x = fract(fr.x + uTime * (0.10 + h * 0.15));
+
+  /* 粒子在格内的随机位置 */
+  vec2 pp = vec2(0.28 + 0.44 * hash21(cell + 1.37),
+                 0.28 + 0.44 * hash21(cell + 7.73));
+
+  vec2 d = abs(fr - pp);
+  d.x = min(d.x, 1.0 - d.x);        // 角向环绕
+
+  float dist  = length(d);
+  float spark = smoothstep(0.30, 0.02, dist) * (0.35 + 0.65 * h);
+
+  /* 靠近中心与边缘处减淡 */
+  spark *= smoothstep(0.02, 0.22, r) * (1.0 - smoothstep(0.72, 0.80, r));
+
+  /* ============================================================
+     合成
+     ============================================================ */
+  vec3 paper = vec3(1.0);
+  vec3 ink   = vec3(0.032, 0.034, 0.052);
+
+  vec3 col = mix(paper, ink, black);
+
+  /* 黑鱼中的冷银火花 */
+  vec3 sparkCool = vec3(0.60, 0.80, 1.00);
+  col = mix(col, sparkCool, spark * black * 0.85);
+
+  /* 白鱼中的墨点 */
+  vec3 inkDot = vec3(0.20, 0.26, 0.44);
+  col = mix(col, inkDot, spark * (1.0 - black) * 0.72);
+
+  /* 圆外保持纯白 */
+  col = mix(paper, col, inCircle);
+
+  /* ---------- 宣纸颗粒感 ---------- */
+  float grain = hash21(gl_FragCoord.xy * 0.37) - 0.5;
+  col += grain * 0.010 * (0.35 + black);
+
+  /* ---------- 入场淡入 ---------- */
+  col = mix(paper, col, uAlpha);
+
+  /* ---------- 抖动，消除色带 ---------- */
+  col += (hash21(gl_FragCoord.xy * 0.71 + uTime) - 0.5) * 0.005;
+
+  fragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+}
+`;
+
+  /* ============================================================
+     编译 / 链接
+     ============================================================ */
+  function compile(type, src) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+      console.error(gl.getShaderInfoLog(s));
+      throw new Error('Shader compile error');
+    }
+    return s;
+  }
+
+  const prog = gl.createProgram();
+  gl.attachShader(prog, compile(gl.VERTEX_SHADER, VERT_SRC));
+  gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FRAG_SRC));
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+    console.error(gl.getProgramInfoLog(prog));
+    return;
+  }
+  gl.useProgram(prog);
+
+  /* 覆盖全屏的大三角形 */
+  const vbo = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+    -1, -1,
+     3, -1,
+    -1,  3
+  ]), gl.STATIC_DRAW);
+
+  const aPos = gl.getAttribLocation(prog, 'aPos');
+  gl.enableVertexAttribArray(aPos);
+  gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+  /* uniform 位置 */
+  const U = {
+    res:   gl.getUniformLocation(prog, 'uRes'),
+    time:  gl.getUniformLocation(prog, 'uTime'),
+    alpha: gl.getUniformLocation(prog, 'uAlpha')
+  };
+
+  /* ============================================================
+     渲染状态 —— 白底，无需混合
+     ============================================================ */
+  gl.disable(gl.DEPTH_TEST);
+  gl.disable(gl.CULL_FACE);
+  gl.disable(gl.BLEND);
+
+  /* ============================================================
+     自适应分辨率
+     ============================================================ */
+  const IS_MOBILE = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+  const PIXEL_BUDGET = IS_MOBILE ? 680000 : 1700000;
+
+  let quality = 1.0;
+  let curW = 0, curH = 0;
+
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.75);
+    const budget = PIXEL_BUDGET * quality;
+
+    let w = window.innerWidth  * dpr;
+    let h = window.innerHeight * dpr;
+
+    const total = w * h;
+    if (total > budget) {
+      const s = Math.sqrt(budget / total);
+      w *= s;
+      h *= s;
+    }
+
+    w = Math.max(2, Math.round(w));
+    h = Math.max(2, Math.round(h));
+
+    if (w !== curW || h !== curH) {
+      curW = w;
+      curH = h;
+      canvas.width  = w;
+      canvas.height = h;
+      gl.viewport(0, 0, w, h);
+    }
+  }
+
+  /* ============================================================
+     主循环
+     ============================================================ */
+  let last = performance.now();
+  let elapsed = 0;
+  let ftAcc = 0, ftCount = 0;
+
+  function frame(now) {
+    let dt = (now - last) / 1000;
+    last = now;
+    if (dt > 0.05) dt = 0.05;      // 防止切标签页后跳变
+    elapsed += dt;
+
+    /* ---------- 动态画质 ---------- */
+    ftAcc += dt;
+    ftCount++;
+    if (ftCount >= 90) {
+      const avg = ftAcc / ftCount;
+      ftAcc = 0;
+      ftCount = 0;
+      if (avg > 0.038 && quality > 0.55) {
+        quality = Math.max(0.55, quality * 0.86);
+      } else if (avg < 0.020 && quality < 1.0) {
+        quality = Math.min(1.0, quality * 1.08);
+      }
+    }
+
+    resize();
+
+    /* ---------- 入场淡入 ---------- */
+    const f = Math.min(1.0, elapsed / 1.4);
+    const fade = f * f * (3.0 - 2.0 * f);
+
+    /* ---------- 清屏：纯白 ---------- */
+    gl.clearColor(1.0, 1.0, 1.0, 1.0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+
+    /* ---------- 上传 uniform ---------- */
+    gl.uniform2f(U.res, curW, curH);
+    gl.uniform1f(U.time, elapsed);
+    gl.uniform1f(U.alpha, fade);
+
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    requestAnimationFrame(frame);
+  }
+
+  requestAnimationFrame(function (t) {
+    last = t;
+    requestAnimationFrame(frame);
+  });
+
+})();
+</script>
+</body>
+</html>

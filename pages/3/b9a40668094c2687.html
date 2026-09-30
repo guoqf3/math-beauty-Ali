@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>蝴蝶曲线 · r = e^(sinθ) − 2cos(4θ)</title>
+<style>
+  html, body {
+    margin: 0; padding: 0;
+    width: 100%; height: 100%;
+    overflow: hidden;
+    background: #e4fae8;
+  }
+
+  #bg {
+    position: fixed; inset: 0; z-index: 0;
+    background: radial-gradient(ellipse 130% 120% at 50% 35%,
+      #f6fff6 0%, #e4fae8 10%, #cdf2d8 22%, #b0e8c4 36%,
+      #90daae 52%, #70c898 68%, #52b082 84%, #3a946a 100%);
+  }
+
+  #glow {
+    position: fixed; inset: 0; z-index: 0;
+    pointer-events: none;
+    background: radial-gradient(circle 35vw at 50% 45%,
+      rgba(255, 255, 230, 0.32) 0%,
+      rgba(220, 255, 220, 0.10) 45%,
+      rgba(0, 0, 0, 0) 72%);
+  }
+
+  canvas { position: fixed; inset: 0; display: block; z-index: 1; }
+
+  #hint {
+    position: fixed;
+    left: 50%; bottom: 22px;
+    transform: translateX(-50%);
+    z-index: 2;
+    color: rgba(40, 100, 70, 0.32);
+    font: 12px/1.7 -apple-system, BlinkMacSystemFont, "PingFang SC",
+          "Microsoft YaHei", "Helvetica Neue", sans-serif;
+    letter-spacing: 0.22em;
+    white-space: nowrap;
+    pointer-events: none;
+    user-select: none;
+  }
+
+  /* 加载指示：几何构建完成后自动淡出 */
+  #loading {
+    position: fixed;
+    left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 3;
+    color: rgba(40, 100, 70, 0.45);
+    font: 13px/1.7 -apple-system, BlinkMacSystemFont, "PingFang SC",
+          "Microsoft YaHei", sans-serif;
+    letter-spacing: 0.3em;
+    pointer-events: none;
+    user-select: none;
+    transition: opacity 0.5s ease;
+  }
+</style>
+</head>
+<body>
+<div id="bg"></div>
+<div id="glow"></div>
+<div id="loading">L O A D I N G</div>
+<div id="hint">r = e^(sinθ) − 2cos(4θ)　·　蝴蝶曲线</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+
+/* ============================================================
+   1. 基础环境
+   ============================================================ */
+const scene  = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 200);
+camera.position.set(1.2, 0.7, 10.2);
+camera.lookAt(0, 0, 0);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.setClearColor(0x000000, 0);
+document.body.appendChild(renderer.domElement);
+
+/* ============================================================
+   2. 蝴蝶曲线  r = e^(sinθ) − 2cos(4θ)
+   ============================================================ */
+const SCALE = 1.0;
+const Y_OFF = -0.65;
+
+function butterflyR(theta) {
+  return Math.exp(Math.sin(theta)) - 2 * Math.cos(4 * theta);
+}
+
+/* 颜色映射：内圈紫蓝 → 外缘橙金 */
+function wingColor(t) {
+  t = Math.max(0, Math.min(1, t));
+  if (t < 0.45) {
+    const k = t / 0.45;
+    return [0.48 + (0.15 - 0.48) * k, 0.18 + (0.39 - 0.18) * k, 0.75 + (0.92 - 0.75) * k];
+  } else {
+    const k = (t - 0.45) / 0.55;
+    return [0.15 + (0.98 - 0.15) * k, 0.39 + (0.45 - 0.39) * k, 0.92 + (0.09 - 0.92) * k];
+  }
+}
+
+/* ============================================================
+   3. 几何数据
+   ============================================================ */
+const positions = [];
+const colors    = [];
+const sizes     = [];
+const alphas    = [];
+const phases    = [];
+
+/* --- 3.1 轮廓点：高密度贴合曲线 --- */
+const N_CURVE = 5200;
+
+for (let i = 0; i < N_CURVE; i++) {
+  const theta = i / N_CURVE * Math.PI * 2;
+  const r  = butterflyR(theta);
+
+  const xo = r * Math.cos(theta);
+  const yo = r * Math.sin(theta);
+  const dist = Math.sqrt(xo * xo + yo * yo);
+
+  const [cr, cg, cb] = wingColor(dist / 4.0);
+
+  positions.push(xo * SCALE, yo * SCALE + Y_OFF, 0);
+  colors.push(cr, cg, cb);
+  sizes.push(0.30 + Math.random() * 0.14);
+  alphas.push(0.85 + Math.random() * 0.15);
+  phases.push(Math.random() * Math.PI * 2);
+}
+
+/* --- 3.2 内部鳞片点：用扁平数组 + 低分辨率多边形做快速内外判定 --- */
+const POLY_N = 500;              // 多边形分辨率（原来是 3000，降为 500）
+const polyX = new Float32Array(POLY_N);
+const polyY = new Float32Array(POLY_N);
+
+let minX =  Infinity, maxX = -Infinity;
+let minY =  Infinity, maxY = -Infinity;
+
+for (let i = 0; i < POLY_N; i++) {
+  const theta = i / POLY_N * Math.PI * 2;
+  const r = butterflyR(theta);
+  const px = r * Math.cos(theta);
+  const py = r * Math.sin(theta);
+  polyX[i] = px;
+  polyY[i] = py;
+  if (px < minX) minX = px;
+  if (px > maxX) maxX = px;
+  if (py < minY) minY = py;
+  if (py > maxY) maxY = py;
+}
+
+/* 射线法，使用扁平数组 —— 比对象数组快 5~10 倍 */
+function pointInPolygon(x, y) {
+  let inside = false;
+  let j = POLY_N - 1;
+  for (let i = 0; i < POLY_N; i++) {
+    const xi = polyX[i], yi = polyY[i];
+    const xj = polyX[j], yj = polyY[j];
+    if (((yi > y) !== (yj > y)) &&
+        (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) {
+      inside = !inside;
+    }
+    j = i;
+  }
+  return inside;
+}
+
+const N_INNER = 4200;            // 内部点数（原 6200 → 4200，视觉差别很小）
+const MAX_TRIES = 55000;         // 尝试上限（原 160000 → 55000）
+
+let tries = 0;
+let added = 0;
+
+while (added < N_INNER && tries < MAX_TRIES) {
+  tries++;
+
+  const xo = minX + Math.random() * (maxX - minX);
+  const yo = minY + Math.random() * (maxY - minY);
+
+  if (!pointInPolygon(xo, yo)) continue;
+  added++;
+
+  const dist = Math.sqrt(xo * xo + yo * yo);
+  const [cr, cg, cb] = wingColor(dist / 4.0);
+
+  positions.push(xo * SCALE, yo * SCALE + Y_OFF, 0);
+  colors.push(cr * 0.90, cg * 0.90, cb * 0.90);
+  sizes.push(0.09 + Math.random() * 0.11);
+  alphas.push(0.32 + Math.random() * 0.45);
+  phases.push(Math.random() * Math.PI * 2);
+}
+
+/* ============================================================
+   4. 几何体与材质
+   ============================================================ */
+const geo = new THREE.BufferGeometry();
+geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+geo.setAttribute('aColor',   new THREE.Float32BufferAttribute(colors, 3));
+geo.setAttribute('aSize',    new THREE.Float32BufferAttribute(sizes, 1));
+geo.setAttribute('aAlpha',   new THREE.Float32BufferAttribute(alphas, 1));
+geo.setAttribute('aPhase',   new THREE.Float32BufferAttribute(phases, 1));
+
+const VERT = `
+  uniform float uFlap;
+  uniform float uTime;
+  uniform float uPR;
+
+  attribute float aSize;
+  attribute float aAlpha;
+  attribute float aPhase;
+  attribute vec3  aColor;
+
+  varying vec3  vColor;
+  varying float vAlpha;
+
+  void main() {
+    float ca = cos(uFlap);
+    float sa = sin(uFlap);
+
+    vec3 p;
+    p.x = position.x * ca;
+    p.y = position.y;
+    p.z = -abs(position.x) * sa;
+
+    vec4 mv = modelViewMatrix * vec4(p, 1.0);
+
+    float shimmer = 0.5 + 0.5 * sin(uTime * 3.2 + aPhase);
+
+    vColor = aColor * (0.82 + 0.42 * shimmer);
+    vAlpha = aAlpha * (0.68 + 0.42 * shimmer);
+
+    float d = max(-mv.z, 0.001);
+    gl_PointSize = clamp(aSize * uPR * (200.0 / d), 1.0, 48.0);
+
+    gl_Position = projectionMatrix * mv;
+  }
+`;
+
+const FRAG = `
+  varying vec3  vColor;
+  varying float vAlpha;
+
+  void main() {
+    vec2 c = gl_PointCoord - vec2(0.5);
+    float d = length(c);
+    if (d > 0.5) discard;
+
+    float a = smoothstep(0.5, 0.0, d);
+    a = pow(a, 1.8);
+
+    gl_FragColor = vec4(vColor, vAlpha * a);
+  }
+`;
+
+const material = new THREE.ShaderMaterial({
+  uniforms: {
+    uFlap: { value: 0 },
+    uTime: { value: 0 },
+    uPR:   { value: Math.min(devicePixelRatio, 2) }
+  },
+  vertexShader:   VERT,
+  fragmentShader: FRAG,
+  transparent: true,
+  depthWrite:  false,
+  blending:    THREE.NormalBlending
+});
+
+const butterfly = new THREE.Points(geo, material);
+butterfly.frustumCulled = false;
+
+const group = new THREE.Group();
+group.add(butterfly);
+scene.add(group);
+
+/* 隐藏加载提示 */
+const loadingEl = document.getElementById('loading');
+if (loadingEl) loadingEl.style.opacity = '0';
+
+/* ============================================================
+   5. 动画循环
+   ============================================================ */
+const clock = new THREE.Clock();
+let elapsed = 0;
+
+function animate() {
+  requestAnimationFrame(animate);
+
+  const dt = Math.min(clock.getDelta(), 0.05);
+  elapsed += dt;
+
+  const flap = Math.sin(elapsed * 2.65) * 0.38;
+  material.uniforms.uFlap.value = flap;
+  material.uniforms.uTime.value = elapsed;
+
+  group.position.y = Math.sin(elapsed * 1.15) * 0.24;
+  group.position.x = Math.sin(elapsed * 0.72) * 0.13;
+  group.rotation.z = Math.sin(elapsed * 0.88) * 0.065;
+  group.rotation.x = Math.sin(elapsed * 0.58) * 0.050;
+
+  camera.position.x = 1.2 + Math.sin(elapsed * 0.22) * 0.70;
+  camera.position.y = 0.7 + Math.sin(elapsed * 0.30) * 0.45;
+  camera.position.z = 10.2 + Math.cos(elapsed * 0.18) * 0.55;
+  camera.lookAt(0, 0, 0);
+
+  renderer.render(scene, camera);
+}
+
+animate();
+
+/* ============================================================
+   6. 自适应
+   ============================================================ */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  material.uniforms.uPR.value = Math.min(devicePixelRatio, 2);
+});
+</script>
+</body>
+</html>

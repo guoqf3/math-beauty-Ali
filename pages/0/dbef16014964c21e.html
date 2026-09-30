@@ -1,0 +1,1178 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<title>阿基米德螺塔 · 原生 WebGL</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    width: 100%; height: 100%; overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+    background:
+      radial-gradient(circle at 50% 38%, #0d1f33 0%, #07111e 42%, #02060b 100%);
+    color: #cfe9ff;
+    -webkit-font-smoothing: antialiased;
+    user-select: none;
+  }
+
+  #glCanvas {
+    position: fixed; inset: 0; width: 100%; height: 100%;
+    display: block; z-index: 1; touch-action: none;
+  }
+
+  #glow {
+    position: fixed; inset: 0; pointer-events: none; z-index: 2;
+    background: radial-gradient(circle at 50% 45%, transparent 32%, rgba(0,4,10,0.68) 100%);
+  }
+
+  .panel {
+    position: fixed; z-index: 10;
+    background: rgba(10, 26, 44, 0.52);
+    border: 1px solid rgba(90, 190, 255, 0.20);
+    border-radius: 16px;
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+    box-shadow: 0 12px 44px rgba(0, 80, 160, 0.22),
+                inset 0 1px 0 rgba(160, 220, 255, 0.10);
+    padding: 16px 20px;
+  }
+
+  /* ---- 信息面板 ---- */
+  .info { top: 22px; left: 22px; max-width: 296px; }
+  .info h1 {
+    font-size: 16.5px; font-weight: 600; letter-spacing: 1.6px;
+    background: linear-gradient(92deg, #56d0ff, #9be8ff 45%, #c9f4ff);
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent;
+    margin-bottom: 9px;
+  }
+  .formula {
+    font-family: "Cambria Math", "Times New Roman", Georgia, serif;
+    font-size: 19px; font-style: italic; color: #7fdcff;
+    letter-spacing: 0.6px; margin-bottom: 9px;
+    text-shadow: 0 0 20px rgba(70, 190, 255, 0.65);
+  }
+  .hint {
+    font-size: 11.5px; color: rgba(150, 205, 240, 0.52);
+    line-height: 1.75; letter-spacing: 0.2px;
+  }
+  .hint b { color: rgba(140, 220, 255, 0.85); font-weight: 500; }
+
+  /* ---- 控制面板 ---- */
+  .controls {
+    bottom: 24px; left: 50%; transform: translateX(-50%);
+    display: flex; flex-direction: column; gap: 13px;
+    padding: 17px 24px; min-width: 430px;
+  }
+  .row { display: flex; align-items: center; gap: 13px; }
+  .row .lbl {
+    font-size: 12px; width: 92px; flex-shrink: 0;
+    color: rgba(150, 210, 245, 0.78); letter-spacing: 0.6px;
+  }
+  .row .val {
+    font-size: 12px; width: 68px; text-align: right; flex-shrink: 0;
+    font-variant-numeric: tabular-nums; font-weight: 600;
+    color: #63d2ff;
+    text-shadow: 0 0 14px rgba(70, 190, 255, 0.75);
+  }
+
+  input[type=range] {
+    -webkit-appearance: none; appearance: none;
+    flex: 1; height: 4px; border-radius: 4px; outline: none; cursor: pointer;
+    background: linear-gradient(90deg, #0a6fa8 0%, #42c8ff 100%);
+    box-shadow: 0 0 14px rgba(60, 180, 255, 0.40);
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 15px; height: 15px; border-radius: 50%;
+    background: #eaf8ff; cursor: pointer; border: none;
+    box-shadow: 0 0 10px #46c6ff, 0 0 24px rgba(70, 198, 255, 0.85);
+    transition: transform 0.14s ease;
+  }
+  input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.24); }
+  input[type=range]::-moz-range-thumb {
+    width: 15px; height: 15px; border: none; border-radius: 50%;
+    background: #eaf8ff; cursor: pointer;
+    box-shadow: 0 0 10px #46c6ff, 0 0 24px rgba(70, 198, 255, 0.85);
+  }
+  input[type=range]::-moz-range-track {
+    height: 4px; border-radius: 4px;
+    background: linear-gradient(90deg, #0a6fa8 0%, #42c8ff 100%);
+  }
+
+  /* 音效脉冲指示 */
+  .pulse-ring {
+    width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+    background: #3fc4ff;
+    box-shadow: 0 0 10px #3fc4ff, 0 0 20px rgba(63, 196, 255, 0.6);
+    transition: transform 0.1s ease-out, box-shadow 0.1s ease-out;
+  }
+
+  @media (max-width: 700px) {
+    .controls { min-width: 0; width: calc(100% - 28px); padding: 13px 15px; gap: 10px; }
+    .row .lbl { width: 62px; font-size: 11px; }
+    .row .val { width: 56px; font-size: 11px; }
+    .info { max-width: 210px; padding: 12px 14px; top: 16px; left: 16px; }
+    .info h1 { font-size: 14px; }
+    .formula { font-size: 16px; }
+    .hint { font-size: 10.5px; }
+  }
+
+  /* 不支持提示 */
+  #noWebGL {
+    position: fixed; inset: 0; display: none; z-index: 99;
+    align-items: center; justify-content: center;
+    background: #050b12; color: #8fd6ff; font-size: 15px;
+    text-align: center; padding: 30px; line-height: 1.8;
+  }
+</style>
+</head>
+<body>
+
+<canvas id="glCanvas"></canvas>
+<div id="glow"></div>
+
+<div class="panel info">
+  <h1>阿基米德螺塔</h1>
+  <p class="formula">r = a · θ</p>
+  <p class="hint">
+    螺线绕轴螺旋上升，等距螺距展开为三维塔身<br>
+    <b>拖拽</b> 旋转视角 · <b>滚轮</b> 缩放 · <b>点击塔身</b> 钟声
+  </p>
+</div>
+
+<div class="panel controls">
+  <div class="row">
+    <div class="pulse-ring" id="pulseRing"></div>
+    <label class="lbl">螺距 a</label>
+    <input type="range" id="aSlider" min="0.022" max="0.075" step="0.0005" value="0.042" />
+    <span class="val" id="aVal">0.0420</span>
+  </div>
+  <div class="row">
+    <label class="lbl">塔身圈数</label>
+    <input type="range" id="turnsSlider" min="3" max="14" step="1" value="7" />
+    <span class="val" id="turnsVal">7 圈</span>
+  </div>
+  <div class="row">
+    <label class="lbl">塔身半径</label>
+    <input type="range" id="radiusSlider" min="0.55" max="1.9" step="0.01" value="1.0" />
+    <span class="val" id="radiusVal">1.00×</span>
+  </div>
+</div>
+
+<div id="noWebGL">您的浏览器不支持 WebGL2，无法运行本页面。</div>
+
+<script type="module">
+/* ================================================================
+   阿基米德螺塔 · 原生 WebGL2
+   ----------------------------------------------------------------
+   螺线参数方程：  r(θ) = a · θ
+   绕 Y 轴螺旋上升：x = r·cosθ,  y = r·k,  z = r·sinθ
+   ================================================================ */
+
+const canvas = document.getElementById('glCanvas');
+const gl = canvas.getContext('webgl2', {
+  antialias: true,
+  alpha: true,
+  premultipliedAlpha: false,
+  powerPreference: 'high-performance'
+});
+
+if (!gl) {
+  document.getElementById('noWebGL').style.display = 'flex';
+  throw new Error('WebGL2 not supported');
+}
+
+/* ================================================================
+   1. 矩阵数学工具（列主序）
+   ================================================================ */
+const M4 = {
+  perspective(out, fovy, aspect, near, far) {
+    const f = 1.0 / Math.tan(fovy / 2);
+    const nf = 1 / (near - far);
+    out[0] = f / aspect; out[1] = 0; out[2] = 0;  out[3] = 0;
+    out[4] = 0;  out[5] = f; out[6] = 0;  out[7] = 0;
+    out[8] = 0;  out[9] = 0; out[10] = (far + near) * nf; out[11] = -1;
+    out[12] = 0; out[13] = 0; out[14] = 2 * far * near * nf; out[15] = 0;
+    return out;
+  },
+
+  lookAt(out, eye, center, up) {
+    let z0 = eye[0] - center[0],
+        z1 = eye[1] - center[1],
+        z2 = eye[2] - center[2];
+    let len = Math.hypot(z0, z1, z2) || 1;
+    z0 /= len; z1 /= len; z2 /= len;
+
+    let x0 = up[1] * z2 - up[2] * z1;
+    let x1 = up[2] * z0 - up[0] * z2;
+    let x2 = up[0] * z1 - up[1] * z0;
+    len = Math.hypot(x0, x1, x2);
+    if (len < 1e-6) { x0 = 1; x1 = 0; x2 = 0; }
+    else { len = 1 / len; x0 *= len; x1 *= len; x2 *= len; }
+
+    const y0 = z1 * x2 - z2 * x1;
+    const y1 = z2 * x0 - z0 * x2;
+    const y2 = z0 * x1 - z1 * x0;
+
+    out[0] = x0; out[1] = y0; out[2] = z0; out[3] = 0;
+    out[4] = x1; out[5] = y1; out[6] = z1; out[7] = 0;
+    out[8] = x2; out[9] = y2; out[10] = z2; out[11] = 0;
+    out[12] = -(x0 * eye[0] + x1 * eye[1] + x2 * eye[2]);
+    out[13] = -(y0 * eye[0] + y1 * eye[1] + y2 * eye[2]);
+    out[14] = -(z0 * eye[0] + z1 * eye[1] + z2 * eye[2]);
+    out[15] = 1;
+    return out;
+  },
+
+  rotationY(out, rad) {
+    const c = Math.cos(rad), s = Math.sin(rad);
+    out[0] = c;  out[1] = 0; out[2] = -s; out[3] = 0;
+    out[4] = 0;  out[5] = 1; out[6] = 0;  out[7] = 0;
+    out[8] = s;  out[9] = 0; out[10] = c; out[11] = 0;
+    out[12] = 0; out[13] = 0; out[14] = 0; out[15] = 1;
+    return out;
+  }
+};
+
+const clamp = (v, lo, hi) => v < lo ? lo : (v > hi ? hi : v);
+
+/* ================================================================
+   2. 着色器
+   ================================================================ */
+const VS_MESH = `#version 300 es
+in vec3 aPosition;
+uniform mat4 uProjection;
+uniform mat4 uView;
+uniform mat4 uModel;
+uniform float uYMin;
+uniform float uYMax;
+out vec3 vWorldPos;
+out float vHeight;
+
+void main() {
+  vec4 world = uModel * vec4(aPosition, 1.0);
+  vWorldPos = world.xyz;
+  vHeight = clamp((aPosition.y - uYMin) / max(uYMax - uYMin, 0.001), 0.0, 1.0);
+  gl_Position = uProjection * uView * world;
+}`;
+
+const FS_MESH = `#version 300 es
+precision highp float;
+
+in vec3 vWorldPos;
+in float vHeight;
+
+uniform vec3 uCameraPos;
+uniform float uTime;
+uniform float uHitFlash;
+
+out vec4 fragColor;
+
+void main() {
+  /* ---- 由屏幕空间导数恢复几何法线（平面着色，双面） ---- */
+  vec3 dx = dFdx(vWorldPos);
+  vec3 dy = dFdy(vWorldPos);
+  vec3 n = normalize(cross(dx, dy));
+  vec3 V = normalize(uCameraPos - vWorldPos);
+  if (dot(n, V) < 0.0) n = -n;
+
+  /* ---- 光照 ---- */
+  vec3 L1 = normalize(vec3( 0.55, 0.92, 0.48));
+  vec3 L2 = normalize(vec3(-0.72, 0.28, -0.62));
+  vec3 L3 = normalize(vec3( 0.10, -0.85, 0.30));
+
+  float d1 = max(dot(n, L1), 0.0);
+  float d2 = max(dot(n, L2), 0.0);
+  float d3 = max(dot(n, L3), 0.0);
+
+  /* ---- 基础色：沿塔身高度渐变 ---- */
+  vec3 cLow  = vec3(0.020, 0.045, 0.105);
+  vec3 cMid  = vec3(0.055, 0.230, 0.470);
+  vec3 cHigh = vec3(0.330, 0.860, 0.980);
+
+  vec3 base = mix(cLow, cMid, smoothstep(0.0, 0.55, vHeight));
+  base = mix(base, cHigh, smoothstep(0.55, 1.0, vHeight));
+
+  vec3 col = base * (0.30 + 0.90 * d1 + 0.32 * d2 + 0.18 * d3);
+
+  /* ---- 菲涅尔边缘光 ---- */
+  float fres = pow(1.0 - max(dot(n, V), 0.0), 3.0);
+  col += vec3(0.32, 0.80, 1.00) * fres * 1.05;
+
+  /* ---- 沿塔盘旋上升的能量流光 ---- */
+  float flow = sin(vHeight * 22.0 - uTime * 2.6) * 0.5 + 0.5;
+  flow = pow(flow, 7.0);
+  col += vec3(0.30, 0.88, 1.00) * flow * 0.30;
+
+  /* ---- 镜面高光 ---- */
+  vec3 H = normalize(L1 + V);
+  float spec = pow(max(dot(n, H), 0.0), 52.0);
+  col += vec3(1.0, 1.0, 1.0) * spec * 0.55;
+
+  /* ---- 点击闪光 ---- */
+  col += vec3(0.55, 0.92, 1.00) * uHitFlash * 1.6;
+
+  /* ---- 轻微色调映射 ---- */
+  col = col / (col + vec3(0.85)) * 1.65;
+  col = pow(col, vec3(0.92));
+
+  fragColor = vec4(col, 1.0);
+}`;
+
+const VS_LINE = `#version 300 es
+in vec3 aPosition;
+uniform mat4 uProjection;
+uniform mat4 uView;
+uniform mat4 uModel;
+void main() {
+  gl_Position = uProjection * uView * uModel * vec4(aPosition, 1.0);
+}`;
+
+const FS_LINE = `#version 300 es
+precision highp float;
+uniform vec3 uColor;
+uniform float uAlpha;
+out vec4 fragColor;
+void main() {
+  fragColor = vec4(uColor, uAlpha);
+}`;
+
+/* ---- 编译工具 ---- */
+function compileShader(type, src) {
+  const sh = gl.createShader(type);
+  gl.shaderSource(sh, src);
+  gl.compileShader(sh);
+  if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+    console.error('Shader compile error:\n', gl.getShaderInfoLog(sh), '\n', src);
+    gl.deleteShader(sh);
+    return null;
+  }
+  return sh;
+}
+
+function createProgram(vsSrc, fsSrc) {
+  const vs = compileShader(gl.VERTEX_SHADER, vsSrc);
+  const fs = compileShader(gl.FRAGMENT_SHADER, fsSrc);
+  const prog = gl.createProgram();
+  gl.attachShader(prog, vs);
+  gl.attachShader(prog, fs);
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+    console.error('Program link error:', gl.getProgramInfoLog(prog));
+  }
+  gl.deleteShader(vs);
+  gl.deleteShader(fs);
+  return prog;
+}
+
+const meshProgram  = createProgram(VS_MESH, FS_MESH);
+const lineProgram  = createProgram(VS_LINE, FS_LINE);
+
+/* ---- uniform / attribute 位置缓存 ---- */
+const meshLoc = {
+  aPosition:   gl.getAttribLocation(meshProgram, 'aPosition'),
+  uProjection: gl.getUniformLocation(meshProgram, 'uProjection'),
+  uView:       gl.getUniformLocation(meshProgram, 'uView'),
+  uModel:      gl.getUniformLocation(meshProgram, 'uModel'),
+  uYMin:       gl.getUniformLocation(meshProgram, 'uYMin'),
+  uYMax:       gl.getUniformLocation(meshProgram, 'uYMax'),
+  uCameraPos:  gl.getUniformLocation(meshProgram, 'uCameraPos'),
+  uTime:       gl.getUniformLocation(meshProgram, 'uTime'),
+  uHitFlash:   gl.getUniformLocation(meshProgram, 'uHitFlash'),
+};
+
+const lineLoc = {
+  aPosition:   gl.getAttribLocation(lineProgram, 'aPosition'),
+  uProjection: gl.getUniformLocation(lineProgram, 'uProjection'),
+  uView:       gl.getUniformLocation(lineProgram, 'uView'),
+  uModel:      gl.getUniformLocation(lineProgram, 'uModel'),
+  uColor:      gl.getUniformLocation(lineProgram, 'uColor'),
+  uAlpha:      gl.getUniformLocation(lineProgram, 'uAlpha'),
+};
+
+/* ================================================================
+   3. 几何体构建 —— 阿基米德螺线绕轴螺旋上升
+   ================================================================ */
+
+const V_RATIO   = 1.5;     // 垂直上升比例（螺距视觉系数）
+const BAND_RATIO = 0.78;   // 带宽 / 每圈半径增量
+const SEG_PER_TURN = 108;
+
+/**
+ * 构建螺塔网格
+ * 截面为矩形（径向宽 bandW，垂直厚 thick），沿螺线扫掠
+ */
+function buildTowerMesh(a, turns, radiusScale) {
+  const TWO_PI = Math.PI * 2;
+  const thetaMax = turns * TWO_PI;
+  const steps = Math.max(24, Math.round(turns * SEG_PER_TURN));
+
+  const bandW = a * TWO_PI * BAND_RATIO;
+  const thick = Math.max(bandW * 0.16, 0.0035);
+
+  const vertexCount = steps * 24;   // 每段 4 个面 × 6 个顶点
+  const positions = new Float32Array(vertexCount * 3);
+  let ptr = 0;
+
+  let yMin = Infinity, yMax = -Infinity, rMax = 0;
+
+  /* --- 预计算所有截面顶点 --- */
+  const sec = new Float32Array((steps + 1) * 12); // 4 角 × xyz
+  const cOffR = [-bandW * 0.5, bandW * 0.5, bandW * 0.5, -bandW * 0.5];
+  const cOffY = [-thick * 0.5, -thick * 0.5, thick * 0.5, thick * 0.5];
+
+  for (let i = 0; i <= steps; i++) {
+    const theta = (thetaMax * i) / steps;
+    const ct = Math.cos(theta);
+    const st = Math.sin(theta);
+    const baseR = a * theta * radiusScale;
+    const baseY = a * theta * V_RATIO;
+
+    for (let c = 0; c < 4; c++) {
+      let rr = baseR + cOffR[c];
+      if (rr < 0) rr = 0;
+      const yy = baseY + cOffY[c];
+      const idx = (i * 4 + c) * 3;
+      sec[idx]     = rr * ct;
+      sec[idx + 1] = yy;
+      sec[idx + 2] = rr * st;
+
+      if (yy < yMin) yMin = yy;
+      if (yy > yMax) yMax = yy;
+      if (rr > rMax) rMax = rr;
+    }
+  }
+
+  const SX = (i, c) => sec[(i * 4 + c) * 3];
+  const SY = (i, c) => sec[(i * 4 + c) * 3 + 1];
+  const SZ = (i, c) => sec[(i * 4 + c) * 3 + 2];
+
+  const tri = (ax, ay, az, bx, by, bz, cx, cy, cz) => {
+    positions[ptr++] = ax; positions[ptr++] = ay; positions[ptr++] = az;
+    positions[ptr++] = bx; positions[ptr++] = by; positions[ptr++] = bz;
+    positions[ptr++] = cx; positions[ptr++] = cy; positions[ptr++] = cz;
+  };
+
+  /* 四个侧面：内下(0)→外下(1)→外上(2)→内上(3)→内下 */
+  const FACES = [[0, 1], [1, 2], [2, 3], [3, 0]];
+
+  for (let i = 0; i < steps; i++) {
+    for (let f = 0; f < 4; f++) {
+      const c0 = FACES[f][0];
+      const c1 = FACES[f][1];
+
+      const ax = SX(i, c0),     ay = SY(i, c0),     az = SZ(i, c0);
+      const bx = SX(i, c1),     by = SY(i, c1),     bz = SZ(i, c1);
+      const cx = SX(i + 1, c1), cy = SY(i + 1, c1), cz = SZ(i + 1, c1);
+      const dx = SX(i + 1, c0), dy = SY(i + 1, c0), dz = SZ(i + 1, c0);
+
+      tri(ax, ay, az, bx, by, bz, cx, cy, cz);
+      tri(ax, ay, az, cx, cy, cz, dx, dy, dz);
+    }
+  }
+
+  return {
+    positions: positions.subarray(0, ptr),
+    yMin, yMax, rMax,
+    thetaMax, bandW, thick, steps
+  };
+}
+
+/**
+ * 构建螺旋骨架线（沿螺线外缘盘旋上升）
+ */
+function buildSpine(a, turns, radiusScale, bandW) {
+  const TWO_PI = Math.PI * 2;
+  const thetaMax = turns * TWO_PI;
+  const steps = Math.max(160, Math.round(turns * 260));
+
+  const pts = new Float32Array((steps + 1) * 3);
+  const rOff = bandW * 0.5 * 1.012;   // 略突出于外壁，避免深度冲突
+
+  for (let i = 0; i <= steps; i++) {
+    const theta = thetaMax * i / steps;
+    const r = Math.max(a * theta * radiusScale + rOff, 0.0015);
+    const y = a * theta * V_RATIO;
+    pts[i * 3]     = r * Math.cos(theta);
+    pts[i * 3 + 1] = y;
+    pts[i * 3 + 2] = r * Math.sin(theta);
+  }
+  return { positions: pts, count: steps + 1 };
+}
+
+/**
+ * 构建内缘骨架线（描出塔身内圈）
+ */
+function buildInnerSpine(a, turns, radiusScale, bandW) {
+  const TWO_PI = Math.PI * 2;
+  const thetaMax = turns * TWO_PI;
+  const steps = Math.max(160, Math.round(turns * 260));
+
+  const pts = new Float32Array((steps + 1) * 3);
+  const rOff = -bandW * 0.5 * 1.012;
+
+  for (let i = 0; i <= steps; i++) {
+    const theta = thetaMax * i / steps;
+    const r = Math.max(a * theta * radiusScale + rOff, 0.0015);
+    const y = a * theta * V_RATIO;
+    pts[i * 3]     = r * Math.cos(theta);
+    pts[i * 3 + 1] = y;
+    pts[i * 3 + 2] = r * Math.sin(theta);
+  }
+  return { positions: pts, count: steps + 1 };
+}
+
+/* ================================================================
+   4. GPU 资源
+   ================================================================ */
+let meshVBO = null, spineVBO = null, innerVBO = null;
+let meshData = null, spineData = null, innerData = null;
+let fit = { yMin: -1, yMax: 1, rMax: 1 };
+
+function rebuild() {
+  const a = parseFloat(aSlider.value);
+  const turns = parseInt(turnsSlider.value, 10);
+  const radiusScale = parseFloat(radiusSlider.value);
+
+  const m = buildTowerMesh(a, turns, radiusScale);
+  const sp = buildSpine(a, turns, radiusScale, m.bandW);
+  const ip = buildInnerSpine(a, turns, radiusScale, m.bandW);
+
+  /* --- 上传网格 --- */
+  if (meshVBO) gl.deleteBuffer(meshVBO);
+  meshVBO = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, meshVBO);
+  gl.bufferData(gl.ARRAY_BUFFER, m.positions, gl.STATIC_DRAW);
+
+  /* --- 上传外骨架线 --- */
+  if (spineVBO) gl.deleteBuffer(spineVBO);
+  spineVBO = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, spineVBO);
+  gl.bufferData(gl.ARRAY_BUFFER, sp.positions, gl.STATIC_DRAW);
+
+  /* --- 上传内骨架线 --- */
+  if (innerVBO) gl.deleteBuffer(innerVBO);
+  innerVBO = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, innerVBO);
+  gl.bufferData(gl.ARRAY_BUFFER, ip.positions, gl.STATIC_DRAW);
+
+  meshData  = { count: m.positions.length / 3, yMin: m.yMin, yMax: m.yMax };
+  spineData = { count: sp.count };
+  innerData = { count: ip.count };
+
+  fit = { yMin: m.yMin, yMax: m.yMax, rMax: m.rMax };
+}
+
+/* ================================================================
+   5. 相机 / 轨道控制
+   ================================================================ */
+const FOV = 45 * Math.PI / 180;
+const projMatrix = new Float32Array(16);
+const viewMatrix = new Float32Array(16);
+const modelMatrix = new Float32Array(16);
+
+let camTheta = 0.85;     // 方位角
+let camPhi   = 1.12;     // 极角（自 Y 轴）
+let zoomFactor = 1.0;
+let camDist = 8;
+let rotY = 0;            // 模型自转角
+
+let camPos = [0, 0, 8];
+let camRight = [1, 0, 0], camUp = [0, 1, 0], camForward = [0, 0, -1];
+let camTarget = [0, 0, 0];
+
+function computeFitDistance() {
+  const halfH = (fit.yMax - fit.yMin) * 0.5;
+  const R = Math.hypot(fit.rMax, halfH);
+  const aspect = Math.max(canvas.clientWidth / Math.max(canvas.clientHeight, 1), 0.0001);
+  const tanV = Math.tan(FOV / 2);
+  const tanH = tanV * aspect;
+  const dV = R / tanV;
+  const dH = R / tanH;
+  return Math.max(dV, dH) * 1.16;
+}
+
+function updateCamera() {
+  camTarget = [0, (fit.yMin + fit.yMax) * 0.5, 0];
+
+  camDist = computeFitDistance() * zoomFactor;
+
+  const sp = Math.sin(camPhi), cp = Math.cos(camPhi);
+  const st = Math.sin(camTheta), ct = Math.cos(camTheta);
+
+  camPos = [
+    camTarget[0] + camDist * sp * st,
+    camTarget[1] + camDist * cp,
+    camTarget[2] + camDist * sp * ct
+  ];
+
+  /* 视线基向量 */
+  let fx = camTarget[0] - camPos[0];
+  let fy = camTarget[1] - camPos[1];
+  let fz = camTarget[2] - camPos[2];
+  let fl = Math.hypot(fx, fy, fz) || 1;
+  fx /= fl; fy /= fl; fz /= fl;
+  camForward = [fx, fy, fz];
+
+  let rx = fy * 0 - fz * 1;
+  let ry = fz * 0 - fx * 0;
+  let rz = fx * 1 - fy * 0;
+  /* cross(forward, worldUp) = (fy*0 - fz*1, fz*0 - fx*0, fx*1 - fy*0) */
+  let rl = Math.hypot(rx, ry, rz) || 1;
+  rx /= rl; ry /= rl; rz /= rl;
+  camRight = [rx, ry, rz];
+
+  /* up = cross(right, forward) */
+  const ux = ry * fz - rz * fy;
+  const uy = rz * fx - rx * fz;
+  const uz = rx * fy - ry * fx;
+  camUp = [ux, uy, uz];
+}
+
+/* ================================================================
+   6. 交互 —— 拖拽旋转 / 滚轮缩放 / 点击拾取
+   ================================================================ */
+let dragging = false;
+let lastX = 0, lastY = 0;
+let dragDist = 0;
+let swooshAccum = 0;
+let lastSwooshTime = 0;
+let autoRotateEnabled = true;
+
+canvas.addEventListener('pointerdown', (e) => {
+  initAudio();
+  dragging = true;
+  dragDist = 0;
+  lastX = e.clientX;
+  lastY = e.clientY;
+  autoRotateEnabled = false;
+  try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
+});
+
+canvas.addEventListener('pointermove', (e) => {
+  if (!dragging) return;
+
+  const dx = e.clientX - lastX;
+  const dy = e.clientY - lastY;
+  lastX = e.clientX;
+  lastY = e.clientY;
+  dragDist += Math.abs(dx) + Math.abs(dy);
+
+  camTheta -= dx * 0.0062;
+  camPhi   += dy * 0.0058;
+  camPhi = clamp(camPhi, 0.10, Math.PI - 0.10);
+
+  /* ---- 盘旋攀升滑动音效：累积垂直拖拽量 ---- */
+  swooshAccum += -dy;
+  const now = performance.now();
+  if (Math.abs(swooshAccum) > 26 && now - lastSwooshTime > 175) {
+    playSwoosh(swooshAccum > 0);
+    swooshAccum = 0;
+    lastSwooshTime = now;
+    flashPulse();
+  }
+});
+
+function endDrag(e) {
+  if (!dragging) return;
+  dragging = false;
+  try { canvas.releasePointerCapture(e.pointerId); } catch (_) {}
+  setTimeout(() => { autoRotateEnabled = true; }, 2200);
+}
+canvas.addEventListener('pointerup', endDrag);
+canvas.addEventListener('pointercancel', endDrag);
+
+canvas.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  initAudio();
+  zoomFactor *= Math.exp(e.deltaY * 0.0011);
+  zoomFactor = clamp(zoomFactor, 0.42, 3.2);
+}, { passive: false });
+
+/* ---- 点击拾取 ---- */
+canvas.addEventListener('click', (e) => {
+  if (dragDist > 12) return;   // 拖拽而非点击
+  initAudio();
+
+  const ray = screenToRay(e.clientX, e.clientY);
+  if (ray && raycastMesh(ray)) {
+    playBell();
+    hitFlash = 1.0;
+    flashPulse();
+  }
+});
+
+function screenToRay(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  const ndcX = ((clientX - rect.left) / rect.width) * 2 - 1;
+  const ndcY = -((clientY - rect.top) / rect.height) * 2 + 1;
+
+  const aspect = rect.width / rect.height;
+  const tanV = Math.tan(FOV / 2);
+
+  const dir = [
+    camForward[0] + camRight[0] * ndcX * tanV * aspect + camUp[0] * ndcY * tanV,
+    camForward[1] + camRight[1] * ndcX * tanV * aspect + camUp[1] * ndcY * tanV,
+    camForward[2] + camRight[2] * ndcX * tanV * aspect + camUp[2] * ndcY * tanV,
+  ];
+  const l = Math.hypot(dir[0], dir[1], dir[2]) || 1;
+  dir[0] /= l; dir[1] /= l; dir[2] /= l;
+
+  return { origin: camPos.slice(), dir };
+}
+
+/* 把射线变换到模型空间（模型只绕 Y 轴旋转） */
+function worldToModelPoint(p) {
+  const c = Math.cos(rotY), s = Math.sin(rotY);
+  return [p[0] * c - p[2] * s, p[1], p[0] * s + p[2] * c];
+}
+function worldToModelDir(d) {
+  const c = Math.cos(rotY), s = Math.sin(rotY);
+  return [d[0] * c - d[2] * s, d[1], d[0] * s + d[2] * c];
+}
+
+/* Möller–Trumbore 射线-三角形求交 */
+function rayTriangle(ox, oy, oz, dx, dy, dz, ax, ay, az, bx, by, bz, cx, cy, cz) {
+  const EPS = 1e-9;
+  const e1x = bx - ax, e1y = by - ay, e1z = bz - az;
+  const e2x = cx - ax, e2y = cy - ay, e2z = cz - az;
+
+  const px = dy * e2z - dz * e2y;
+  const py = dz * e2x - dx * e2z;
+  const pz = dx * e2y - dy * e2x;
+
+  const det = e1x * px + e1y * py + e1z * pz;
+  if (Math.abs(det) < EPS) return false;
+  const inv = 1 / det;
+
+  const tx = ox - ax, ty = oy - ay, tz = oz - az;
+  const u = (tx * px + ty * py + tz * pz) * inv;
+  if (u < -1e-6 || u > 1 + 1e-6) return false;
+
+  const qx = ty * e1z - tz * e1y;
+  const qy = tz * e1x - tx * e1z;
+  const qz = tx * e1y - ty * e1x;
+
+  const v = (dx * qx + dy * qy + dz * qz) * inv;
+  if (v < -1e-6 || u + v > 1 + 1e-6) return false;
+
+  const t = (e2x * qx + e2y * qy + e2z * qz) * inv;
+  return t > EPS;
+}
+
+function raycastMesh(ray) {
+  if (!meshData || !meshData.positions) return false;
+
+  const o = worldToModelPoint(ray.origin);
+  const d = worldToModelDir(ray.dir);
+  const P = meshData.positions;
+
+  const ox = o[0], oy = o[1], oz = o[2];
+  const dx = d[0], dy = d[1], dz = d[2];
+
+  const triCount = P.length / 9;
+  for (let i = 0; i < triCount; i++) {
+    const k = i * 9;
+    if (rayTriangle(
+      ox, oy, oz, dx, dy, dz,
+      P[k], P[k + 1], P[k + 2],
+      P[k + 3], P[k + 4], P[k + 5],
+      P[k + 6], P[k + 7], P[k + 8]
+    )) return true;
+  }
+  return false;
+}
+
+/* ================================================================
+   7. 音频引擎（Web Audio API）
+   ================================================================ */
+let audioCtx = null;
+let masterGain = null;
+let compressor = null;
+let reverbDelay = null;
+let reverbFeedback = null;
+let reverbWet = null;
+let audioReady = false;
+let currentVolume = 0.6;
+
+function initAudio() {
+  if (audioReady) {
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    return;
+  }
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+
+  try {
+    audioCtx = new AC();
+  } catch (err) {
+    return;
+  }
+
+  masterGain = audioCtx.createGain();
+  masterGain.gain.value = currentVolume;
+
+  compressor = audioCtx.createDynamicsCompressor();
+  compressor.threshold.value = -20;
+  compressor.knee.value = 22;
+  compressor.ratio.value = 6;
+  compressor.attack.value = 0.004;
+  compressor.release.value = 0.25;
+
+  masterGain.connect(compressor);
+  compressor.connect(audioCtx.destination);
+
+  /* --- 简易反馈延迟，营造"钟声回荡" --- */
+  reverbDelay = audioCtx.createDelay(1.2);
+  reverbDelay.delayTime.value = 0.24;
+
+  reverbFeedback = audioCtx.createGain();
+  reverbFeedback.gain.value = 0.44;
+
+  const damp = audioCtx.createBiquadFilter();
+  damp.type = 'lowpass';
+  damp.frequency.value = 2600;
+
+  reverbWet = audioCtx.createGain();
+  reverbWet.gain.value = 0.55;
+
+  reverbDelay.connect(damp);
+  damp.connect(reverbFeedback);
+  reverbFeedback.connect(reverbDelay);
+  reverbDelay.connect(reverbWet);
+  reverbWet.connect(masterGain);
+
+  audioReady = true;
+}
+
+/* ---- 钟声：多泛音叠加 + 延迟回荡 ---- */
+function playBell() {
+  if (!audioReady) return;
+  const t = audioCtx.currentTime;
+
+  const base = 620 + Math.random() * 90;
+  /* 钟体非谐泛音比例 */
+  const partials = [
+    { r: 1.000, g: 1.00, d: 2.60 },
+    { r: 2.010, g: 0.52, d: 1.90 },
+    { r: 2.985, g: 0.36, d: 1.45 },
+    { r: 4.165, g: 0.22, d: 1.05 },
+    { r: 5.430, g: 0.13, d: 0.78 },
+    { r: 7.120, g: 0.07, d: 0.55 },
+  ];
+
+  partials.forEach((p, i) => {
+    const osc = audioCtx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(base * p.r, t);
+    /* 轻微下滑，更有金属敲击感 */
+    osc.frequency.exponentialRampToValueAtTime(base * p.r * 0.9975, t + p.d);
+
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.0001 + 0.20 * p.g, t + 0.006);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + p.d);
+
+    osc.connect(g);
+    g.connect(masterGain);
+    g.connect(reverbDelay);
+
+    osc.start(t);
+    osc.stop(t + p.d + 0.08);
+  });
+
+  /* 敲击瞬态噪声 */
+  const nLen = Math.floor(audioCtx.sampleRate * 0.06);
+  const nBuf = audioCtx.createBuffer(1, nLen, audioCtx.sampleRate);
+  const nd = nBuf.getChannelData(0);
+  for (let i = 0; i < nLen; i++) nd[i] = (Math.random() * 2 - 1) * (1 - i / nLen);
+  const nSrc = audioCtx.createBufferSource();
+  nSrc.buffer = nBuf;
+  const nGain = audioCtx.createGain();
+  nGain.gain.setValueAtTime(0.10, t);
+  nGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.06);
+  const nFilt = audioCtx.createBiquadFilter();
+  nFilt.type = 'bandpass';
+  nFilt.frequency.value = 3400;
+  nFilt.Q.value = 1.6;
+  nSrc.connect(nFilt);
+  nFilt.connect(nGain);
+  nGain.connect(masterGain);
+  nGain.connect(reverbDelay);
+  nSrc.start(t);
+}
+
+/* ---- 盘旋攀升滑动音 ---- */
+function playSwoosh(goingUp) {
+  if (!audioReady) return;
+  const t = audioCtx.currentTime;
+
+  const f0 = goingUp ? 240 : 920;
+  const f1 = goingUp ? 900 : 250;
+
+  /* 主滑音 */
+  const osc = audioCtx.createOscillator();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(f0, t);
+  osc.frequency.exponentialRampToValueAtTime(f1, t + 0.38);
+
+  const g = audioCtx.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(0.085, t + 0.055);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + 0.44);
+
+  osc.connect(g);
+  g.connect(masterGain);
+  g.connect(reverbDelay);
+
+  osc.start(t);
+  osc.stop(t + 0.48);
+
+  /* 叠加气流感噪声扫频 */
+  const nLen = Math.floor(audioCtx.sampleRate * 0.42);
+  const nBuf = audioCtx.createBuffer(1, nLen, audioCtx.sampleRate);
+  const nd = nBuf.getChannelData(0);
+  for (let i = 0; i < nLen; i++) nd[i] = Math.random() * 2 - 1;
+  const nSrc = audioCtx.createBufferSource();
+  nSrc.buffer = nBuf;
+
+  const bp = audioCtx.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.Q.value = 5.5;
+  bp.frequency.setValueAtTime(f0 * 1.6, t);
+  bp.frequency.exponentialRampToValueAtTime(f1 * 1.6, t + 0.38);
+
+  const ng = audioCtx.createGain();
+  ng.gain.setValueAtTime(0.0001, t);
+  ng.gain.exponentialRampToValueAtTime(0.030, t + 0.06);
+  ng.gain.exponentialRampToValueAtTime(0.0001, t + 0.42);
+
+  nSrc.connect(bp);
+  bp.connect(ng);
+  ng.connect(masterGain);
+
+  nSrc.start(t, 0, 0.42);
+}
+
+/* ---- 螺距滑音：a 越大音高越低 ---- */
+let lastGlideTime = 0;
+function playPitchGlide(a) {
+  if (!audioReady) return;
+  const now = performance.now();
+  if (now - lastGlideTime < 95) return;
+  lastGlideTime = now;
+
+  const t = audioCtx.currentTime;
+  const norm = clamp((a - 0.022) / (0.075 - 0.022), 0, 1);
+
+  /* a 大 → 音低；a 小 → 音高 */
+  const fTarget = 1150 - norm * 900;    // 1150 → 250 Hz
+  const fStart  = fTarget * 1.55;
+
+  const osc = audioCtx.createOscillator();
+  osc.type = 'sawtooth';
+  osc.frequency.setValueAtTime(fStart, t);
+  osc.frequency.exponentialRampToValueAtTime(fTarget, t + 0.19);
+
+  const filt = audioCtx.createBiquadFilter();
+  filt.type = 'lowpass';
+  filt.Q.value = 7;
+  filt.frequency.setValueAtTime(3400, t);
+  filt.frequency.exponentialRampToValueAtTime(680, t + 0.26);
+
+  const g = audioCtx.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(0.075, t + 0.018);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + 0.30);
+
+  osc.connect(filt);
+  filt.connect(g);
+  g.connect(masterGain);
+  g.connect(reverbDelay);
+
+  osc.start(t);
+  osc.stop(t + 0.34);
+}
+
+/* ================================================================
+   8. UI 绑定
+   ================================================================ */
+const aSlider      = document.getElementById('aSlider');
+const turnsSlider  = document.getElementById('turnsSlider');
+const radiusSlider = document.getElementById('radiusSlider');
+const aVal         = document.getElementById('aVal');
+const turnsVal     = document.getElementById('turnsVal');
+const radiusVal    = document.getElementById('radiusVal');
+const pulseRing    = document.getElementById('pulseRing');
+
+let pulseRingTimer = null;
+function flashPulse() {
+  pulseRing.style.transform = 'scale(2.1)';
+  pulseRing.style.boxShadow = '0 0 18px #7fe0ff, 0 0 36px rgba(127,224,255,0.9)';
+  clearTimeout(pulseRingTimer);
+  pulseRingTimer = setTimeout(() => {
+    pulseRing.style.transform = 'scale(1)';
+    pulseRing.style.boxShadow = '0 0 10px #3fc4ff, 0 0 20px rgba(63,196,255,0.6)';
+  }, 130);
+}
+
+function onGeometryChange() {
+  aVal.textContent = parseFloat(aSlider.value).toFixed(4);
+  turnsVal.textContent = parseInt(turnsSlider.value, 10) + ' 圈';
+  radiusVal.textContent = parseFloat(radiusSlider.value).toFixed(2) + '×';
+  rebuild();
+}
+
+aSlider.addEventListener('input', () => {
+  initAudio();
+  aVal.textContent = parseFloat(aSlider.value).toFixed(4);
+  playPitchGlide(parseFloat(aSlider.value));
+  rebuild();
+});
+
+turnsSlider.addEventListener('input', () => {
+  initAudio();
+  turnsVal.textContent = parseInt(turnsSlider.value, 10) + ' 圈';
+  rebuild();
+});
+
+radiusSlider.addEventListener('input', () => {
+  initAudio();
+  radiusVal.textContent = parseFloat(radiusSlider.value).toFixed(2) + '×';
+  rebuild();
+});
+
+/* 页面加载完成后初始化 */
+window.addEventListener('load', () => {
+  rebuild();
+});
+
+/* ================================================================
+   9. 渲染循环
+   ================================================================ */
+let hitFlash = 0;
+let timeAccum = 0;
+let lastTime = performance.now();
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = Math.floor(canvas.clientWidth * dpr);
+  const h = Math.floor(canvas.clientHeight * dpr);
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
+  }
+  gl.viewport(0, 0, canvas.width, canvas.height);
+}
+
+function render(now) {
+  requestAnimationFrame(render);
+
+  const dt = Math.min((now - lastTime) / 1000, 0.06);
+  lastTime = now;
+  timeAccum += dt;
+
+  resize();
+
+  /* --- 自转 --- */
+  if (autoRotateEnabled && !dragging) {
+    rotY += dt * 0.16;
+  }
+  if (dragging) {
+    /* 拖拽时也带一点点模型旋转，增强"盘旋"手感 */
+    rotY += 0;
+  }
+
+  /* --- 点击闪光衰减 --- */
+  hitFlash = Math.max(0, hitFlash - dt * 2.4);
+
+  /* --- 相机 --- */
+  updateCamera();
+
+  const aspect = canvas.width / Math.max(canvas.height, 1);
+  M4.perspective(projMatrix, FOV, aspect, 0.05, 200);
+  M4.lookAt(viewMatrix, camPos, camTarget, [0, 1, 0]);
+  M4.rotationY(modelMatrix, rotY);
+
+  /* --- 清屏 --- */
+  gl.clearColor(0, 0, 0, 0);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.DEPTH_TEST);
+  gl.depthFunc(gl.LEQUAL);
+  gl.enable(gl.CULL_FACE);
+  gl.cullFace(gl.BACK);
+  gl.disable(gl.BLEND);
+
+  /* ============ 绘制螺塔网格 ============ */
+  if (meshData && meshVBO) {
+    gl.useProgram(meshProgram);
+
+    gl.uniformMatrix4fv(meshLoc.uProjection, false, projMatrix);
+    gl.uniformMatrix4fv(meshLoc.uView, false, viewMatrix);
+    gl.uniformMatrix4fv(meshLoc.uModel, false, modelMatrix);
+    gl.uniform1f(meshLoc.uYMin, fit.yMin);
+    gl.uniform1f(meshLoc.uYMax, fit.yMax);
+    gl.uniform3f(meshLoc.uCameraPos, camPos[0], camPos[1], camPos[2]);
+    gl.uniform1f(meshLoc.uTime, timeAccum);
+    gl.uniform1f(meshLoc.uHitFlash, hitFlash);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, meshVBO);
+    gl.enableVertexAttribArray(meshLoc.aPosition);
+    gl.vertexAttribPointer(meshLoc.aPosition, 3, gl.FLOAT, false, 0, 0);
+
+    gl.drawArrays(gl.TRIANGLES, 0, meshData.count);
+  }
+
+  /* ============ 绘制螺旋骨架线 ============ */
+  gl.disable(gl.CULL_FACE);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.depthMask(false);
+
+  if (spineData && spineVBO) {
+    gl.useProgram(lineProgram);
+    gl.uniformMatrix4fv(lineLoc.uProjection, false, projMatrix);
+    gl.uniformMatrix4fv(lineLoc.uView, false, viewMatrix);
+    gl.uniformMatrix4fv(lineLoc.uModel, false, modelMatrix);
+    gl.uniform3f(lineLoc.uColor, 0.55, 0.93, 1.0);
+    gl.uniform1f(lineLoc.uAlpha, 0.88);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, spineVBO);
+    gl.enableVertexAttribArray(lineLoc.aPosition);
+    gl.vertexAttribPointer(lineLoc.aPosition, 3, gl.FLOAT, false, 0, 0);
+    gl.drawArrays(gl.LINE_STRIP, 0, spineData.count);
+  }
+
+  if (innerData && innerVBO) {
+    gl.uniform3f(lineLoc.uColor, 0.30, 0.72, 1.0);
+    gl.uniform1f(lineLoc.uAlpha, 0.42);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, innerVBO);
+    gl.vertexAttribPointer(lineLoc.aPosition, 3, gl.FLOAT, false, 0, 0);
+    gl.drawArrays(gl.LINE_STRIP, 0, innerData.count);
+  }
+
+  gl.depthMask(true);
+  gl.disable(gl.BLEND);
+}
+
+/* ================================================================
+   10. 启动
+   ================================================================ */
+window.addEventListener('resize', () => {
+  resize();
+});
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) {
+    lastTime = performance.now();
+  }
+});
+
+requestAnimationFrame(render);
+</script>
+</body>
+</html>

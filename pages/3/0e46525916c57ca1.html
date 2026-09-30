@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>平面驻波 u(x,t) = A·sin(kx − ωt) · 同心涟漪</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%; overflow: hidden;
+    background: #000206;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #app { position: fixed; inset: 0; }
+  canvas { display: block; }
+
+  /* 顶部的数学公式 */
+  .formula {
+    position: fixed; left: 50%; top: 5.5%;
+    transform: translateX(-50%);
+    font-family: "Cambria Math", "Latin Modern Math", Georgia, "Times New Roman", serif;
+    font-style: italic;
+    font-size: clamp(17px, 3.1vw, 44px);
+    color: rgba(170, 255, 228, 0.94);
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+    text-shadow:
+      0 0 10px rgba(0, 255, 175, 0.85),
+      0 0 34px rgba(0, 255, 175, 0.42),
+      0 0 70px rgba(0, 255, 190, 0.22);
+    pointer-events: none; user-select: none;
+    animation: breathe 5.2s ease-in-out infinite;
+  }
+  @keyframes breathe {
+    0%, 100% { opacity: 0.82; filter: brightness(1); }
+    50%      { opacity: 1;    filter: brightness(1.28); }
+  }
+
+  .sub {
+    position: fixed; left: 50%; bottom: 4.5%;
+    transform: translateX(-50%);
+    font-family: ui-monospace, Consolas, "SFMono-Regular", monospace;
+    font-size: clamp(9px, 1.25vw, 14px);
+    color: rgba(110, 225, 200, 0.46);
+    letter-spacing: 0.34em;
+    white-space: nowrap;
+    pointer-events: none; user-select: none;
+  }
+
+  .vignette {
+    position: fixed; inset: 0; pointer-events: none;
+    background:
+      radial-gradient(ellipse at 50% 52%, rgba(0,0,0,0) 34%, rgba(0,0,0,0.55) 74%, rgba(0,0,0,0.94) 100%);
+    mix-blend-mode: multiply;
+  }
+  .grain {
+    position: fixed; inset: -50%; pointer-events: none; opacity: 0.05;
+    background-image: radial-gradient(rgba(120,255,220,0.6) 1px, transparent 1px);
+    background-size: 3px 3px;
+    animation: drift 8s linear infinite;
+  }
+  @keyframes drift { from { transform: translate(0,0);} to { transform: translate(3px,3px);} }
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<div class="formula">u(x, t) = A · sin(kx − ωt)</div>
+<div class="sub">PLANE WAVE · CONCENTRIC RIPPLE FIELD · r = √(x² + y²)</div>
+<div class="vignette"></div>
+<div class="grain"></div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer }   from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass }       from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass }  from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+/* ============================================================
+   基础环境
+   ============================================================ */
+const container = document.getElementById('app');
+
+const renderer = new THREE.WebGLRenderer({
+  antialias: true,
+  powerPreference: 'high-performance'
+});
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setClearColor(0x000205, 1);
+container.appendChild(renderer.domElement);
+
+const scene  = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(
+  50, window.innerWidth / window.innerHeight, 0.5, 4000
+);
+camera.position.set(0, 58, 92);
+camera.lookAt(0, 0, 0);
+
+/* ============================================================
+   波参数  u = A·sin(k·r − ω·t)
+   ============================================================ */
+const WAVE = {
+  A:     2.7,     // 振幅
+  k:     0.55,    // 波数  k = 2π/λ
+  omega: 6.0,     // 角频率 ω
+  fade:  0.011    // 径向衰减系数（涟漪扩散逐渐消散）
+};
+
+const uniforms = {
+  uTime:  { value: 0 },
+  uAmp:   { value: WAVE.A },
+  uK:     { value: WAVE.k },
+  uOmega: { value: WAVE.omega },
+  uFade:  { value: WAVE.fade }
+};
+
+/* ============================================================
+   顶点着色器：径向驻波位移
+   ============================================================ */
+const vertexShader = /* glsl */`
+  uniform float uTime;
+  uniform float uAmp;
+  uniform float uK;
+  uniform float uOmega;
+  uniform float uFade;
+
+  varying float vH;      // 位移高度
+  varying float vR;      // 到中心的半径
+  varying float vPhase;  // 当前相位 k·r − ω·t
+
+  void main() {
+    vec3 p = position;
+
+    float r = length(p.xy);
+    float phase = uK * r - uOmega * uTime;
+
+    // 涟漪扩散的能量衰减：越往外越弱
+    float env = exp(-r * uFade);
+
+    // 主波
+    float h  = sin(phase) * env * uAmp;
+    // 二次谐波：让波峰更锐利、波谷更平缓
+    h += sin(phase * 2.0 + 0.7) * env * uAmp * 0.20;
+    // 低频调制：形成一组组向外传导的波包
+    h += sin(phase * 0.5 - 1.3) * env * uAmp * 0.30;
+
+    p.z = h;
+
+    vH     = h;
+    vR     = r;
+    vPhase = phase;
+
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+  }
+`;
+
+/* ============================================================
+   片元着色器：墨蓝水面 + 翠绿波峰描边 + 相位循环高亮
+   ============================================================ */
+const fragmentShader = /* glsl */`
+  precision highp float;
+
+  uniform float uTime;
+  uniform float uAmp;
+
+  varying float vH;
+  varying float vR;
+  varying float vPhase;
+
+  void main() {
+    float hn = clamp(vH / uAmp, -1.6, 1.6);
+    float t  = clamp(hn * 0.5 + 0.5, 0.0, 1.0);
+
+    /* ---------- 水面基色：墨蓝层次 ---------- */
+    vec3 deep = vec3(0.002, 0.010, 0.042);
+    vec3 ink  = vec3(0.008, 0.042, 0.125);
+    vec3 blue = vec3(0.020, 0.140, 0.315);
+    vec3 jade = vec3(0.040, 0.930, 0.560);
+    vec3 mint = vec3(0.520, 1.000, 0.860);
+
+    vec3 col = mix(deep, ink,  smoothstep(0.10, 0.62, t));
+    col      = mix(col,  blue, smoothstep(0.55, 0.90, t));
+
+    /* ---------- 翠绿水光勾勒波峰轮廓 ---------- */
+    float crest = smoothstep(0.72, 0.99, t);
+    col = mix(col, jade, crest);
+
+    /* ---------- 波峰顶端高亮 ---------- */
+    float tip = pow(max(hn, 0.0), 6.0);
+    col += mint * tip * 1.45;
+
+    /* ---------- 相位循环移动的高亮标识 ---------- */
+    float marker = pow(max(hn, 0.0), 15.0)
+                 * (0.55 + 0.45 * sin(vPhase * 0.35 + uTime * 2.2));
+    col += vec3(0.78, 1.0, 0.96) * marker * 1.7;
+
+    /* ---------- 由中心均匀向外扩散的扫描涟漪环 ---------- */
+    for (int i = 0; i < 3; i++) {
+      float fi = float(i);
+      float ph = fract(uTime * 0.085 + fi * 0.3333);
+      float rr = ph * 280.0;                 // 环半径不断扩大
+      float w  = 5.0 + ph * 28.0;            // 环逐渐变宽变淡
+      float d  = (vR - rr) / w;
+      float ring = exp(-d * d) * (1.0 - ph) * (1.0 - ph);
+      col += jade * ring * 0.42;
+    }
+
+    /* ---------- 细微的虹彩炫光 ---------- */
+    float irid = sin(vR * 0.055 - uTime * 0.9) * 0.5 + 0.5;
+    col += vec3(0.02, 0.12, 0.10) * irid * pow(max(hn, 0.0), 2.0) * 0.9;
+
+    /* ---------- 远处消散，归于平静 ---------- */
+    float fade = 1.0 - smoothstep(120.0, 330.0, vR);
+    col *= fade;
+
+    /* ---------- 微弱水面闪烁 ---------- */
+    float shimmer = 0.5 + 0.5 * sin(vPhase * 3.0 + vR * 0.12);
+    col += vec3(0.04, 0.16, 0.13) * shimmer * 0.13 * fade;
+
+    gl_FragColor = vec4(col, 1.0);
+  }
+`;
+
+/* ============================================================
+   构建涟漪水面
+   ============================================================ */
+const isSmall = Math.min(window.innerWidth, window.innerHeight) < 760;
+const SEG = isSmall ? 256 : 448;
+
+const geometry = new THREE.PlaneGeometry(460, 460, SEG, SEG);
+
+const material = new THREE.ShaderMaterial({
+  uniforms,
+  vertexShader,
+  fragmentShader,
+  side: THREE.DoubleSide
+});
+
+const water = new THREE.Mesh(geometry, material);
+water.rotation.x = -Math.PI / 2;   // 平铺为水平水面
+scene.add(water);
+
+/* ============================================================
+   后期泛光：让翠绿波峰发光
+   ============================================================ */
+const composer = new EffectComposer(renderer);
+composer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+composer.setSize(window.innerWidth, window.innerHeight);
+composer.addPass(new RenderPass(scene, camera));
+
+const bloom = new UnrealBloomPass(
+  new THREE.Vector2(window.innerWidth, window.innerHeight),
+  0.92,   // strength
+  0.75,   // radius
+  0.22    // threshold
+);
+composer.addPass(bloom);
+
+/* ============================================================
+   动画循环
+   ============================================================ */
+const clock = new THREE.Clock();
+let elapsed = 0;
+
+function animate() {
+  requestAnimationFrame(animate);
+
+  const dt = Math.min(clock.getDelta(), 0.05);
+  elapsed += dt;
+
+  uniforms.uTime.value = elapsed;
+
+  // 相机缓慢环绕，增强 3D 纵深感
+  const t = elapsed;
+  camera.position.x = Math.sin(t * 0.10) * 11.0;
+  camera.position.z = 92.0 + Math.cos(t * 0.085) * 9.0;
+  camera.position.y = 58.0 + Math.sin(t * 0.145) * 3.5;
+  camera.lookAt(0, 0, 0);
+
+  composer.render();
+}
+
+/* ============================================================
+   自适应
+   ============================================================ */
+function onResize() {
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(w, h);
+
+  composer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  composer.setSize(w, h);
+  bloom.setSize(w, h);
+}
+
+window.addEventListener('resize', onResize, { passive: true });
+
+/* 页面隐藏时暂停时钟累积（避免回来后相位跳变） */
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) clock.getDelta();
+});
+
+animate();
+</script>
+</body>
+</html>

@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>逻辑斯谛映射 · 倍周期分叉图</title>
+<style>
+  html, body {
+    margin: 0; padding: 0;
+    width: 100%; height: 100%;
+    overflow: hidden;
+    background: #ffffff;
+  }
+
+  canvas { position: fixed; inset: 0; display: block; z-index: 1; }
+
+  /* 公式面板 */
+  #formula {
+    position: fixed;
+    left: 32px; top: 30px;
+    z-index: 2;
+    color: rgba(120, 20, 20, 0.62);
+    font: 13px/1.85 "Cambria Math", "Times New Roman", Georgia, serif;
+    letter-spacing: 0.03em;
+    pointer-events: none;
+    user-select: none;
+  }
+
+  #formula .title {
+    display: block;
+    font-size: 10px;
+    letter-spacing: 0.30em;
+    color: rgba(120, 20, 20, 0.38);
+    margin-bottom: 10px;
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+  }
+
+  #formula .line { display: block; margin: 1px 0; }
+  #formula .key  { color: rgba(150, 25, 25, 0.85); }
+
+  #hint {
+    position: fixed;
+    left: 50%; bottom: 24px;
+    transform: translateX(-50%);
+    z-index: 2;
+    color: rgba(120, 20, 20, 0.30);
+    font: 11px/1.7 -apple-system, BlinkMacSystemFont, "PingFang SC",
+          "Microsoft YaHei", "Helvetica Neue", sans-serif;
+    letter-spacing: 0.24em;
+    white-space: nowrap;
+    pointer-events: none;
+    user-select: none;
+  }
+</style>
+</head>
+<body>
+
+<!-- 公式面板 -->
+<div id="formula">
+  <span class="title">逻辑斯谛映射 · 倍周期分叉</span>
+  <span class="line"><span class="key">f</span>(x) = r · x · (1 − x)</span>
+  <span class="line">x<sub>n+1</sub> = r · x<sub>n</sub> · (1 − x<sub>n</sub>)</span>
+  <span class="line">r ∈ [ 2.4 , 4.0 ]</span>
+</div>
+
+<div id="hint">f(x) = r·x(1−x)　·　倍周期分叉图</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+
+/* ============================================================
+   1. 基础环境
+   ============================================================ */
+const scene  = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 100);
+camera.position.set(0, 0, 7.5);
+camera.lookAt(0, 0, 0);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.setClearColor(0xffffff, 1);          // 纯白底
+document.body.appendChild(renderer.domElement);
+
+/* ============================================================
+   2. 生成逻辑斯谛映射分叉图点云
+   f(x) = r·x·(1−x)
+   对每个 r ∈ [2.4, 4.0]：
+     - 先预迭代 N_SKIP 次丢弃瞬态
+     - 再记录 N_ITER 个吸引子点
+   ============================================================ */
+const R_MIN  = 2.4;
+const R_MAX  = 4.0;
+const N_R    = 1200;      // r 分辨率
+const N_ITER = 55;        // 每个 r 记录的点数
+const N_SKIP = 500;       // 预迭代次数
+
+const WORLD_W = 8.6;      // 世界坐标宽度
+const WORLD_H = 5.0;      // 世界坐标高度
+
+const total = N_R * N_ITER;
+
+const positions  = new Float32Array(total * 3);
+const aR_arr     = new Float32Array(total);
+const aChaos_arr = new Float32Array(total);
+const aRand_arr  = new Float32Array(total);
+
+let idx = 0;
+
+for (let i = 0; i < N_R; i++) {
+  const rFrac = i / (N_R - 1);
+  const r = R_MIN + (R_MAX - R_MIN) * rFrac;
+
+  /* 混沌度量：r > 3.5 之后逐渐增强 */
+  const chaos = Math.max(0, Math.min(1, (r - 3.5) / 0.5));
+
+  /* 预迭代丢弃瞬态 */
+  let x = 0.5;
+  for (let k = 0; k < N_SKIP; k++) {
+    x = r * x * (1 - x);
+  }
+
+  const wx = (rFrac - 0.5) * WORLD_W;
+
+  /* 记录吸引子点 */
+  for (let k = 0; k < N_ITER; k++) {
+    x = r * x * (1 - x);
+    const wy = (x - 0.5) * WORLD_H;
+
+    positions[idx * 3]     = wx;
+    positions[idx * 3 + 1] = wy;
+    positions[idx * 3 + 2] = 0;
+
+    aR_arr[idx]     = rFrac;
+    aChaos_arr[idx] = chaos;
+    aRand_arr[idx]  = Math.random();
+
+    idx++;
+  }
+}
+
+const geo = new THREE.BufferGeometry();
+geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+geo.setAttribute('aR',       new THREE.BufferAttribute(aR_arr, 1));
+geo.setAttribute('aChaos',   new THREE.BufferAttribute(aChaos_arr, 1));
+geo.setAttribute('aRand',    new THREE.BufferAttribute(aRand_arr, 1));
+
+/* ============================================================
+   3. 着色器 —— 扫描揭示 + 红黑渐变 + 混沌抖动
+   ============================================================ */
+const VERT = `
+  uniform float uTime;
+  uniform float uScan;
+  uniform float uPR;
+
+  attribute float aR;
+  attribute float aChaos;
+  attribute float aRand;
+
+  varying vec3  vColor;
+  varying float vAlpha;
+
+  void main() {
+    /* —— 扫描可见性：aR < uScan 时可见 —— */
+    float vis = 1.0 - smoothstep(uScan - 0.008, uScan + 0.014, aR);
+
+    /* —— 扫描前沿的光脉冲 —— */
+    float scanPulse = exp(-pow((aR - uScan) * 12.0, 2.0));
+
+    /* —— 混沌区域抖动：仅抖动 x 值方向（世界 y） —— */
+    float jitter = sin(uTime * 6.5 + aRand * 6.28318 + aR * 42.0)
+                 * aChaos * 0.13;
+
+    vec3 pos = position;
+    pos.y += jitter;
+
+    /* —— 颜色：亮红 → 暗黑，随 r 渐变 —— */
+    vec3 colRed  = vec3(0.88, 0.09, 0.09);
+    vec3 colDark = vec3(0.05, 0.015, 0.025);
+    vec3 col = mix(colRed, colDark, pow(aR, 0.9));
+
+    /* 扫描前沿加暖光 */
+    col += vec3(0.55, 0.15, 0.10) * scanPulse;
+
+    vColor = col;
+
+    /* —— 透明度 —— */
+    float alphaBase = 0.30 + 0.16 * aChaos;
+    vAlpha = vis * (alphaBase + scanPulse * 0.50);
+
+    /* —— 点尺寸 —— */
+    vec4 mv = modelViewMatrix * vec4(pos, 1.0);
+    float dist = max(-mv.z, 0.1);
+    float sz = 1.85 + scanPulse * 3.2;
+    gl_PointSize = clamp(sz * uPR * (7.5 / dist), 1.0, 11.0 * uPR);
+
+    gl_Position = projectionMatrix * mv;
+  }
+`;
+
+const FRAG = `
+  varying vec3  vColor;
+  varying float vAlpha;
+
+  void main() {
+    vec2 c = gl_PointCoord - vec2(0.5);
+    float d = length(c);
+    if (d > 0.5) discard;
+
+    float a = smoothstep(0.5, 0.0, d);
+    a = pow(a, 1.45);
+
+    gl_FragColor = vec4(vColor, vAlpha * a);
+  }
+`;
+
+const material = new THREE.ShaderMaterial({
+  uniforms: {
+    uTime: { value: 0 },
+    uScan: { value: 0 },
+    uPR:   { value: Math.min(devicePixelRatio, 2) }
+  },
+  vertexShader:   VERT,
+  fragmentShader: FRAG,
+  transparent: true,
+  depthWrite:  false,
+  depthTest:   false,
+  blending:    THREE.NormalBlending
+});
+
+const bifurcation = new THREE.Points(geo, material);
+bifurcation.frustumCulled = false;
+
+const group = new THREE.Group();
+group.add(bifurcation);
+scene.add(group);
+
+/* ============================================================
+   4. 动画循环
+   ============================================================ */
+const clock = new THREE.Clock();
+let elapsed = 0;
+
+function animate() {
+  requestAnimationFrame(animate);
+
+  const dt = Math.min(clock.getDelta(), 0.05);
+  elapsed += dt;
+
+  /* —— 扫描：16 秒往返一次 —— */
+  const period = 16;
+  const phase  = (elapsed % period) / period;
+  const uScan  = phase < 0.5 ? phase * 2 : 2 - phase * 2;
+
+  material.uniforms.uTime.value = elapsed;
+  material.uniforms.uScan.value = uScan;
+
+  /* —— 极轻微的 3D 摆动，增强空间感 —— */
+  group.rotation.y = Math.sin(elapsed * 0.20) * 0.055;
+  group.rotation.x = Math.sin(elapsed * 0.15) * 0.030;
+  group.rotation.z = Math.cos(elapsed * 0.13) * 0.012;
+
+  /* 相机极缓慢游移 */
+  camera.position.x = Math.sin(elapsed * 0.11) * 0.20;
+  camera.position.y = Math.cos(elapsed * 0.14) * 0.14;
+  camera.lookAt(0, 0, 0);
+
+  renderer.render(scene, camera);
+}
+
+animate();
+
+/* ============================================================
+   5. 自适应
+   ============================================================ */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  material.uniforms.uPR.value = Math.min(devicePixelRatio, 2);
+});
+</script>
+</body>
+</html>

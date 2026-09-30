@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>炫彩漩涡 · r = a(1+cosφ)</title>
+<style>
+  html, body {
+    margin: 0; padding: 0;
+    width: 100%; height: 100%;
+    overflow: hidden;
+    background: #040a12;
+  }
+
+  /* 海底深渊灰蓝渐变 */
+  #bg {
+    position: fixed; inset: 0; z-index: 0;
+    background: radial-gradient(ellipse 120% 110% at 50% 50%,
+      #0d2536 0%,
+      #081c2c 18%,
+      #051422 38%,
+      #030d18 58%,
+      #02070e 78%,
+      #040a12 100%);
+  }
+
+  /* 中心冷光晕 */
+  #glow {
+    position: fixed; inset: 0; z-index: 0;
+    pointer-events: none;
+    background: radial-gradient(circle 32vw at 50% 50%,
+      rgba(70, 200, 220, 0.055) 0%,
+      rgba(30, 90, 140, 0.024) 42%,
+      rgba(0, 0, 0, 0) 72%);
+  }
+
+  canvas { position: fixed; inset: 0; display: block; z-index: 1; }
+
+  #hint {
+    position: fixed;
+    left: 50%; bottom: 22px;
+    transform: translateX(-50%);
+    z-index: 2;
+    color: rgba(120, 210, 235, 0.26);
+    font: 12px/1.7 -apple-system, BlinkMacSystemFont, "PingFang SC",
+          "Microsoft YaHei", "Helvetica Neue", sans-serif;
+    letter-spacing: 0.24em;
+    white-space: nowrap;
+    pointer-events: none;
+    user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="bg"></div>
+<div id="glow"></div>
+<div id="hint">r = a(1+cosφ)　·　炫彩漩涡</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+
+/* ============================================================
+   1. 基础环境
+   ============================================================ */
+const scene  = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(46, innerWidth / innerHeight, 0.1, 200);
+camera.position.set(3.6, 1.9, 12.2);
+camera.lookAt(0, 0, 0);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.setClearColor(0x000000, 0);
+document.body.appendChild(renderer.domElement);
+
+/* ============================================================
+   2. 环形螺线参数  r = a(1+cosφ)  分层堆叠成锥状漩涡
+   ============================================================ */
+const LAYERS      = 58;
+const PTS_PER     = 180;
+const A_COEF      = 1.0;
+const TWIST_TOTAL = Math.PI * 6;
+const HEIGHT      = 7.0;
+const SCALE_TOP   = 0.10;
+const CURVE_SCALE = 2.0;
+const Y_JITTER    = 0.055;
+
+const TOTAL = LAYERS * PTS_PER;
+
+const positions = new Float32Array(TOTAL * 3);
+const aPhi      = new Float32Array(TOTAL);
+const aT        = new Float32Array(TOTAL);
+const aRand     = new Float32Array(TOTAL);
+
+let idx = 0;
+
+for (let layer = 0; layer < LAYERS; layer++) {
+  const t  = layer / (LAYERS - 1);
+  const y  = t * HEIGHT - HEIGHT * 0.5;
+  const sc = 1.0 - t * (1.0 - SCALE_TOP);
+  const tw = t * TWIST_TOTAL;
+  const ct = Math.cos(tw);
+  const st = Math.sin(tw);
+
+  for (let i = 0; i < PTS_PER; i++) {
+    const phi = (i / PTS_PER) * Math.PI * 2;
+    const r   = A_COEF * (1 + Math.cos(phi));
+
+    const x0 = r * Math.cos(phi);
+    const z0 = r * Math.sin(phi);
+
+    const rx = x0 * ct - z0 * st;
+    const rz = x0 * st + z0 * ct;
+
+    const jitter = (Math.random() - 0.5) * Y_JITTER;
+
+    positions[idx * 3]     = rx * sc * CURVE_SCALE;
+    positions[idx * 3 + 1] = y + jitter;
+    positions[idx * 3 + 2] = rz * sc * CURVE_SCALE;
+
+    aPhi[idx]  = phi;
+    aT[idx]    = t;
+    aRand[idx] = Math.random();
+    idx++;
+  }
+}
+
+const vortexGeo = new THREE.BufferGeometry();
+vortexGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+vortexGeo.setAttribute('aPhi',     new THREE.BufferAttribute(aPhi, 1));
+vortexGeo.setAttribute('aT',       new THREE.BufferAttribute(aT, 1));
+vortexGeo.setAttribute('aRand',    new THREE.BufferAttribute(aRand, 1));
+
+/* ============================================================
+   3. 漩涡材质 —— 多色渐变炫彩 + 更小尺寸 + 更低亮度
+   ============================================================ */
+const vortexMat = new THREE.ShaderMaterial({
+  uniforms: {
+    uTime: { value: 0 },
+    uPR:   { value: Math.min(devicePixelRatio, 2) }
+  },
+  vertexShader: `
+    uniform float uTime;
+    uniform float uPR;
+
+    attribute float aPhi;
+    attribute float aT;
+    attribute float aRand;
+
+    varying vec3  vColor;
+    varying float vAlpha;
+
+    vec3 hsv2rgb(vec3 c) {
+      vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+      vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+      return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+    }
+
+    void main() {
+      vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      float dist = max(-mv.z, 0.001);
+
+      /* —— 沿环向流淌的光脉冲 —— */
+      float pulse = sin(aPhi * 2.2 + uTime * 2.8 - aT * 9.0);
+      pulse = pow(max(pulse, 0.0), 2.0);
+
+      /* —— 高阶谐波 —— */
+      float fine = sin(aPhi * 5.5 - uTime * 4.2 + aT * 14.0);
+      fine = pow(max(fine, 0.0), 3.0) * 0.55;
+
+      /* —— 靠近漩涡中心增亮 —— */
+      float innerGlow = pow(aT, 1.6);
+
+      /* —— 炫彩：色相沿环向 + 半径 + 时间循环流转 —— */
+      float hue = fract(
+        aPhi * 0.16 +
+        aT * 0.85 +
+        uTime * 0.055
+      );
+      vec3 rainbow = hsv2rgb(vec3(hue, 0.78, 1.0));
+
+      /* —— 中心偏白提亮，让核心更纯净 —— */
+      vec3 white = vec3(0.92, 0.98, 1.00);
+      vec3 col = mix(rainbow, white, innerGlow * 0.55);
+
+      /* —— 亮度大幅降低 —— */
+      float bright = 0.22 + 0.35 * pulse + 0.22 * fine + 0.30 * innerGlow;
+      vColor = col * bright;
+
+      /* —— 透明度降低 —— */
+      vAlpha = 0.10 + 0.26 * pulse + 0.16 * fine + 0.22 * innerGlow;
+      vAlpha *= 0.65 + 0.35 * (0.5 + 0.5 * sin(aRand * 6.283 + uTime * 1.3));
+      vAlpha = clamp(vAlpha, 0.0, 0.62);
+
+      /* —— 点尺寸大幅缩小 —— */
+      float size = 0.22 + 0.55 * pulse + 0.30 * fine + 0.45 * innerGlow;
+      gl_PointSize = clamp(size * uPR * (44.0 / dist), 0.6, 8.5);
+
+      gl_Position = projectionMatrix * mv;
+    }
+  `,
+  fragmentShader: `
+    varying vec3  vColor;
+    varying float vAlpha;
+
+    void main() {
+      vec2 c = gl_PointCoord - vec2(0.5);
+      float d2 = dot(c, c);
+      if (d2 > 0.25) discard;
+
+      float a = smoothstep(0.25, 0.0, d2);
+      a = pow(a, 1.9);
+
+      gl_FragColor = vec4(vColor, vAlpha * a);
+    }
+  `,
+  transparent: true,
+  depthWrite:  false,
+  blending:    THREE.AdditiveBlending
+});
+
+const vortex = new THREE.Points(vortexGeo, vortexMat);
+vortex.frustumCulled = false;
+
+/* ============================================================
+   4. 漩涡表面流淌的粒子 —— 更小、更炫彩
+   ============================================================ */
+const P_COUNT = 1100;
+
+const pPositions = new Float32Array(P_COUNT * 3);
+const pPhi       = new Float32Array(P_COUNT);
+const pT         = new Float32Array(P_COUNT);
+const pSpeed     = new Float32Array(P_COUNT);
+const pClimb     = new Float32Array(P_COUNT);
+const pRand      = new Float32Array(P_COUNT);
+
+const pGeo = new THREE.BufferGeometry();
+pGeo.setAttribute('position', new THREE.BufferAttribute(pPositions, 3));
+pGeo.setAttribute('aRand',    new THREE.BufferAttribute(pRand, 1));
+
+for (let i = 0; i < P_COUNT; i++) {
+  pPhi[i]   = Math.random() * Math.PI * 2;
+  pT[i]     = Math.random();
+  pSpeed[i] = 1.0 + Math.random() * 2.6;
+  pClimb[i] = 0.020 + Math.random() * 0.055;
+  pRand[i]  = Math.random();
+}
+
+const pMat = new THREE.ShaderMaterial({
+  uniforms: {
+    uTime: { value: 0 },
+    uPR:   { value: Math.min(devicePixelRatio, 2) }
+  },
+  vertexShader: `
+    uniform float uTime;
+    uniform float uPR;
+
+    attribute float aRand;
+
+    varying vec3  vColor;
+    varying float vAlpha;
+
+    vec3 hsv2rgb(vec3 c) {
+      vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+      vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+      return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+    }
+
+    void main() {
+      vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      float dist = max(-mv.z, 0.001);
+
+      float flicker = 0.5 + 0.5 * sin(uTime * 7.5 + aRand * 6.28318);
+
+      /* —— 炫彩：每个粒子独立色相 + 时间缓慢偏移 —— */
+      float hue = fract(aRand + uTime * 0.045);
+      vec3 col = hsv2rgb(vec3(hue, 0.82, 1.0));
+
+      /* —— 亮度降低 —— */
+      vColor = col * (0.35 + 0.32 * flicker);
+
+      /* —— 透明度降低 —— */
+      vAlpha = clamp(0.22 + 0.32 * flicker, 0.0, 0.60);
+
+      /* —— 尺寸大幅缩小 —— */
+      float size = 0.32 + 0.65 * flicker;
+      gl_PointSize = clamp(size * uPR * (38.0 / dist), 0.6, 9.0);
+
+      gl_Position = projectionMatrix * mv;
+    }
+  `,
+  fragmentShader: `
+    varying vec3  vColor;
+    varying float vAlpha;
+
+    void main() {
+      vec2 c = gl_PointCoord - vec2(0.5);
+      float d2 = dot(c, c);
+      if (d2 > 0.25) discard;
+
+      float a = smoothstep(0.25, 0.0, d2);
+      a = pow(a, 1.9);
+
+      gl_FragColor = vec4(vColor, vAlpha * a);
+    }
+  `,
+  transparent: true,
+  depthWrite:  false,
+  blending:    THREE.AdditiveBlending
+});
+
+const particles = new THREE.Points(pGeo, pMat);
+particles.frustumCulled = false;
+
+function updateParticles(dt) {
+  for (let i = 0; i < P_COUNT; i++) {
+    pPhi[i] += pSpeed[i] * dt;
+    if (pPhi[i] > Math.PI * 2) pPhi[i] -= Math.PI * 2;
+
+    pT[i] += pClimb[i] * dt;
+
+    if (pT[i] > 1.0) {
+      pT[i]     = 0.0;
+      pPhi[i]   = Math.random() * Math.PI * 2;
+      pSpeed[i] = 1.0 + Math.random() * 2.6;
+      pClimb[i] = 0.020 + Math.random() * 0.055;
+    }
+
+    const t  = pT[i];
+    const phi = pPhi[i];
+
+    const y  = t * HEIGHT - HEIGHT * 0.5;
+    const sc = 1.0 - t * (1.0 - SCALE_TOP);
+    const tw = t * TWIST_TOTAL;
+    const ct = Math.cos(tw);
+    const st = Math.sin(tw);
+
+    const r  = A_COEF * (1 + Math.cos(phi));
+    const x0 = r * Math.cos(phi);
+    const z0 = r * Math.sin(phi);
+
+    const rx = x0 * ct - z0 * st;
+    const rz = x0 * st + z0 * ct;
+
+    pPositions[i * 3]     = rx * sc * CURVE_SCALE;
+    pPositions[i * 3 + 1] = y;
+    pPositions[i * 3 + 2] = rz * sc * CURVE_SCALE;
+  }
+
+  pGeo.attributes.position.needsUpdate = true;
+}
+
+/* ============================================================
+   5. 组与姿态
+   ============================================================ */
+const group = new THREE.Group();
+group.add(vortex);
+group.add(particles);
+scene.add(group);
+
+group.rotation.x = 0.12;
+group.rotation.z = 0.06;
+
+/* ============================================================
+   6. 动画循环
+   ============================================================ */
+const clock = new THREE.Clock();
+let elapsed = 0;
+
+function animate() {
+  requestAnimationFrame(animate);
+
+  const dt = Math.min(clock.getDelta(), 0.05);
+  elapsed += dt;
+
+  vortexMat.uniforms.uTime.value = elapsed;
+  pMat.uniforms.uTime.value      = elapsed;
+
+  updateParticles(dt);
+
+  group.rotation.y = elapsed * 0.22;
+
+  group.rotation.x = 0.12 + Math.sin(elapsed * 0.24) * 0.045;
+  group.rotation.z = 0.06 + Math.cos(elapsed * 0.19) * 0.035;
+
+  const breathe = 1.0 + Math.sin(elapsed * 0.58) * 0.018;
+  group.scale.setScalar(breathe);
+
+  camera.position.x = 3.6 + Math.sin(elapsed * 0.13) * 0.55;
+  camera.position.y = 1.9 + Math.cos(elapsed * 0.17) * 0.42;
+  camera.position.z = 12.2 + Math.sin(elapsed * 0.11) * 0.50;
+  camera.lookAt(0, 0, 0);
+
+  renderer.render(scene, camera);
+}
+
+animate();
+
+/* ============================================================
+   7. 自适应
+   ============================================================ */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  vortexMat.uniforms.uPR.value = Math.min(devicePixelRatio, 2);
+  pMat.uniforms.uPR.value      = Math.min(devicePixelRatio, 2);
+});
+</script>
+</body>
+</html>

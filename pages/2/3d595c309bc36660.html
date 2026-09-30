@@ -1,0 +1,1175 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>象棋马走日 · 3D</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body {
+    width:100%; height:100%; overflow:hidden;
+    background:#0a0806;
+    font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;
+    color:#e0d0b0; user-select:none; -webkit-tap-highlight-color:transparent;
+    cursor:grab;
+  }
+  html.dragging, html.dragging body { cursor:grabbing; }
+  canvas { display:block; }
+
+  #hud {
+    position:fixed; top:22px; left:26px; z-index:5;
+    pointer-events:none; font-size:12px; line-height:1.72;
+    letter-spacing:0.03em; text-shadow:0 0 24px rgba(0,0,0,0.95);
+  }
+  #hud .title {
+    font-size:18px; font-weight:300; letter-spacing:0.3em;
+    color:#f4e6c8; margin-bottom:2px;
+  }
+  #hud .sub {
+    font-size:10px; letter-spacing:0.24em;
+    color:rgba(210,180,130,0.46); margin-bottom:16px;
+  }
+  #hud .row { display:flex; gap:10px; font-variant-numeric:tabular-nums; }
+  #hud .k { color:rgba(200,170,125,0.42); width:56px; }
+  #hud .v { color:#f0d8a8; }
+  #hud .v.hi { color:#ffd060; }
+  #hud .v.g { color:#7de0a8; }
+
+  #hud .sec {
+    margin-top:13px; padding-top:12px;
+    border-top:1px solid rgba(200,170,125,0.13);
+  }
+  #hud .sec-title {
+    font-size:9.5px; letter-spacing:0.18em;
+    color:rgba(200,170,125,0.42); margin-bottom:8px;
+  }
+  #hud .mv {
+    display:flex; align-items:center; gap:8px;
+    font-size:11px; margin-bottom:4px;
+    color:rgba(220,200,170,0.72);
+    font-variant-numeric:tabular-nums;
+  }
+  #hud .mv .dot {
+    width:6px; height:6px; border-radius:50%;
+    background:#ffd060; box-shadow:0 0 8px #ffd060;
+    flex-shrink:0;
+  }
+
+  .btn {
+    position:fixed; z-index:6;
+    padding:10px 19px;
+    background:rgba(24,18,12,0.76);
+    border:1px solid rgba(200,170,120,0.26);
+    border-radius:999px;
+    color:#d8c098; font-size:12px; letter-spacing:0.14em;
+    font-family:inherit; cursor:pointer;
+    backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
+    transition:all 0.3s cubic-bezier(0.4,0,0.2,1);
+  }
+  .btn:hover {
+    background:rgba(62,48,32,0.86);
+    border-color:rgba(245,215,150,0.62);
+    color:#fcecd0;
+  }
+  .btn.on {
+    background:rgba(120,86,40,0.58);
+    border-color:rgba(255,226,170,0.78);
+    color:#fff8e8;
+    box-shadow:0 0 28px rgba(255,200,120,0.26);
+  }
+  #btn-spin  { right:24px; bottom:26px; }
+  #btn-reset { right:24px; bottom:78px; }
+
+  #hint {
+    position:fixed; bottom:32px; left:26px; z-index:5;
+    font-size:10.5px; letter-spacing:0.1em;
+    color:rgba(200,170,125,0.44);
+    pointer-events:none; transition:opacity 0.9s;
+    line-height:1.7;
+  }
+  #hint.hide { opacity:0; }
+
+  @media (max-width:720px) {
+    #hud { top:14px; left:14px; font-size:10.5px; }
+    #hud .title { font-size:14px; letter-spacing:0.22em; }
+    .btn { padding:8px 13px; font-size:11px; }
+    #btn-spin  { right:12px; bottom:14px; }
+    #btn-reset { right:12px; bottom:56px; }
+    #hint { display:none; }
+  }
+</style>
+</head>
+<body>
+
+<div id="hud">
+  <div class="title">象棋马走日</div>
+  <div class="sub">KNIGHT · 坐标变换</div>
+  <div class="row"><span class="k">选中</span><span class="v hi" id="v-sel">—</span></div>
+  <div class="row"><span class="k">落点</span><span class="v g" id="v-count">—</span></div>
+  <div class="row"><span class="k">路径</span><span class="v" id="v-path">—</span></div>
+  <div class="sec">
+    <div class="sec-title">合法着法</div>
+    <div id="v-moves">点击马匹查看</div>
+  </div>
+</div>
+
+<button class="btn on" id="btn-spin">自动旋转</button>
+<button class="btn" id="btn-reset">重置棋局</button>
+<div id="hint">点击马匹显示合法落点 · 点击落点走子<br>拖动旋转视角 · 滚轮缩放</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ============================================================
+//  常量
+// ============================================================
+const COLS = 9;
+const ROWS = 10;
+const CELL = 1;
+const BOARD_W = (COLS - 1) * CELL;
+const BOARD_H = (ROWS - 1) * CELL;
+
+const HORSE_MOVES = [
+  { dx: 2, dy: 1 }, { dx: 2, dy: -1 },
+  { dx: -2, dy: 1 }, { dx: -2, dy: -1 },
+  { dx: 1, dy: 2 }, { dx: 1, dy: -2 },
+  { dx: -1, dy: 2 }, { dx: -1, dy: -2 },
+];
+
+const INITIAL = [
+  { col:0, row:0, type:'车', side:'b' },
+  { col:1, row:0, type:'马', side:'b' },
+  { col:2, row:0, type:'象', side:'b' },
+  { col:3, row:0, type:'士', side:'b' },
+  { col:4, row:0, type:'将', side:'b' },
+  { col:5, row:0, type:'士', side:'b' },
+  { col:6, row:0, type:'象', side:'b' },
+  { col:7, row:0, type:'马', side:'b' },
+  { col:8, row:0, type:'车', side:'b' },
+  { col:1, row:2, type:'炮', side:'b' },
+  { col:7, row:2, type:'炮', side:'b' },
+  { col:0, row:3, type:'卒', side:'b' },
+  { col:2, row:3, type:'卒', side:'b' },
+  { col:4, row:3, type:'卒', side:'b' },
+  { col:6, row:3, type:'卒', side:'b' },
+  { col:8, row:3, type:'卒', side:'b' },
+  { col:0, row:9, type:'车', side:'r' },
+  { col:1, row:9, type:'马', side:'r' },
+  { col:2, row:9, type:'相', side:'r' },
+  { col:3, row:9, type:'仕', side:'r' },
+  { col:4, row:9, type:'帅', side:'r' },
+  { col:5, row:9, type:'仕', side:'r' },
+  { col:6, row:9, type:'相', side:'r' },
+  { col:7, row:9, type:'马', side:'r' },
+  { col:8, row:9, type:'车', side:'r' },
+  { col:1, row:7, type:'炮', side:'r' },
+  { col:7, row:7, type:'炮', side:'r' },
+  { col:0, row:6, type:'兵', side:'r' },
+  { col:2, row:6, type:'兵', side:'r' },
+  { col:4, row:6, type:'兵', side:'r' },
+  { col:6, row:6, type:'兵', side:'r' },
+  { col:8, row:6, type:'兵', side:'r' },
+];
+
+function g2w(col, row) {
+  return {
+    x: (col - (COLS - 1) / 2) * CELL,
+    z: (row - (ROWS - 1) / 2) * CELL,
+  };
+}
+
+// ============================================================
+//  场景
+// ============================================================
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a0806);
+scene.fog = new THREE.Fog(0x0a0806, 20, 46);
+
+const camera = new THREE.PerspectiveCamera(
+  42, window.innerWidth / window.innerHeight, 0.1, 200
+);
+camera.position.set(0, 13, 12);
+camera.lookAt(0, 0, 0);
+
+const renderer = new THREE.WebGLRenderer({
+  antialias: true,
+  powerPreference: 'high-performance',
+});
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.1;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+// ── 光照 ──
+const ambient = new THREE.AmbientLight(0x405068, 1.4);
+scene.add(ambient);
+
+const keyLight = new THREE.DirectionalLight(0xfff0d8, 2.2);
+keyLight.position.set(6, 16, 8);
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.width = 2048;
+keyLight.shadow.mapSize.height = 2048;
+keyLight.shadow.camera.near = 0.5;
+keyLight.shadow.camera.far = 50;
+keyLight.shadow.camera.left = -12;
+keyLight.shadow.camera.right = 12;
+keyLight.shadow.camera.top = 12;
+keyLight.shadow.camera.bottom = -12;
+keyLight.shadow.bias = -0.0004;
+scene.add(keyLight);
+
+const rimLight = new THREE.DirectionalLight(0x6080b0, 0.9);
+rimLight.position.set(-8, 6, -10);
+scene.add(rimLight);
+
+const fillLight = new THREE.PointLight(0xffd8a0, 0.6, 30);
+fillLight.position.set(0, 6, 6);
+scene.add(fillLight);
+
+// ============================================================
+//  棋盘纹理
+// ============================================================
+function makeBoardTexture() {
+  const cw = 1024;
+  const ch = 1024 * (ROWS - 1 + 1.6) / (COLS - 1 + 1.6);
+
+  const cv = document.createElement('canvas');
+  cv.width = cw;
+  cv.height = Math.round(ch);
+  const g = cv.getContext('2d');
+
+  const grd = g.createLinearGradient(0, 0, cw, ch);
+  grd.addColorStop(0, '#7a5836');
+  grd.addColorStop(0.35, '#8c6840');
+  grd.addColorStop(0.6, '#94704a');
+  grd.addColorStop(1, '#6a4a2e');
+  g.fillStyle = grd;
+  g.fillRect(0, 0, cw, ch);
+
+  for (let i = 0; i < 3200; i++) {
+    const x = Math.random() * cw;
+    const y = Math.random() * ch;
+    const w = 4 + Math.random() * 60;
+    const h = 0.6 + Math.random() * 1.6;
+    const a = Math.random() * 0.055;
+    g.fillStyle = `rgba(${40 + Math.random() * 50}, ${20 + Math.random() * 32}, 5, ${a})`;
+    g.fillRect(x, y, w, h);
+  }
+
+  g.save();
+  g.globalAlpha = 0.045;
+  g.strokeStyle = '#2a1a0a';
+  g.lineWidth = 10;
+  g.lineCap = 'round';
+  for (let k = 1; k <= 6; k++) {
+    const s = k * 130;
+    g.beginPath();
+    g.moveTo(cw / 2 - s, ch / 2);
+    g.lineTo(cw / 2, ch / 2 - s * 0.42);
+    g.lineTo(cw / 2 + s, ch / 2);
+    g.stroke();
+  }
+  g.restore();
+
+  const padX = cw * 0.085;
+  const padY = ch * 0.075;
+  const gw = cw - padX * 2;
+  const gh = ch - padY * 2;
+  const gcw = gw / (COLS - 1);
+  const gch = gh / (ROWS - 1);
+
+  g.lineCap = 'round';
+  g.lineJoin = 'round';
+
+  g.strokeStyle = 'rgba(38, 24, 12, 0.82)';
+  g.lineWidth = 3.5;
+
+  for (let i = 0; i < COLS; i++) {
+    const x = padX + i * gcw;
+    if (i === 0 || i === COLS - 1) {
+      g.beginPath();
+      g.moveTo(x, padY);
+      g.lineTo(x, ch - padY);
+      g.stroke();
+    } else {
+      g.beginPath();
+      g.moveTo(x, padY);
+      g.lineTo(x, padY + 4 * gch);
+      g.stroke();
+      g.beginPath();
+      g.moveTo(x, padY + 5 * gch);
+      g.lineTo(x, ch - padY);
+      g.stroke();
+    }
+  }
+
+  for (let i = 0; i < ROWS; i++) {
+    const y = padY + i * gch;
+    g.beginPath();
+    g.moveTo(padX, y);
+    g.lineTo(cw - padX, y);
+    g.stroke();
+  }
+
+  g.strokeStyle = 'rgba(30, 18, 8, 0.9)';
+  g.lineWidth = 7;
+  g.strokeRect(padX - 5, padY - 5, gw + 10, gh + 10);
+  g.lineWidth = 2.5;
+  g.strokeRect(padX - 18, padY - 18, gw + 36, gh + 36);
+
+  g.lineWidth = 3.5;
+  g.strokeStyle = 'rgba(38, 24, 12, 0.82)';
+  g.beginPath();
+  g.moveTo(padX + 3 * gcw, padY);
+  g.lineTo(padX + 5 * gcw, padY + 2 * gch);
+  g.moveTo(padX + 5 * gcw, padY);
+  g.lineTo(padX + 3 * gcw, padY + 2 * gch);
+  g.stroke();
+  g.beginPath();
+  g.moveTo(padX + 3 * gcw, padY + 7 * gch);
+  g.lineTo(padX + 5 * gcw, padY + 9 * gch);
+  g.moveTo(padX + 5 * gcw, padY + 7 * gch);
+  g.lineTo(padX + 3 * gcw, padY + 9 * gch);
+  g.stroke();
+
+  g.fillStyle = 'rgba(40, 24, 10, 0.6)';
+  g.font = `300 ${Math.round(gch * 0.62)}px "KaiTi", "STKaiti", "Songti SC", serif`;
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillText('楚  河', padX + 2 * gcw, padY + 4.5 * gch);
+  g.fillText('汉  界', padX + 6 * gcw, padY + 4.5 * gch);
+
+  g.fillStyle = 'rgba(40, 24, 10, 0.7)';
+  const stars = [[1,2],[7,2],[1,7],[7,7],[0,3],[2,3],[4,3],[6,3],[8,3]];
+  for (const [c, r] of stars) {
+    const x = padX + c * gcw;
+    const y = padY + r * gch;
+    const rad = 4;
+    g.fillRect(x - rad * 2.5 - 2, y - 1.5, rad * 2, 3);
+    g.fillRect(x + rad * 0.5 + 2, y - 1.5, rad * 2, 3);
+    g.fillRect(x - 1.5, y - rad * 2.5 - 2, 3, rad * 2);
+    g.fillRect(x - 1.5, y + rad * 0.5 + 2, 3, rad * 2);
+  }
+
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return tex;
+}
+
+// ============================================================
+//  棋盘网格
+//  ⚠ 修正 z-fighting：棋盘顶面抬高 0.004，底座顶部略低于 0
+// ============================================================
+const boardW = BOARD_W + 1.5;
+const boardH = BOARD_H + 1.5;
+
+const boardMat = new THREE.MeshStandardMaterial({
+  map: makeBoardTexture(),
+  roughness: 0.72,
+  metalness: 0.08,
+});
+
+const boardMesh = new THREE.Mesh(
+  new THREE.PlaneGeometry(boardW, boardH),
+  boardMat
+);
+boardMesh.rotation.x = -Math.PI / 2;
+boardMesh.position.y = 0.004;        // ← 抬高一点点，消除与底座共面
+boardMesh.receiveShadow = true;
+scene.add(boardMesh);
+
+// 底座：中心下移，让顶面在 -0.004，进一步避开共面
+const BOARD_BASE_H = 0.36;
+const boardBase = new THREE.Mesh(
+  new THREE.BoxGeometry(boardW, BOARD_BASE_H, boardH),
+  new THREE.MeshStandardMaterial({
+    color: 0x4a3018,
+    roughness: 0.88,
+    metalness: 0.05,
+  })
+);
+boardBase.position.y = -BOARD_BASE_H / 2 - 0.004;   // 顶面 = -0.004
+boardBase.receiveShadow = true;
+boardBase.castShadow = true;
+scene.add(boardBase);
+
+// 地台
+const ground = new THREE.Mesh(
+  new THREE.CircleGeometry(22, 64),
+  new THREE.MeshStandardMaterial({
+    color: 0x14100c,
+    roughness: 1,
+    metalness: 0,
+  })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = -0.42;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// ============================================================
+//  棋子
+// ============================================================
+const texCache = new Map();
+
+function getPieceTexture(type, side) {
+  const key = type + '_' + side;
+  if (texCache.has(key)) return texCache.get(key);
+
+  const S = 256;
+  const cv = document.createElement('canvas');
+  cv.width = S; cv.height = S;
+  const g = cv.getContext('2d');
+
+  const isRed = side === 'r';
+  const inkColor = isRed ? '#a82820' : '#1a1a1a';
+  const ringColor = isRed ? '#b03028' : '#2a2a2a';
+
+  const grd = g.createRadialGradient(
+    S * 0.36, S * 0.32, S * 0.05,
+    S * 0.5, S * 0.5, S * 0.5
+  );
+  grd.addColorStop(0, '#f8eed6');
+  grd.addColorStop(0.6, '#eadcc0');
+  grd.addColorStop(1, '#d0bea0');
+  g.fillStyle = grd;
+  g.beginPath();
+  g.arc(S / 2, S / 2, S * 0.48, 0, Math.PI * 2);
+  g.fill();
+
+  g.beginPath();
+  g.arc(S / 2, S / 2, S * 0.44, 0, Math.PI * 2);
+  g.strokeStyle = ringColor;
+  g.lineWidth = S * 0.028;
+  g.stroke();
+
+  g.beginPath();
+  g.arc(S / 2, S / 2, S * 0.38, 0, Math.PI * 2);
+  g.strokeStyle = ringColor;
+  g.lineWidth = S * 0.012;
+  g.stroke();
+
+  g.fillStyle = inkColor;
+  g.font = `600 ${S * 0.52}px "KaiTi", "STKaiti", "Songti SC", serif`;
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillText(type, S / 2, S * 0.545);
+
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  texCache.set(key, tex);
+  return tex;
+}
+
+const PIECE_R = 0.42;
+
+function makePieceMesh(type, side, isKnight) {
+  const group = new THREE.Group();
+  const isRed = side === 'r';
+
+  const bodyMat = new THREE.MeshStandardMaterial({
+    color: isRed ? 0xe8dcc2 : 0xe2d6bc,
+    roughness: 0.62,
+    metalness: 0.12,
+  });
+
+  const body = new THREE.Mesh(
+    new THREE.CylinderGeometry(PIECE_R, PIECE_R * 1.04, 0.16, 40),
+    bodyMat
+  );
+  body.position.y = 0.08;
+  body.castShadow = true;
+  body.receiveShadow = true;
+  group.add(body);
+
+  const topGeo = new THREE.CircleGeometry(PIECE_R, 40);
+  const topMat = new THREE.MeshStandardMaterial({
+    map: getPieceTexture(type, side),
+    roughness: 0.58,
+    metalness: 0.1,
+  });
+  const top = new THREE.Mesh(topGeo, topMat);
+  top.rotation.x = -Math.PI / 2;
+  top.position.y = 0.161;
+  top.receiveShadow = true;
+  group.add(top);
+
+  const edge = new THREE.Mesh(
+    new THREE.TorusGeometry(PIECE_R * 0.995, 0.012, 8, 48),
+    new THREE.MeshStandardMaterial({
+      color: isRed ? 0xc09060 : 0xb0a080,
+      roughness: 0.45,
+      metalness: 0.55,
+    })
+  );
+  edge.rotation.x = Math.PI / 2;
+  edge.position.y = 0.161;
+  group.add(edge);
+
+  if (isKnight) {
+    const halo = new THREE.Mesh(
+      new THREE.RingGeometry(PIECE_R * 0.98, PIECE_R * 1.18, 48),
+      new THREE.MeshBasicMaterial({
+        color: isRed ? 0xff8060 : 0x80c8ff,
+        transparent: true,
+        opacity: 0.30,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      })
+    );
+    halo.rotation.x = -Math.PI / 2;
+    halo.position.y = 0.163;
+    group.add(halo);
+    group.userData.halo = halo;
+  }
+
+  return group;
+}
+
+// ============================================================
+//  游戏状态
+// ============================================================
+const pieces = [];
+const highlights = [];
+const pathLines = [];
+
+let selectedPiece = null;
+let legalMoves = [];
+
+// ============================================================
+//  初始化
+// ============================================================
+function initGame() {
+  for (const p of pieces) scene.remove(p.group);
+  pieces.length = 0;
+
+  clearHighlights();
+  clearPaths();
+
+  selectedPiece = null;
+  legalMoves = [];
+  anims.length = 0;
+
+  for (const def of INITIAL) {
+    const isKnight = def.type === '马';
+    const group = makePieceMesh(def.type, def.side, isKnight);
+    const w = g2w(def.col, def.row);
+    group.position.set(w.x, 0, w.z);
+    scene.add(group);
+
+    pieces.push({
+      group,
+      col: def.col,
+      row: def.row,
+      type: def.type,
+      side: def.side,
+      alive: true,
+    });
+  }
+
+  updateHUD();
+}
+
+// ============================================================
+//  查询
+// ============================================================
+function pieceAt(col, row) {
+  return pieces.find(p => p.alive && p.col === col && p.row === row) || null;
+}
+
+function computeHorseMoves(piece) {
+  const result = [];
+
+  for (const mv of HORSE_MOVES) {
+    const nc = piece.col + mv.dx;
+    const nr = piece.row + mv.dy;
+
+    if (nc < 0 || nc >= COLS || nr < 0 || nr >= ROWS) continue;
+
+    let blockC, blockR;
+    if (Math.abs(mv.dx) === 2) {
+      blockC = piece.col + Math.sign(mv.dx);
+      blockR = piece.row;
+    } else {
+      blockC = piece.col;
+      blockR = piece.row + Math.sign(mv.dy);
+    }
+
+    const blocker = pieceAt(blockC, blockR);
+    if (blocker) continue;
+
+    const target = pieceAt(nc, nr);
+    if (target && target.side === piece.side) continue;
+
+    result.push({
+      col: nc,
+      row: nr,
+      capture: target || null,
+    });
+  }
+
+  return result;
+}
+
+// ============================================================
+//  高亮 —— ⚠ 修正：mesh 与 dot 都要移除
+// ============================================================
+const highlightGroup = new THREE.Group();
+scene.add(highlightGroup);
+
+function clearHighlights() {
+  for (const h of highlights) {
+    // 移除圆环
+    if (h.mesh) {
+      highlightGroup.remove(h.mesh);
+      h.mesh.geometry.dispose();
+      h.mesh.material.dispose();
+      h.mesh = null;
+    }
+    // 移除中心点 —— 上一次就是漏了这一步
+    if (h.dot) {
+      highlightGroup.remove(h.dot);
+      h.dot.geometry.dispose();
+      h.dot.material.dispose();
+      h.dot = null;
+    }
+  }
+  highlights.length = 0;
+
+  // 兜底：清空 group 的所有子节点，防止意外残留
+  while (highlightGroup.children.length > 0) {
+    const child = highlightGroup.children[0];
+    highlightGroup.remove(child);
+    if (child.geometry) child.geometry.dispose();
+    if (child.material) child.material.dispose();
+  }
+}
+
+function addHighlight(col, row, isCapture) {
+  const w = g2w(col, row);
+
+  const color = isCapture ? 0xff5540 : 0xffd060;
+
+  const ringGeo = new THREE.RingGeometry(PIECE_R * 0.68, PIECE_R * 0.95, 40);
+  const ringMat = new THREE.MeshBasicMaterial({
+    color,
+    transparent: true,
+    opacity: 0.85,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  const mesh = new THREE.Mesh(ringGeo, ringMat);
+  mesh.rotation.x = -Math.PI / 2;
+  mesh.position.set(w.x, 0.21, w.z);
+  highlightGroup.add(mesh);
+
+  const dotGeo = new THREE.CircleGeometry(PIECE_R * 0.22, 24);
+  const dotMat = new THREE.MeshBasicMaterial({
+    color,
+    transparent: true,
+    opacity: 0.7,
+    depthWrite: false,
+  });
+  const dot = new THREE.Mesh(dotGeo, dotMat);
+  dot.rotation.x = -Math.PI / 2;
+  dot.position.set(w.x, 0.212, w.z);
+  highlightGroup.add(dot);
+
+  highlights.push({
+    mesh, dot,
+    col, row,
+    phase: Math.random() * Math.PI * 2,
+  });
+}
+
+// ============================================================
+//  路径
+// ============================================================
+const pathGroup = new THREE.Group();
+scene.add(pathGroup);
+
+function clearPaths() {
+  for (const l of pathLines) {
+    pathGroup.remove(l);
+    if (l.geometry) l.geometry.dispose();
+    if (l.material) l.material.dispose();
+  }
+  pathLines.length = 0;
+
+  while (pathGroup.children.length > 0) {
+    const child = pathGroup.children[0];
+    pathGroup.remove(child);
+    if (child.geometry) child.geometry.dispose();
+    if (child.material) child.material.dispose();
+  }
+}
+
+function addPath(fromCol, fromRow, toCol, toRow) {
+  const a = g2w(fromCol, fromRow);
+  const b = g2w(toCol, toRow);
+
+  const p0 = new THREE.Vector3(a.x, 0.28, a.z);
+  const p2 = new THREE.Vector3(b.x, 0.28, b.z);
+
+  const mx = (a.x + b.x) * 0.5;
+  const mz = (a.z + b.z) * 0.5;
+  const dirX = b.x - a.x;
+  const dirZ = b.z - a.z;
+  const len = Math.hypot(dirX, dirZ) || 1;
+  const perpX = -dirZ / len;
+  const perpZ = dirX / len;
+
+  const bend = len * 0.30;
+  const p1 = new THREE.Vector3(
+    mx + perpX * bend,
+    0.28 + len * 0.42,
+    mz + perpZ * bend
+  );
+
+  const curve = new THREE.QuadraticBezierCurve3(p0, p1, p2);
+  const pts = curve.getPoints(36);
+
+  const geo = new THREE.BufferGeometry().setFromPoints(pts);
+  const mat = new THREE.LineDashedMaterial({
+    color: 0xffd060,
+    dashSize: 0.22,
+    gapSize: 0.15,
+    transparent: true,
+    opacity: 0.85,
+  });
+
+  const line = new THREE.Line(geo, mat);
+  line.computeLineDistances();
+  pathGroup.add(line);
+  pathLines.push(line);
+}
+
+// ============================================================
+//  选中 / 走子
+// ============================================================
+function selectPiece(piece) {
+  clearHighlights();
+  clearPaths();
+
+  selectedPiece = piece;
+  legalMoves = computeHorseMoves(piece);
+
+  for (const mv of legalMoves) {
+    addHighlight(mv.col, mv.row, !!mv.capture);
+    addPath(piece.col, piece.row, mv.col, mv.row);
+  }
+
+  updateHUD();
+}
+
+function deselect() {
+  clearHighlights();
+  clearPaths();
+  selectedPiece = null;
+  legalMoves = [];
+  updateHUD();
+}
+
+const anims = [];
+
+function movePieceTo(piece, col, row, capture) {
+  const w = g2w(col, row);
+
+  if (capture) {
+    capture.alive = false;
+    scene.remove(capture.group);
+    const idx = pieces.indexOf(capture);
+    if (idx >= 0) pieces.splice(idx, 1);
+  }
+
+  piece.col = col;
+  piece.row = row;
+
+  anims.push({
+    group: piece.group,
+    from: piece.group.position.clone(),
+    to: new THREE.Vector3(w.x, 0, w.z),
+    t: 0,
+    duration: 0.38,
+    arcHeight: 0.85,
+  });
+
+  playHoof();
+}
+
+// ============================================================
+//  音频 —— 马蹄
+// ============================================================
+const audio = { ctx: null, master: null, ready: false };
+
+function ensureAudio() {
+  if (audio.ctx) {
+    if (audio.ctx.state === 'suspended') audio.ctx.resume();
+    return;
+  }
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  const ctx = new AC();
+  audio.ctx = ctx;
+
+  const master = ctx.createGain();
+  master.gain.value = 0.52;
+  master.connect(ctx.destination);
+  audio.master = master;
+  audio.ready = true;
+}
+
+function playHoof() {
+  ensureAudio();
+  if (!audio.ready) return;
+  hoofHit(0.00, 1.00);
+  hoofHit(0.075, 0.72);
+}
+
+function hoofHit(delay, gain) {
+  const ctx = audio.ctx;
+  const t0 = ctx.currentTime + delay;
+
+  const out = ctx.createGain();
+  out.gain.value = gain;
+  out.connect(audio.master);
+
+  const osc = ctx.createOscillator();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(240, t0);
+  osc.frequency.exponentialRampToValueAtTime(58, t0 + 0.075);
+
+  const og = ctx.createGain();
+  og.gain.setValueAtTime(0.9, t0);
+  og.gain.exponentialRampToValueAtTime(0.001, t0 + 0.12);
+
+  osc.connect(og);
+  og.connect(out);
+  osc.start(t0);
+  osc.stop(t0 + 0.14);
+
+  const nlen = Math.floor(ctx.sampleRate * 0.028);
+  const nbuf = ctx.createBuffer(1, nlen, ctx.sampleRate);
+  const nd = nbuf.getChannelData(0);
+  for (let i = 0; i < nlen; i++) {
+    nd[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / nlen, 3.8);
+  }
+  const ns = ctx.createBufferSource();
+  ns.buffer = nbuf;
+
+  const bp = ctx.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.frequency.value = 2400;
+  bp.Q.value = 1.6;
+
+  const ng = ctx.createGain();
+  ng.gain.value = 0.28;
+
+  ns.connect(bp);
+  bp.connect(ng);
+  ng.connect(out);
+  ns.start(t0);
+
+  const res = ctx.createOscillator();
+  res.type = 'triangle';
+  res.frequency.setValueAtTime(380, t0);
+  res.frequency.exponentialRampToValueAtTime(180, t0 + 0.09);
+
+  const rg = ctx.createGain();
+  rg.gain.setValueAtTime(0.22, t0);
+  rg.gain.exponentialRampToValueAtTime(0.001, t0 + 0.11);
+
+  res.connect(rg);
+  rg.connect(out);
+  res.start(t0);
+  res.stop(t0 + 0.13);
+}
+
+// ============================================================
+//  交互
+// ============================================================
+const raycaster = new THREE.Raycaster();
+const pointerNDC = new THREE.Vector2();
+
+function getBoardPos(clientX, clientY) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  pointerNDC.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+  pointerNDC.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+
+  raycaster.setFromCamera(pointerNDC, camera);
+  const hits = raycaster.intersectObject(boardMesh);
+
+  if (!hits.length) return null;
+
+  const p = hits[0].point;
+  const col = Math.round(p.x / CELL + (COLS - 1) / 2);
+  const row = Math.round(p.z / CELL + (ROWS - 1) / 2);
+
+  if (col < 0 || col >= COLS || row < 0 || row >= ROWS) return null;
+
+  const w = g2w(col, row);
+  if (Math.hypot(p.x - w.x, p.z - w.z) > 0.62) return null;
+
+  return { col, row };
+}
+
+let ptr = { down: false, moved: false, startX: 0, startY: 0 };
+
+const dom = renderer.domElement;
+
+dom.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  ensureAudio();
+
+  ptr.down = true;
+  ptr.moved = false;
+  ptr.startX = e.clientX;
+  ptr.startY = e.clientY;
+
+  const hint = document.getElementById('hint');
+  if (hint) hint.classList.add('hide');
+}, { passive: false });
+
+dom.addEventListener('pointermove', e => {
+  if (ptr.down) {
+    const dx = e.clientX - ptr.startX;
+    const dy = e.clientY - ptr.startY;
+    if (Math.hypot(dx, dy) > 6) {
+      ptr.moved = true;
+      document.documentElement.classList.add('dragging');
+    }
+  }
+}, { passive: true });
+
+dom.addEventListener('pointerup', e => {
+  if (!ptr.down) return;
+  ptr.down = false;
+  document.documentElement.classList.remove('dragging');
+
+  if (ptr.moved) return;
+
+  const cell = getBoardPos(e.clientX, e.clientY);
+  if (!cell) {
+    deselect();
+    return;
+  }
+
+  // ① 检查是否点击了合法落点
+  if (selectedPiece) {
+    const mv = legalMoves.find(m => m.col === cell.col && m.row === cell.row);
+    if (mv) {
+      const piece = selectedPiece;
+      const capture = mv.capture;
+
+      // ⚠ 关键：先清空所有高亮与路径，再走子
+      selectedPiece = null;
+      legalMoves = [];
+      clearHighlights();
+      clearPaths();
+
+      movePieceTo(piece, cell.col, cell.row, capture);
+      updateHUD();
+      return;
+    }
+  }
+
+  // ② 点击己方马
+  const target = pieceAt(cell.col, cell.row);
+  if (target && target.type === '马') {
+    if (selectedPiece === target) {
+      deselect();
+    } else {
+      selectPiece(target);
+    }
+    return;
+  }
+
+  // ③ 其他情况取消选中
+  deselect();
+}, { passive: false });
+
+dom.addEventListener('pointercancel', () => {
+  ptr.down = false;
+  ptr.moved = false;
+  document.documentElement.classList.remove('dragging');
+});
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ============================================================
+//  OrbitControls
+// ============================================================
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.075;
+controls.minDistance = 8;
+controls.maxDistance = 32;
+controls.maxPolarAngle = Math.PI * 0.46;
+controls.minPolarAngle = 0.15;
+controls.enablePan = false;
+controls.target.set(0, 0, 0);
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.7;
+
+// ============================================================
+//  HUD
+// ============================================================
+const elSel   = document.getElementById('v-sel');
+const elCount = document.getElementById('v-count');
+const elPath  = document.getElementById('v-path');
+const elMoves = document.getElementById('v-moves');
+
+function updateHUD() {
+  if (!selectedPiece) {
+    elSel.textContent = '—';
+    elCount.textContent = '—';
+    elPath.textContent = '—';
+    elMoves.innerHTML = '<span style="color:rgba(210,180,130,0.5);font-size:11px;">点击马匹查看</span>';
+    return;
+  }
+
+  const letters = 'ABCDEFGHI';
+  const label = (selectedPiece.side === 'r' ? '红' : '黑') + '马';
+  elSel.textContent = label + ' ' + letters[selectedPiece.col] + (10 - selectedPiece.row);
+  elCount.textContent = legalMoves.length + ' 处';
+  elPath.textContent = legalMoves.length + ' 条';
+
+  if (legalMoves.length === 0) {
+    elMoves.innerHTML = '<span style="color:rgba(255,130,110,0.75);font-size:11px;">无合法着法</span>';
+    return;
+  }
+
+  elMoves.innerHTML = legalMoves.map(mv => {
+    const tag = letters[mv.col] + (10 - mv.row);
+    const cap = mv.capture ? ` <span style="color:#ff8570;">吃${mv.capture.type}</span>` : '';
+    return `<div class="mv"><span class="dot"></span>${tag}${cap}</div>`;
+  }).join('');
+}
+
+// ============================================================
+//  按钮
+// ============================================================
+const btnSpin = document.getElementById('btn-spin');
+
+btnSpin.addEventListener('click', e => {
+  e.stopPropagation();
+  controls.autoRotate = !controls.autoRotate;
+  btnSpin.classList.toggle('on', controls.autoRotate);
+  btnSpin.textContent = controls.autoRotate ? '自动旋转' : '停止旋转';
+});
+
+document.getElementById('btn-reset').addEventListener('click', e => {
+  e.stopPropagation();
+  ensureAudio();
+  initGame();
+  controls.autoRotate = true;
+  btnSpin.classList.add('on');
+  btnSpin.textContent = '自动旋转';
+});
+
+window.addEventListener('keydown', e => {
+  if (e.key === ' ') { e.preventDefault(); btnSpin.click(); }
+  if (e.key === 'r' || e.key === 'R') document.getElementById('btn-reset').click();
+});
+
+// ============================================================
+//  主循环
+// ============================================================
+let lastT = performance.now() / 1000;
+
+function animate(nowMs) {
+  requestAnimationFrame(animate);
+
+  try {
+    const t = nowMs / 1000;
+    let dt = t - lastT;
+    if (!isFinite(dt) || dt < 0) dt = 0.016;
+    if (dt > 0.06) dt = 0.06;
+    lastT = t;
+
+    for (let i = anims.length - 1; i >= 0; i--) {
+      const a = anims[i];
+      a.t += dt / a.duration;
+      if (a.t >= 1) a.t = 1;
+
+      const k = a.t;
+      const e = 1 - Math.pow(1 - k, 3);
+
+      a.group.position.x = a.from.x + (a.to.x - a.from.x) * e;
+      a.group.position.z = a.from.z + (a.to.z - a.from.z) * e;
+
+      const arc = 4 * a.arcHeight * k * (1 - k);
+      a.group.position.y = arc;
+
+      if (k >= 1) {
+        a.group.position.y = 0;
+        anims.splice(i, 1);
+      }
+    }
+
+    for (const h of highlights) {
+      if (!h.mesh || !h.dot) continue;
+      const pulse = 0.7 + 0.3 * Math.sin(t * 4.2 + h.phase);
+      h.mesh.material.opacity = pulse * 0.9;
+      h.mesh.scale.setScalar(0.94 + pulse * 0.12);
+      h.dot.material.opacity = 0.5 + pulse * 0.35;
+    }
+
+    for (const l of pathLines) {
+      if (l.material) {
+        l.material.opacity = 0.55 + 0.35 * Math.sin(t * 3.2);
+      }
+    }
+
+    for (const p of pieces) {
+      if (p.type !== '马' || !p.group.userData.halo) continue;
+      const isSel = (selectedPiece === p);
+      const targetOp = isSel ? 0.85 : 0.30;
+      const halo = p.group.userData.halo;
+      halo.material.opacity += (targetOp - halo.material.opacity) * Math.min(1, dt * 8);
+      const sc = isSel ? 1 + 0.08 * Math.sin(t * 5) : 1;
+      halo.scale.setScalar(sc);
+    }
+
+    controls.update();
+    renderer.render(scene, camera);
+
+  } catch (err) {
+    console.warn('frame error', err);
+  }
+}
+
+// ============================================================
+//  启动
+// ============================================================
+initGame();
+requestAnimationFrame(animate);
+
+window.addEventListener('pointerdown', function once() {
+  ensureAudio();
+  window.removeEventListener('pointerdown', once);
+}, { once: true });
+
+</script>
+</body>
+</html>

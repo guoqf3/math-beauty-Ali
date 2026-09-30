@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>三维激励点阵 · 无边界拓扑环面</title>
+<style>
+  html, body {
+    margin: 0; padding: 0;
+    width: 100%; height: 100%;
+    overflow: hidden;
+    background: #000005;
+  }
+
+  /* 深邃星空黑背景 */
+  #bg {
+    position: fixed; inset: 0; z-index: 0;
+    background: radial-gradient(ellipse 90% 80% at 50% 46%,
+      #0a0a1e 0%,
+      #06061a 22%,
+      #030310 46%,
+      #010108 72%,
+      #000005 100%);
+  }
+
+  /* 中心冷光晕 */
+  #glow {
+    position: fixed; inset: 0; z-index: 0;
+    pointer-events: none;
+    background: radial-gradient(circle 34vw at 50% 50%,
+      rgba(0, 220, 180, 0.055) 0%,
+      rgba(180, 0, 200, 0.035) 40%,
+      rgba(0, 0, 0, 0) 72%);
+  }
+
+  canvas { position: fixed; inset: 0; display: block; z-index: 1; }
+
+  #hint {
+    position: fixed;
+    left: 50%; bottom: 22px;
+    transform: translateX(-50%);
+    z-index: 2;
+    color: rgba(120, 255, 220, 0.26);
+    font: 12px/1.7 -apple-system, BlinkMacSystemFont, "PingFang SC",
+          "Microsoft YaHei", "Helvetica Neue", sans-serif;
+    letter-spacing: 0.24em;
+    white-space: nowrap;
+    pointer-events: none;
+    user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="bg"></div>
+<div id="glow"></div>
+<div id="hint">( sin u , sin v , sin(u+v) )　·　无边界拓扑环面</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+
+/* ============================================================
+   1. 基础环境
+   ============================================================ */
+const scene  = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 400);
+camera.position.set(4.2, 2.8, 5.6);
+camera.lookAt(0, 0, 0);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.setClearColor(0x000000, 0);
+document.body.appendChild(renderer.domElement);
+
+/* ============================================================
+   2. 三维激励点阵几何体
+   P(u,v) = ( sin u , sin v , sin(u+v) )
+   u,v ∈ [0, 2π] —— 双向周期，无边界拓扑
+   ============================================================ */
+const SCALE = 1.62;
+const NU = 160;
+const NV = 160;
+
+const positions = [];
+const normals   = [];
+const params    = [];
+const indices   = [];
+
+for (let i = 0; i <= NU; i++) {
+  const u = i / NU * Math.PI * 2;
+  const su = Math.sin(u), cu = Math.cos(u);
+
+  for (let j = 0; j <= NV; j++) {
+    const v = j / NV * Math.PI * 2;
+    const sv = Math.sin(v), cv = Math.cos(v);
+
+    const suv = Math.sin(u + v);
+    const cuv = Math.cos(u + v);
+
+    positions.push(su * SCALE, sv * SCALE, suv * SCALE);
+
+    /* 解析法线：N = ∂P/∂u × ∂P/∂v
+       ∂P/∂u = ( cos u ,  0   , cos(u+v) )
+       ∂P/∂v = (  0   , cos v , cos(u+v) )
+       N = ( -cos(u+v)·cos v , -cos u·cos(u+v) , cos u·cos v )            */
+    let nx = -cuv * cv;
+    let ny = -cu  * cuv;
+    let nz =  cu  * cv;
+    const nl = Math.hypot(nx, ny, nz) || 1;
+
+    normals.push(nx / nl, ny / nl, nz / nl);
+
+    /* 参数域归一化 (0..1) */
+    params.push(i / NU, j / NV);
+  }
+}
+
+for (let i = 0; i < NU; i++) {
+  for (let j = 0; j < NV; j++) {
+    const a = i * (NV + 1) + j;
+    const b = a + 1;
+    const c = a + (NV + 1);
+    const d = c + 1;
+    indices.push(a, b, c,  b, d, c);
+  }
+}
+
+const torusGeo = new THREE.BufferGeometry();
+torusGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+torusGeo.setAttribute('normal',   new THREE.Float32BufferAttribute(normals, 3));
+torusGeo.setAttribute('aParam',   new THREE.Float32BufferAttribute(params, 2));
+torusGeo.setIndex(indices);
+
+/* ============================================================
+   3. 霓虹青绿 / 品红 渐变发光材质
+   ============================================================ */
+const surfaceMat = new THREE.ShaderMaterial({
+  uniforms: { uTime: { value: 0 } },
+  vertexShader: `
+    attribute vec2 aParam;
+    uniform float uTime;
+
+    varying vec2  vParam;
+    varying vec3  vN;
+    varying vec3  vV;
+
+    void main() {
+      vParam = aParam;
+
+      vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      vV = normalize(-mv.xyz);
+      vN = normalize(normalMatrix * normal);
+
+      gl_Position = projectionMatrix * mv;
+    }
+  `,
+  fragmentShader: `
+    uniform float uTime;
+
+    varying vec2  vParam;
+    varying vec3  vN;
+    varying vec3  vV;
+
+    const vec3 CYAN    = vec3(0.05, 1.00, 0.78);
+    const vec3 MAGENTA = vec3(1.00, 0.10, 0.92);
+
+    void main() {
+      vec3 N = normalize(vN);
+      vec3 V = normalize(vV);
+
+      /* —— 沿参数空间的青绿 ↔ 品红渐变，随时间循环流转 —— */
+      float g = 0.5 + 0.5 * sin((vParam.x + vParam.y) * 6.28318 - uTime * 1.15);
+      vec3 base = mix(CYAN, MAGENTA, g);
+
+      /* 伪光照：让自交结构有体积感 */
+      vec3 L = normalize(vec3(0.45, 0.72, 0.55));
+      float lam = 0.42 + 0.58 * abs(dot(N, L));
+
+      /* —— 菲涅尔边缘光：轮廓发亮 —— */
+      float fres = pow(1.0 - abs(dot(N, V)), 2.4);
+
+      /* —— 流体网格线：沿 u、v 方向连续滑动 —— */
+      vec2 c = vParam * 30.0;
+      c.x -= uTime * 1.75;
+      c.y -= uTime * 1.15;
+
+      float dx = abs(fract(c.x + 0.5) - 0.5);
+      float dy = abs(fract(c.y + 0.5) - 0.5);
+      float lx = 1.0 - smoothstep(0.0, 0.055, dx);
+      float ly = 1.0 - smoothstep(0.0, 0.055, dy);
+      float grid = max(lx, ly);
+
+      /* —— 合成 —— */
+      vec3 col = base * 0.50 * lam;
+      col += mix(CYAN, MAGENTA, 0.5) * fres * 1.45;
+      col += vec3(0.82, 1.00, 0.96) * grid * 0.95;
+
+      gl_FragColor = vec4(col, 1.0);
+    }
+  `,
+  side: THREE.DoubleSide
+});
+
+const torusMesh = new THREE.Mesh(torusGeo, surfaceMat);
+const torusGroup = new THREE.Group();
+torusGroup.add(torusMesh);
+scene.add(torusGroup);
+
+/* ============================================================
+   4. 星空背景
+   ============================================================ */
+const STAR_COUNT = 2200;
+const starPos = new Float32Array(STAR_COUNT * 3);
+const starCol = new Float32Array(STAR_COUNT * 3);
+
+for (let i = 0; i < STAR_COUNT; i++) {
+  const r     = 38 + Math.random() * 90;
+  const theta = Math.random() * Math.PI * 2;
+  const phi   = Math.acos(2 * Math.random() - 1);
+
+  starPos[i * 3]     = r * Math.sin(phi) * Math.cos(theta);
+  starPos[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+  starPos[i * 3 + 2] = r * Math.cos(phi);
+
+  const b    = 0.28 + Math.random() * 0.72;
+  const tint = Math.random();
+  starCol[i * 3]     = b * (0.72 + 0.28 * tint);
+  starCol[i * 3 + 1] = b * (0.82 + 0.18 * tint);
+  starCol[i * 3 + 2] = b * (0.95 + 0.05 * tint);
+}
+
+const starGeo = new THREE.BufferGeometry();
+starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+starGeo.setAttribute('color',    new THREE.BufferAttribute(starCol, 3));
+
+const stars = new THREE.Points(starGeo, new THREE.PointsMaterial({
+  size: 0.55,
+  sizeAttenuation: true,
+  vertexColors: true,
+  transparent: true,
+  opacity: 0.9,
+  depthWrite: false,
+  blending: THREE.AdditiveBlending
+}));
+stars.frustumCulled = false;
+scene.add(stars);
+
+/* ============================================================
+   5. 动画循环
+   ============================================================ */
+const clock = new THREE.Clock();
+let elapsed = 0;
+
+function animate() {
+  requestAnimationFrame(animate);
+
+  const dt = Math.min(clock.getDelta(), 0.05);
+  elapsed += dt;
+
+  /* 材质时间 —— 驱动渐变色循环与网格滑动 */
+  surfaceMat.uniforms.uTime.value = elapsed;
+
+  /* —— 环体在三维空间中翻滚旋转，展示无边界特性 —— */
+  torusGroup.rotation.x = elapsed * 0.42;
+  torusGroup.rotation.y = elapsed * 0.63;
+  torusGroup.rotation.z = elapsed * 0.27;
+
+  /* 轻微呼吸缩放，强化“流体”感 */
+  const breathe = 1.0 + Math.sin(elapsed * 1.35) * 0.022;
+  torusGroup.scale.setScalar(breathe);
+
+  /* 星空缓慢反向旋转，增加空间纵深 */
+  stars.rotation.y = -elapsed * 0.012;
+  stars.rotation.x =  elapsed * 0.006;
+
+  /* —— 相机缓慢漂移 —— */
+  camera.position.x = 4.2 + Math.sin(elapsed * 0.23) * 0.95;
+  camera.position.y = 2.8 + Math.sin(elapsed * 0.31) * 0.75;
+  camera.position.z = 5.6 + Math.cos(elapsed * 0.19) * 0.75;
+  camera.lookAt(0, 0, 0);
+
+  renderer.render(scene, camera);
+}
+
+animate();
+
+/* ============================================================
+   6. 自适应
+   ============================================================ */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

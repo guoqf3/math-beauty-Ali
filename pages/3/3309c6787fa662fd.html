@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>机械玫瑰 · 极坐标玫瑰曲线</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #000308; overflow: hidden;
+  }
+  #c { display: block; width: 100vw; height: 100vh; }
+
+  .hud {
+    position: fixed; left: 20px; bottom: 16px;
+    font: 400 11px/1.7 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: rgba(150, 140, 255, 0.42);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    pointer-events: none; user-select: none;
+    text-shadow: 0 0 16px rgba(120, 90, 255, 0.55);
+  }
+  .hud b {
+    font-weight: 500;
+    color: rgba(255, 170, 210, 0.78);
+    letter-spacing: 0.26em;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud">r = a · cos(kθ) &nbsp;·&nbsp; <b>ROSA MECHANICA</b></div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ============================================================
+     WebGL 2.0 初始化
+     ============================================================ */
+  const canvas = document.getElementById('c');
+  const gl = canvas.getContext('webgl2', {
+    alpha: false,
+    antialias: false,
+    depth: false,
+    stencil: false,
+    premultipliedAlpha: false,
+    preserveDrawingBuffer: false,
+    powerPreference: 'high-performance'
+  });
+
+  if (!gl) {
+    document.body.innerHTML =
+      '<div style="color:#a9f;font:15px/2 system-ui;padding:3em;letter-spacing:.1em">' +
+      '当前浏览器不支持 WebGL 2.0，无法渲染该分形动画。</div>';
+    return;
+  }
+
+  /* ============================================================
+     着色器源码
+     ============================================================ */
+
+  const VERT_SRC = `#version 300 es
+in vec2 aPos;
+void main() {
+  gl_Position = vec4(aPos, 0.0, 1.0);
+}
+`;
+
+  const FRAG_SRC = `#version 300 es
+precision highp float;
+
+uniform vec2  uRes;    // 缓冲区尺寸
+uniform float uTime;   // 动画时间（秒）
+uniform float uFade;   // 入场淡入
+
+out vec4 fragColor;
+
+const float PI = 3.14159265359;
+
+/* ---------- 工具 ---------- */
+float hash(vec2 p) {
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+}
+
+/* 三角波：0 → 1 → 0，两端导数为零（在整数 k 处停留更久） */
+float triWave(float x) {
+  float t = abs(fract(x) * 2.0 - 1.0);
+  return t * t * (3.0 - 2.0 * t);
+}
+
+void main() {
+  /* 以屏幕高度归一化的等比坐标，y ∈ [-1, 1] */
+  vec2 p = (gl_FragCoord.xy - 0.5 * uRes) / uRes.y * 2.0;
+
+  float r     = length(p);
+  float theta = atan(p.y, p.x);
+
+  float t = uTime;
+
+  /* ---------- k 在整数之间平滑切换 ----------
+     4 → 8 → 4 循环，每趟约 22 秒，
+     两端缓入缓出，使曲线在整数处停留更久，
+     非整数过渡期间花瓣合并 / 分裂，如花蕾绽放。 */
+  float k = 4.0 + triWave(t * 0.045) * 4.0;
+
+  /* 整体匀速旋转 */
+  float baseRot = t * 0.22;
+
+  /* ---------- 深空蓝背景 ---------- */
+  vec3 bgDeep = vec3(0.006, 0.010, 0.048);
+  vec3 bgMid  = vec3(0.022, 0.042, 0.135);
+  vec3 col = mix(bgMid, bgDeep, smoothstep(0.0, 1.45, r));
+
+  /* 极远处的微弱星云 */
+  float neb = exp(-r * 1.6) * 0.055;
+  col += vec3(0.16, 0.22, 0.55) * neb;
+
+  /* ---------- 分层玫瑰 ---------- */
+  const int LAYERS = 4;
+  for (int i = 0; i < LAYERS; i++) {
+    float fi = float(i);
+
+    /* 每层半径递减 —— 形成层层叠叠的花瓣纵深 */
+    float scale = 0.80 - fi * 0.118;
+
+    /* 每层旋转速度略不同 —— 机械错动感 */
+    float rot = baseRot * (1.0 - fi * 0.17) + fi * 0.72;
+
+    /* 每层 k 轻微错位 —— 边缘互相咬合 */
+    float kk = k + fi * 0.33;
+
+    float th = theta - rot;
+
+    /* 玫瑰曲线 r = a·|cos(kθ)|^p （p<1 使花瓣更饱满） */
+    float rc = scale * pow(abs(cos(kk * th)), 0.72);
+
+    /* 径向距离场：d<0 在花瓣内部 */
+    float d = r - rc;
+
+    /* 花瓣填充（带抗锯齿） */
+    float fill = smoothstep(0.011, -0.011, d);
+
+    /* 边缘辉光 —— 柔和外扩 */
+    float glow = exp(-abs(d) * 17.0) * 0.85;
+
+    /* 紧贴边缘的一圈亮线 */
+    float rim = exp(-abs(d) * 90.0) * 0.55;
+
+    /* 花瓣内部靠边缘处的柔光 */
+    float inner = exp(-max(d, 0.0) * 5.0) * 0.22;
+
+    /* 径向渐变：内粉红 → 外金色 */
+    float rn = clamp(r / 0.86, 0.0, 1.0);
+    vec3 cIn  = vec3(1.00, 0.28, 0.66);
+    vec3 cMid = vec3(1.00, 0.55, 0.62);
+    vec3 cOut = vec3(1.00, 0.87, 0.46);
+    vec3 lc = rn < 0.5
+      ? mix(cIn,  cMid, smoothstep(0.0, 0.5, rn))
+      : mix(cMid, cOut, smoothstep(0.5, 1.0, rn));
+
+    /* 辉光偏冷粉，与花瓣本体区分 */
+    vec3 gc = mix(vec3(1.00, 0.52, 0.86), vec3(1.00, 0.92, 0.62),
+                  smoothstep(0.1, 0.95, rn));
+
+    /* 层越深越暗，制造厚度 */
+    float depthFade = 1.0 - fi * 0.175;
+
+    col += lc * (fill * 0.62 + inner) * depthFade;
+    col += gc * (glow * 0.60 + rim * 1.10) * depthFade;
+  }
+
+  /* ---------- 花心核光 ---------- */
+  col += vec3(1.00, 0.62, 0.88) * exp(-r * 24.0) * 0.42;
+  col += vec3(1.00, 0.90, 0.70) * exp(-r * 70.0) * 0.55;
+
+  /* ---------- 暗角 ---------- */
+  float vig = 1.0 - 0.48 * smoothstep(0.55, 1.80, r);
+  col *= vig;
+
+  /* ---------- 柔和色调映射，防止过曝 ---------- */
+  col = col / (1.0 + col * 0.32);
+
+  /* ---------- 入场淡入 ---------- */
+  col *= uFade;
+
+  /* ---------- 抖动，消除色带 ---------- */
+  float dither = hash(gl_FragCoord.xy) - 0.5;
+  col += dither * 0.0055;
+
+  fragColor = vec4(col, 1.0);
+}
+`;
+
+  /* ============================================================
+     编译 / 链接
+     ============================================================ */
+  function compile(type, src) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+      console.error(gl.getShaderInfoLog(s));
+      throw new Error('Shader compile error');
+    }
+    return s;
+  }
+
+  const prog = gl.createProgram();
+  gl.attachShader(prog, compile(gl.VERTEX_SHADER, VERT_SRC));
+  gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FRAG_SRC));
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+    console.error(gl.getProgramInfoLog(prog));
+    return;
+  }
+  gl.useProgram(prog);
+
+  /* 覆盖全屏的大三角形 */
+  const vbo = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+    -1, -1,
+     3, -1,
+    -1,  3
+  ]), gl.STATIC_DRAW);
+
+  const aPos = gl.getAttribLocation(prog, 'aPos');
+  gl.enableVertexAttribArray(aPos);
+  gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+  const U = {
+    res:  gl.getUniformLocation(prog, 'uRes'),
+    time: gl.getUniformLocation(prog, 'uTime'),
+    fade: gl.getUniformLocation(prog, 'uFade')
+  };
+
+  /* ============================================================
+     自适应分辨率
+     ============================================================ */
+  const IS_MOBILE = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+  const PIXEL_BUDGET = IS_MOBILE ? 520000 : 1450000;
+
+  let quality = 1.0;
+  let curW = 0, curH = 0;
+
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+    const budget = PIXEL_BUDGET * quality;
+
+    let w = window.innerWidth  * dpr;
+    let h = window.innerHeight * dpr;
+
+    const total = w * h;
+    if (total > budget) {
+      const s = Math.sqrt(budget / total);
+      w *= s;
+      h *= s;
+    }
+
+    w = Math.max(2, Math.round(w));
+    h = Math.max(2, Math.round(h));
+
+    if (w !== curW || h !== curH) {
+      curW = w;
+      curH = h;
+      canvas.width  = w;
+      canvas.height = h;
+      gl.viewport(0, 0, w, h);
+    }
+  }
+
+  /* ============================================================
+     主循环
+     ============================================================ */
+  let last = performance.now();
+  let elapsed = 0;
+  let ftAcc = 0, ftCount = 0;
+
+  function frame(now) {
+    let dt = (now - last) / 1000;
+    last = now;
+    if (dt > 0.05) dt = 0.05;      // 防止切标签页后跳变
+    elapsed += dt;
+
+    /* ---------- 动态画质调节 ---------- */
+    ftAcc += dt;
+    ftCount++;
+    if (ftCount >= 90) {
+      const avg = ftAcc / ftCount;
+      ftAcc = 0;
+      ftCount = 0;
+      if (avg > 0.038 && quality > 0.55) {
+        quality = Math.max(0.55, quality * 0.86);
+      } else if (avg < 0.020 && quality < 1.0) {
+        quality = Math.min(1.0, quality * 1.08);
+      }
+    }
+
+    resize();
+
+    /* ---------- 入场淡入 ---------- */
+    const fade = Math.min(1.0, elapsed / 1.8);
+    const fadeEased = fade * fade * (3.0 - 2.0 * fade);
+
+    /* ---------- 上传 uniform ---------- */
+    gl.uniform2f(U.res, curW, curH);
+    gl.uniform1f(U.time, elapsed);
+    gl.uniform1f(U.fade, fadeEased);
+
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    requestAnimationFrame(frame);
+  }
+
+  requestAnimationFrame(function (t) {
+    last = t;
+    requestAnimationFrame(frame);
+  });
+
+})();
+</script>
+</body>
+</html>

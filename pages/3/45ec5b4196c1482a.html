@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>莫比乌斯带 · 单侧曲面</title>
+<style>
+  html, body {
+    margin: 0; padding: 0;
+    width: 100%; height: 100%;
+    overflow: hidden;
+    background: #050008;
+  }
+
+  /* 渐变黑夜紫背景 */
+  #bg {
+    position: fixed; inset: 0; z-index: 0;
+    background: radial-gradient(ellipse 95% 90% at 50% 45%,
+      #2c1248 0%,
+      #1e0b34 20%,
+      #130622 42%,
+      #0a0315 65%,
+      #050008 100%);
+  }
+
+  /* 中心柔光 */
+  #glow {
+    position: fixed; inset: 0; z-index: 0;
+    pointer-events: none;
+    background: radial-gradient(circle 32vw at 50% 50%,
+      rgba(150, 80, 230, 0.09) 0%,
+      rgba(90, 40, 170, 0.04) 45%,
+      rgba(0, 0, 0, 0) 72%);
+  }
+
+  canvas { position: fixed; inset: 0; display: block; z-index: 1; }
+
+  #hint {
+    position: fixed;
+    left: 50%; bottom: 22px;
+    transform: translateX(-50%);
+    z-index: 2;
+    color: rgba(190, 150, 255, 0.30);
+    font: 12px/1.7 -apple-system, BlinkMacSystemFont, "PingFang SC",
+          "Microsoft YaHei", "Helvetica Neue", sans-serif;
+    letter-spacing: 0.22em;
+    white-space: nowrap;
+    pointer-events: none;
+    user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="bg"></div>
+<div id="glow"></div>
+<div id="hint">莫比乌斯带 · 单侧曲面</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+
+/* ============================================================
+   1. 基础环境
+   ============================================================ */
+const scene  = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 200);
+camera.position.set(0, 3.2, 8.2);
+camera.lookAt(0, 0, 0);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.setClearColor(0x000000, 0);
+document.body.appendChild(renderer.domElement);
+
+/* ============================================================
+   2. 莫比乌斯带参数
+   P(u,v) = ((R + v·cos(u/2))·cos u,
+             (R + v·cos(u/2))·sin u,
+              v·sin(u/2))
+   ============================================================ */
+const R   = 2.20;
+const W   = 0.72;
+const N_U = 360;
+const N_V = 40;
+
+/* 解析法向量 + 位置 */
+function mobiusFrame(u, v) {
+  const cu = Math.cos(u), su = Math.sin(u);
+  const ch = Math.cos(u / 2), sh = Math.sin(u / 2);
+  const r  = R + v * ch;
+
+  const px = r * cu, py = r * su, pz = v * sh;
+
+  const dux = -0.5 * v * sh * cu - r * su;
+  const duy = -0.5 * v * sh * su + r * cu;
+  const duz =  0.5 * v * ch;
+
+  const dvx = ch * cu;
+  const dvy = ch * su;
+  const dvz = sh;
+
+  let nx = duy * dvz - duz * dvy;
+  let ny = duz * dvx - dux * dvz;
+  let nz = dux * dvy - duy * dvx;
+
+  const nl = Math.hypot(nx, ny, nz) || 1;
+  nx /= nl; ny /= nl; nz /= nl;
+
+  return { px, py, pz, nx, ny, nz };
+}
+
+/* HSV → RGB（JS 端，用于粒子尾迹） */
+function hsv2rgb(h, s, v) {
+  h = ((h % 1) + 1) % 1;
+  const i = Math.floor(h * 6);
+  const f = h * 6 - i;
+  const p = v * (1 - s);
+  const q = v * (1 - f * s);
+  const t = v * (1 - (1 - f) * s);
+  switch (i % 6) {
+    case 0:  return [v, t, p];
+    case 1:  return [q, v, p];
+    case 2:  return [p, v, t];
+    case 3:  return [p, q, v];
+    case 4:  return [t, p, v];
+    default: return [v, p, q];
+  }
+}
+
+/* ============================================================
+   3. 构建莫比乌斯带几何体
+   ============================================================ */
+const positions = [];
+const normals   = [];
+const params    = [];
+const indices   = [];
+
+for (let i = 0; i <= N_U; i++) {
+  const u  = i / N_U * Math.PI * 2;
+  const cu = Math.cos(u), su = Math.sin(u);
+  const ch = Math.cos(u / 2), sh = Math.sin(u / 2);
+
+  for (let j = 0; j <= N_V; j++) {
+    const vt = j / N_V;
+    const v  = (vt * 2 - 1) * W;
+    const r  = R + v * ch;
+
+    positions.push(r * cu, r * su, v * sh);
+
+    const dux = -0.5 * v * sh * cu - r * su;
+    const duy = -0.5 * v * sh * su + r * cu;
+    const duz =  0.5 * v * ch;
+
+    const dvx = ch * cu;
+    const dvy = ch * su;
+    const dvz = sh;
+
+    let nx = duy * dvz - duz * dvy;
+    let ny = duz * dvx - dux * dvz;
+    let nz = dux * dvy - duy * dvx;
+    const nl = Math.hypot(nx, ny, nz) || 1;
+    normals.push(nx / nl, ny / nl, nz / nl);
+
+    /* u 归一化到 0..1，v 归一化到 -1..1 */
+    params.push(i / N_U, vt * 2 - 1);
+  }
+}
+
+for (let i = 0; i < N_U; i++) {
+  for (let j = 0; j < N_V; j++) {
+    const a = i * (N_V + 1) + j;
+    const b = a + 1;
+    const c = a + (N_V + 1);
+    const d = c + 1;
+    indices.push(a, c, b,  b, c, d);
+  }
+}
+
+const bandGeo = new THREE.BufferGeometry();
+bandGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+bandGeo.setAttribute('normal',   new THREE.Float32BufferAttribute(normals, 3));
+bandGeo.setAttribute('aParam',   new THREE.Float32BufferAttribute(params, 2));
+bandGeo.setIndex(indices);
+
+/* ============================================================
+   4. 带体材质 —— 彩虹流光 + 菲涅尔边缘
+   ============================================================ */
+const bandMat = new THREE.ShaderMaterial({
+  uniforms: { uTime: { value: 0 } },
+  vertexShader: `
+    attribute vec2 aParam;
+    uniform float uTime;
+    varying vec3  vColor;
+    varying float vFresnel;
+    varying float vCore;
+
+    vec3 hsv2rgb(vec3 c) {
+      vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+      vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+      return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+    }
+
+    void main() {
+      vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      vec3 n  = normalize(normalMatrix * normal);
+      vec3 vd = normalize(-mv.xyz);
+      vFresnel = pow(1.0 - abs(dot(n, vd)), 2.2);
+
+      float un = aParam.x;
+      float vn = aParam.y;
+
+      /* 彩虹色沿 u 方向循环，随时间流转 */
+      float hue = fract(un + abs(vn) * 0.20 + uTime * 0.07);
+      vColor = hsv2rgb(vec3(hue, 0.70, 1.0));
+
+      /* 中心线光带 */
+      vCore = exp(-vn * vn * 14.0);
+
+      gl_Position = projectionMatrix * mv;
+    }
+  `,
+  fragmentShader: `
+    varying vec3  vColor;
+    varying float vFresnel;
+    varying float vCore;
+
+    void main() {
+      vec3 col = vColor * (0.82 + 0.55 * vFresnel);
+      col += vec3(0.95, 0.90, 1.0) * vFresnel * 0.60;
+      col += vec3(1.0, 1.0, 1.0) * vCore * 0.18;
+      gl_FragColor = vec4(col, 1.0);
+    }
+  `,
+  side: THREE.DoubleSide
+});
+
+const band = new THREE.Mesh(bandGeo, bandMat);
+scene.add(band);
+
+/* ============================================================
+   5. 沿带面爬行的小光点 + 渐隐尾迹
+   路径：v = 0.5W·cos(u/2)
+   走完一圈 (u: 0→2π) 回到起点，法线翻转 → 另一面
+   ============================================================ */
+const TRAIL      = 70;
+const TRAIL_STEP = 0.026;
+const OMEGA      = 1.0;
+
+const tPos = new Float32Array(TRAIL * 3);
+const tCol = new Float32Array(TRAIL * 3);
+const tSiz = new Float32Array(TRAIL);
+const tAlp = new Float32Array(TRAIL);
+
+const dotGeo = new THREE.BufferGeometry();
+dotGeo.setAttribute('position', new THREE.BufferAttribute(tPos, 3));
+dotGeo.setAttribute('aColor',   new THREE.BufferAttribute(tCol, 3));
+dotGeo.setAttribute('aSize',    new THREE.BufferAttribute(tSiz, 1));
+dotGeo.setAttribute('aAlpha',   new THREE.BufferAttribute(tAlp, 1));
+
+const dotMat = new THREE.ShaderMaterial({
+  uniforms: { uPR: { value: Math.min(devicePixelRatio, 2) } },
+  vertexShader: `
+    attribute float aSize;
+    attribute float aAlpha;
+    attribute vec3  aColor;
+    varying vec3  vColor;
+    varying float vAlpha;
+    uniform float uPR;
+
+    void main() {
+      vColor = aColor;
+      vAlpha = aAlpha;
+      vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      float d = max(-mv.z, 0.001);
+      gl_PointSize = clamp(aSize * uPR * (110.0 / d), 1.0, 120.0);
+      gl_Position  = projectionMatrix * mv;
+    }
+  `,
+  fragmentShader: `
+    varying vec3  vColor;
+    varying float vAlpha;
+
+    void main() {
+      vec2 c = gl_PointCoord - vec2(0.5);
+      float d = length(c);
+      if (d > 0.5) discard;
+      float a = smoothstep(0.5, 0.0, d);
+      a = pow(a, 1.9);
+      gl_FragColor = vec4(vColor, vAlpha * a);
+    }
+  `,
+  transparent: true,
+  depthWrite: false,
+  depthTest: false,
+  blending: THREE.AdditiveBlending
+});
+
+const dotPoints = new THREE.Points(dotGeo, dotMat);
+dotPoints.frustumCulled = false;
+scene.add(dotPoints);
+
+function updateDot(t) {
+  const u = (t * OMEGA) % (Math.PI * 2);
+
+  for (let i = 0; i < TRAIL; i++) {
+    const ut = u - i * TRAIL_STEP;
+    const vt = 0.5 * W * Math.cos(ut / 2);
+    const f  = mobiusFrame(ut, vt);
+
+    /* 沿法线微微浮起，让翻转可见 */
+    const off = 0.055;
+    const i3  = i * 3;
+    tPos[i3]     = f.px + f.nx * off;
+    tPos[i3 + 1] = f.py + f.ny * off;
+    tPos[i3 + 2] = f.pz + f.nz * off;
+
+    const fw   = 1 - i / TRAIL;      // 1 头部 → 0 尾端
+    const fade = fw * fw;
+
+    /* 颜色与带体色相同源，头部转白 */
+    const hue = ((ut / (Math.PI * 2)) + Math.abs(vt / W) * 0.20 + t * 0.07) % 1;
+    const [cr, cg, cb] = hsv2rgb(hue, 0.62 - fw * 0.55, 1.0);
+
+    const bright = 0.55 + 0.75 * fade;
+    tCol[i3]     = Math.min(1.0, cr * bright + fade * fade * 0.45);
+    tCol[i3 + 1] = Math.min(1.0, cg * bright + fade * fade * 0.45);
+    tCol[i3 + 2] = Math.min(1.0, cb * bright + fade * fade * 0.45);
+
+    tAlp[i] = fade * 0.95;
+    tSiz[i] = 0.35 + 3.6 * fade * fade;
+  }
+
+  dotGeo.attributes.position.needsUpdate = true;
+  dotGeo.attributes.aColor.needsUpdate   = true;
+  dotGeo.attributes.aSize.needsUpdate    = true;
+  dotGeo.attributes.aAlpha.needsUpdate   = true;
+}
+
+/* ============================================================
+   6. 动画循环
+   ============================================================ */
+const clock = new THREE.Clock();
+let elapsed = 0;
+
+function animate() {
+  requestAnimationFrame(animate);
+
+  const dt = Math.min(clock.getDelta(), 0.05);
+  elapsed += dt;
+
+  bandMat.uniforms.uTime.value = elapsed;
+  updateDot(elapsed);
+
+  /* 相机极缓慢漂移，增加立体呼吸感 */
+  camera.position.x = Math.sin(elapsed * 0.24) * 1.15;
+  camera.position.y = 3.2 + Math.sin(elapsed * 0.31) * 0.85;
+  camera.position.z = 8.2 + Math.cos(elapsed * 0.19) * 0.65;
+  camera.lookAt(0, 0, 0);
+
+  renderer.render(scene, camera);
+}
+
+animate();
+
+/* ============================================================
+   7. 自适应
+   ============================================================ */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  dotMat.uniforms.uPR.value = Math.min(devicePixelRatio, 2);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>放射星芒 · 十重旋转对称</title>
+<style>
+  html, body {
+    margin: 0; padding: 0;
+    width: 100%; height: 100%;
+    overflow: hidden;
+    background: #01040c;
+  }
+
+  /* 深空藏蓝背景 */
+  #bg {
+    position: fixed; inset: 0; z-index: 0;
+    background: radial-gradient(ellipse 100% 100% at 50% 50%,
+      #0b1d42 0%,
+      #071432 22%,
+      #040c1e 46%,
+      #020714 70%,
+      #01040c 100%);
+  }
+
+  /* 中心冷光晕 */
+  #glow {
+    position: fixed; inset: 0; z-index: 0;
+    pointer-events: none;
+    background: radial-gradient(circle 28vw at 50% 50%,
+      rgba(90, 160, 255, 0.075) 0%,
+      rgba(40, 80, 180, 0.03) 42%,
+      rgba(0, 0, 0, 0) 72%);
+  }
+
+  canvas { position: fixed; inset: 0; display: block; z-index: 1; }
+
+  #hint {
+    position: fixed;
+    left: 50%; bottom: 22px;
+    transform: translateX(-50%);
+    z-index: 2;
+    color: rgba(140, 190, 255, 0.24);
+    font: 12px/1.7 -apple-system, BlinkMacSystemFont, "PingFang SC",
+          "Microsoft YaHei", "Helvetica Neue", sans-serif;
+    letter-spacing: 0.24em;
+    white-space: nowrap;
+    pointer-events: none;
+    user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="bg"></div>
+<div id="glow"></div>
+<div id="hint">θ = πk/5 (k = 0..9)　·　十重放射星芒</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+
+/* ============================================================
+   1. 基础环境
+   ============================================================ */
+const scene  = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.1, 200);
+camera.position.set(0, 0, 10.5);
+camera.lookAt(0, 0, 0);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.setClearColor(0x000000, 0);
+document.body.appendChild(renderer.domElement);
+
+/* ============================================================
+   2. 生成十条射线  θ = πk/5 (k = 0..9)
+   每条射线两层：冰蓝光晕层 + 亮金白芯线层
+   ============================================================ */
+const RAYS      = 10;
+const R_MAX     = 4.25;      // 射线最大半径
+const PTS_ICE   = 70;        // 冰蓝层每射线点数
+const PTS_GOLD  = 70;        // 金白层每射线点数
+
+const TOTAL = RAYS * (PTS_ICE + PTS_GOLD);
+
+const positions = new Float32Array(TOTAL * 3);
+const aT        = new Float32Array(TOTAL);
+const aLayer    = new Float32Array(TOTAL);
+const aRand     = new Float32Array(TOTAL);
+
+let idx = 0;
+
+for (let k = 0; k < RAYS; k++) {
+  const angle = Math.PI * k / 5;
+  const dx = Math.cos(angle);
+  const dy = Math.sin(angle);
+
+  /* —— 冰蓝光晕层：抖动宽，点大而柔 —— */
+  for (let i = 0; i < PTS_ICE; i++) {
+    const t = i / (PTS_ICE - 1);
+    const r = t * R_MAX;
+    const spread = Math.sin(t * Math.PI) * 0.20;
+    const j = (Math.random() - 0.5) * spread;
+
+    positions[idx * 3]     = dx * r - dy * j;
+    positions[idx * 3 + 1] = dy * r + dx * j;
+    positions[idx * 3 + 2] = (Math.random() - 0.5) * 0.38;
+
+    aT[idx]     = t;
+    aLayer[idx] = 0;
+    aRand[idx]  = Math.random();
+    idx++;
+  }
+
+  /* —— 亮金白芯线层：抖动窄，点小而亮 —— */
+  for (let i = 0; i < PTS_GOLD; i++) {
+    const t = i / (PTS_GOLD - 1);
+    const r = t * R_MAX;
+    const spread = Math.sin(t * Math.PI) * 0.05;
+    const j = (Math.random() - 0.5) * spread;
+
+    positions[idx * 3]     = dx * r - dy * j;
+    positions[idx * 3 + 1] = dy * r + dx * j;
+    positions[idx * 3 + 2] = (Math.random() - 0.5) * 0.18;
+
+    aT[idx]     = t;
+    aLayer[idx] = 1;
+    aRand[idx]  = Math.random();
+    idx++;
+  }
+}
+
+const geo = new THREE.BufferGeometry();
+geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+geo.setAttribute('aT',       new THREE.BufferAttribute(aT, 1));
+geo.setAttribute('aLayer',   new THREE.BufferAttribute(aLayer, 1));
+geo.setAttribute('aRand',    new THREE.BufferAttribute(aRand, 1));
+
+/* ============================================================
+   3. 着色器 —— 双层发光 + 向外脉冲 + 芒尖闪烁
+   ============================================================ */
+const VERT = `
+  uniform float uTime;
+  uniform float uPR;
+
+  attribute float aT;
+  attribute float aLayer;
+  attribute float aRand;
+
+  varying vec3  vColor;
+  varying float vAlpha;
+
+  void main() {
+    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    float dist = max(-mv.z, 0.001);
+
+    /* —— 双层颜色：冰蓝 ↔ 亮金白，沿半径渐变 —— */
+    vec3 iceCenter  = vec3(0.68, 0.90, 1.00);
+    vec3 iceEdge    = vec3(0.22, 0.58, 1.00);
+    vec3 goldCenter = vec3(1.00, 1.00, 0.94);
+    vec3 goldEdge   = vec3(1.00, 0.82, 0.38);
+
+    vec3 iceCol  = mix(iceCenter,  iceEdge,  aT);
+    vec3 goldCol = mix(goldCenter, goldEdge, aT);
+    vec3 col = mix(iceCol, goldCol, aLayer);
+
+    /* —— 从中心匀速向外放射的脉冲 —— */
+    float pulse = sin(aT * 10.0 - uTime * 5.0);
+    pulse = pow(max(pulse, 0.0), 2.5);
+
+    /* —— 芒尖处星辰般的闪烁 —— */
+    float tipZone = smoothstep(0.78, 1.0, aT);
+    float flicker = 0.5 + 0.5 * sin(uTime * 7.5 + aRand * 6.28318);
+    float tipGlow = tipZone * (0.5 + 1.6 * flicker);
+
+    /* —— 中心核心增亮 —— */
+    float coreGlow = exp(-aT * aT * 20.0) * 1.15;
+
+    /* —— 基础亮度：外圈渐暗 —— */
+    float baseBright = 1.0 - 0.42 * aT;
+
+    float brightness = baseBright * (0.42 + 0.80 * pulse)
+                     + tipGlow + coreGlow;
+
+    /* —— 冰蓝层作光晕，金白层作芯线 —— */
+    float layerBoost = aLayer > 0.5 ? 1.00 : 0.72;
+
+    vColor = col * brightness * layerBoost;
+    vAlpha = clamp(brightness * (aLayer > 0.5 ? 0.95 : 0.48), 0.0, 1.0);
+
+    /* —— 点尺寸 —— */
+    float size;
+    if (aLayer > 0.5) {
+      size = 0.50 + 0.60 * pulse + 1.80 * tipGlow + 0.80 * coreGlow;
+    } else {
+      size = 0.90 + 0.90 * pulse + 2.40 * tipGlow + 1.40 * coreGlow;
+    }
+
+    gl_PointSize = clamp(size * uPR * (28.0 / dist), 1.0, 34.0);
+    gl_Position  = projectionMatrix * mv;
+  }
+`;
+
+const FRAG = `
+  varying vec3  vColor;
+  varying float vAlpha;
+
+  void main() {
+    vec2 c = gl_PointCoord - vec2(0.5);
+    float d2 = dot(c, c);
+    if (d2 > 0.25) discard;
+
+    float a = smoothstep(0.25, 0.0, d2);
+    a = pow(a, 1.6);
+
+    gl_FragColor = vec4(vColor, vAlpha * a);
+  }
+`;
+
+const material = new THREE.ShaderMaterial({
+  uniforms: {
+    uTime: { value: 0 },
+    uPR:   { value: Math.min(devicePixelRatio, 2) }
+  },
+  vertexShader:   VERT,
+  fragmentShader: FRAG,
+  transparent: true,
+  depthWrite:  false,
+  blending:    THREE.AdditiveBlending
+});
+
+const star = new THREE.Points(geo, material);
+star.frustumCulled = false;
+
+/* 组承载整体旋转与呼吸 */
+const group = new THREE.Group();
+group.add(star);
+scene.add(group);
+
+/* ============================================================
+   4. 动画循环
+   ============================================================ */
+const clock = new THREE.Clock();
+let elapsed = 0;
+
+function animate() {
+  requestAnimationFrame(animate);
+
+  const dt = Math.min(clock.getDelta(), 0.05);
+  elapsed += dt;
+
+  material.uniforms.uTime.value = elapsed;
+
+  /* —— 整体围绕中心缓慢转动 —— */
+  group.rotation.z = elapsed * 0.13;
+
+  /* —— 轻微 3D 倾斜摆动，增强空间感 —— */
+  group.rotation.x = Math.sin(elapsed * 0.24) * 0.10;
+  group.rotation.y = Math.cos(elapsed * 0.19) * 0.10;
+
+  /* —— 呼吸缩放 —— */
+  const breathe = 1.0 + Math.sin(elapsed * 0.62) * 0.022;
+  group.scale.setScalar(breathe);
+
+  /* —— 相机极缓慢游移 —— */
+  camera.position.x = Math.sin(elapsed * 0.17) * 0.65;
+  camera.position.y = Math.cos(elapsed * 0.22) * 0.50;
+  camera.position.z = 10.5 + Math.sin(elapsed * 0.14) * 0.45;
+  camera.lookAt(0, 0, 0);
+
+  renderer.render(scene, camera);
+}
+
+animate();
+
+/* ============================================================
+   5. 自适应
+   ============================================================ */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  material.uniforms.uPR.value = Math.min(devicePixelRatio, 2);
+});
+</script>
+</body>
+</html>

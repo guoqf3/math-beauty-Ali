@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>叶形曲线 · y² = x³(1−x)</title>
+<style>
+  html, body {
+    margin: 0; padding: 0;
+    width: 100%; height: 100%;
+    overflow: hidden;
+    background: #FFFCF0;
+  }
+
+  #bg {
+    position: fixed; inset: 0; z-index: 0;
+    background: radial-gradient(ellipse 125% 110% at 50% 44%,
+      #FFFCF0 0%, #FDF7E8 16%, #FBF2DD 34%, #F7EAD0 54%,
+      #F2E0BE 74%, #EBD5A8 90%, #E4CB98 100%);
+  }
+
+  #glow {
+    position: fixed; inset: 0; z-index: 0;
+    pointer-events: none;
+    background: radial-gradient(circle 38vw at 50% 46%,
+      rgba(255, 250, 220, 0.42) 0%,
+      rgba(230, 245, 210, 0.12) 45%,
+      rgba(0, 0, 0, 0) 72%);
+  }
+
+  canvas { position: fixed; inset: 0; display: block; z-index: 1; }
+
+  #hint {
+    position: fixed;
+    left: 50%; bottom: 22px;
+    transform: translateX(-50%);
+    z-index: 2;
+    color: rgba(30, 80, 45, 0.26);
+    font: 12px/1.7 -apple-system, BlinkMacSystemFont, "PingFang SC",
+          "Microsoft YaHei", "Helvetica Neue", sans-serif;
+    letter-spacing: 0.22em;
+    white-space: nowrap;
+    pointer-events: none;
+    user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="bg"></div>
+<div id="glow"></div>
+<div id="hint">y² = x³(1−x)　·　叶形曲线</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+
+/* ============================================================
+   1. 基础环境
+   ============================================================ */
+const scene  = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 200);
+camera.position.set(0, 0, 7.0);
+camera.lookAt(0, 0, 0);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.setClearColor(0x000000, 0);
+document.body.appendChild(renderer.domElement);
+
+/* ============================================================
+   2. 叶形曲线  y² = x³(1−x)  →  y = ±x^1.5·√(1−x)
+   ============================================================ */
+const N_PTS  = 620;      // 每支采样点数（原 900 → 620，视觉无差别）
+const SCALE  = 5.5;
+const CX     = 0.5;
+
+const positions = new Float32Array((N_PTS + 1) * 2 * 3);
+const aTarr     = new Float32Array((N_PTS + 1) * 2);
+const aRandarr  = new Float32Array((N_PTS + 1) * 2);
+
+let ptr = 0;
+
+for (let i = 0; i <= N_PTS; i++) {
+  const x = i / N_PTS;
+  const y = Math.pow(x, 1.5) * Math.sqrt(Math.max(0, 1 - x));
+
+  positions[ptr * 3]     = (x - CX) * SCALE;
+  positions[ptr * 3 + 1] =  y * SCALE;
+  positions[ptr * 3 + 2] =  0;
+  aTarr[ptr]    = x;
+  aRandarr[ptr] = Math.random();
+  ptr++;
+
+  positions[ptr * 3]     = (x - CX) * SCALE;
+  positions[ptr * 3 + 1] = -y * SCALE;
+  positions[ptr * 3 + 2] =  0;
+  aTarr[ptr]    = x;
+  aRandarr[ptr] = Math.random();
+  ptr++;
+}
+
+const geo = new THREE.BufferGeometry();
+geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+geo.setAttribute('aT',       new THREE.BufferAttribute(aTarr, 1));
+geo.setAttribute('aRand',    new THREE.BufferAttribute(aRandarr, 1));
+
+/* ============================================================
+   3. 着色器 —— 森林绿→金色渐变 + 扫光 + 展开
+   ============================================================ */
+const VERT = `
+  uniform float uTime;
+  uniform float uReveal;
+  uniform float uSweep;
+  uniform float uPR;
+
+  attribute float aT;
+  attribute float aRand;
+
+  varying vec3  vColor;
+  varying float vAlpha;
+
+  void main() {
+    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    float dist = max(-mv.z, 0.001);
+
+    /* —— 展开进度 —— */
+    float vis = 1.0 - smoothstep(uReveal - 0.06, uReveal + 0.02, aT);
+
+    /* —— 基础色：森林绿 → 金色 —— */
+    vec3 cGreen = vec3(0.09, 0.40, 0.19);
+    vec3 cGold  = vec3(0.92, 0.72, 0.16);
+    vec3 col = mix(cGreen, cGold, smoothstep(0.0, 1.0, aT));
+
+    /* —— 沿轮廓滑行的光线 —— */
+    float d = aT - uSweep;
+    float light = exp(-d * d * 130.0);
+
+    /* —— 轻微闪烁 —— */
+    float flick = 0.86 + 0.14 * sin(uTime * 2.6 + aRand * 6.28318);
+
+    vColor = col + vec3(1.00, 0.96, 0.80) * light * 1.9;
+    vAlpha = vis * (0.64 + 0.36 * flick) + light * 0.55 * vis;
+
+    float size = (1.05 + 3.4 * light) * (0.85 + 0.30 * aRand);
+    gl_PointSize = clamp(size * uPR * (55.0 / dist), 0.8, 42.0);
+
+    gl_Position = projectionMatrix * mv;
+  }
+`;
+
+const FRAG = `
+  varying vec3  vColor;
+  varying float vAlpha;
+
+  void main() {
+    vec2 c = gl_PointCoord - vec2(0.5);
+    float d2 = dot(c, c);
+    if (d2 > 0.25) discard;
+
+    float a = smoothstep(0.25, 0.0, d2);
+    a = pow(a, 1.7);
+
+    gl_FragColor = vec4(vColor, vAlpha * a);
+  }
+`;
+
+const material = new THREE.ShaderMaterial({
+  uniforms: {
+    uTime:   { value: 0 },
+    uReveal: { value: 1.0 },   // 初始设为 1.0，避免等待
+    uSweep:  { value: -0.5 },
+    uPR:     { value: Math.min(devicePixelRatio, 2) }
+  },
+  vertexShader:   VERT,
+  fragmentShader: FRAG,
+  transparent: true,
+  depthWrite:  false,
+  blending:    THREE.NormalBlending
+});
+
+const leaf = new THREE.Points(geo, material);
+leaf.frustumCulled = false;
+
+const group = new THREE.Group();
+group.add(leaf);
+scene.add(group);
+
+/* ============================================================
+   4. 动画循环
+   ============================================================ */
+const clock = new THREE.Clock();
+let elapsed = 0;
+
+function animate() {
+  requestAnimationFrame(animate);
+
+  const dt = Math.min(clock.getDelta(), 0.05);
+  elapsed += dt;
+
+  /* —— 展开：0.9 秒内完成（原 3.2 秒） —— */
+  let rv = Math.min(1, elapsed / 0.9);
+  rv = rv * rv * (3 - 2 * rv);
+  material.uniforms.uReveal.value = rv;
+
+  /* —— 扫光：1.8 秒一圈（原 3 秒） —— */
+  const sweepCycle = elapsed % 1.8;
+  material.uniforms.uSweep.value = sweepCycle / 1.8;
+
+  material.uniforms.uTime.value = elapsed;
+
+  /* —— 整体摆动 —— */
+  group.rotation.z = Math.sin(elapsed * 0.55) * 0.035;
+  group.rotation.y = Math.sin(elapsed * 0.40) * 0.14;
+  group.rotation.x = Math.sin(elapsed * 0.30) * 0.05;
+
+  const breathe = 1.0 + Math.sin(elapsed * 0.8) * 0.016;
+  group.scale.setScalar(breathe);
+  group.position.x = Math.sin(elapsed * 0.45) * 0.06;
+
+  /* —— 相机缓慢游移 —— */
+  camera.position.x = Math.sin(elapsed * 0.20) * 0.55;
+  camera.position.y = Math.cos(elapsed * 0.26) * 0.42;
+  camera.position.z = 7.0 + Math.sin(elapsed * 0.16) * 0.40;
+  camera.lookAt(0, 0, 0);
+
+  renderer.render(scene, camera);
+}
+
+animate();
+
+/* ============================================================
+   5. 自适应
+   ============================================================ */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  material.uniforms.uPR.value = Math.min(devicePixelRatio, 2);
+});
+</script>
+</body>
+</html>
