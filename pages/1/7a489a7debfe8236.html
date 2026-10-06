@@ -1,0 +1,841 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>行星环潮汐力 · Tidal Forces &amp; Planetary Rings</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden;
+    background: radial-gradient(ellipse at 50% 38%, #0a1030 0%, #05081a 45%, #01020a 100%);
+    font-family: "SF Mono", "JetBrains Mono", Consolas, Menlo, monospace;
+    color: #b8f4ff;
+    user-select: none;
+  }
+  canvas { display: block; }
+  #scene { position: fixed; inset: 0; }
+
+  /* ---------- 标题 ---------- */
+  .hud-title {
+    position: fixed; top: 24px; left: 50%; transform: translateX(-50%);
+    text-align: center; pointer-events: none; z-index: 10;
+  }
+  .hud-title h1 {
+    font-size: 15px; letter-spacing: 10px; font-weight: 400;
+    color: #b8f4ff;
+    text-shadow: 0 0 20px rgba(120, 200, 255, .9), 0 0 60px rgba(140, 90, 255, .55);
+  }
+  .hud-title p {
+    font-size: 10px; letter-spacing: 5px; margin-top: 9px;
+    color: rgba(150, 200, 255, .42);
+  }
+
+  /* ---------- 通用面板 ---------- */
+  .panel {
+    position: fixed; z-index: 10;
+    background: linear-gradient(135deg, rgba(12, 22, 58, .58), rgba(6, 10, 28, .42));
+    border: 1px solid rgba(120, 180, 255, .18);
+    border-radius: 11px;
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    padding: 14px 18px;
+    box-shadow: 0 0 38px rgba(90, 140, 255, .08), inset 0 0 38px rgba(120, 90, 255, .045);
+  }
+  .cap {
+    font-size: 10px; letter-spacing: 3px; margin-bottom: 10px;
+    color: rgba(150, 200, 255, .45);
+  }
+
+  /* ---------- 公式 ---------- */
+  #formulas { top: 104px; left: 28px; }
+  #formulas .eq {
+    font-size: 13.5px; line-height: 2.1; letter-spacing: .4px;
+    color: #cdeaff; text-shadow: 0 0 14px rgba(110, 190, 255, .55);
+    white-space: nowrap;
+  }
+  #formulas .eq em { font-style: normal; color: #7fe8ff; }
+  #formulas .eq .hl { color: #b48cff; }
+  #formulas .eq .dim { color: rgba(150, 200, 255, .45); font-size: 12px; }
+
+  /* ---------- 读数 ---------- */
+  #readout { bottom: 28px; left: 28px; min-width: 268px; }
+  #readout .row {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-size: 11.5px; line-height: 2.05; color: rgba(160, 210, 255, .72);
+  }
+  #readout .row b {
+    font-weight: 500; color: #7fe8ff;
+    text-shadow: 0 0 12px rgba(110, 200, 255, .8);
+    font-variant-numeric: tabular-nums;
+  }
+  #readout .row b.purple { color: #b48cff; text-shadow: 0 0 12px rgba(160, 110, 255, .8); }
+  #readout .divider {
+    height: 1px; margin: 8px 0;
+    background: linear-gradient(90deg, transparent, rgba(120,180,255,.25), transparent);
+  }
+
+  /* ---------- 音频按钮 ---------- */
+  #soundBtn {
+    position: fixed; top: 26px; right: 28px; z-index: 20;
+    padding: 9px 18px; font-size: 11px; letter-spacing: 2px;
+    font-family: inherit; color: #7fe8ff; cursor: pointer;
+    background: linear-gradient(135deg, rgba(20, 40, 90, .62), rgba(8, 14, 36, .5));
+    border: 1px solid rgba(120, 180, 255, .3);
+    border-radius: 8px;
+    backdrop-filter: blur(8px);
+    transition: all .25s;
+    box-shadow: 0 0 18px rgba(90, 150, 255, .14);
+  }
+  #soundBtn:hover {
+    background: linear-gradient(135deg, rgba(35, 65, 130, .78), rgba(20, 30, 70, .62));
+    box-shadow: 0 0 30px rgba(110, 180, 255, .4);
+    transform: translateY(-1px);
+  }
+  #soundBtn:active { transform: translateY(0); }
+
+  /* ---------- 右下角提示 ---------- */
+  #hint {
+    position: fixed; right: 28px; bottom: 26px; z-index: 10;
+    font-size: 9.5px; letter-spacing: 2px; line-height: 1.9;
+    color: rgba(150, 200, 255, .32); text-align: right;
+  }
+
+  @media (max-width: 900px) {
+    #formulas .eq { font-size: 10.5px; }
+    #readout { min-width: 200px; font-size: 10px; }
+    .hud-title h1 { font-size: 12px; letter-spacing: 6px; }
+  }
+</style>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+  }
+}
+</script>
+</head>
+<body>
+
+<div id="scene"></div>
+
+<div class="hud-title">
+  <h1>行 星 环 潮 汐 力</h1>
+  <p>TIDAL FORCES &amp; PLANETARY RINGS</p>
+</div>
+
+<button id="soundBtn">🔈 开启音效</button>
+
+<div id="formulas" class="panel">
+  <div class="cap">PHYSICAL MODEL</div>
+  <div class="eq">F<sub>tidal</sub> ∝ <em>2GMm·r / R³</em></div>
+  <div class="eq">洛希极限 <em>d ≈ 2.44 R<sub>p</sub>(ρ<sub>p</sub>/ρ<sub>m</sub>)<sup>1/3</sup></em></div>
+  <div class="eq">开普勒第三定律 <span class="hl">r³/T² = GM/4π²</span></div>
+  <div class="eq">轨道角速度 <span class="hl">ω(r) = √(GM/r³)</span></div>
+  <div class="eq"><span class="dim">内圈快 · 外圈慢 —— 差速旋转</span></div>
+</div>
+
+<div id="readout" class="panel">
+  <div class="cap">RING DYNAMICS</div>
+  <div class="row"><span>内环半径 r₁</span><b id="vr1">—</b></div>
+  <div class="row"><span>外环半径 r₂</span><b id="vr2">—</b></div>
+  <div class="divider"></div>
+  <div class="row"><span>内环周期 T₁</span><b id="vt1">—</b></div>
+  <div class="row"><span>外环周期 T₂</span><b id="vt2">—</b></div>
+  <div class="divider"></div>
+  <div class="row"><span>周期比 T₂ / T₁</span><b class="purple" id="vratio">—</b></div>
+  <div class="row"><span>内外速度比 v₁ / v₂</span><b class="purple" id="vvel">—</b></div>
+</div>
+
+<div id="hint">
+  拖拽鼠标 · 微调视角<br>
+  内环粒子角速度 ω ∝ r<sup>-3/2</sup>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+
+/* ============================================================
+   常量 / 参数
+   ============================================================ */
+const PLANET_R   = 1.0;
+const RING_IN    = 1.62;
+const RING_OUT   = 5.20;
+const PARTICLE_N = 60000;
+const GM         = 1.0;
+const SPEED      = 1.45;     // 全局轨道速度系数
+const LIGHT_DIR  = new THREE.Vector3(0.58, 0.36, 0.73).normalize();
+
+/* ============================================================
+   渲染器 / 场景 / 相机
+   ============================================================ */
+const container = document.getElementById('scene');
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setClearAlpha(0);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.12;
+container.appendChild(renderer.domElement);
+
+const scene  = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(46, window.innerWidth / window.innerHeight, 0.1, 600);
+camera.position.set(0, 4.8, 10.6);
+camera.lookAt(0, 0, 0);
+
+/* ============================================================
+   行星 · 气态巨行星（程序化云带着色器）
+   ============================================================ */
+const planetUniforms = {
+  uTime:     { value: 0 },
+  uLightDir: { value: LIGHT_DIR.clone() }
+};
+
+const planetVert = /* glsl */`
+  varying vec3 vNormalW;
+  varying vec3 vPosL;
+  varying vec3 vWorldPos;
+  void main() {
+    vNormalW  = normalize(mat3(modelMatrix) * normal);
+    vPosL     = position;
+    vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+
+const planetFrag = /* glsl */`
+  uniform float uTime;
+  uniform vec3  uLightDir;
+
+  varying vec3 vNormalW;
+  varying vec3 vPosL;
+  varying vec3 vWorldPos;
+
+  float hash21(vec2 p) {
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+  }
+
+  float vnoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    float a = hash21(i);
+    float b = hash21(i + vec2(1.0, 0.0));
+    float c = hash21(i + vec2(0.0, 1.0));
+    float d = hash21(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+  }
+
+  float fbm(vec2 p) {
+    float v = 0.0;
+    float a = 0.5;
+    mat2 m = mat2(1.62, 1.20, -1.20, 1.62);
+    for (int i = 0; i < 5; i++) {
+      v += a * vnoise(p);
+      p = m * p;
+      a *= 0.5;
+    }
+    return v;
+  }
+
+  void main() {
+    vec3 n = normalize(vPosL);
+
+    float lat = asin(clamp(n.y, -1.0, 1.0));
+    float lon = atan(n.z, n.x);
+
+    // 纬度带 + 湍流
+    vec2 uv = vec2(lon * 1.30, lat * 2.55);
+    float turb  = fbm(uv * 2.1 + vec2(uTime * 0.045, uTime * 0.014));
+    float turb2 = fbm(uv * 4.6 - vec2(uTime * 0.030, 0.0));
+
+    float band1 = sin(lat *  7.0 + turb  * 2.6 + uTime * 0.10);
+    float band2 = sin(lat * 13.5 - turb  * 1.8 + 2.10 + uTime * 0.07);
+    float band3 = sin(lat * 22.0 + turb2 * 3.1 + 0.70);
+    float band4 = sin(lat *  3.4 + turb  * 1.4 - uTime * 0.05);
+
+    // 调色板：深海蓝 → 青绿 → 紫罗兰 → 亮青
+    vec3 cDeep  = vec3(0.020, 0.075, 0.195);
+    vec3 cTeal  = vec3(0.000, 0.470, 0.520);
+    vec3 cPurp  = vec3(0.330, 0.130, 0.580);
+    vec3 cCyan  = vec3(0.030, 0.700, 0.680);
+    vec3 cLight = vec3(0.520, 0.820, 0.860);
+
+    vec3 col = mix(cDeep, cTeal, smoothstep(-0.55, 0.65, band1));
+    col = mix(col, cPurp,  smoothstep(0.05, 1.00, band2) * 0.55);
+    col = mix(col, cCyan,  smoothstep(0.25, 1.00, band3) * 0.38);
+    col = mix(col, cLight, smoothstep(0.55, 1.00, band4) * 0.22);
+
+    // 湍流高光涡旋
+    col += vec3(0.10, 0.55, 0.60) * pow(smoothstep(0.55, 0.95, turb), 2.0) * 0.35;
+
+    // 极区变暗
+    float pole = pow(abs(n.y), 3.2);
+    col = mix(col, vec3(0.035, 0.085, 0.150), pole * 0.72);
+
+    // ---------- 光照 ----------
+    vec3 N = normalize(vNormalW);
+    vec3 L = normalize(uLightDir);
+    float wrap = dot(N, L) * 0.5 + 0.5;          // 柔和半兰伯特
+    float diff = pow(wrap, 1.35);
+
+    vec3 V = normalize(cameraPosition - vWorldPos);
+    float rim = pow(1.0 - max(dot(N, V), 0.0), 3.0);
+
+    vec3 finalCol = col * (0.14 + diff * 1.05);
+    finalCol += vec3(0.16, 0.85, 0.95) * rim * 0.62;
+
+    // 冷暖分离
+    finalCol += vec3(0.30, 0.10, 0.55) * rim * 0.28;
+
+    gl_FragColor = vec4(finalCol, 1.0);
+  }
+`;
+
+const planet = new THREE.Mesh(
+  new THREE.SphereGeometry(PLANET_R, 96, 96),
+  new THREE.ShaderMaterial({
+    uniforms: planetUniforms,
+    vertexShader: planetVert,
+    fragmentShader: planetFrag
+  })
+);
+scene.add(planet);
+
+/* ---------- 大气辉光 ---------- */
+const atmoUniforms = {
+  uLightDir: { value: LIGHT_DIR.clone() }
+};
+
+const atmo = new THREE.Mesh(
+  new THREE.SphereGeometry(PLANET_R * 1.16, 64, 64),
+  new THREE.ShaderMaterial({
+    uniforms: atmoUniforms,
+    vertexShader: /* glsl */`
+      varying vec3 vN;
+      varying vec3 vV;
+      varying vec3 vW;
+      void main() {
+        vN = normalize(mat3(modelMatrix) * normal);
+        vec4 wp = modelMatrix * vec4(position, 1.0);
+        vW = wp.xyz;
+        vV = normalize(cameraPosition - wp.xyz);
+        gl_Position = projectionMatrix * viewMatrix * wp;
+      }
+    `,
+    fragmentShader: /* glsl */`
+      uniform vec3 uLightDir;
+      varying vec3 vN;
+      varying vec3 vV;
+      varying vec3 vW;
+      void main() {
+        vec3 N = normalize(vN);
+        vec3 L = normalize(uLightDir);
+        float rim = pow(1.0 - abs(dot(N, vV)), 2.6);
+        float lit = max(dot(N, L), 0.0) * 0.65 + 0.35;
+        vec3 col = mix(vec3(0.10, 0.45, 1.00), vec3(0.10, 1.00, 0.90), rim);
+        gl_FragColor = vec4(col * rim * lit * 1.35, rim * 0.85);
+      }
+    `,
+    side: THREE.BackSide,
+    blending: THREE.AdditiveBlending,
+    transparent: true,
+    depthWrite: false
+  })
+);
+scene.add(atmo);
+
+/* ============================================================
+   行星环 · 60,000 粒子，开普勒差速旋转
+   ============================================================ */
+function ringDensity(r) {
+  if (r < RING_IN || r > RING_OUT) return 0;
+
+  let d = 1.0;
+
+  // 大间隙（卡西尼缝风格的环隙）
+  d *= 1 - 0.95 * Math.exp(-Math.pow(r - 2.42, 2) / (2 * 0.070 * 0.070));
+  d *= 1 - 0.82 * Math.exp(-Math.pow(r - 3.38, 2) / (2 * 0.120 * 0.120));
+  d *= 1 - 0.66 * Math.exp(-Math.pow(r - 4.48, 2) / (2 * 0.095 * 0.095));
+  d *= 1 - 0.50 * Math.exp(-Math.pow(r - 1.95, 2) / (2 * 0.045 * 0.045));
+
+  // 细密子环纹理
+  d *= 0.42 + 0.58 * (0.5 + 0.5 * Math.sin(r * 36.0)) *
+              (0.55 + 0.45 * (0.5 + 0.5 * Math.sin(r * 11.7 + 1.3)));
+
+  // 内 / 外渐变淡出
+  const fadeIn  = Math.min(1, (r - RING_IN) / 0.28);
+  const fadeOut = Math.min(1, (RING_OUT - r) / 0.45);
+  d *= fadeIn * fadeOut;
+
+  return Math.max(0, Math.min(1, d));
+}
+
+const ringUniforms = {
+  uTime:         { value: 0 },
+  uSpeed:        { value: SPEED },
+  uLightDir:     { value: LIGHT_DIR.clone() },
+  uPlanetRadius: { value: PLANET_R },
+  uPixelRatio:   { value: Math.min(window.devicePixelRatio, 2) }
+};
+
+const ringGeo = new THREE.BufferGeometry();
+{
+  const positions = new Float32Array(PARTICLE_N * 3); // (radius, angle0, yOffset)
+  const colors    = new Float32Array(PARTICLE_N * 3);
+  const sizes     = new Float32Array(PARTICLE_N);
+
+  const tmp = new THREE.Color();
+  let placed = 0;
+  let attempts = 0;
+  const MAX_ATTEMPTS = PARTICLE_N * 70;
+
+  while (placed < PARTICLE_N && attempts < MAX_ATTEMPTS) {
+    attempts++;
+
+    const r = RING_IN + Math.random() * (RING_OUT - RING_IN);
+    const d = ringDensity(r);
+    if (d <= 0 || Math.random() > d) continue;
+
+    const t   = (r - RING_IN) / (RING_OUT - RING_IN);
+    const ang = Math.random() * Math.PI * 2;
+
+    // 竖直厚度：内薄外厚
+    const thick = 0.0035 + t * 0.0135;
+    const yOff  = (Math.random() + Math.random() + Math.random() - 1.5) * thick * 2.1;
+
+    const i3 = placed * 3;
+    positions[i3]     = r;
+    positions[i3 + 1] = ang;
+    positions[i3 + 2] = yOff;
+
+    // 颜色：青绿 → 蓝 → 紫罗兰 → 品红
+    const hue = (0.44 + t * 0.44 + (Math.random() - 0.5) * 0.035 + 1.0) % 1.0;
+    const sat = 0.66 + Math.random() * 0.30;
+    let   lig = 0.40 + Math.random() * 0.30 + Math.sin(r * 19.0) * 0.07;
+    lig = Math.min(0.88, Math.max(0.24, lig));
+
+    tmp.setHSL(hue, sat, lig);
+    colors[i3]     = tmp.r;
+    colors[i3 + 1] = tmp.g;
+    colors[i3 + 2] = tmp.b;
+
+    sizes[placed] = (0.030 + Math.random() * 0.058) * (0.72 + t * 0.72);
+
+    placed++;
+  }
+
+  ringGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  ringGeo.setAttribute('aColor',   new THREE.BufferAttribute(colors, 3));
+  ringGeo.setAttribute('aSize',    new THREE.BufferAttribute(sizes, 1));
+}
+
+const ringMat = new THREE.ShaderMaterial({
+  uniforms: ringUniforms,
+  vertexShader: /* glsl */`
+    attribute float aSize;
+    attribute vec3  aColor;
+
+    uniform float uTime;
+    uniform float uSpeed;
+    uniform vec3  uLightDir;
+    uniform float uPlanetRadius;
+    uniform float uPixelRatio;
+
+    varying vec3  vColor;
+    varying float vShadow;
+
+    void main() {
+      float radius = position.x;
+      float ang0   = position.y;
+      float yOff   = position.z;
+
+      // 开普勒差速：ω ∝ r^(-3/2)
+      float omega = uSpeed / pow(radius, 1.5);
+      float ang   = ang0 + uTime * omega;
+
+      vec3 p = vec3(cos(ang) * radius, yOff, sin(ang) * radius);
+
+      // 行星投射在环上的阴影
+      vec3  L = normalize(uLightDir);
+      float tt = dot(p, L);
+      float sh = 1.0;
+      if (tt < 0.0) {
+        vec3  perp = p - L * tt;
+        float dd   = length(perp);
+        sh = smoothstep(uPlanetRadius * 0.88, uPlanetRadius * 1.70, dd);
+      }
+      vShadow = 0.22 + 0.78 * sh;
+
+      vec4 mv = modelViewMatrix * vec4(p, 1.0);
+      gl_Position = projectionMatrix * mv;
+
+      float ps = aSize * uPixelRatio * (330.0 / max(0.001, -mv.z));
+      gl_PointSize = clamp(ps, 0.55, 13.0);
+
+      vColor = aColor;
+    }
+  `,
+  fragmentShader: /* glsl */`
+    varying vec3  vColor;
+    varying float vShadow;
+
+    void main() {
+      vec2 c = gl_PointCoord - 0.5;
+      float d2 = dot(c, c);
+      if (d2 > 0.25) discard;
+
+      float a = smoothstep(0.25, 0.015, d2);
+      gl_FragColor = vec4(vColor * vShadow, a * 0.92);
+    }
+  `,
+  transparent: true,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false,
+  depthTest: true
+});
+
+const ringPoints = new THREE.Points(ringGeo, ringMat);
+ringPoints.frustumCulled = false;
+scene.add(ringPoints);
+
+/* ============================================================
+   星空背景
+   ============================================================ */
+{
+  const N = 4200;
+  const pos = new Float32Array(N * 3);
+  const col = new Float32Array(N * 3);
+  const siz = new Float32Array(N);
+  const tmp = new THREE.Color();
+
+  for (let i = 0; i < N; i++) {
+    const theta = Math.random() * Math.PI * 2;
+    const phi   = Math.acos(2 * Math.random() - 1);
+    const r     = 80 + Math.random() * 110;
+
+    pos[i * 3]     = r * Math.sin(phi) * Math.cos(theta);
+    pos[i * 3 + 1] = r * Math.cos(phi);
+    pos[i * 3 + 2] = r * Math.sin(phi) * Math.sin(theta);
+
+    const t = Math.random();
+    if (t < 0.62)      tmp.setHSL(0.56 + Math.random() * 0.08, 0.45, 0.86);
+    else if (t < 0.88) tmp.setHSL(0.47 + Math.random() * 0.06, 0.55, 0.82);
+    else               tmp.setHSL(0.08 + Math.random() * 0.05, 0.65, 0.82);
+
+    col[i * 3]     = tmp.r;
+    col[i * 3 + 1] = tmp.g;
+    col[i * 3 + 2] = tmp.b;
+
+    siz[i] = 0.8 + Math.random() * 2.6;
+  }
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('aColor',   new THREE.BufferAttribute(col, 3));
+  g.setAttribute('aSize',    new THREE.BufferAttribute(siz, 1));
+
+  const m = new THREE.ShaderMaterial({
+    uniforms: {
+      uPixelRatio: { value: Math.min(window.devicePixelRatio, 2) },
+      uTime:       { value: 0 }
+    },
+    vertexShader: /* glsl */`
+      attribute float aSize;
+      attribute vec3  aColor;
+      uniform float uPixelRatio;
+      uniform float uTime;
+      varying vec3  vColor;
+      varying float vTw;
+      void main() {
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_Position = projectionMatrix * mv;
+
+        float tw = 0.72 + 0.28 * sin(uTime * 1.6 + position.x * 0.35 + position.y * 0.21);
+        vTw = tw;
+
+        gl_PointSize = clamp(aSize * uPixelRatio * (260.0 / max(0.001, -mv.z)), 0.8, 6.0);
+        vColor = aColor;
+      }
+    `,
+    fragmentShader: /* glsl */`
+      varying vec3  vColor;
+      varying float vTw;
+      void main() {
+        vec2 c = gl_PointCoord - 0.5;
+        float d2 = dot(c, c);
+        if (d2 > 0.25) discard;
+        float a = smoothstep(0.25, 0.0, d2);
+        gl_FragColor = vec4(vColor * vTw, a);
+      }
+    `,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false
+  });
+
+  const stars = new THREE.Points(g, m);
+  stars.frustumCulled = false;
+  scene.add(stars);
+
+  window.__stars = stars;
+}
+
+/* ============================================================
+   读数面板（依据开普勒第三定律计算）
+   ============================================================ */
+(function fillReadout() {
+  const T1 = 2 * Math.PI * Math.sqrt(Math.pow(RING_IN, 3) / GM);
+  const T2 = 2 * Math.PI * Math.sqrt(Math.pow(RING_OUT, 3) / GM);
+  const v1 = Math.sqrt(GM / RING_IN);
+  const v2 = Math.sqrt(GM / RING_OUT);
+
+  document.getElementById('vr1').textContent = RING_IN.toFixed(2) + ' R_p';
+  document.getElementById('vr2').textContent = RING_OUT.toFixed(2) + ' R_p';
+  document.getElementById('vt1').textContent = T1.toFixed(2) + ' T₀';
+  document.getElementById('vt2').textContent = T2.toFixed(2) + ' T₀';
+  document.getElementById('vratio').textContent = (T2 / T1).toFixed(2);
+  document.getElementById('vvel').textContent = (v1 / v2).toFixed(2);
+})();
+
+/* ============================================================
+   音频 · 深空科技氛围
+   ============================================================ */
+let audioCtx = null;
+let masterGain = null;
+let audioOn = false;
+let shimmerOsc = null;
+let shimmerGain = null;
+let filterLFO = null;
+
+const soundBtn = document.getElementById('soundBtn');
+
+function makeReverb(ctx, duration, decay) {
+  const rate = ctx.sampleRate;
+  const len  = Math.floor(rate * duration);
+  const buf  = ctx.createBuffer(2, len, rate);
+  for (let ch = 0; ch < 2; ch++) {
+    const data = buf.getChannelData(ch);
+    for (let i = 0; i < len; i++) {
+      data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, decay);
+    }
+  }
+  return buf;
+}
+
+function initAudio() {
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+  masterGain = audioCtx.createGain();
+  masterGain.gain.value = 0;
+  masterGain.connect(audioCtx.destination);
+
+  // 混响
+  const convolver = audioCtx.createConvolver();
+  convolver.buffer = makeReverb(audioCtx, 4.5, 2.6);
+  const wetGain = audioCtx.createGain();
+  wetGain.gain.value = 0.55;
+  convolver.connect(wetGain);
+  wetGain.connect(masterGain);
+
+  const dryBus = audioCtx.createGain();
+  dryBus.gain.value = 1.0;
+  dryBus.connect(masterGain);
+  dryBus.connect(convolver);
+
+  // ---- 低频 drone ----
+  [55, 82.5, 110, 164.81].forEach((f, i) => {
+    const o = audioCtx.createOscillator();
+    o.type = i < 2 ? 'sine' : 'triangle';
+    o.frequency.value = f;
+    o.detune.value = (Math.random() - 0.5) * 8;
+
+    const g = audioCtx.createGain();
+    g.gain.value = [0.30, 0.14, 0.075, 0.032][i];
+
+    o.connect(g);
+    g.connect(dryBus);
+    o.start();
+  });
+
+  // ---- Pad 和弦（经低通 + 缓慢扫描）----
+  const padFilter = audioCtx.createBiquadFilter();
+  padFilter.type = 'lowpass';
+  padFilter.frequency.value = 780;
+  padFilter.Q.value = 3.6;
+  padFilter.connect(dryBus);
+
+  // 和弦：A3  C#4  E4  G#4  B4
+  [220, 277.18, 329.63, 415.30, 493.88].forEach((f, i) => {
+    const o = audioCtx.createOscillator();
+    o.type = 'triangle';
+    o.frequency.value = f;
+    o.detune.value = (i - 2) * 9;
+
+    const g = audioCtx.createGain();
+    g.gain.value = 0.030;
+    o.connect(g);
+    g.connect(padFilter);
+    o.start();
+  });
+
+  // LFO 扫描滤波器
+  filterLFO = audioCtx.createOscillator();
+  filterLFO.type = 'sine';
+  filterLFO.frequency.value = 0.055;
+
+  const lfoAmt = audioCtx.createGain();
+  lfoAmt.gain.value = 480;
+
+  filterLFO.connect(lfoAmt);
+  lfoAmt.connect(padFilter.frequency);
+  filterLFO.start();
+
+  // ---- 高频微光 ----
+  shimmerOsc = audioCtx.createOscillator();
+  shimmerOsc.type = 'sine';
+  shimmerOsc.frequency.value = 1046.5;
+
+  shimmerGain = audioCtx.createGain();
+  shimmerGain.gain.value = 0.0;
+
+  const shimmerFilter = audioCtx.createBiquadFilter();
+  shimmerFilter.type = 'bandpass';
+  shimmerFilter.frequency.value = 1400;
+  shimmerFilter.Q.value = 2.2;
+
+  shimmerOsc.connect(shimmerFilter);
+  shimmerFilter.connect(shimmerGain);
+  shimmerGain.connect(dryBus);
+  shimmerGain.connect(convolver);
+  shimmerOsc.start();
+
+  // ---- 星尘噪声 ----
+  const noiseLen = audioCtx.sampleRate * 4;
+  const noiseBuf = audioCtx.createBuffer(1, noiseLen, audioCtx.sampleRate);
+  const nd = noiseBuf.getChannelData(0);
+  for (let i = 0; i < noiseLen; i++) nd[i] = (Math.random() * 2 - 1) * 0.35;
+
+  const noiseSrc = audioCtx.createBufferSource();
+  noiseSrc.buffer = noiseBuf;
+  noiseSrc.loop = true;
+
+  const noiseFilter = audioCtx.createBiquadFilter();
+  noiseFilter.type = 'bandpass';
+  noiseFilter.frequency.value = 2600;
+  noiseFilter.Q.value = 0.8;
+
+  const noiseGain = audioCtx.createGain();
+  noiseGain.gain.value = 0.018;
+
+  noiseSrc.connect(noiseFilter);
+  noiseFilter.connect(noiseGain);
+  noiseGain.connect(convolver);
+  noiseSrc.start();
+}
+
+soundBtn.addEventListener('click', () => {
+  if (!audioCtx) {
+    initAudio();
+    audioOn = true;
+    masterGain.gain.setTargetAtTime(0.32, audioCtx.currentTime, 0.8);
+    soundBtn.textContent = '🔊 关闭音效';
+  } else {
+    audioOn = !audioOn;
+    masterGain.gain.setTargetAtTime(audioOn ? 0.32 : 0.0, audioCtx.currentTime, 0.35);
+    soundBtn.textContent = audioOn ? '🔊 关闭音效' : '🔈 开启音效';
+  }
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+});
+
+/* ============================================================
+   鼠标视差
+   ============================================================ */
+let mouseX = 0, mouseY = 0;
+let targetMX = 0, targetMY = 0;
+
+window.addEventListener('pointermove', (e) => {
+  targetMX = (e.clientX / window.innerWidth  - 0.5) * 2.0;
+  targetMY = (e.clientY / window.innerHeight - 0.5) * 2.0;
+});
+
+/* ============================================================
+   主循环
+   ============================================================ */
+const clock = new THREE.Clock();
+let simTime = 0;
+
+function animate() {
+  requestAnimationFrame(animate);
+
+  const dt = Math.min(clock.getDelta(), 0.05);
+  simTime += dt;
+
+  // ---------- 着色器时间 ----------
+  planetUniforms.uTime.value = simTime;
+  ringUniforms.uTime.value   = simTime;
+  if (window.__stars) window.__stars.material.uniforms.uTime.value = simTime;
+
+  // ---------- 相机缓慢环绕 + 视差 ----------
+  mouseX += (targetMX - mouseX) * 0.045;
+  mouseY += (targetMY - mouseY) * 0.045;
+
+  const camR = 11.6;
+  const az   = Math.sin(simTime * 0.045) * 0.38 + mouseX * 0.28;
+  const el   = 0.44 + Math.sin(simTime * 0.072) * 0.055 - mouseY * 0.16;
+
+  camera.position.set(
+    camR * Math.cos(el) * Math.sin(az),
+    camR * Math.sin(el),
+    camR * Math.cos(el) * Math.cos(az)
+  );
+  camera.lookAt(0, 0, 0);
+
+  // ---------- 音频联动 ----------
+  if (audioCtx && audioOn) {
+    const now = audioCtx.currentTime;
+    const phase = simTime * 0.7;
+    const mod = Math.sin(phase) * 0.5 + 0.5;
+
+    shimmerOsc.frequency.setTargetAtTime(880 + mod * 760, now, 0.12);
+    shimmerGain.gain.setTargetAtTime(0.0016 + mod * 0.0075, now, 0.15);
+
+    if (filterLFO) {
+      filterLFO.frequency.setTargetAtTime(0.045 + mod * 0.035, now, 0.5);
+    }
+  }
+
+  renderer.render(scene, camera);
+}
+
+/* ============================================================
+   自适应
+   ============================================================ */
+function onResize() {
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+
+  const dpr = Math.min(window.devicePixelRatio, 2);
+  renderer.setPixelRatio(dpr);
+  renderer.setSize(w, h);
+
+  ringUniforms.uPixelRatio.value = dpr;
+  if (window.__stars) window.__stars.material.uniforms.uPixelRatio.value = dpr;
+}
+
+window.addEventListener('resize', onResize);
+
+/* ============================================================
+   启动
+   ============================================================ */
+animate();
+</script>
+</body>
+</html>

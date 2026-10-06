@@ -1,0 +1,931 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>09 布朗运动随机游走</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    overflow: hidden;
+    background: #010004;
+    color: #e9e7ff;
+    font-family: "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
+    user-select: none;
+  }
+
+  /* ---------- 背景 ---------- */
+  #bg {
+    position: fixed; inset: 0; z-index: 0;
+    background:
+      radial-gradient(ellipse at 50% 46%, rgba(40,16,80,0.30) 0%, rgba(4,2,12,0) 58%),
+      radial-gradient(circle at 50% 50%, #07041a 0%, #02010a 55%, #000000 100%);
+  }
+  #vignette {
+    position: fixed; inset: 0; z-index: 2; pointer-events: none;
+    background: radial-gradient(circle at 50% 50%, rgba(0,0,0,0) 40%, rgba(0,0,0,0.82) 100%);
+  }
+  #scene { position: fixed; inset: 0; z-index: 1; }
+  canvas { display: block; }
+
+  /* ---------- UI ---------- */
+  .ui { position: fixed; z-index: 4; pointer-events: none; }
+
+  header.ui { top: 34px; left: 42px; }
+  .tag {
+    font-size: 11px; letter-spacing: .38em; color: #8f7dd6;
+    margin-bottom: 12px; text-transform: uppercase;
+  }
+  h1 {
+    margin: 0; font-size: 30px; font-weight: 600; letter-spacing: .14em;
+    background: linear-gradient(92deg, #ff5a3c 0%, #ff9a44 30%, #ffd166 52%, #6ee7ff 84%, #a78bfa 100%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    filter: drop-shadow(0 0 18px rgba(255,110,60,.40));
+  }
+  .sub {
+    margin-top: 10px; font-size: 11px; letter-spacing: .26em; color: #6f6a9a;
+  }
+
+  .panel {
+    left: 42px; bottom: 44px;
+    padding: 18px 24px 16px; border-radius: 14px;
+    background: linear-gradient(160deg, rgba(52,22,40,.40), rgba(12,6,20,.30));
+    border: 1px solid rgba(255,120,80,.22);
+    backdrop-filter: blur(9px); -webkit-backdrop-filter: blur(9px);
+    box-shadow:
+      0 0 40px rgba(180,70,40,.10) inset,
+      0 10px 44px rgba(0,0,0,.55);
+  }
+  .eq {
+    font-family: "Cambria Math", Georgia, "Times New Roman", serif;
+    font-size: 20px; line-height: 1.6; color: #d6d0ff;
+    text-shadow: 0 0 16px rgba(150,120,255,.40);
+    margin: 3px 0; letter-spacing: .02em;
+  }
+  .eq.small { font-size: 13.5px; color: #a89ee0; text-shadow: 0 0 12px rgba(120,90,220,.32); }
+  .eq .hl  { color: #ff8a5c; }
+  .eq .hl2 { color: #ffd166; }
+  .eq .hl3 { color: #6ee7ff; }
+
+  .hint {
+    right: 42px; bottom: 46px; font-size: 11px;
+    letter-spacing: .22em; color: #5d5885; text-align: right; line-height: 1.9;
+  }
+
+  /* ---------- 启动层 ---------- */
+  #startScreen {
+    position: fixed; inset: 0; z-index: 20;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 34px;
+    background: radial-gradient(circle at 50% 50%, rgba(30,10,26,.78), rgba(1,0,3,.96));
+    backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+    transition: opacity 1s ease, visibility 1s ease;
+  }
+  #startScreen.hide { opacity: 0; visibility: hidden; pointer-events: none; }
+
+  #startScreen .st {
+    font-size: 12px; letter-spacing: .5em; color: #c47d6c; text-indent: .5em;
+  }
+  #startBtn {
+    pointer-events: auto; cursor: pointer;
+    padding: 16px 52px; font-size: 15px; letter-spacing: .42em; text-indent: .42em;
+    color: #ffe9e0; background: rgba(140,50,40,.18);
+    border: 1px solid rgba(255,140,90,.50); border-radius: 40px;
+    font-family: inherit;
+    box-shadow: 0 0 32px rgba(255,110,60,.32), 0 0 70px rgba(255,90,60,.14) inset;
+    transition: all .35s ease;
+    animation: pulseBtn 2.6s ease-in-out infinite;
+  }
+  #startBtn:hover {
+    background: rgba(220,80,50,.30);
+    box-shadow: 0 0 56px rgba(255,140,80,.60), 0 0 90px rgba(255,90,60,.26) inset;
+    transform: translateY(-2px);
+  }
+  @keyframes pulseBtn {
+    0%, 100% { box-shadow: 0 0 26px rgba(255,110,60,.28), 0 0 60px rgba(255,90,60,.10) inset; }
+    50%      { box-shadow: 0 0 52px rgba(255,140,80,.58), 0 0 90px rgba(255,90,60,.24) inset; }
+  }
+
+  @media (max-width: 720px) {
+    header.ui { top: 22px; left: 20px; }
+    h1 { font-size: 19px; }
+    .sub { font-size: 9px; }
+    .panel { left: 20px; bottom: 24px; padding: 13px 16px; }
+    .eq { font-size: 15px; }
+    .eq.small { font-size: 11px; }
+    .hint { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div id="bg"></div>
+<div id="scene"></div>
+<div id="vignette"></div>
+
+<header class="ui">
+  <div class="tag">Statistical Physics · 09</div>
+  <h1>布朗运动随机游走</h1>
+  <div class="sub">BROWNIAN MOTION · RANDOM WALK</div>
+</header>
+
+<div class="panel ui">
+  <div class="eq">⟨x²⟩ = <span class="hl">2Dt</span></div>
+  <div class="eq small">x(t+Δt) = x(t) + ε√Δt</div>
+  <div class="eq small">P(x,t) = 1/√(4πDt) · e<sup>−x²/4Dt</sup></div>
+  <div class="eq small">⟨x²⟩ ∝ t &nbsp;·&nbsp; 中心极限定理 ⇒ 高斯分布</div>
+</div>
+
+<div class="hint ui">
+  拖动鼠标 · 旋转视角<br>
+  滚轮 · 缩放
+</div>
+
+<div id="startScreen">
+  <div class="st">STOCHASTIC COLLISION FIELD</div>
+  <button id="startBtn">启 动</button>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+/* ============================================================
+   0. 参数
+   ============================================================ */
+const L           = 9.0;      // 容器半边长
+const N_SMALL     = 1500;     // 微小粒子数
+const SMALL_R     = 0.13;     // 微小粒子半径
+const BIG_R       = 0.68;     // 大粒子半径
+const BIG_MASS    = 110;      // 大粒子等效质量
+const V_MIN       = 6.0;      // 微小粒子速度下限
+const V_MAX       = 14.0;     // 微小粒子速度上限
+const TRAIL_MAX   = 1600;     // 轨迹最大点数
+const SPARK_MAX   = 700;      // 火花最大数
+
+/* ============================================================
+   1. 全局
+   ============================================================ */
+let scene, camera, renderer, clock;
+let bigMesh, bigGlow, instMesh, trailLine, trailGeo, sparkPoints;
+let dummy = new THREE.Object3D();
+
+// 大粒子物理量
+const bigPos = new THREE.Vector3(0, 0, 0);
+const bigVel = new THREE.Vector3(0, 0, 0);
+
+// 小粒子数据
+const smallPos = new Float32Array(N_SMALL * 3);
+const smallVel = new Float32Array(N_SMALL * 3);
+
+// 轨迹
+const trailPos = new Float32Array(TRAIL_MAX * 3);
+const trailCol = new Float32Array(TRAIL_MAX * 3);
+let trailCount = 0;
+const lastTrailPos = new THREE.Vector3(999, 999, 999);
+
+// 火花
+const sparkPos   = new Float32Array(SPARK_MAX * 3);
+const sparkVel   = new Float32Array(SPARK_MAX * 3);
+const sparkLife  = new Float32Array(SPARK_MAX);
+const sparkMax   = new Float32Array(SPARK_MAX);
+const sparkAlpha = new Float32Array(SPARK_MAX);
+const sparkSize  = new Float32Array(SPARK_MAX);
+const sparkCol   = new Float32Array(SPARK_MAX * 3);
+let sparkCursor = 0;
+
+// 相机轨道
+let camRotY = 0, camRotX = 0;
+let tgtRotY = 0, tgtRotX = 0;
+let camRadius = 26, tgtRadius = 26;
+
+/* ============================================================
+   2. 工具
+   ============================================================ */
+function hslToRgb(h, s, l) {
+  h = ((h % 360) + 360) % 360;
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = l - c / 2;
+  let r, g, b;
+  if      (h <  60) { r = c; g = x; b = 0; }
+  else if (h < 120) { r = x; g = c; b = 0; }
+  else if (h < 180) { r = 0; g = c; b = x; }
+  else if (h < 240) { r = 0; g = x; b = c; }
+  else if (h < 300) { r = x; g = 0; b = c; }
+  else              { r = c; g = 0; b = x; }
+  return [r + m, g + m, b + m];
+}
+
+function rand(a, b) { return a + Math.random() * (b - a); }
+
+/* ============================================================
+   3. 初始化粒子状态
+   ============================================================ */
+function initParticles() {
+  for (let i = 0; i < N_SMALL; i++) {
+    const i3 = i * 3;
+    // 均匀分布在容器内
+    let x, y, z;
+    do {
+      x = rand(-L * 0.94, L * 0.94);
+      y = rand(-L * 0.94, L * 0.94);
+      z = rand(-L * 0.94, L * 0.94);
+    } while (Math.hypot(x, y, z) < BIG_R + SMALL_R * 2);
+
+    smallPos[i3]     = x;
+    smallPos[i3 + 1] = y;
+    smallPos[i3 + 2] = z;
+
+    // 随机方向 + 随机速率
+    const u   = Math.random() * 2 - 1;
+    const phi = Math.random() * Math.PI * 2;
+    const s   = Math.sqrt(1 - u * u);
+    const sp  = rand(V_MIN, V_MAX);
+    smallVel[i3]     = s * Math.cos(phi) * sp;
+    smallVel[i3 + 1] = u * sp;
+    smallVel[i3 + 2] = s * Math.sin(phi) * sp;
+  }
+}
+
+/* ============================================================
+   4. 场景构建
+   ============================================================ */
+function init() {
+  scene = new THREE.Scene();
+  scene.fog = new THREE.FogExp2(0x02010a, 0.012);
+
+  camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 400);
+  camera.position.set(0, 2, camRadius);
+
+  renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.setClearColor(0x000000, 0);
+  document.getElementById('scene').appendChild(renderer.domElement);
+
+  /* ---------- 光照 ---------- */
+  scene.add(new THREE.AmbientLight(0xffffff, 0.95));
+
+  const dir1 = new THREE.DirectionalLight(0x88bbff, 0.55);
+  dir1.position.set(6, 12, 8);
+  scene.add(dir1);
+
+  const dir2 = new THREE.DirectionalLight(0xff8866, 0.42);
+  dir2.position.set(-8, -6, -7);
+  scene.add(dir2);
+
+  const coreLight = new THREE.PointLight(0xff5533, 1.6, 22, 2);
+  coreLight.position.set(0, 0, 0);
+  scene.add(coreLight);
+
+  /* ---------- 容器边界点阵（背景浅色点缀） ---------- */
+  const edgePos = [];
+  const N_EDGE = 14;
+  const faces = [
+    { axis: 0, sign:  1 }, { axis: 0, sign: -1 },
+    { axis: 1, sign:  1 }, { axis: 1, sign: -1 },
+    { axis: 2, sign:  1 }, { axis: 2, sign: -1 }
+  ];
+  faces.forEach(f => {
+    for (let a = 0; a < N_EDGE; a++) {
+      for (let b = 0; b < N_EDGE; b++) {
+        const u = (a / (N_EDGE - 1)) * 2 - 1;
+        const v = (b / (N_EDGE - 1)) * 2 - 1;
+        const p = [0, 0, 0];
+        const others = [0, 1, 2].filter(x => x !== f.axis);
+        p[f.axis]    = f.sign * L;
+        p[others[0]] = u * L;
+        p[others[1]] = v * L;
+        edgePos.push(p[0], p[1], p[2]);
+      }
+    }
+  });
+
+  const edgeGeo = new THREE.BufferGeometry();
+  edgeGeo.setAttribute('position', new THREE.Float32BufferAttribute(edgePos, 3));
+  const edgeDots = new THREE.Points(edgeGeo, new THREE.PointsMaterial({
+    color: 0x8fa8ff,
+    size: 0.06,
+    transparent: true,
+    opacity: 0.22,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    sizeAttenuation: true
+  }));
+  scene.add(edgeDots);
+
+  /* ---------- 远处星点 ---------- */
+  const starPos = [];
+  for (let i = 0; i < 900; i++) {
+    const u   = Math.random() * 2 - 1;
+    const phi = Math.random() * Math.PI * 2;
+    const s   = Math.sqrt(1 - u * u);
+    const rr  = rand(60, 150);
+    starPos.push(s * Math.cos(phi) * rr, u * rr, s * Math.sin(phi) * rr);
+  }
+  const starGeo = new THREE.BufferGeometry();
+  starGeo.setAttribute('position', new THREE.Float32BufferAttribute(starPos, 3));
+  const stars = new THREE.Points(starGeo, new THREE.PointsMaterial({
+    color: 0xffffff,
+    size: 0.45,
+    transparent: true,
+    opacity: 0.30,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    sizeAttenuation: true
+  }));
+  scene.add(stars);
+
+  /* ---------- 微小粒子（InstancedMesh） ---------- */
+  initParticles();
+
+  const smallGeo = new THREE.IcosahedronGeometry(SMALL_R, 1);
+  const smallMat = new THREE.MeshLambertMaterial({
+    transparent: true,
+    opacity: 0.62,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  });
+
+  instMesh = new THREE.InstancedMesh(smallGeo, smallMat, N_SMALL);
+  instMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  instMesh.frustumCulled = false;
+
+  const col = new THREE.Color();
+  for (let i = 0; i < N_SMALL; i++) {
+    // 多彩冷色系：青 → 蓝 → 紫 → 品红
+    const hue = 160 + Math.random() * 190;
+    const rgb = hslToRgb(hue, 0.88, 0.60);
+    col.setRGB(rgb[0], rgb[1], rgb[2]);
+    instMesh.setColorAt(i, col);
+
+    dummy.position.set(smallPos[i * 3], smallPos[i * 3 + 1], smallPos[i * 3 + 2]);
+    dummy.updateMatrix();
+    instMesh.setMatrixAt(i, dummy.matrix);
+  }
+  instMesh.instanceColor.needsUpdate = true;
+  instMesh.instanceMatrix.needsUpdate = true;
+  scene.add(instMesh);
+
+  /* ---------- 大粒子（红色） ---------- */
+  bigMesh = new THREE.Mesh(
+    new THREE.SphereGeometry(BIG_R, 40, 28),
+    new THREE.MeshStandardMaterial({
+      color: 0xff3a2a,
+      emissive: 0xaa1100,
+      emissiveIntensity: 1.4,
+      roughness: 0.28,
+      metalness: 0.15
+    })
+  );
+  scene.add(bigMesh);
+
+  // 大粒子光晕
+  bigGlow = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: makeGlowTexture(),
+    color: 0xff5a30,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    opacity: 0.85
+  }));
+  bigGlow.scale.set(4.2, 4.2, 1);
+  scene.add(bigGlow);
+
+  /* ---------- 轨迹线 ---------- */
+  trailGeo = new THREE.BufferGeometry();
+  trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPos, 3));
+  trailGeo.setAttribute('color',    new THREE.BufferAttribute(trailCol, 3));
+  trailGeo.setDrawRange(0, 0);
+
+  trailLine = new THREE.Line(trailGeo, new THREE.LineBasicMaterial({
+    vertexColors: true,
+    transparent: true,
+    opacity: 0.95,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false
+  }));
+  trailLine.frustumCulled = false;
+  scene.add(trailLine);
+
+  /* ---------- 火花 ---------- */
+  const sparkGeo = new THREE.BufferGeometry();
+  sparkGeo.setAttribute('position', new THREE.BufferAttribute(sparkPos, 3));
+  sparkGeo.setAttribute('aColor',   new THREE.BufferAttribute(sparkCol, 3));
+  sparkGeo.setAttribute('aAlpha',   new THREE.BufferAttribute(sparkAlpha, 1));
+  sparkGeo.setAttribute('aSize',    new THREE.BufferAttribute(sparkSize, 1));
+
+  const sparkMat = new THREE.ShaderMaterial({
+    uniforms: {},
+    vertexShader: `
+      attribute vec3  aColor;
+      attribute float aAlpha;
+      attribute float aSize;
+      varying vec3  vColor;
+      varying float vAlpha;
+      void main() {
+        vColor = aColor;
+        vAlpha = aAlpha;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = aSize * (200.0 / max(-mv.z, 0.001));
+        gl_PointSize = clamp(gl_PointSize, 0.5, 26.0);
+        gl_Position = projectionMatrix * mv;
+      }
+    `,
+    fragmentShader: `
+      varying vec3  vColor;
+      varying float vAlpha;
+      void main() {
+        vec2 uv = gl_PointCoord - 0.5;
+        float d2 = dot(uv, uv);
+        if (d2 > 0.25) discard;
+        float a = smoothstep(0.25, 0.0, d2);
+        a *= a;
+        gl_FragColor = vec4(vColor, a * vAlpha);
+      }
+    `,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false
+  });
+
+  sparkPoints = new THREE.Points(sparkGeo, sparkMat);
+  sparkPoints.frustumCulled = false;
+  scene.add(sparkPoints);
+
+  // 初始化火花全透明
+  for (let i = 0; i < SPARK_MAX; i++) sparkAlpha[i] = 0;
+
+  clock = new THREE.Clock();
+
+  addEventListener('resize', onResize);
+  addEventListener('pointermove', onPointerMove);
+  addEventListener('wheel', onWheel, { passive: true });
+
+  animate();
+}
+
+/* 光晕贴图 */
+function makeGlowTexture() {
+  const S = 256;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = S;
+  const ctx = cv.getContext('2d');
+  const g = ctx.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+  g.addColorStop(0.00, 'rgba(255,255,255,1.00)');
+  g.addColorStop(0.10, 'rgba(255,210,150,0.90)');
+  g.addColorStop(0.30, 'rgba(255,110,50,0.34)');
+  g.addColorStop(0.62, 'rgba(200,50,180,0.09)');
+  g.addColorStop(1.00, 'rgba(90,40,255,0.00)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, S, S);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.needsUpdate = true;
+  return tex;
+}
+
+/* ============================================================
+   5. 火花生成
+   ============================================================ */
+function spawnSpark(x, y, z, nx, ny, nz, strength) {
+  const i  = sparkCursor;
+  sparkCursor = (sparkCursor + 1) % SPARK_MAX;
+  const i3 = i * 3;
+
+  sparkPos[i3]     = x;
+  sparkPos[i3 + 1] = y;
+  sparkPos[i3 + 2] = z;
+
+  // 沿法线方向为主，加随机散射
+  const spread = 2.4;
+  const sp = Math.min(strength * 0.55, 6.0) + rand(1.5, 4.5);
+  sparkVel[i3]     = (nx + rand(-1, 1) * spread) * sp;
+  sparkVel[i3 + 1] = (ny + rand(-1, 1) * spread) * sp;
+  sparkVel[i3 + 2] = (nz + rand(-1, 1) * spread) * sp;
+
+  const life = rand(0.28, 0.62);
+  sparkLife[i] = life;
+  sparkMax[i]  = life;
+  sparkAlpha[i] = 1.0;
+  sparkSize[i]  = rand(2.0, 5.0);
+
+  // 火花颜色：橙黄 → 亮白 → 淡青
+  const r = Math.random();
+  let cr, cg, cb;
+  if (r < 0.5)      { cr = 1.0;  cg = rand(0.62, 0.88); cb = rand(0.18, 0.36); }
+  else if (r < 0.82){ cr = 1.0;  cg = 1.0;              cb = rand(0.70, 0.95); }
+  else              { cr = 0.55; cg = 0.95;             cb = 1.0; }
+  sparkCol[i3]     = cr;
+  sparkCol[i3 + 1] = cg;
+  sparkCol[i3 + 2] = cb;
+}
+
+/* ============================================================
+   6. 物理更新
+   ============================================================ */
+const tmpR = { x: 0, y: 0, z: 0 };
+
+function updatePhysics(dt) {
+  const bound = L - SMALL_R;
+  const bigBound = L - BIG_R;
+
+  /* ---------- 大粒子：阻尼 + 热扰动 ---------- */
+  bigVel.multiplyScalar(0.990);
+  bigVel.x += rand(-1, 1) * 3.2 * dt;
+  bigVel.y += rand(-1, 1) * 3.2 * dt;
+  bigVel.z += rand(-1, 1) * 3.2 * dt;
+
+  // 限速
+  const bv = bigVel.length();
+  if (bv > 7.0) bigVel.multiplyScalar(7.0 / bv);
+
+  bigPos.x += bigVel.x * dt;
+  bigPos.y += bigVel.y * dt;
+  bigPos.z += bigVel.z * dt;
+
+  // 大粒子碰壁反弹
+  ['x', 'y', 'z'].forEach(ax => {
+    if (bigPos[ax] >  bigBound) { bigPos[ax] =  bigBound; bigVel[ax] = -Math.abs(bigVel[ax]) * 0.9; }
+    if (bigPos[ax] < -bigBound) { bigPos[ax] = -bigBound; bigVel[ax] =  Math.abs(bigVel[ax]) * 0.9; }
+  });
+
+  /* ---------- 小粒子 ---------- */
+  const bx = bigPos.x, by = bigPos.y, bz = bigPos.z;
+  const collR  = BIG_R + SMALL_R;
+  const collR2 = collR * collR;
+  const invM   = 1.0 / BIG_MASS;
+
+  for (let i = 0; i < N_SMALL; i++) {
+    const i3 = i * 3;
+
+    let px = smallPos[i3]     + smallVel[i3]     * dt;
+    let py = smallPos[i3 + 1] + smallVel[i3 + 1] * dt;
+    let pz = smallPos[i3 + 2] + smallVel[i3 + 2] * dt;
+
+    /* --- 器壁反弹 --- */
+    if (px >  bound) { px =  bound; smallVel[i3]     = -Math.abs(smallVel[i3]); }
+    if (px < -bound) { px = -bound; smallVel[i3]     =  Math.abs(smallVel[i3]); }
+    if (py >  bound) { py =  bound; smallVel[i3 + 1] = -Math.abs(smallVel[i3 + 1]); }
+    if (py < -bound) { py = -bound; smallVel[i3 + 1] =  Math.abs(smallVel[i3 + 1]); }
+    if (pz >  bound) { pz =  bound; smallVel[i3 + 2] = -Math.abs(smallVel[i3 + 2]); }
+    if (pz < -bound) { pz = -bound; smallVel[i3 + 2] =  Math.abs(smallVel[i3 + 2]); }
+
+    /* --- 与大粒子碰撞 --- */
+    const dx = px - bx, dy = py - by, dz = pz - bz;
+    const d2 = dx * dx + dy * dy + dz * dz;
+
+    if (d2 < collR2 && d2 > 1e-8) {
+      const d  = Math.sqrt(d2);
+      const nx = dx / d, ny = dy / d, nz = dz / d;
+
+      // 把粒子推到大粒子表面外
+      px = bx + nx * collR;
+      py = by + ny * collR;
+      pz = bz + nz * collR;
+
+      // 沿法线反射速度
+      const vn = smallVel[i3] * nx + smallVel[i3 + 1] * ny + smallVel[i3 + 2] * nz;
+
+      if (vn < 0) {
+        const dvx = -2 * vn * nx;
+        const dvy = -2 * vn * ny;
+        const dvz = -2 * vn * nz;
+
+        smallVel[i3]     += dvx;
+        smallVel[i3 + 1] += dvy;
+        smallVel[i3 + 2] += dvz;
+
+        // 动量守恒 → 大粒子获得反冲
+        bigVel.x -= dvx * invM;
+        bigVel.y -= dvy * invM;
+        bigVel.z -= dvz * invM;
+
+        // 高速碰撞产生火花
+        const impact = Math.abs(vn);
+        if (impact > 7.0 && Math.random() < 0.45) {
+          spawnSpark(px, py, pz, -nx, -ny, -nz, impact);
+        }
+      }
+    }
+
+    smallPos[i3]     = px;
+    smallPos[i3 + 1] = py;
+    smallPos[i3 + 2] = pz;
+  }
+}
+
+/* ============================================================
+   7. 实例矩阵更新
+   ============================================================ */
+function updateInstances() {
+  for (let i = 0; i < N_SMALL; i++) {
+    const i3 = i * 3;
+    dummy.position.set(smallPos[i3], smallPos[i3 + 1], smallPos[i3 + 2]);
+    dummy.updateMatrix();
+    instMesh.setMatrixAt(i, dummy.matrix);
+  }
+  instMesh.instanceMatrix.needsUpdate = true;
+}
+
+/* ============================================================
+   8. 轨迹更新
+   ============================================================ */
+function updateTrail() {
+  const moved = lastTrailPos.distanceTo(bigPos);
+  if (moved < 0.035) return;
+
+  lastTrailPos.copy(bigPos);
+
+  if (trailCount < TRAIL_MAX) {
+    const idx = trailCount * 3;
+    trailPos[idx]     = bigPos.x;
+    trailPos[idx + 1] = bigPos.y;
+    trailPos[idx + 2] = bigPos.z;
+    trailCount++;
+  } else {
+    trailPos.copyWithin(0, 3);
+    const idx = (TRAIL_MAX - 1) * 3;
+    trailPos[idx]     = bigPos.x;
+    trailPos[idx + 1] = bigPos.y;
+    trailPos[idx + 2] = bigPos.z;
+  }
+
+  // 颜色渐变：越新越亮（橙红 → 亮橙白）
+  const denom = Math.max(trailCount - 1, 1);
+  for (let i = 0; i < trailCount; i++) {
+    const t = i / denom;                    // 0 最旧 → 1 最新
+    const f = Math.pow(t, 1.6);
+    const i3 = i * 3;
+    trailCol[i3]     = 0.28 + f * 0.72;
+    trailCol[i3 + 1] = 0.03 + f * 0.52;
+    trailCol[i3 + 2] = 0.00 + f * 0.18;
+  }
+
+  trailGeo.setDrawRange(0, trailCount);
+  trailGeo.attributes.position.needsUpdate = true;
+  trailGeo.attributes.color.needsUpdate = true;
+}
+
+/* ============================================================
+   9. 火花更新
+   ============================================================ */
+function updateSparks(dt) {
+  for (let i = 0; i < SPARK_MAX; i++) {
+    if (sparkLife[i] <= 0) { sparkAlpha[i] = 0; continue; }
+
+    sparkLife[i] -= dt;
+    if (sparkLife[i] <= 0) { sparkAlpha[i] = 0; continue; }
+
+    const i3 = i * 3;
+    const k  = sparkLife[i] / sparkMax[i];
+
+    sparkAlpha[i] = k * k;
+    sparkSize[i]  = sparkSize[i] * 0.985 + 0.02;
+
+    sparkPos[i3]     += sparkVel[i3]     * dt;
+    sparkPos[i3 + 1] += sparkVel[i3 + 1] * dt;
+    sparkPos[i3 + 2] += sparkVel[i3 + 2] * dt;
+
+    sparkVel[i3]     *= 0.94;
+    sparkVel[i3 + 1] *= 0.94;
+    sparkVel[i3 + 2] *= 0.94;
+  }
+
+  sparkPoints.geometry.attributes.position.needsUpdate = true;
+  sparkPoints.geometry.attributes.aAlpha.needsUpdate   = true;
+  sparkPoints.geometry.attributes.aSize.needsUpdate    = true;
+  sparkPoints.geometry.attributes.aColor.needsUpdate   = true;
+}
+
+/* ============================================================
+   10. 主循环
+   ============================================================ */
+function animate() {
+  requestAnimationFrame(animate);
+
+  const dt = Math.min(clock.getDelta(), 0.033);
+  const t  = clock.getElapsedTime();
+
+  updatePhysics(dt);
+  updateInstances();
+  updateTrail();
+  updateSparks(dt);
+
+  /* ---------- 大粒子同步 ---------- */
+  bigMesh.position.copy(bigPos);
+  bigGlow.position.copy(bigPos);
+
+  const pulse = 1 + 0.10 * Math.sin(t * 3.4);
+  bigGlow.scale.set(4.2 * pulse, 4.2 * pulse, 1);
+
+  // 大粒子材质脉动
+  bigMesh.material.emissiveIntensity = 1.2 + 0.45 * Math.sin(t * 3.0);
+
+  /* ---------- 相机轨道 ---------- */
+  camRotY += (tgtRotY - camRotY) * 0.05;
+  camRotX += (tgtRotX - camRotX) * 0.05;
+  camRadius += (tgtRadius - camRadius) * 0.06;
+
+  const cx = Math.sin(camRotY) * Math.cos(camRotX) * camRadius;
+  const cy = Math.sin(camRotX) * camRadius + 1.5;
+  const cz = Math.cos(camRotY) * Math.cos(camRotX) * camRadius;
+
+  camera.position.set(cx, cy, cz);
+  camera.lookAt(0, 0, 0);
+
+  renderer.render(scene, camera);
+}
+
+/* ============================================================
+   11. 事件
+   ============================================================ */
+function onResize() {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+}
+
+function onPointerMove(e) {
+  const nx = (e.clientX / innerWidth)  * 2 - 1;
+  const ny = (e.clientY / innerHeight) * 2 - 1;
+  tgtRotY = nx * 0.72;
+  tgtRotX = ny * 0.48;
+}
+
+function onWheel(e) {
+  tgtRadius += e.deltaY * 0.014;
+  tgtRadius = Math.max(14, Math.min(42, tgtRadius));
+}
+
+/* ============================================================
+   12. 科技感背景音效（Web Audio 实时合成）
+   ============================================================ */
+let audioStarted = false;
+
+function startAudio() {
+  if (audioStarted) return;
+  audioStarted = true;
+
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    const ctx = new AC();
+
+    /* ---------- 总输出 ---------- */
+    const master = ctx.createGain();
+    master.gain.setValueAtTime(0.0001, ctx.currentTime);
+    master.gain.exponentialRampToValueAtTime(0.50, ctx.currentTime + 5);
+    master.connect(ctx.destination);
+
+    /* ---------- 低频持续音 ---------- */
+    const droneGain = ctx.createGain();
+    droneGain.gain.value = 0.14;
+
+    const droneFilter = ctx.createBiquadFilter();
+    droneFilter.type = 'lowpass';
+    droneFilter.frequency.value = 520;
+    droneFilter.Q.value = 0.7;
+
+    droneGain.connect(droneFilter);
+    droneFilter.connect(master);
+
+    // 呼吸式调制
+    const breathLfo = ctx.createOscillator();
+    breathLfo.frequency.value = 0.13;
+    const breathDepth = ctx.createGain();
+    breathDepth.gain.value = 0.06;
+    breathLfo.connect(breathDepth);
+    breathDepth.connect(droneGain.gain);
+    breathLfo.start();
+
+    [49, 73.42, 98, 146.83, 196].forEach((f, i) => {
+      const osc = ctx.createOscillator();
+      osc.type = i % 2 ? 'sine' : 'triangle';
+      osc.frequency.value = f;
+      osc.detune.value = (Math.random() - 0.5) * 18;
+
+      const g = ctx.createGain();
+      g.gain.value = 0.55 / (i + 1.2);
+
+      osc.connect(g);
+      g.connect(droneGain);
+
+      const lfo = ctx.createOscillator();
+      lfo.frequency.value = 0.04 + 0.055 * i;
+      const lg = ctx.createGain();
+      lg.gain.value = 0.30 * g.gain.value;
+      lfo.connect(lg);
+      lg.connect(g.gain);
+      lfo.start();
+
+      osc.start();
+    });
+
+    /* ---------- 白噪声层（带通扫频） ---------- */
+    const len = Math.floor(ctx.sampleRate * 4);
+    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+
+    const noise = ctx.createBufferSource();
+    noise.buffer = buf;
+    noise.loop = true;
+
+    const nFilter = ctx.createBiquadFilter();
+    nFilter.type = 'bandpass';
+    nFilter.frequency.value = 1100;
+    nFilter.Q.value = 1.2;
+
+    const nGain = ctx.createGain();
+    nGain.gain.value = 0.052;
+
+    noise.connect(nFilter);
+    nFilter.connect(nGain);
+    nGain.connect(master);
+    noise.start();
+
+    const sweep1 = ctx.createOscillator();
+    sweep1.frequency.value = 0.038;
+    const sd1 = ctx.createGain();
+    sd1.gain.value = 800;
+    sweep1.connect(sd1);
+    sd1.connect(nFilter.frequency);
+    sweep1.start();
+
+    const sweep2 = ctx.createOscillator();
+    sweep2.frequency.value = 0.015;
+    const sd2 = ctx.createGain();
+    sd2.gain.value = 300;
+    sweep2.connect(sd2);
+    sd2.connect(nFilter.frequency);
+    sweep2.start();
+
+    /* ---------- 随机碰撞短音（模拟粒子撞击） ---------- */
+    const freqs = [784, 880, 1046.5, 1174.7, 1318.5, 1568, 1760, 2093];
+
+    function blip() {
+      if (!audioStarted) return;
+      try {
+        const now = ctx.currentTime;
+        const osc = ctx.createOscillator();
+        const g   = ctx.createGain();
+
+        osc.type = Math.random() < 0.6 ? 'sine' : 'triangle';
+        osc.frequency.value = freqs[Math.floor(Math.random() * freqs.length)];
+        osc.detune.value = (Math.random() - 0.5) * 40;
+
+        const peak = 0.012 + Math.random() * 0.026;
+        g.gain.setValueAtTime(0.0001, now);
+        g.gain.exponentialRampToValueAtTime(peak, now + 0.008);
+        g.gain.exponentialRampToValueAtTime(0.0001, now + 0.22 + Math.random() * 0.3);
+
+        osc.connect(g);
+        g.connect(master);
+
+        osc.start(now);
+        osc.stop(now + 0.7);
+      } catch (e) { /* ignore */ }
+
+      setTimeout(blip, 180 + Math.random() * 780);
+    }
+    setTimeout(blip, 1200);
+
+    /* ---------- 高频微弱泛音 ---------- */
+    const shimmer = ctx.createOscillator();
+    shimmer.type = 'sine';
+    shimmer.frequency.value = 1568;
+    const shGain = ctx.createGain();
+    shGain.gain.value = 0.006;
+
+    const shLfo = ctx.createOscillator();
+    shLfo.frequency.value = 0.07;
+    const shDepth = ctx.createGain();
+    shDepth.gain.value = 0.005;
+    shLfo.connect(shDepth);
+    shDepth.connect(shGain.gain);
+    shLfo.start();
+
+    shimmer.connect(shGain);
+    shGain.connect(master);
+    shimmer.start();
+
+  } catch (err) {
+    console.warn('音频初始化失败：', err);
+  }
+}
+
+/* ============================================================
+   13. 启动
+   ============================================================ */
+init();
+
+const startScreen = document.getElementById('startScreen');
+const startBtn    = document.getElementById('startBtn');
+
+startBtn.addEventListener('click', () => {
+  startScreen.classList.add('hide');
+  startAudio();
+});
+</script>
+</body>
+</html>
