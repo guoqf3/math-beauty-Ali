@@ -1,0 +1,972 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>范德华真实气体 · 非理想气体修正方程</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{height:100%;background:#010006;overflow:hidden;
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+    -webkit-tap-highlight-color:transparent;}
+  canvas{position:fixed;inset:0;display:block;}
+  .hud{position:fixed;inset:0;pointer-events:none;}
+
+  .epigraph{
+    position:absolute;top:14px;left:50%;transform:translateX(-50%);
+    font-family:"Songti SC","STSong",serif;
+    font-size:clamp(12px,1.35vw,19px);
+    letter-spacing:.16em;white-space:nowrap;
+    color:#f0eaff;
+    text-shadow:0 0 12px rgba(180,100,255,.9),0 0 34px rgba(90,160,255,.5);
+    animation:breathe 4.3s ease-in-out infinite;
+  }
+  @keyframes breathe{0%,100%{opacity:.7}50%{opacity:1}}
+
+  .formula{
+    position:absolute;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"PingFang SC",monospace;
+    font-size:clamp(9px,.76vw,12px);
+    line-height:1.75;letter-spacing:.02em;
+    color:rgba(150,185,255,.40);
+    text-shadow:0 0 9px rgba(80,130,255,.25);
+    white-space:nowrap;
+  }
+  .formula b{color:rgba(195,220,255,.66);font-weight:500;}
+  .tl{top:56px;left:22px;}
+  .tr{top:56px;right:22px;text-align:right;}
+  .bl{bottom:16px;left:22px;}
+  .br{bottom:16px;right:22px;text-align:right;}
+
+  .controls{
+    position:absolute;bottom:12px;left:50%;transform:translateX(-50%);
+    display:flex;align-items:center;gap:16px;
+    pointer-events:auto;
+    font-family:ui-monospace,Menlo,Consolas,monospace;
+    font-size:11px;color:rgba(170,200,255,.82);
+    background:rgba(10,6,26,.68);
+    border:1px solid rgba(130,90,255,.24);
+    border-radius:30px;padding:8px 22px;
+    backdrop-filter:blur(10px);
+    -webkit-backdrop-filter:blur(10px);
+    box-shadow:0 0 28px rgba(120,70,255,.18);
+    white-space:nowrap;
+  }
+  .controls label{display:flex;align-items:center;gap:8px;cursor:pointer;}
+  .controls input[type=range]{
+    -webkit-appearance:none;appearance:none;
+    width:150px;height:3px;border-radius:3px;
+    background:linear-gradient(90deg,#3d6bff,#9b4dff,#ff4fc8,#ff9a3d);
+    outline:none;cursor:pointer;
+  }
+  .controls input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none;width:13px;height:13px;border-radius:50%;
+    background:#f2ecff;
+    box-shadow:0 0 10px rgba(170,140,255,.95),0 0 22px rgba(210,90,255,.75);
+    cursor:pointer;
+  }
+  .controls input[type=range]::-moz-range-thumb{
+    width:13px;height:13px;border:none;border-radius:50%;
+    background:#f2ecff;
+    box-shadow:0 0 10px rgba(170,140,255,.95);
+    cursor:pointer;
+  }
+  .vmval{
+    color:#c48dff;font-weight:600;min-width:74px;text-align:center;
+    text-shadow:0 0 10px rgba(180,90,255,.75);
+  }
+  .controls input[type=checkbox]{
+    -webkit-appearance:none;appearance:none;
+    width:32px;height:16px;border-radius:9px;
+    background:rgba(100,110,200,.28);
+    position:relative;cursor:pointer;transition:background .25s;
+  }
+  .controls input[type=checkbox]::after{
+    content:"";position:absolute;top:2px;left:2px;
+    width:12px;height:12px;border-radius:50%;
+    background:#a8b6e0;transition:transform .25s,background .25s;
+  }
+  .controls input[type=checkbox]:checked{background:rgba(150,80,255,.72);}
+  .controls input[type=checkbox]:checked::after{transform:translateX(16px);background:#f2ecff;}
+
+  @media (max-width:900px){
+    .bl,.br{display:none;}
+    .controls{gap:10px;padding:7px 14px;font-size:10px;}
+    .controls input[type=range]{width:90px;}
+    .vmval{min-width:60px;}
+  }
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<div class="hud">
+  <div class="epigraph">分子间有引力，理想之外方见真实世界的温度</div>
+
+  <div class="formula tl">
+    <b>范德华方程</b><br>
+    (P + a·n²/V²)(V − n·b) = n R T
+  </div>
+  <div class="formula tr">
+    <b>内压修正 a / 体积修正 b</b><br>
+    a = 0.364 J·m³/mol　b = 4.27×10⁻⁵ m³/mol
+  </div>
+  <div class="formula bl">
+    <b>维里方程</b><br>
+    P·V<sub>m</sub>/(RT) = 1 + B(T)/V<sub>m</sub> + …
+  </div>
+  <div class="formula br">
+    <b>CO₂ 临界参数</b><br>
+    T<sub>c</sub> = 304 K　Z = PV<sub>m</sub>/RT = 0.914
+  </div>
+
+  <div class="controls">
+    <label>摩尔体积 V<sub>m</sub>
+      <input type="range" id="vmRange" min="0" max="1000" value="180" step="1">
+    </label>
+    <span class="vmval" id="vmLabel">1.00 L/mol</span>
+    <label>
+      <input type="checkbox" id="fieldToggle" checked>
+      引力场
+    </label>
+  </div>
+</div>
+
+<script>
+(() => {
+'use strict';
+
+const cv  = document.getElementById('cv');
+const ctx = cv.getContext('2d', { alpha: false });
+const TAU = Math.PI * 2;
+
+/* ============================================================
+   物理常量
+============================================================ */
+const R_GAS = 8.314;         // J/(mol·K)
+const A_VDW = 0.364;         // J·m³/mol  (CO₂ 内压修正)
+const B_VDW = 4.27e-5;       // m³/mol    (CO₂ 体积修正)
+const TEMP  = 300;           // K  恒定温度
+const N_MOL = 1.0;           // mol
+
+const VM_MIN = 6.5e-5;
+const VM_MAX = 4.0e-3;
+const LOG_VM_MIN = Math.log(VM_MIN);
+const LOG_VM_MAX = Math.log(VM_MAX);
+const LOG_SPAN   = LOG_VM_MAX - LOG_VM_MIN;
+
+/* Z 曲线显示范围 */
+const Z_MIN = 0.15, Z_MAX = 1.12;
+
+/* ============================================================
+   状态
+============================================================ */
+let W = 0, H = 0, DPR = 1;
+let bgGrad = null;
+
+let simTime = 0, lastTime = 0;
+
+const boxL = { x:0, y:0, w:0, h:0, parts:[] };   // 理想气体
+const boxR = { x:0, y:0, w:0, h:0, parts:[] };   // 范德华气体
+
+let vm = 1.0e-3;
+let targetVm = 1.0e-3;
+let autoVm = true;
+
+let showField = true;
+
+let chartX=0, chartY=0, chartW=0, chartH=0;
+
+let probe = null;    // 点击探测
+
+const NPARTS = 180;
+
+/* ============================================================
+   颜色
+============================================================ */
+function idealColor(u){
+  // 青蓝  慢 #1a6bff  → 快 #66eaff
+  const r = 26 + (102-26)*u;
+  const g = 107 + (234-107)*u;
+  const b = 255;
+  return [r|0, g|0, b|0];
+}
+function vdwColor(u){
+  // 紫红  慢 #8a2bff → 快 #ff4fd8
+  const r = 138 + (255-138)*u;
+  const g = 43 + (79-43)*u;
+  const b = 255 - (255-216)*u;
+  return [r|0, g|0, b|0];
+}
+
+/* ============================================================
+   工具
+============================================================ */
+function smoothstep(x){ x = x<0?0:x>1?1:x; return x*x*(3-2*x); }
+function gaussRand(){
+  let u=0,v=0;
+  while(u===0) u=Math.random();
+  while(v===0) v=Math.random();
+  return Math.sqrt(-2*Math.log(u))*Math.cos(TAU*v);
+}
+function sampleSpeed(){
+  const vrms = 320 * Math.sqrt(TEMP/300);
+  const sig  = vrms/Math.sqrt(3);
+  const g1=gaussRand(), g2=gaussRand(), g3=gaussRand();
+  return sig*Math.sqrt(g1*g1+g2*g2+g3*g3);
+}
+function rr(c,x,y,w,h,r){
+  c.beginPath();
+  c.moveTo(x+r,y);
+  c.lineTo(x+w-r,y); c.arcTo(x+w,y,x+w,y+r,r);
+  c.lineTo(x+w,y+h-r); c.arcTo(x+w,y+h,x+w-r,y+h,r);
+  c.lineTo(x+r,y+h); c.arcTo(x,y+h,x,y+h-r,r);
+  c.lineTo(x,y+r); c.arcTo(x,y,x+r,y,r);
+  c.closePath();
+}
+
+/* ============================================================
+   范德华物理量
+============================================================ */
+function vdwPressure(vmVal){
+  const pIdeal = R_GAS*TEMP/vmVal;
+  const pRep   = R_GAS*TEMP/(vmVal - B_VDW);
+  const pAtt   = A_VDW/(vmVal*vmVal);
+  return { ideal: pIdeal, vdw: pRep - pAtt, rep: pRep, att: pAtt };
+}
+function vdwZ(vmVal){
+  const p = vdwPressure(vmVal);
+  return (p.vdw * vmVal)/(R_GAS*TEMP);
+}
+
+/* ============================================================
+   分子间势能 & 力（像素单位）
+============================================================ */
+const R_REPEL = 9;
+const R_ATT   = 24;
+const K_REP   = 15000;
+const K_ATT   = 3600;
+
+function pairForce(d){
+  if (d < 0.001) return -K_REP;
+  if (d < R_REPEL){
+    const u = d/R_REPEL;
+    return -K_REP*(1-u)*(1-u)*2;
+  }
+  if (d < R_ATT){
+    const u = (d-R_REPEL)/(R_ATT-R_REPEL);
+    return K_ATT*Math.sin(Math.PI*u)*0.9;
+  }
+  return 0;
+}
+function pairEnergy(d){
+  if (d < 0.001) return 12;
+  if (d < R_REPEL){
+    const u = d/R_REPEL;
+    return 6*(1-u)*(1-u);
+  }
+  if (d < R_ATT){
+    const u = (d-R_REPEL)/(R_ATT-R_REPEL);
+    return -3.5*Math.sin(Math.PI*u);
+  }
+  return 0;
+}
+
+/* ============================================================
+   初始化
+============================================================ */
+function makeParticles(box){
+  const arr = [];
+  for (let i=0;i<NPARTS;i++){
+    const sp = sampleSpeed();
+    const ang = Math.random()*TAU;
+    arr.push({
+      x: box.x + 6 + Math.random()*(box.w-12),
+      y: box.y + 6 + Math.random()*(box.h-12),
+      vx: Math.cos(ang)*sp,
+      vy: Math.sin(ang)*sp,
+      fx: 0, fy: 0,
+      r: 1.75 + Math.random()*0.9,
+      ph: Math.random()*TAU
+    });
+  }
+  return arr;
+}
+
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  cv.width = Math.round(W*DPR); cv.height = Math.round(H*DPR);
+  cv.style.width = W+'px'; cv.style.height = H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+
+  /* --- 两个容器 --- */
+  const margin = W*0.045;
+  const gap    = W*0.03;
+  const bw     = (W - margin*2 - gap)/2;
+  const by     = H*0.135;
+  const bh     = H*0.465;
+
+  boxL.x = margin;          boxL.y = by; boxL.w = bw; boxL.h = bh;
+  boxR.x = margin+bw+gap;   boxR.y = by; boxR.w = bw; boxR.h = bh;
+
+  /* --- 图表 --- */
+  chartX = W*0.11;
+  chartY = H*0.655;
+  chartW = W*0.78;
+  chartH = H*0.195;
+
+  /* --- 背景 --- */
+  bgGrad = ctx.createRadialGradient(W*0.5, H*0.38, 0, W*0.5, H*0.38, Math.max(W,H)*0.85);
+  bgGrad.addColorStop(0,   '#0a0618');
+  bgGrad.addColorStop(0.45,'#050310');
+  bgGrad.addColorStop(1,   '#010006');
+
+  /* --- 粒子 --- */
+  if (boxL.parts.length === 0){
+    boxL.parts = makeParticles(boxL);
+    boxR.parts = makeParticles(boxR);
+  } else {
+    clampAll(boxL); clampAll(boxR);
+  }
+}
+
+function clampAll(box){
+  for (const p of box.parts){
+    if (p.x < box.x+p.r) p.x = box.x+p.r;
+    if (p.x > box.x+box.w-p.r) p.x = box.x+box.w-p.r;
+    if (p.y < box.y+p.r) p.y = box.y+p.r;
+    if (p.y > box.y+box.h-p.r) p.y = box.y+box.h-p.r;
+  }
+}
+
+/* ============================================================
+   30 秒剧本
+============================================================ */
+function autoVmValue(t){
+  if (t < 6)  return 3.0e-3;
+  if (t < 14){
+    const u = smoothstep((t-6)/8);
+    return Math.exp(Math.log(3.0e-3) + u*(Math.log(1.0e-4) - Math.log(3.0e-3)));
+  }
+  if (t < 20) return 1.0e-4;
+  if (t < 28){
+    const u = smoothstep((t-20)/8);
+    return Math.exp(Math.log(1.0e-4) + u*(Math.log(3.0e-3) - Math.log(1.0e-4)));
+  }
+  return 3.0e-3;
+}
+
+/* ============================================================
+   物理更新
+============================================================ */
+function stepIdeal(box, dt){
+  for (const p of box.parts){
+    p.x += p.vx*dt;
+    p.y += p.vy*dt;
+
+    if (p.x - p.r < box.x){ p.x = box.x+p.r; p.vx = Math.abs(p.vx); }
+    if (p.x + p.r > box.x+box.w){ p.x = box.x+box.w-p.r; p.vx = -Math.abs(p.vx); }
+    if (p.y - p.r < box.y){ p.y = box.y+p.r; p.vy = Math.abs(p.vy); }
+    if (p.y + p.r > box.y+box.h){ p.y = box.y+box.h-p.r; p.vy = -Math.abs(p.vy); }
+  }
+}
+
+function stepVdw(box, dt){
+  const ps = box.parts;
+  const n  = ps.length;
+
+  /* 重置受力 */
+  for (let i=0;i<n;i++){ ps[i].fx = 0; ps[i].fy = 0; }
+
+  /* 两两作用力 */
+  for (let i=0;i<n;i++){
+    const pi = ps[i];
+    for (let j=i+1;j<n;j++){
+      const pj = ps[j];
+      const dx = pj.x - pi.x;
+      const dy = pj.y - pi.y;
+      const d2 = dx*dx + dy*dy;
+      if (d2 > R_ATT*R_ATT) continue;
+      const d = Math.sqrt(d2) || 0.001;
+      const F = pairForce(d);
+      if (F === 0) continue;
+      const ux = dx/d, uy = dy/d;
+      pi.fx += F*ux; pi.fy += F*uy;
+      pj.fx -= F*ux; pj.fy -= F*uy;
+    }
+  }
+
+  /* 积分 + 阻尼 */
+  let sumV2 = 0;
+  for (let i=0;i<n;i++){
+    const p = ps[i];
+
+    p.vx += p.fx*dt;
+    p.vy += p.fy*dt;
+
+    /* 速度上限 */
+    const v2 = p.vx*p.vx + p.vy*p.vy;
+    const VMAX = 820;
+    if (v2 > VMAX*VMAX){
+      const s = VMAX/Math.sqrt(v2);
+      p.vx *= s; p.vy *= s;
+    }
+
+    /* 轻阻尼（帮助成团） */
+    const damp = 1 - 0.55*dt;
+    p.vx *= damp; p.vy *= damp;
+
+    p.x += p.vx*dt;
+    p.y += p.vy*dt;
+
+    if (p.x - p.r < box.x){ p.x = box.x+p.r; p.vx = Math.abs(p.vx)*0.92; }
+    if (p.x + p.r > box.x+box.w){ p.x = box.x+box.w-p.r; p.vx = -Math.abs(p.vx)*0.92; }
+    if (p.y - p.r < box.y){ p.y = box.y+p.r; p.vy = Math.abs(p.vy)*0.92; }
+    if (p.y + p.r > box.y+box.h){ p.y = box.y+box.h-p.r; p.vy = -Math.abs(p.vy)*0.92; }
+
+    sumV2 += p.vx*p.vx + p.vy*p.vy;
+  }
+
+  /* 弱恒温器（时间常数长，避免吹散团簇） */
+  const meanV2  = sumV2/n;
+  const targV   = 0.82 * 320 * Math.sqrt(TEMP/300);
+  const targV2  = targV*targV;
+  if (meanV2 > 1){
+    let lam = 1 + 0.010*(targV2/meanV2 - 1);
+    if (lam < 0.9985) lam = 0.9985;
+    if (lam > 1.0015) lam = 1.0015;
+    const s = Math.sqrt(lam);
+    for (let i=0;i<n;i++){ ps[i].vx *= s; ps[i].vy *= s; }
+  }
+}
+
+/* ============================================================
+   渲染 · 容器
+============================================================ */
+function drawBox(box, type){
+  const isIdeal = type === 'ideal';
+  const c1 = isIdeal ? '70,190,255' : '185,90,255';
+  const c2 = isIdeal ? '40,120,255' : '255,80,220';
+
+  /* 内部氛围光 */
+  const g = ctx.createRadialGradient(
+    box.x+box.w/2, box.y+box.h/2, 0,
+    box.x+box.w/2, box.y+box.h/2, Math.max(box.w,box.h)*0.62
+  );
+  g.addColorStop(0, `rgba(${c1},0.055)`);
+  g.addColorStop(0.55, `rgba(${c2},0.028)`);
+  g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(box.x, box.y, box.w, box.h);
+
+  /* 边框 */
+  ctx.save();
+  ctx.shadowColor = `rgba(${c1},0.85)`;
+  ctx.shadowBlur  = 22;
+  ctx.strokeStyle = `rgba(${c1},0.72)`;
+  ctx.lineWidth = 2;
+  rr(ctx, box.x, box.y, box.w, box.h, 18);
+  ctx.stroke();
+  ctx.restore();
+
+  ctx.strokeStyle = `rgba(${c2},0.24)`;
+  ctx.lineWidth = 1;
+  rr(ctx, box.x+5, box.y+5, box.w-10, box.h-10, 14);
+  ctx.stroke();
+}
+
+/* ============================================================
+   渲染 · 粒子
+============================================================ */
+function drawParticles(box, type){
+  const isIdeal = type === 'ideal';
+  const ps = box.parts;
+  const t  = simTime;
+
+  ctx.globalCompositeOperation = 'lighter';
+
+  for (let i=0;i<ps.length;i++){
+    const p = ps[i];
+    const sp = Math.sqrt(p.vx*p.vx + p.vy*p.vy);
+    const u  = sp/700 > 1 ? 1 : sp/700;
+    const c  = isIdeal ? idealColor(u) : vdwColor(u);
+    const cs = `${c[0]},${c[1]},${c[2]}`;
+
+    const tw = 0.62 + 0.38*Math.sin(t*3.0 + p.ph);
+
+    /* 光晕 */
+    ctx.globalAlpha = 0.13*tw;
+    ctx.fillStyle = `rgb(${cs})`;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r*3.6, 0, TAU);
+    ctx.fill();
+
+    /* 核心 */
+    ctx.globalAlpha = 0.95;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r, 0, TAU);
+    ctx.fill();
+  }
+
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ============================================================
+   渲染 · 引力场（范德华容器内附近分子连线）
+============================================================ */
+function drawField(box){
+  if (!showField) return;
+  const ps = box.parts;
+  const n  = ps.length;
+
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineWidth = 0.7;
+
+  let count = 0;
+  for (let i=0;i<n && count<260;i++){
+    const pi = ps[i];
+    for (let j=i+1;j<n && count<260;j++){
+      const pj = ps[j];
+      const dx = pj.x - pi.x, dy = pj.y - pi.y;
+      const d2 = dx*dx + dy*dy;
+      if (d2 > 20*20) continue;
+      const d = Math.sqrt(d2);
+      const a = (1 - d/20)*0.20;
+      if (a <= 0.01) continue;
+
+      const isAtt = d > R_REPEL;
+      const col = isAtt ? `rgba(210,110,255,${a})` : `rgba(120,200,255,${a*0.7})`;
+
+      ctx.strokeStyle = col;
+      ctx.beginPath();
+      ctx.moveTo(pi.x, pi.y);
+      ctx.lineTo(pj.x, pj.y);
+      ctx.stroke();
+      count++;
+    }
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ============================================================
+   渲染 · 容器内标签 & 压强条
+============================================================ */
+function drawBoxLabel(box, type){
+  const isIdeal = type === 'ideal';
+  const p = vdwPressure(vm);
+
+  /* 标题 */
+  ctx.textAlign = 'left';
+  ctx.font = '600 13px ui-monospace,Menlo,Consolas,monospace';
+  if (isIdeal){
+    ctx.fillStyle = 'rgba(110,220,255,0.92)';
+    ctx.shadowColor = 'rgba(60,180,255,0.9)';
+  } else {
+    ctx.fillStyle = 'rgba(215,130,255,0.92)';
+    ctx.shadowColor = 'rgba(190,80,255,0.9)';
+  }
+  ctx.shadowBlur = 14;
+  ctx.fillText(isIdeal ? '理想气体  Ideal' : '范德华气体  Van der Waals',
+               box.x + 14, box.y - 14);
+  ctx.shadowBlur = 0;
+
+  /* 压强条 */
+  const barW = box.w*0.62, barH = 6;
+  const bx = box.x + 14, by = box.y + box.h + 16;
+
+  const P = isIdeal ? p.ideal : p.vdw;
+
+  ctx.fillStyle = 'rgba(90,110,190,0.16)';
+  rr(ctx, bx, by, barW, barH, 3);
+  ctx.fill();
+
+  /* 对数刻度映射 */
+  const lgMin = Math.log(500e3), lgMax = Math.log(42e6);
+  let frac = (Math.log(Math.max(P, 1)) - lgMin)/(lgMax - lgMin);
+  frac = frac<0?0:frac>1?1:frac;
+
+  if (frac > 0.008){
+    const g = ctx.createLinearGradient(bx, 0, bx+barW, 0);
+    if (isIdeal){
+      g.addColorStop(0,'#1f4cff'); g.addColorStop(1,'#66eaff');
+    } else {
+      g.addColorStop(0,'#7a2bff'); g.addColorStop(1,'#ff5cd8');
+    }
+    ctx.fillStyle = g;
+    ctx.shadowColor = isIdeal ? 'rgba(70,180,255,0.8)' : 'rgba(200,90,255,0.8)';
+    ctx.shadowBlur = 12;
+    rr(ctx, bx, by, barW*frac, barH, 3);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+  }
+
+  /* 压强数值 */
+  ctx.font = '500 11px ui-monospace,Menlo,Consolas,monospace';
+  ctx.fillStyle = isIdeal ? 'rgba(120,210,255,0.78)' : 'rgba(215,140,255,0.78)';
+  ctx.textAlign = 'left';
+  ctx.fillText('P = ' + (P/1000).toFixed(0) + ' kPa', bx, by + 26);
+
+  /* Z 值 */
+  if (!isIdeal){
+    const z = vdwZ(vm);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = 'rgba(255,190,120,0.85)';
+    ctx.fillText('Z = ' + z.toFixed(3), bx + barW, by + 26);
+  }
+}
+
+/* ============================================================
+   渲染 · Z 曲线图
+============================================================ */
+function drawChart(){
+  const x0 = chartX, x1 = chartX + chartW;
+  const y0 = chartY, y1 = chartY + chartH;
+
+  const zToY = (z) => {
+    let u = (z - Z_MIN)/(Z_MAX - Z_MIN);
+    u = u<0?0:u>1?1:u;
+    return y1 - u*(y1-y0);
+  };
+  const vmToX = (v) => {
+    const u = (Math.log(v) - LOG_VM_MIN)/LOG_SPAN;
+    return x0 + u*(x1-x0);
+  };
+
+  /* 背景 */
+  ctx.fillStyle = 'rgba(8,6,22,0.52)';
+  rr(ctx, x0-14, y0-14, (x1-x0)+28, (y1-y0)+28, 12);
+  ctx.fill();
+
+  /* 网格线 */
+  ctx.strokeStyle = 'rgba(100,130,220,0.10)';
+  ctx.lineWidth = 1;
+  for (let z=0.2; z<=1.1; z+=0.2){
+    const y = zToY(z);
+    ctx.beginPath(); ctx.moveTo(x0,y); ctx.lineTo(x1,y); ctx.stroke();
+  }
+
+  /* Z = 1 参考线 */
+  const yOne = zToY(1);
+  ctx.setLineDash([5,6]);
+  ctx.strokeStyle = 'rgba(110,200,255,0.42)';
+  ctx.beginPath(); ctx.moveTo(x0,yOne); ctx.lineTo(x1,yOne); ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.font = '500 10px ui-monospace,Menlo,Consolas,monospace';
+  ctx.textAlign = 'left';
+  ctx.fillStyle = 'rgba(110,200,255,0.55)';
+  ctx.fillText('Z = 1', x0 - 10, yOne + 3.5);
+
+  /* 曲线 */
+  const STEPS = 240;
+  ctx.beginPath();
+  for (let i=0;i<=STEPS;i++){
+    const u  = i/STEPS;
+    const v  = Math.exp(LOG_VM_MIN + u*LOG_SPAN);
+    const z  = vdwZ(v);
+    const px = x0 + u*(x1-x0);
+    const py = zToY(z);
+    if (i===0) ctx.moveTo(px,py); else ctx.lineTo(px,py);
+  }
+  const grad = ctx.createLinearGradient(x0,0,x1,0);
+  grad.addColorStop(0,   '#ff4fc8');
+  grad.addColorStop(0.4, '#b45cff');
+  grad.addColorStop(1,   '#4dc4ff');
+  ctx.strokeStyle = grad;
+  ctx.lineWidth = 2.1;
+  ctx.shadowColor = 'rgba(180,90,255,0.9)';
+  ctx.shadowBlur = 15;
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  /* 当前点 */
+  const curX = vmToX(vm);
+  const curZ = vdwZ(vm);
+  const curY = zToY(curZ);
+
+  const pulse = 1 + 0.35*Math.sin(simTime*4.2);
+  ctx.beginPath();
+  ctx.arc(curX, curY, 11*pulse, 0, TAU);
+  ctx.fillStyle = 'rgba(255,220,150,0.16)';
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(curX, curY, 5, 0, TAU);
+  ctx.fillStyle = '#ffe6a0';
+  ctx.shadowColor = 'rgba(255,210,120,0.95)';
+  ctx.shadowBlur = 16;
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  /* 当前点标签 */
+  const lbl = 'V_m=' + (vm*1000).toFixed(2) + ' L/mol   Z=' + curZ.toFixed(3);
+  ctx.font = '600 10.5px ui-monospace,Menlo,Consolas,monospace';
+  const tw = ctx.measureText(lbl).width;
+  let lx = curX + 14, ly = curY - 12;
+  if (lx + tw + 16 > x1) lx = curX - tw - 26;
+  if (ly < y0 + 4) ly = y0 + 4;
+
+  ctx.fillStyle = 'rgba(22,16,46,0.9)';
+  ctx.strokeStyle = 'rgba(255,215,140,0.5)';
+  ctx.lineWidth = 1;
+  rr(ctx, lx, ly, tw+16, 22, 6);
+  ctx.fill(); ctx.stroke();
+  ctx.fillStyle = 'rgba(255,232,170,0.95)';
+  ctx.textAlign = 'left';
+  ctx.fillText(lbl, lx+8, ly+15);
+
+  /* 坐标说明 */
+  ctx.font = '10px ui-monospace,Menlo,Consolas,monospace';
+  ctx.fillStyle = 'rgba(140,170,240,0.42)';
+  ctx.textAlign = 'right';
+  ctx.fillText('V_m (对数刻度)  →', x1, y1 + 26);
+  ctx.textAlign = 'left';
+  ctx.fillText('Z = PV_m / RT', x0 - 10, y0 - 20);
+}
+
+/* ============================================================
+   渲染 · 点击探测
+============================================================ */
+function drawProbe(){
+  if (!probe) return;
+
+  const age = simTime - probe.t;
+  const a = Math.max(0, 1 - age/3.0);
+  if (a <= 0){ probe = null; return; }
+
+  const isIdeal = probe.side === 'ideal';
+  const col = isIdeal ? '120,215,255' : '230,130,255';
+
+  /* 高亮环 */
+  ctx.beginPath();
+  ctx.arc(probe.x, probe.y, 70 + (1-a)*24, 0, TAU);
+  ctx.strokeStyle = `rgba(${col},${a*0.65})`;
+  ctx.lineWidth = 1.6;
+  ctx.stroke();
+
+  /* 两点连线 */
+  if (probe.j){
+    ctx.setLineDash([4,4]);
+    ctx.beginPath();
+    ctx.moveTo(probe.i.x, probe.i.y);
+    ctx.lineTo(probe.j.x, probe.j.y);
+    ctx.strokeStyle = `rgba(255,220,140,${a*0.85})`;
+    ctx.lineWidth = 1.4;
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    /* 端点 */
+    for (const pp of [probe.i, probe.j]){
+      ctx.beginPath();
+      ctx.arc(pp.x, pp.y, 3.4, 0, TAU);
+      ctx.fillStyle = `rgba(255,230,170,${a})`;
+      ctx.fill();
+    }
+  }
+
+  /* 信息卡 */
+  const lines = isIdeal
+    ? ['理想气体', '分子间无相互作用势', 'U = 0']
+    : [
+        '分子间距  d = ' + probe.d.toFixed(1) + ' px',
+        '势能  U ≈ ' + probe.U.toFixed(2) + '  (a.u.)',
+        probe.U < 0 ? '状态：吸引主导' : '状态：排斥主导'
+      ];
+
+  ctx.font = '600 10.5px ui-monospace,Menlo,Consolas,monospace';
+  let maxW = 0;
+  for (const l of lines) maxW = Math.max(maxW, ctx.measureText(l).width);
+
+  const bw = maxW + 20;
+  const bh = lines.length*16 + 12;
+  let bx = probe.x + 82;
+  let by = probe.y - bh/2;
+  if (bx + bw > W - 8) bx = probe.x - bw - 82;
+  if (by < 8) by = 8;
+  if (by + bh > H - 8) by = H - bh - 8;
+
+  ctx.fillStyle = `rgba(18,12,38,${a*0.92})`;
+  ctx.strokeStyle = `rgba(${col},${a*0.6})`;
+  ctx.lineWidth = 1;
+  rr(ctx, bx, by, bw, bh, 8);
+  ctx.fill(); ctx.stroke();
+
+  ctx.textAlign = 'left';
+  for (let i=0;i<lines.length;i++){
+    ctx.fillStyle = i === 0
+      ? `rgba(${col},${a})`
+      : `rgba(220,225,255,${a*0.85})`;
+    ctx.fillText(lines[i], bx+10, by+18+i*16);
+  }
+}
+
+/* ============================================================
+   主渲染
+============================================================ */
+function render(){
+  ctx.fillStyle = bgGrad;
+  ctx.fillRect(0, 0, W, H);
+
+  /* 左：理想气体 */
+  drawBox(boxL, 'ideal');
+  drawParticles(boxL, 'ideal');
+
+  /* 右：范德华气体 */
+  drawBox(boxR, 'vdw');
+  drawField(boxR);
+  drawParticles(boxR, 'vdw');
+
+  /* 标签 */
+  drawBoxLabel(boxL, 'ideal');
+  drawBoxLabel(boxR, 'vdw');
+
+  /* 中间分隔提示 */
+  const midX = (boxL.x+boxL.w + boxR.x)/2;
+  const midY = boxL.y + boxL.h/2;
+  ctx.font = '600 11px ui-monospace,Menlo,Consolas,monospace';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(200,180,255,0.34)';
+  ctx.fillText('VS', midX, midY);
+  ctx.beginPath();
+  ctx.moveTo(midX, midY+14);
+  ctx.lineTo(midX, midY+60);
+  ctx.strokeStyle = 'rgba(160,130,255,0.16)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  /* 图表 */
+  drawChart();
+
+  /* 探测 */
+  drawProbe();
+
+  /* 顶部参数 */
+  const p = vdwPressure(vm);
+  const z = vdwZ(vm);
+  const txt =
+    `T = ${TEMP} K    n = ${N_MOL.toFixed(2)} mol    ` +
+    `V_m = ${(vm*1000).toFixed(3)} L/mol    ` +
+    `P_ideal = ${(p.ideal/1000).toFixed(0)} kPa    ` +
+    `P_vdw = ${(p.vdw/1000).toFixed(0)} kPa    ` +
+    `Z = ${z.toFixed(3)}`;
+
+  ctx.font = '600 12px ui-monospace,Menlo,Consolas,monospace';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(205,225,255,0.82)';
+  ctx.shadowColor = 'rgba(150,110,255,0.85)';
+  ctx.shadowBlur = 14;
+  ctx.fillText(txt, W/2, boxL.y - 34);
+  ctx.shadowBlur = 0;
+}
+
+/* ============================================================
+   主循环
+============================================================ */
+function frame(now){
+  requestAnimationFrame(frame);
+
+  if (!lastTime) lastTime = now;
+  let dt = (now - lastTime)/1000;
+  lastTime = now;
+  if (dt > 0.05) dt = 0.05;
+  if (dt < 0) dt = 0;
+
+  simTime += dt;
+  if (simTime >= 30){
+    simTime -= 30;
+    boxL.parts = makeParticles(boxL);
+    boxR.parts = makeParticles(boxR);
+    probe = null;
+  }
+
+  /* 自动剧本 */
+  if (autoVm){
+    targetVm = autoVmValue(simTime);
+    vmRange.value = Math.round(
+      (Math.log(targetVm) - LOG_VM_MIN)/LOG_SPAN * 1000
+    );
+  }
+
+  /* 平滑过渡 */
+  vm += (targetVm - vm) * Math.min(1, dt*5.5);
+  if (vm < VM_MIN) vm = VM_MIN;
+  if (vm > VM_MAX) vm = VM_MAX;
+
+  vmLabel.textContent = (vm*1000).toFixed(2) + ' L/mol';
+
+  stepIdeal(boxL, dt);
+  stepVdw(boxR, dt);
+
+  render();
+}
+
+/* ============================================================
+   交互
+============================================================ */
+const vmRange  = document.getElementById('vmRange');
+const vmLabel  = document.getElementById('vmLabel');
+const fieldToggle = document.getElementById('fieldToggle');
+
+vmRange.addEventListener('input', () => {
+  autoVm = false;
+  const u = vmRange.value/1000;
+  targetVm = Math.exp(LOG_VM_MIN + u*LOG_SPAN);
+});
+
+fieldToggle.addEventListener('change', () => {
+  showField = fieldToggle.checked;
+});
+
+cv.addEventListener('pointerdown', (e) => {
+  const rect = cv.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+
+  for (const [box, side] of [[boxL,'ideal'], [boxR,'vdw']]){
+    if (mx < box.x || mx > box.x+box.w) continue;
+    if (my < box.y || my > box.y+box.h) continue;
+
+    /* 找最近粒子 */
+    let best = null, bd2 = Infinity;
+    for (const p of box.parts){
+      const dx = p.x-mx, dy = p.y-my;
+      const d2 = dx*dx + dy*dy;
+      if (d2 < bd2){ bd2 = d2; best = p; }
+    }
+    if (!best) return;
+
+    /* 找它的最近邻 */
+    let nbr = null, nd2 = Infinity;
+    for (const p of box.parts){
+      if (p === best) continue;
+      const dx = p.x-best.x, dy = p.y-best.y;
+      const d2 = dx*dx + dy*dy;
+      if (d2 < nd2){ nd2 = d2; nbr = p; }
+    }
+
+    const d = nbr ? Math.sqrt(nd2) : 0;
+    probe = {
+      x: mx, y: my,
+      t: simTime,
+      side,
+      i: best,
+      j: nbr,
+      d,
+      U: side === 'ideal' ? 0 : pairEnergy(d)
+    };
+    return;
+  }
+});
+
+window.addEventListener('resize', resize);
+
+/* ============================================================
+   启动
+============================================================ */
+resize();
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

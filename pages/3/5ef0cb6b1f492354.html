@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>环面 Torus · 炫彩动画</title>
+<style>
+  *{box-sizing:border-box;}
+  html,body{
+    margin:0;padding:0;height:100%;width:100%;
+    overflow:hidden;background:#020008;
+  }
+  #scene{display:block;position:fixed;inset:0;}
+
+  /* ===== 边缘数字公式 ===== */
+  .fx{
+    position:fixed;
+    z-index:5;
+    pointer-events:none;
+    user-select:none;
+    white-space:nowrap;
+    font-family:Georgia,"Times New Roman",serif;
+    font-style:italic;
+    font-size:clamp(10px,1.02vw,17px);
+    letter-spacing:.06em;
+    animation:hueShift 13s linear infinite, breathe 7s ease-in-out infinite;
+  }
+  .fx sub,.fx sup{font-size:.62em;font-style:normal;}
+  .fx b{font-style:normal;font-weight:400;}
+
+  @keyframes hueShift{
+    0%  {color:#ff5ecb;text-shadow:0 0 16px rgba(255,94,203,.6);}
+    25% {color:#ffb15e;text-shadow:0 0 16px rgba(255,177,94,.6);}
+    50% {color:#7dffd8;text-shadow:0 0 16px rgba(125,255,216,.6);}
+    75% {color:#5ecbff;text-shadow:0 0 16px rgba(94,203,255,.6);}
+    100%{color:#ff5ecb;text-shadow:0 0 16px rgba(255,94,203,.6);}
+  }
+  @keyframes breathe{
+    0%,100%{opacity:.42;}
+    50%    {opacity:.92;}
+  }
+
+  .f-tl{top:20px;  left:24px;}
+  .f-tr{top:20px;  right:24px; text-align:right;}
+  .f-bl{bottom:20px;left:24px;}
+  .f-br{bottom:20px;right:24px;text-align:right;}
+
+  .f-tr{animation-delay:-3.1s,-1.6s;}
+  .f-bl{animation-delay:-6.2s,-3.1s;}
+  .f-br{animation-delay:-9.3s,-4.7s;}
+
+  .f-ml,.f-mr{
+    top:50%;
+    font-size:clamp(9px,.85vw,14px);
+    letter-spacing:.26em;
+  }
+  .f-ml{left:16px;  transform:translateY(-50%) rotate(-90deg); transform-origin:left center;
+        animation-delay:-1.5s,-0.9s;}
+  .f-mr{right:16px; transform:translateY(-50%) rotate( 90deg); transform-origin:right center;
+        animation-delay:-7.4s,-4.1s;}
+
+  @media (max-width:760px){
+    .fx{font-size:10px;letter-spacing:.02em;}
+    .f-ml,.f-mr{display:none;}
+    .f-tr{max-width:54vw;white-space:normal;text-align:right;line-height:1.5;}
+    .f-tl{max-width:64vw;white-space:normal;line-height:1.5;}
+  }
+</style>
+</head>
+<body>
+
+<canvas id="scene"></canvas>
+
+<!-- 边缘数字公式 -->
+<div class="fx f-tl">x(u,v) = (R + r·cos v)·cos u</div>
+<div class="fx f-tr">y(u,v) = (R + r·cos v)·sin u</div>
+<div class="fx f-bl">z(u,v) = r·sin v</div>
+<div class="fx f-br">χ(T²) = 0&nbsp;&nbsp;·&nbsp;&nbsp;g = 1&nbsp;&nbsp;·&nbsp;&nbsp;K = 0</div>
+<div class="fx f-ml">R = 主半径&nbsp;·&nbsp;r = 副半径</div>
+<div class="fx f-mr">T² = S¹ × S¹</div>
+
+<script>
+(function(){
+'use strict';
+
+/* ============================================================
+   基础
+============================================================ */
+const cv  = document.getElementById('scene');
+const ctx = cv.getContext('2d', { alpha:false });
+const TAU = Math.PI * 2;
+
+let W = 0, H = 0, DPR = 1;
+let cx = 0, cy = 0, S = 100;
+
+const D_PERSP = 6.0;          // 透视距离
+const R_MAJOR = 1.0;          // 主半径 R
+const R_MINOR = 0.38;         // 副半径 r
+
+/* ============================================================
+   网格尺寸
+============================================================ */
+const NU = 56;                // 沿 u（主环方向）分段数
+const NV = 24;                // 沿 v（管道剖面方向）分段数
+const NUV = (NU + 1) * (NV + 1);
+const NQ  = NU * NV;
+
+/* 模型坐标 */
+const mX = new Float32Array(NUV);
+const mY = new Float32Array(NUV);
+const mZ = new Float32Array(NUV);
+
+/* 投影后屏幕坐标 + 深度 */
+const sX = new Float32Array(NUV);
+const sY = new Float32Array(NUV);
+const sZ = new Float32Array(NUV);
+
+/* 四边形排序 */
+const qOrder = new Int32Array(NQ);
+const qDepth = new Float32Array(NQ);
+
+/* ============================================================
+   构建环面网格
+============================================================ */
+function buildMesh(){
+  for (let i = 0; i <= NU; i++){
+    const u  = i / NU * TAU;
+    const cu = Math.cos(u), su = Math.sin(u);
+
+    for (let j = 0; j <= NV; j++){
+      const v  = j / NV * TAU;
+      const rr = R_MAJOR + R_MINOR * Math.cos(v);
+      const k  = i * (NV + 1) + j;
+
+      mX[k] = rr * cu;
+      mY[k] = rr * su;
+      mZ[k] = R_MINOR * Math.sin(v);
+    }
+  }
+}
+
+/* ============================================================
+   背景星点
+============================================================ */
+const stars = [];
+
+function initStars(){
+  stars.length = 0;
+  const n = Math.round(Math.min(200, Math.max(70, W * H / 15000)));
+  for (let i = 0; i < n; i++){
+    stars.push({
+      x : Math.random(),
+      y : Math.random(),
+      r : 0.3 + Math.random() * 1.3,
+      ph: Math.random() * TAU,
+      sp: 0.5 + Math.random() * 1.5
+    });
+  }
+}
+
+/* ============================================================
+   尺寸
+============================================================ */
+function resize(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+
+  cv.width  = Math.round(W * DPR);
+  cv.height = Math.round(H * DPR);
+  cv.style.width  = W + 'px';
+  cv.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  cx = W * 0.5;
+  cy = H * 0.5;
+  S  = Math.min(W, H) * 0.235;
+
+  initStars();
+}
+
+/* ============================================================
+   渲染
+============================================================ */
+function render(t){
+
+  /* ---------------- 背景 ---------------- */
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+
+  const bg = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(W, H) * 0.82);
+  bg.addColorStop(0.00, '#100626');
+  bg.addColorStop(0.45, '#07021a');
+  bg.addColorStop(1.00, '#02000a');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  /* 星点 */
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < stars.length; i++){
+    const s = stars[i];
+    const a = 0.10 + 0.40 * Math.abs(Math.sin(t * s.sp + s.ph));
+    ctx.globalAlpha = a;
+    ctx.fillStyle = '#a8c8ff';
+    ctx.beginPath();
+    ctx.arc(s.x * W, s.y * H, s.r, 0, TAU);
+    ctx.fill();
+  }
+  ctx.restore();
+
+  /* ---------------- 环面中心：内部光晕透出 ---------------- */
+  const pulse = 0.5 + 0.5 * Math.sin(t * 2.4);
+  const glowR = S * 1.9;
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+
+  const cg = ctx.createRadialGradient(cx, cy, 0, cx, cy, glowR);
+  cg.addColorStop(0.00, 'hsla(298,100%,72%,' + (0.13 + 0.12 * pulse) + ')');
+  cg.addColorStop(0.32, 'hsla(276,100%,64%,' + (0.06 + 0.05 * pulse) + ')');
+  cg.addColorStop(0.66, 'hsla(256,100%,60%,' + (0.02 + 0.02 * pulse) + ')');
+  cg.addColorStop(1.00, 'hsla(240,100%,58%,0)');
+  ctx.fillStyle = cg;
+  ctx.fillRect(0, 0, W, H);
+  ctx.restore();
+
+  /* ---------------- 变换矩阵 ---------------- */
+  const rotS  = t * 0.42;                              // 自转角
+  const tiltX = 0.52 + Math.sin(t * 0.24) * 0.18;      // 倾斜角
+
+  const cosS = Math.cos(rotS),  sinS = Math.sin(rotS);
+  const cosT = Math.cos(tiltX), sinT = Math.sin(tiltX);
+
+  /* ---------------- 顶点变换 ---------------- */
+  for (let i = 0; i <= NU; i++){
+    for (let j = 0; j <= NV; j++){
+      const k = i * (NV + 1) + j;
+
+      const X = mX[k], Y = mY[k], Z = mZ[k];
+
+      /* 1. 绕 X 轴倾斜 */
+      const y1 = Y * cosT - Z * sinT;
+      const z1 = Y * sinT + Z * cosT;
+      const x1 = X;
+
+      /* 2. 绕 Y 轴自转 */
+      const x2 = x1 * cosS - z1 * sinS;
+      const z2 = x1 * sinS + z1 * cosS;
+      const y2 = y1;
+
+      /* 3. 透视投影 */
+      const p = D_PERSP / (D_PERSP - z2);
+
+      sX[k] = cx + x2 * S * p;
+      sY[k] = cy - y2 * S * p;
+      sZ[k] = z2;
+    }
+  }
+
+  /* ---------------- 四边形深度 ---------------- */
+  for (let i = 0; i < NU; i++){
+    for (let j = 0; j < NV; j++){
+      const qi = i * NV + j;
+
+      const k00 =  i      * (NV + 1) + j;
+      const k10 = (i + 1) * (NV + 1) + j;
+      const k11 = (i + 1) * (NV + 1) + j + 1;
+      const k01 =  i      * (NV + 1) + j + 1;
+
+      qDepth[qi] = (sZ[k00] + sZ[k10] + sZ[k11] + sZ[k01]) * 0.25;
+      qOrder[qi] = qi;
+    }
+  }
+
+  /* 远 → 近 排序 */
+  qOrder.sort(function(a, b){ return qDepth[a] - qDepth[b]; });
+
+  /* ---------------- 绘制环面表面 ---------------- */
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+
+  for (let n = 0; n < NQ; n++){
+    const qi = qOrder[n];
+    const i  = (qi / NV) | 0;
+    const j  = qi - i * NV;
+
+    const k00 =  i      * (NV + 1) + j;
+    const k10 = (i + 1) * (NV + 1) + j;
+    const k11 = (i + 1) * (NV + 1) + j + 1;
+    const k01 =  i      * (NV + 1) + j + 1;
+
+    const x0 = sX[k00], y0 = sY[k00];
+    const x1 = sX[k10], y1 = sY[k10];
+    const x2 = sX[k11], y2 = sY[k11];
+    const x3 = sX[k01], y3 = sY[k01];
+
+    /* 视口剔除 */
+    if ((x0 < -80 && x1 < -80 && x2 < -80 && x3 < -80) ||
+        (x0 > W + 80 && x1 > W + 80 && x2 > W + 80 && x3 > W + 80) ||
+        (y0 < -80 && y1 < -80 && y2 < -80 && y3 < -80) ||
+        (y0 > H + 80 && y1 > H + 80 && y2 > H + 80 && y3 > H + 80)){
+      continue;
+    }
+
+    /* ---------- 色相计算 ---------- */
+    const u = (i + 0.5) / NU * TAU;
+    const v = (j + 0.5) / NV * TAU;
+
+    /* 暖色光带：沿 u（经线）方向流动 —— 品红 → 橙红 */
+    let warm = Math.sin(u * 2 - t * 1.55) * 0.5 + 0.5;
+    warm = warm * warm;
+
+    /* 冷色光带：沿 v（纬线）方向流动 —— 青 → 天蓝 */
+    let cool = Math.sin(v * 3 + t * 2.00) * 0.5 + 0.5;
+    cool = cool * cool;
+
+    let hue, glow;
+    if (warm > cool){
+      hue  = 312 + 68 * warm;     /* 312 → 380 (即 20) 品红 → 橙红 */
+      glow = warm;
+    } else {
+      hue  = 176 + 46 * cool;     /* 176 → 222 青 → 天蓝 */
+      glow = cool;
+    }
+    if (hue >= 360) hue -= 360;
+
+    const alpha = 0.030 + 0.40 * glow;
+    const lum   = 56 + 24 * glow;
+
+    ctx.fillStyle = 'hsla(' + hue.toFixed(1) + ',100%,' + lum.toFixed(1) + '%,' + alpha.toFixed(3) + ')';
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.lineTo(x3, y3);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  ctx.restore();
+
+  /* ---------------- 暗角 ---------------- */
+  const vg = ctx.createRadialGradient(
+    cx, cy, Math.min(W, H) * 0.26,
+    cx, cy, Math.max(W, H) * 0.84
+  );
+  vg.addColorStop(0, 'rgba(0,0,0,0)');
+  vg.addColorStop(1, 'rgba(0,0,0,0.76)');
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = vg;
+  ctx.fillRect(0, 0, W, H);
+}
+
+/* ============================================================
+   主循环
+============================================================ */
+let lastT = performance.now() / 1000;
+
+function frame(now){
+  const t = now / 1000;
+  let dt = t - lastT;
+  lastT = t;
+  if (!isFinite(dt) || dt < 0) dt = 0.016;
+  if (dt > 0.05) dt = 0.05;
+
+  render(t);
+  requestAnimationFrame(frame);
+}
+
+/* ============================================================
+   启动
+============================================================ */
+let lastW = 0, lastH = 0;
+function onResize(){
+  const w = window.innerWidth, h = window.innerHeight;
+  if (Math.abs(w - lastW) < 2 && Math.abs(h - lastH) < 2) return;
+  lastW = w; lastH = h;
+  resize();
+}
+
+window.addEventListener('resize', onResize);
+
+buildMesh();
+resize();
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

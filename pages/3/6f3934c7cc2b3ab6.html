@@ -1,0 +1,760 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>凝固/熔化 · 固液相变潜热</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100%;height:100%;overflow:hidden;background:#01030a;
+    font-family:"SF Mono",Consolas,"Courier New",monospace;cursor:crosshair}
+  canvas{display:block;position:fixed;inset:0}
+
+  .hud{
+    position:fixed;z-index:10;pointer-events:none;
+    font-size:12px;letter-spacing:.4px;line-height:2.0;
+    color:#7fd8ff;
+    text-shadow:0 0 10px rgba(0,180,255,.75),0 0 26px rgba(120,60,255,.35);
+  }
+  .hud .or{color:#ffb066;text-shadow:0 0 10px rgba(255,150,40,.85)}
+  .hud .wh{color:#eef8ff;text-shadow:0 0 12px rgba(200,240,255,.9)}
+  .hud .pp{color:#c9a8ff;text-shadow:0 0 10px rgba(160,90,255,.85)}
+  .hud .gr{color:#8effc0;text-shadow:0 0 10px rgba(80,255,160,.85)}
+  .hud .dim{color:#4a6a88;font-size:11px;text-shadow:none}
+  .tl{top:16px;left:20px}
+  .tr{top:16px;right:20px;text-align:right}
+  .bl{bottom:18px;left:20px}
+  .br{bottom:18px;right:20px;text-align:right}
+
+  .hint{
+    position:fixed;z-index:10;bottom:52px;left:50%;transform:translateX(-50%);
+    font-size:10px;letter-spacing:2.6px;color:#3d5f78;
+    text-shadow:0 0 10px rgba(0,170,255,.35);
+    pointer-events:none;
+  }
+  @keyframes blink{
+    0%,100%{opacity:.35}
+    50%{opacity:1}
+  }
+  .dot{
+    display:inline-block;width:6px;height:6px;border-radius:50%;
+    background:#7fd8ff;box-shadow:0 0 10px #00a8ff;
+    margin-right:6px;vertical-align:middle;
+    animation:blink 1.5s ease-in-out infinite;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div class="hud tl">
+  <div>Q = m · L &nbsp;<span class="dim">(熔解热)</span></div>
+  <div>dp/dT = L / (T · Δv)</div>
+  <div>μ<sub>s</sub>(T,p) = μ<sub>l</sub>(T,p)</div>
+  <div>Ste = c<sub>p</sub>·ΔT / L</div>
+  <div class="dim">克劳修斯-克拉佩龙 · 相平衡</div>
+</div>
+
+<div class="hud tr">
+  <div>m = <span class="wh">50</span> g</div>
+  <div>L<sub>f</sub> = <span class="wh">334</span> kJ/kg</div>
+  <div>Q<sub>总</sub> = <span class="or">16.7</span> kJ</div>
+  <div>Ste = <span class="pp">0.086</span> <span class="dim">≪ 1</span></div>
+</div>
+
+<div class="hud bl">
+  <div>T<sub>m</sub> = <span class="wh">0.0</span> °C</div>
+  <div>潜热主导 · 温度恒定</div>
+  <div class="dim"><span class="dot"></span>固液共存 · Lever 相律</div>
+</div>
+
+<div class="hud br">
+  <div>液相分数 <span class="or" id="lfHud">0.00</span></div>
+  <div>已吸热 <span class="wh" id="qHud">0.00</span> kJ</div>
+  <div>t = <span class="wh" id="tHud">0.0</span> s</div>
+</div>
+
+<div class="hint">冰晶自外向内逐层融化 · 液滴汇聚成洼</div>
+
+<script>
+(function(){
+"use strict";
+
+/* ============================================================
+   基础
+============================================================ */
+const cv  = document.getElementById('c');
+const ctx = cv.getContext('2d', { alpha:false });
+const TAU = Math.PI * 2;
+const CYCLE = 30;
+
+const clamp = (v,a,b)=> v<a?a:(v>b?b:v);
+const rand  = (a,b)=> a + Math.random()*(b-a);
+
+/* ============================================================
+   相变时间线
+============================================================ */
+const T_START = 2.0;    // 融化开始
+const T_END   = 25.0;   // 融化结束
+
+function meltProgress(tt){
+  if (tt < T_START) return 0;
+  if (tt > T_END)   return 1;
+  return (tt - T_START)/(T_END - T_START);
+}
+
+/* ============================================================
+   画布
+============================================================ */
+let W=0, H=0, DPR=1;
+let cx=0, cy=0, CR=0;
+let poolY=0;
+let vignette=null;
+
+function resize(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  cv.width  = Math.floor(W*DPR);
+  cv.height = Math.floor(H*DPR);
+  cv.style.width  = W+'px';
+  cv.style.height = H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+
+  cx = W*0.5;
+  cy = H*0.40;
+  CR = Math.min(W*0.30, H*0.30, 260);
+  poolY = H*0.90;
+
+  const g = ctx.createRadialGradient(W*0.5, H*0.5, Math.min(W,H)*0.30,
+                                     W*0.5, H*0.5, Math.max(W,H)*0.85);
+  g.addColorStop(0, 'rgba(0,0,0,0)');
+  g.addColorStop(1, 'rgba(0,2,8,0.85)');
+  vignette = g;
+}
+
+/* ============================================================
+   冰晶粒子
+============================================================ */
+const ice = [];
+
+/* 六角形边界函数 */
+function hexBoundary(theta){
+  return 0.60 + 0.40 * Math.pow(Math.abs(Math.cos(3*theta)), 0.82);
+}
+
+function buildCrystal(){
+  ice.length = 0;
+  const N = 950;
+
+  for (let i=0;i<N;i++){
+    const theta = Math.random()*TAU;
+    const bd    = hexBoundary(theta);
+
+    /* 偏向外围 */
+    const rN = Math.pow(Math.random(), 0.60);
+    const r  = rN * bd * CR;
+
+    const x = cx + Math.cos(theta)*r;
+    const y = cy + Math.sin(theta)*r;
+
+    /* 阈值：外围=0，中心=1 */
+    const thr = (1 - rN) * 0.86 + rand(-0.04, 0.10);
+
+    ice.push({
+      x : x, y : y,
+      rN: rN,
+      threshold: clamp(thr, 0, 1.02),
+      size : rand(1.2, 2.6),
+      hue  : 192 + Math.random()*42,
+      phase: Math.random()*TAU,
+      melted: false
+    });
+  }
+}
+
+/* ============================================================
+   液滴 / 水洼 / 蒸汽
+============================================================ */
+const drops   = [];
+const steam   = [];
+const sparks  = [];
+let poolVol   = 0;
+let poolW     = 0;
+
+function spawnDrop(x, y, size){
+  drops.push({
+    x : x,
+    y : y,
+    vx: rand(-14, 14),
+    vy: rand(10, 40),
+    size: clamp(size*0.62, 1.1, 3.2),
+    hue: 32 + Math.random()*22,
+    life: 3.6,
+    max: 3.6
+  });
+}
+
+function spawnSteam(x, y, hot){
+  if (steam.length > 420) return;
+  steam.push({
+    x : x + rand(-6,6),
+    y : y,
+    vx: rand(-16, 16),
+    vy: rand(-38, -14),
+    size: rand(2, 6),
+    life: rand(1.6, 3.4),
+    max: 3.4,
+    wob : rand(0, TAU),
+    wobF: rand(1.2, 2.8),
+    hue : hot ? (24 + Math.random()*28) : (185 + Math.random()*45)
+  });
+}
+
+/* ============================================================
+   背景
+============================================================ */
+function drawBG(){
+  const g = ctx.createRadialGradient(W*0.5, H*0.42, 0,
+                                     W*0.5, H*0.5, Math.max(W,H)*0.85);
+  g.addColorStop(0,   '#081420');
+  g.addColorStop(0.5, '#030812');
+  g.addColorStop(1,   '#010205');
+  ctx.fillStyle = g;
+  ctx.fillRect(0,0,W,H);
+
+  /* 极地星尘 */
+  ctx.globalCompositeOperation = 'lighter';
+  const n = Math.floor(W*H/26000);
+  for (let i=0;i<n;i++){
+    const sx = (i*137.51 + t*2.6) % W;
+    const sy = (i*91.73  + t*1.4) % H;
+    const a = 0.018 + 0.05*Math.abs(Math.sin(i*1.9 + t*0.4));
+    ctx.fillStyle = 'rgba(140,210,255,'+a.toFixed(3)+')';
+    ctx.fillRect(sx, sy, 1.2, 1.2);
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ============================================================
+   冰晶绘制
+============================================================ */
+function drawCrystal(mp){
+  /* ---------- 整体冷辉 ---------- */
+  ctx.globalCompositeOperation = 'lighter';
+  const cg = ctx.createRadialGradient(cx, cy, 0, cx, cy, CR*1.55);
+  const fade = 1 - mp*0.65;
+  cg.addColorStop(0,    'rgba(120,210,255,'+(0.13*fade).toFixed(3)+')');
+  cg.addColorStop(0.42, 'rgba(90,140,255,'+(0.07*fade).toFixed(3)+')');
+  cg.addColorStop(1,    'rgba(60,80,255,0)');
+  ctx.fillStyle = cg;
+  ctx.beginPath();
+  ctx.arc(cx, cy, CR*1.55, 0, TAU);
+  ctx.fill();
+
+  /* ---------- 晶体轮廓（六边形） ---------- */
+  if (mp < 1){
+    const scale = 1 - mp*0.98;
+    if (scale > 0.02){
+      ctx.beginPath();
+      for (let k=0;k<=120;k++){
+        const th = k/120*TAU;
+        const rr = hexBoundary(th) * CR * scale;
+        const x = cx + Math.cos(th)*rr;
+        const y = cy + Math.sin(th)*rr;
+        if (k===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+      }
+      ctx.closePath();
+      ctx.strokeStyle = 'rgba(150,230,255,'+(0.42*fade).toFixed(3)+')';
+      ctx.lineWidth = 1.8;
+      ctx.stroke();
+
+      ctx.strokeStyle = 'rgba(90,150,255,'+(0.16*fade).toFixed(3)+')';
+      ctx.lineWidth = 7;
+      ctx.stroke();
+    }
+  }
+
+  /* ---------- 粒子 ---------- */
+  for (let i=0;i<ice.length;i++){
+    const p = ice[i];
+
+    /* 生命周期因子（融化瞬间收缩） */
+    const lf = 1 - clamp((mp - p.threshold)/0.075, 0, 1);
+    if (lf <= 0.001) continue;
+
+    /* 融化前边缘辉光增强 */
+    const dToMelt = p.threshold - mp;
+    let boost = 0;
+    if (dToMelt > 0 && dToMelt < 0.13){
+      boost = (1 - dToMelt/0.13) * 0.85;
+    }
+
+    /* 呼吸 */
+    const br = 0.85 + 0.15*Math.sin(t*1.8 + p.phase);
+    const s  = p.size * br * lf;
+
+    /* 柔光层 */
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, s*3.2 + boost*3.5, 0, TAU);
+    ctx.fillStyle = 'hsla('+p.hue.toFixed(0)+',100%,68%,'+
+                    ((0.055 + boost*0.18)*lf).toFixed(3)+')';
+    ctx.fill();
+
+    /* 核心 */
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, s, 0, TAU);
+    ctx.fillStyle = 'hsla('+p.hue.toFixed(0)+',96%,'+
+                    (76 + boost*20).toFixed(0)+'%,'+(0.88*lf).toFixed(3)+')';
+    ctx.fill();
+  }
+
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ============================================================
+   融化前缘光环
+============================================================ */
+function drawMeltFront(mp){
+  if (mp <= 0.004 || mp >= 0.996) return;
+  const scale = 1 - mp*0.98;
+  if (scale < 0.03) return;
+
+  ctx.globalCompositeOperation = 'lighter';
+
+  for (let k=0;k<=120;k++){
+    const th = k/120*TAU;
+    const rr = hexBoundary(th) * CR * scale;
+    const x = cx + Math.cos(th)*rr;
+    const y = cy + Math.sin(th)*rr;
+    const s = 1.4 + 1.1*Math.sin(th*14 + t*3.4);
+    if (s < 0.1) continue;
+
+    ctx.beginPath();
+    ctx.arc(x, y, s*2.4, 0, TAU);
+    ctx.fillStyle = 'rgba(180,240,255,0.20)';
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.arc(x, y, s*0.8, 0, TAU);
+    ctx.fillStyle = 'rgba(255,255,255,0.55)';
+    ctx.fill();
+  }
+
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ============================================================
+   液滴
+============================================================ */
+function drawDrops(dt){
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap = 'round';
+
+  for (let i=drops.length-1;i>=0;i--){
+    const d = drops[i];
+    d.life -= dt;
+    if (d.life <= 0){ drops.splice(i,1); continue; }
+
+    /* 物理 */
+    d.vy += 520*dt;
+    d.vx *= (1 - 1.6*dt);
+    d.x  += d.vx*dt;
+    d.y  += d.vy*dt;
+
+    /* 落地 → 汇入水洼 */
+    if (d.y > poolY){
+      poolVol += d.size*1.35;
+      /* 溅射 */
+      for (let k=0;k<4;k++){
+        sparks.push({
+          x:d.x, y:poolY,
+          vx:rand(-90,90),
+          vy:rand(-170,-50),
+          size:rand(0.8,1.6),
+          life:rand(0.35,0.85),
+          max:0.85,
+          hue:34+Math.random()*18
+        });
+      }
+      drops.splice(i,1);
+      continue;
+    }
+
+    const a = clamp(d.life/d.max, 0, 1);
+
+    /* 拖尾 */
+    ctx.beginPath();
+    ctx.moveTo(d.x - d.vx*0.03, d.y - d.vy*0.03);
+    ctx.lineTo(d.x, d.y);
+    ctx.strokeStyle = 'hsla('+d.hue.toFixed(0)+',100%,70%,'+(a*0.42).toFixed(3)+')';
+    ctx.lineWidth = d.size*0.7;
+    ctx.stroke();
+
+    /* 辉光 */
+    ctx.beginPath();
+    ctx.arc(d.x, d.y, d.size*2.8, 0, TAU);
+    ctx.fillStyle = 'hsla('+d.hue.toFixed(0)+',100%,64%,'+(a*0.16).toFixed(3)+')';
+    ctx.fill();
+
+    /* 内核 */
+    ctx.beginPath();
+    ctx.arc(d.x, d.y, d.size, 0, TAU);
+    ctx.fillStyle = 'hsla('+d.hue.toFixed(0)+',100%,88%,'+(a*0.92).toFixed(3)+')';
+    ctx.fill();
+  }
+
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ============================================================
+   水洼
+============================================================ */
+function drawPool(){
+  const targetW = Math.min(Math.sqrt(poolVol)*11.5, W*0.46);
+  poolW += (targetW - poolW)*0.08;
+  if (poolW < 1) return;
+
+  const poolH = Math.max(6, poolW*0.14);
+
+  ctx.globalCompositeOperation = 'lighter';
+
+  /* 底部反光 */
+  const g = ctx.createRadialGradient(cx, poolY, 0, cx, poolY, poolW*1.2);
+  g.addColorStop(0,   'rgba(255,170,60,0.16)');
+  g.addColorStop(0.5, 'rgba(255,120,30,0.06)');
+  g.addColorStop(1,   'rgba(255,80,0,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(cx - poolW*1.3, poolY - 30, poolW*2.6, 90);
+
+  /* 液面 */
+  ctx.beginPath();
+  ctx.ellipse(cx, poolY, poolW*0.5, poolH*0.5, 0, 0, TAU);
+  const pg = ctx.createRadialGradient(cx, poolY, 0, cx, poolY, poolW*0.5);
+  pg.addColorStop(0,   'rgba(255,200,110,0.32)');
+  pg.addColorStop(0.5, 'rgba(240,140,50,0.22)');
+  pg.addColorStop(1,   'rgba(200,90,20,0.08)');
+  ctx.fillStyle = pg;
+  ctx.fill();
+
+  /* 液面轮廓 */
+  ctx.beginPath();
+  ctx.ellipse(cx, poolY, poolW*0.5, poolH*0.5, 0, 0, TAU);
+  ctx.strokeStyle = 'rgba(255,210,130,0.55)';
+  ctx.lineWidth = 1.3;
+  ctx.stroke();
+
+  /* 高光弧 */
+  ctx.beginPath();
+  ctx.ellipse(cx, poolY-1, poolW*0.34, poolH*0.30, 0, Math.PI, TAU);
+  ctx.strokeStyle = 'rgba(255,248,220,0.42)';
+  ctx.lineWidth = 1.2;
+  ctx.stroke();
+
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ============================================================
+   蒸汽
+============================================================ */
+function updateSteam(dt, mp){
+  /* 生成 */
+  if (poolW > 6){
+    const rate = 6 + 14*mp;
+    if (Math.random() < rate*dt){
+      spawnSteam(
+        cx + rand(-poolW*0.44, poolW*0.44),
+        poolY - 4,
+        Math.random() < 0.32
+      );
+    }
+  }
+
+  ctx.globalCompositeOperation = 'lighter';
+
+  for (let i=steam.length-1;i>=0;i--){
+    const s = steam[i];
+    s.life -= dt;
+    if (s.life <= 0){ steam.splice(i,1); continue; }
+
+    s.wob += s.wobF*dt;
+    s.x += (s.vx + Math.sin(s.wob)*16)*dt;
+    s.y += s.vy*dt;
+    s.vy *= (1 - 0.42*dt);
+    s.vx *= (1 - 0.32*dt);
+    s.size *= (1 + 0.35*dt);
+
+    const a = clamp(s.life/s.max, 0, 1);
+    const fade = Math.pow(a, 1.3);
+
+    /* 大光晕 */
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.size*3.6, 0, TAU);
+    ctx.fillStyle = 'hsla('+s.hue.toFixed(0)+',82%,68%,'+(fade*0.055).toFixed(3)+')';
+    ctx.fill();
+
+    /* 内核 */
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.size, 0, TAU);
+    ctx.fillStyle = 'hsla('+s.hue.toFixed(0)+',72%,'+
+                    (s.hue < 60 ? 76 : 82)+'%,'+(fade*0.24).toFixed(3)+')';
+    ctx.fill();
+  }
+
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ============================================================
+   飞溅
+============================================================ */
+function updateSparks(dt){
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i=sparks.length-1;i>=0;i--){
+    const s = sparks[i];
+    s.life -= dt;
+    if (s.life <= 0){ sparks.splice(i,1); continue; }
+    s.vy += 620*dt;
+    s.x  += s.vx*dt;
+    s.y  += s.vy*dt;
+    const a = clamp(s.life/s.max, 0, 1);
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.size, 0, TAU);
+    ctx.fillStyle = 'hsla('+s.hue.toFixed(0)+',100%,80%,'+a.toFixed(3)+')';
+    ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ============================================================
+   温度曲线（相变平台）
+============================================================ */
+function drawThermo(){
+  const pw = 194, ph = 106;
+  const px = W - pw - 26;
+  const py = H*0.5 - ph*0.5 + 40;
+
+  ctx.fillStyle = 'rgba(4,12,24,0.72)';
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(px, py, pw, ph, 9);
+  else ctx.rect(px, py, pw, ph);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(120,200,255,0.20)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  const pl = 32, pr = 14, pt = 22, pb = 20;
+  const gx = px+pl, gy = py+pt;
+  const gw = pw-pl-pr, gh = ph-pt-pb;
+
+  /* 网格 */
+  ctx.strokeStyle = 'rgba(90,170,230,0.10)';
+  ctx.lineWidth = 1;
+  for (let i=0;i<=2;i++){
+    const yy = gy + gh*i/2;
+    ctx.beginPath(); ctx.moveTo(gx,yy); ctx.lineTo(gx+gw,yy); ctx.stroke();
+  }
+
+  /* 0°C 平台曲线 */
+  const y0 = gy + gh*0.68;
+
+  ctx.beginPath();
+  ctx.moveTo(gx, y0);
+  ctx.lineTo(gx+gw, y0);
+  ctx.strokeStyle = 'rgba(140,240,255,0.90)';
+  ctx.lineWidth = 2;
+  ctx.shadowColor = 'rgba(80,200,255,0.85)';
+  ctx.shadowBlur = 9;
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  /* 曲线下方填充 */
+  ctx.lineTo(gx+gw, gy+gh);
+  ctx.lineTo(gx, gy+gh);
+  ctx.closePath();
+  const fg = ctx.createLinearGradient(0, y0, 0, gy+gh);
+  fg.addColorStop(0, 'rgba(80,200,255,0.16)');
+  fg.addColorStop(1, 'rgba(80,200,255,0.01)');
+  ctx.fillStyle = fg;
+  ctx.fill();
+
+  /* 当前进度点 */
+  const xNow = gx + gw*clamp(t/CYCLE, 0, 1);
+  ctx.beginPath();
+  ctx.arc(xNow, y0, 4.5, 0, TAU);
+  ctx.fillStyle = 'rgba(255,250,220,1)';
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(xNow, y0, 9.5, 0, TAU);
+  ctx.strokeStyle = 'rgba(255,190,80,0.60)';
+  ctx.lineWidth = 1.6;
+  ctx.stroke();
+
+  /* 标注 */
+  ctx.font = '9px "SF Mono",Consolas,monospace';
+  ctx.fillStyle = 'rgba(140,220,255,0.85)';
+  ctx.fillText('T(t) · 相变平台', px+11, py+15);
+  ctx.fillStyle = 'rgba(200,240,255,0.68)';
+  ctx.fillText('0°C', gx-26, y0+3);
+  ctx.fillText('t', gx+gw-6, gy+gh+13);
+}
+
+/* ============================================================
+   冰晶尺寸图例
+============================================================ */
+function drawShrink(){
+  if (t < T_START || t > T_END+0.5) return;
+  const mp = meltProgress(t);
+  if (mp <= 0 || mp >= 1) return;
+
+  const scale = 1 - mp*0.98;
+  const legX = cx + CR*1.42;
+  const legY = cy;
+
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.beginPath();
+  for (let k=0;k<=60;k++){
+    const th = k/60*TAU;
+    const rr = hexBoundary(th) * CR*0.10 * scale;
+    const x = legX + Math.cos(th)*rr;
+    const y = legY + Math.sin(th)*rr;
+    if (k===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+  }
+  ctx.closePath();
+  ctx.strokeStyle = 'rgba(150,230,255,0.55)';
+  ctx.lineWidth = 1.3;
+  ctx.stroke();
+
+  /* 原始轮廓 */
+  ctx.beginPath();
+  for (let k=0;k<=60;k++){
+    const th = k/60*TAU;
+    const rr = hexBoundary(th) * CR*0.10;
+    const x = legX + Math.cos(th)*rr;
+    const y = legY + Math.sin(th)*rr;
+    if (k===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+  }
+  ctx.closePath();
+  ctx.strokeStyle = 'rgba(100,160,255,0.22)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([2,3]);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ============================================================
+   主循环
+============================================================ */
+let t = 0;
+let last = 0;
+let hudAcc = 0;
+
+function render(dt){
+  const mp = meltProgress(t);
+
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  ctx.clearRect(0,0,W,H);
+
+  drawBG();
+  drawCrystal(mp);
+  drawMeltFront(mp);
+  drawShrink();
+  drawDrops(dt);
+  drawPool();
+  updateSteam(dt, mp);
+  updateSparks(dt);
+  drawThermo();
+
+  if (vignette){
+    ctx.fillStyle = vignette;
+    ctx.fillRect(0,0,W,H);
+  }
+
+  /* 循环淡出 */
+  if (t > CYCLE - 1.8){
+    const a = (t - (CYCLE-1.8))/1.8;
+    ctx.fillStyle = 'rgba(1,3,8,'+(a*0.95).toFixed(3)+')';
+    ctx.fillRect(0,0,W,H);
+  }
+}
+
+/* ============================================================
+   HUD
+============================================================ */
+const elLF = document.getElementById('lfHud');
+const elQ  = document.getElementById('qHud');
+const elT  = document.getElementById('tHud');
+
+function updateHUD(dt){
+  hudAcc += dt;
+  if (hudAcc < 0.07) return;
+  hudAcc = 0;
+
+  const mp = meltProgress(t);
+  const Q  = mp * 16.7;
+
+  elLF.textContent = mp.toFixed(2);
+  elQ.textContent  = Q.toFixed(2);
+  elT.textContent  = (mp * 136).toFixed(1);   // 2.27 min = 136 s
+}
+
+/* ============================================================
+   循环入口
+============================================================ */
+function loop(now){
+  requestAnimationFrame(loop);
+
+  if (!last){ last = now; return; }
+  let dt = (now - last)/1000;
+  last = now;
+  if (dt > 0.05) dt = 0.05;
+  if (dt < 0) dt = 0;
+
+  t += dt;
+  if (t >= CYCLE){
+    t -= CYCLE;
+    buildCrystal();
+    drops.length  = 0;
+    steam.length  = 0;
+    sparks.length = 0;
+    poolVol = 0;
+    poolW   = 0;
+    for (const p of ice) p.melted = false;
+  }
+
+  /* 融化时生成液滴 */
+  const mp = meltProgress(t);
+  for (let i=0;i<ice.length;i++){
+    const p = ice[i];
+    if (p.melted) continue;
+    if (mp > p.threshold){
+      p.melted = true;
+      spawnDrop(p.x, p.y, p.size);
+    }
+  }
+
+  render(dt);
+  updateHUD(dt);
+}
+
+/* ============================================================
+   启动
+============================================================ */
+function boot(){
+  resize();
+  buildCrystal();
+  requestAnimationFrame(loop);
+}
+
+window.addEventListener('resize', function(){
+  resize();
+  buildCrystal();
+});
+
+boot();
+
+})();
+</script>
+</body>
+</html>

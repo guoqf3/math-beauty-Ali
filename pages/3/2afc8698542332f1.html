@@ -1,0 +1,991 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kozeny-Carman 渗透率-孔隙度关联方程</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100%;height:100%;overflow:hidden;background:#02050a;
+    font-family:"SF Mono",Consolas,"Courier New",monospace;cursor:crosshair}
+  canvas{display:block;position:fixed;inset:0}
+
+  .hud{
+    position:fixed;z-index:10;pointer-events:none;
+    font-size:12px;letter-spacing:.5px;line-height:2.0;
+    color:#7dffb0;
+    text-shadow:0 0 10px rgba(60,255,140,.7),0 0 26px rgba(0,180,80,.3);
+  }
+  .hud .cy{color:#7fe8ff;text-shadow:0 0 10px rgba(0,200,255,.8)}
+  .hud .wh{color:#eafff2;text-shadow:0 0 12px rgba(200,255,230,.85)}
+  .hud .or{color:#ffb066;text-shadow:0 0 10px rgba(255,150,40,.8)}
+  .hud .dim{color:#4e7a62;font-size:11px;text-shadow:none}
+  .tl{top:16px;left:20px}
+  .tr{top:16px;right:20px;text-align:right}
+  .bl{bottom:18px;left:20px}
+  .br{bottom:18px;right:20px;text-align:right}
+
+  .ctrl{
+    position:fixed;z-index:12;top:16px;left:50%;transform:translateX(-50%);
+    display:flex;align-items:center;gap:14px;
+    font-size:11px;letter-spacing:1.4px;color:#7dffb0;
+    text-shadow:0 0 10px rgba(60,255,140,.8);
+    background:rgba(4,20,14,.62);
+    border:1px solid rgba(80,255,160,.22);
+    border-radius:24px;padding:9px 22px;
+    backdrop-filter:blur(9px);
+    box-shadow:0 0 30px rgba(0,180,100,.1);
+  }
+  .ctrl input[type=range]{
+    -webkit-appearance:none;appearance:none;width:200px;height:4px;border-radius:4px;
+    background:linear-gradient(90deg,#0a3020,#0aff90,#7affd0,#e0fff0);
+    outline:none;cursor:pointer;
+  }
+  .ctrl input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none;width:14px;height:14px;border-radius:50%;
+    background:#eafff4;border:1px solid rgba(255,255,255,.8);
+    box-shadow:0 0 12px #00ff9d,0 0 26px #00c070;cursor:pointer;
+  }
+  .ctrl input[type=range]::-moz-range-thumb{
+    width:14px;height:14px;border:none;border-radius:50%;background:#eafff4;
+    box-shadow:0 0 12px #00ff9d;cursor:pointer;
+  }
+  #phiv{color:#eafff2;min-width:52px;display:inline-block;text-align:right}
+
+  .hint{
+    position:fixed;z-index:10;bottom:52px;left:50%;transform:translateX(-50%);
+    font-size:10px;letter-spacing:2.6px;color:#3d6a55;
+    text-shadow:0 0 10px rgba(0,180,100,.35);
+    pointer-events:none;
+  }
+  @keyframes blink{
+    0%,100%{opacity:.4}
+    50%{opacity:1}
+  }
+  .dot{
+    display:inline-block;width:6px;height:6px;border-radius:50%;
+    background:#5fffaf;box-shadow:0 0 10px #00ff9d;
+    margin-right:6px;vertical-align:middle;
+    animation:blink 1.6s ease-in-out infinite;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div class="hud tl">
+  <div>k = φ³ / (C · S<sub>v</sub>² · T²)</div>
+  <div>S<sub>v</sub> = (6/d<sub>gm</sub>) · (1 − φ)</div>
+  <div>T = 1 + ln(1/φ) / 2</div>
+  <div class="dim">Kozeny-Carman 渗透率方程</div>
+</div>
+
+<div class="hud tr">
+  <div>C = <span class="cy">5.0</span> &nbsp; d<sub>gm</sub> = <span class="cy">0.221</span> mm</div>
+  <div>φ = <span class="wh" id="phiHud">0.420</span></div>
+  <div>k = <span class="or" id="kHud">2.90e-11</span> m²</div>
+</div>
+
+<div class="hud bl">
+  <div>S<sub>v</sub> = <span class="wh" id="svHud">1.58e4</span> m⁻¹</div>
+  <div>T = <span class="wh" id="tHud">1.434</span></div>
+  <div class="dim"><span class="dot"></span>分形骨架 · 自相似网络</div>
+</div>
+
+<div class="ctrl">
+  <span>φ</span>
+  <input type="range" id="phi" min="0.25" max="0.60" step="0.001" value="0.42">
+  <span id="phiv">0.420</span>
+</div>
+
+<div class="hint">拖动 φ 观察 k 幂律剧升 · 点击骨架看孔径分布</div>
+
+<script>
+(function(){
+"use strict";
+
+/* ============================================================
+   基础
+============================================================ */
+const cv  = document.getElementById('c');
+const ctx = cv.getContext('2d');
+const TAU = Math.PI*2;
+
+const clamp = (v,a,b)=> v<a?a:(v>b?b:v);
+const lerp  = (a,b,t)=> a + (b-a)*t;
+
+/* ============================================================
+   物理常量
+============================================================ */
+const C_SHAPE = 5.0;
+const D_GM    = 2.208e-4;      // 平均粒径 (m)，使 k(0.42)=2.90e-11
+const PHI_REF = 0.42;
+const K_REF   = 2.90e-11;
+const CYCLE   = 30;
+
+/* ============================================================
+   布局
+============================================================ */
+let W=0,H=0,DPR=1;
+let colX=0, colY=0, colW=0, colH=0;
+
+/* ============================================================
+   状态
+============================================================ */
+let phi = 0.42;
+let t = 0;
+let now = 0;
+let autoResume = 0;
+let pulse = 0;
+let lastPhi = 0.42;
+
+/* ============================================================
+   缓存
+============================================================ */
+let treeCanvas = null;
+let treeKey = '';
+let bead = null;         // 骨架纹理缓存
+
+/* ============================================================
+   数据
+============================================================ */
+let tree = [];
+let flowLines = [];
+let particles = [];
+let clicks = [];
+
+/* ============================================================
+   工具
+============================================================ */
+function rrect(c, x, y, w, h, r){
+  c.beginPath();
+  c.moveTo(x+r, y);
+  c.arcTo(x+w, y, x+w, y+h, r);
+  c.arcTo(x+w, y+h, x, y+h, r);
+  c.arcTo(x, y+h, x, y, r);
+  c.arcTo(x, y, x+w, y, r);
+  c.closePath();
+}
+
+function distSeg(px,py,x1,y1,x2,y2){
+  const dx=x2-x1, dy=y2-y1;
+  const l2=dx*dx+dy*dy;
+  if (l2<1e-9) return Math.hypot(px-x1, py-y1);
+  let u = ((px-x1)*dx + (py-y1)*dy)/l2;
+  u = clamp(u,0,1);
+  return Math.hypot(px-(x1+u*dx), py-(y1+u*dy));
+}
+
+/* ============================================================
+   物性计算
+============================================================ */
+function SvOf(p){ return 6*(1-p)/D_GM; }
+function TOf(p){ return 1 + Math.log(1/p)/2; }
+function kOf(p){
+  const sv = SvOf(p);
+  const tt = TOf(p);
+  return p*p*p/(C_SHAPE*sv*sv*tt*tt);
+}
+
+/* ============================================================
+   分形骨架生成
+============================================================ */
+function genTree(){
+  tree = [];
+  function grow(x, y, ang, len, w, depth){
+    const ex = x + Math.cos(ang)*len;
+    const ey = y + Math.sin(ang)*len;
+    tree.push({x1:x, y1:y, x2:ex, y2:ey, w0:w, depth:depth});
+
+    if (depth >= 7 || w < 0.055) return;
+
+    const n = Math.random() < 0.28 ? 3 : 2;
+    for (let i=0;i<n;i++){
+      const spread = ((i+0.5)/n - 0.5) * 2 * (0.42 + Math.random()*0.26);
+      grow(ex, ey,
+           ang + spread,
+           len * (0.66 + Math.random()*0.10),
+           w   * (0.60 + Math.random()*0.12),
+           depth+1);
+    }
+  }
+  grow(0.5, 1.03, -Math.PI/2 + (Math.random()-0.5)*0.26,
+       0.255, 1.0, 0);
+}
+
+/* ============================================================
+   孔隙流线生成（迂曲路径）
+============================================================ */
+function genFlowLines(){
+  flowLines = [];
+  const N = 30;
+  for (let i=0;i<N;i++){
+    const x0 = 0.05 + Math.random()*0.90;
+    const A1 = 0.014 + Math.random()*0.052;
+    const A2 = 0.008 + Math.random()*0.026;
+    const f1 = 1.5  + Math.random()*2.4;
+    const f2 = 4.0  + Math.random()*4.5;
+    const f3 = 12.0 + Math.random()*10;
+    const p1 = Math.random()*TAU;
+    const p2 = Math.random()*TAU;
+    const p3 = Math.random()*TAU;
+
+    const steps = 54;
+    const pts = [];
+    for (let s=0;s<=steps;s++){
+      const u = s/steps;
+      let x = x0
+            + Math.sin(u*f1*Math.PI + p1) * A1
+            + Math.sin(u*f2*Math.PI + p2) * A2
+            + Math.sin(u*f3*Math.PI + p3) * 0.0055;
+      x = clamp(x, 0.025, 0.975);
+      pts.push({x: x, y: 1 - u});
+    }
+    flowLines.push({
+      pts: pts,
+      phase: Math.random()*TAU,
+      speed: 0.7 + Math.random()*0.9
+    });
+  }
+}
+
+/* ============================================================
+   粒子
+============================================================ */
+function genParticles(){
+  particles = [];
+  for (let i=0;i<110;i++){
+    particles.push({
+      li: Math.floor(Math.random()*flowLines.length),
+      u: Math.random(),
+      speed: 0.055 + Math.random()*0.13,
+      size: 0.85 + Math.random()*1.4,
+      alpha: 0.45 + Math.random()*0.5
+    });
+  }
+}
+
+/* ============================================================
+   骨架离屏渲染
+============================================================ */
+function rebuildTreeCanvas(){
+  if (!treeCanvas) treeCanvas = document.createElement('canvas');
+  treeCanvas.width  = Math.max(1, Math.floor(W*DPR));
+  treeCanvas.height = Math.max(1, Math.floor(H*DPR));
+  const tc = treeCanvas.getContext('2d');
+  tc.setTransform(DPR,0,0,DPR,0,0);
+  tc.clearRect(0,0,W,H);
+
+  const bw = 26 * Math.pow((1-phi)/(1-PHI_REF), 1.4);
+
+  tc.lineCap = 'round';
+  tc.lineJoin = 'round';
+
+  /* --- 外辉光层 --- */
+  tc.globalCompositeOperation = 'lighter';
+  for (let i=0;i<tree.length;i++){
+    const b = tree[i];
+    const x1 = colX + b.x1*colW;
+    const y1 = colY + b.y1*colH;
+    const x2 = colX + b.x2*colW;
+    const y2 = colY + b.y2*colH;
+    const w  = Math.max(0.55, b.w0*bw);
+
+    const hue = 205 - b.depth*8;
+    const lig = 20 + b.depth*2.6;
+
+    tc.strokeStyle = 'hsla('+hue+',72%,'+lig+'%,0.16)';
+    tc.lineWidth = w*2.6;
+    tc.beginPath();
+    tc.moveTo(x1,y1); tc.lineTo(x2,y2);
+    tc.stroke();
+  }
+
+  /* --- 实体层 --- */
+  tc.globalCompositeOperation = 'source-over';
+  for (let i=0;i<tree.length;i++){
+    const b = tree[i];
+    const x1 = colX + b.x1*colW;
+    const y1 = colY + b.y1*colH;
+    const x2 = colX + b.x2*colW;
+    const y2 = colY + b.y2*colH;
+    const w  = Math.max(0.55, b.w0*bw);
+
+    const hue = 206 - b.depth*8.5;
+    const sat = 38 + b.depth*6;
+    const lig = 24 + b.depth*4.2;
+
+    tc.strokeStyle = 'hsl('+hue.toFixed(0)+','+sat.toFixed(0)+'%,'+lig.toFixed(0)+'%)';
+    tc.lineWidth = w;
+    tc.beginPath();
+    tc.moveTo(x1,y1); tc.lineTo(x2,y2);
+    tc.stroke();
+  }
+
+  /* --- 边缘高光 --- */
+  tc.globalCompositeOperation = 'lighter';
+  for (let i=0;i<tree.length;i++){
+    const b = tree[i];
+    if (b.depth < 3) continue;
+    const x1 = colX + b.x1*colW;
+    const y1 = colY + b.y1*colH;
+    const x2 = colX + b.x2*colW;
+    const y2 = colY + b.y2*colH;
+    const w  = Math.max(0.55, b.w0*bw);
+
+    tc.strokeStyle = 'rgba(140,255,205,0.10)';
+    tc.lineWidth = Math.max(0.4, w*0.28);
+    tc.beginPath();
+    tc.moveTo(x1,y1); tc.lineTo(x2,y2);
+    tc.stroke();
+  }
+}
+
+/* ============================================================
+   背景
+============================================================ */
+function drawBG(){
+  const g = ctx.createRadialGradient(W*0.5, H*0.44, 0,
+                                     W*0.5, H*0.5, Math.max(W,H)*0.85);
+  g.addColorStop(0,    '#061410');
+  g.addColorStop(0.5,  '#030a08');
+  g.addColorStop(1,    '#010303');
+  ctx.fillStyle = g;
+  ctx.fillRect(0,0,W,H);
+
+  /* 细网格 */
+  ctx.strokeStyle = 'rgba(50,160,110,0.045)';
+  ctx.lineWidth = 1;
+  const gs = 68;
+  ctx.beginPath();
+  for (let x=0;x<W;x+=gs){ ctx.moveTo(x,0); ctx.lineTo(x,H); }
+  for (let y=0;y<H;y+=gs){ ctx.moveTo(0,y); ctx.lineTo(W,y); }
+  ctx.stroke();
+
+  /* 浮尘 */
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i=0;i<70;i++){
+    const sx = (i*173.7 + t*9) % W;
+    const sy = (i*97.3 + t*13) % H;
+    const a = 0.03 + 0.06*Math.abs(Math.sin(i*1.7 + t*0.6));
+    ctx.fillStyle = 'rgba(90,255,170,'+a.toFixed(3)+')';
+    ctx.fillRect(sx, sy, 1.3, 1.3);
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ============================================================
+   柱体内部
+============================================================ */
+function drawColumnInner(){
+  /* 柱体基底 */
+  ctx.fillStyle = '#030907';
+  ctx.fillRect(colX, colY, colW, colH);
+
+  /* 骨架 */
+  if (treeCanvas){
+    ctx.drawImage(treeCanvas, 0, 0, W, H);
+  }
+
+  /* 压力/孔隙场微光 */
+  const pg = ctx.createLinearGradient(0, colY+colH, 0, colY);
+  pg.addColorStop(0,   'rgba(0,255,150,0.055)');
+  pg.addColorStop(0.45,'rgba(0,190,255,0.030)');
+  pg.addColorStop(1,   'rgba(150,80,255,0.050)');
+  ctx.fillStyle = pg;
+  ctx.fillRect(colX, colY, colW, colH);
+
+  /* φ 脉动光 */
+  if (pulse > 0.01){
+    const rg = ctx.createRadialGradient(
+      colX+colW*0.5, colY+colH*0.5, 0,
+      colX+colW*0.5, colY+colH*0.5, Math.max(colW,colH)*0.8
+    );
+    rg.addColorStop(0, 'rgba(120,255,190,'+(pulse*0.16).toFixed(3)+')');
+    rg.addColorStop(1, 'rgba(120,255,190,0)');
+    ctx.fillStyle = rg;
+    ctx.fillRect(colX, colY, colW, colH);
+  }
+}
+
+/* ============================================================
+   流线绘制
+============================================================ */
+function drawFlowLines(){
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  /* 全局彩虹渐变（底→顶） */
+  const g = ctx.createLinearGradient(0, colY+colH, 0, colY);
+  g.addColorStop(0,    'hsl(190,100%,58%)');
+  g.addColorStop(0.28, 'hsl(140,100%,56%)');
+  g.addColorStop(0.52, 'hsl(95,100%,56%)');
+  g.addColorStop(0.74, 'hsl(52,100%,58%)');
+  g.addColorStop(1,    'hsl(305,100%,66%)');
+
+  const dashLen = 22;
+
+  for (let i=0;i<flowLines.length;i++){
+    const fl = flowLines[i];
+    const pts = fl.pts;
+
+    ctx.beginPath();
+    for (let s=0;s<pts.length;s++){
+      const x = colX + pts[s].x*colW;
+      const y = colY + pts[s].y*colH;
+      if (s===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+    }
+
+    /* 宽光晕 */
+    ctx.setLineDash([]);
+    ctx.strokeStyle = g;
+    ctx.globalAlpha = 0.055;
+    ctx.lineWidth = 10;
+    ctx.stroke();
+
+    /* 中线 */
+    ctx.globalAlpha = 0.16;
+    ctx.lineWidth = 2.6;
+    ctx.stroke();
+
+    /* 流动虚线 */
+    const off = -((t*72*fl.speed + i*17) % dashLen);
+    ctx.setLineDash([7, dashLen-7]);
+    ctx.lineDashOffset = off;
+    ctx.globalAlpha = 0.78;
+    ctx.lineWidth = 1.35;
+    ctx.strokeStyle = g;
+    ctx.stroke();
+
+    /* 亮白核心 */
+    ctx.setLineDash([3, dashLen-3]);
+    ctx.lineDashOffset = off;
+    ctx.globalAlpha = 0.55;
+    ctx.lineWidth = 0.65;
+    ctx.strokeStyle = '#dfffee';
+    ctx.stroke();
+  }
+
+  ctx.setLineDash([]);
+  ctx.lineDashOffset = 0;
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ============================================================
+   粒子绘制
+============================================================ */
+function drawParticles(){
+  if (!flowLines.length) return;
+  ctx.globalCompositeOperation = 'lighter';
+
+  for (let i=0;i<particles.length;i++){
+    const p = particles[i];
+    const fl = flowLines[p.li];
+    if (!fl) continue;
+    const pts = fl.pts;
+    const f = p.u * (pts.length-1);
+    const i0 = Math.floor(f);
+    const i1 = Math.min(pts.length-1, i0+1);
+    const fr = f - i0;
+    const px = lerp(pts[i0].x, pts[i1].x, fr);
+    const py = lerp(pts[i0].y, pts[i1].y, fr);
+    const x = colX + px*colW;
+    const y = colY + py*colH;
+
+    const hue = 165 - p.u*65;
+
+    /* 光晕 */
+    ctx.beginPath();
+    ctx.arc(x, y, p.size*3.4, 0, TAU);
+    ctx.fillStyle = 'hsla('+hue.toFixed(0)+',100%,62%,'+(p.alpha*0.10).toFixed(3)+')';
+    ctx.fill();
+
+    /* 核心 */
+    ctx.beginPath();
+    ctx.arc(x, y, p.size, 0, TAU);
+    ctx.fillStyle = 'hsla('+hue.toFixed(0)+',100%,82%,'+p.alpha.toFixed(3)+')';
+    ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ============================================================
+   点击面板
+============================================================ */
+function drawClicks(dt){
+  for (let i=clicks.length-1;i>=0;i--){
+    const c = clicks[i];
+    c.life -= dt;
+    if (c.life <= 0){ clicks.splice(i,1); continue; }
+
+    const a = clamp(c.life/c.max, 0, 1);
+
+    /* 脉冲环 */
+    const ringR = 7 + (1-a)*46;
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, ringR, 0, TAU);
+    ctx.strokeStyle = 'rgba(120,255,190,'+(a*0.68).toFixed(3)+')';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, 2.4, 0, TAU);
+    ctx.fillStyle = 'rgba(230,255,240,'+a.toFixed(3)+')';
+    ctx.fill();
+
+    /* 面板 */
+    const pw = 128, ph = 92;
+    let px = c.x + 20;
+    let py = c.y - ph - 12;
+    if (px + pw > colX + colW - 8) px = c.x - pw - 20;
+    if (py < colY + 8) py = c.y + 20;
+
+    ctx.fillStyle = 'rgba(2,18,12,'+(0.90*a).toFixed(3)+')';
+    rrect(ctx, px, py, pw, ph, 6);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(80,255,160,'+(a*0.45).toFixed(3)+')';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    /* 标题 */
+    ctx.font = '9px "SF Mono",Consolas,monospace';
+    ctx.fillStyle = 'rgba(140,255,200,'+(a*0.9).toFixed(3)+')';
+    ctx.textAlign = 'left';
+    ctx.fillText('局部孔径分布', px+8, py+13);
+
+    /* 柱状图 */
+    const N = 9;
+    const bx = px + 8, by = py + 20;
+    const bwid = (pw - 16) / N;
+    const bhei = ph - 38;
+
+    const peak = 2.0 + c.depth*0.45;
+    let maxh = 0;
+    const hs = [];
+    for (let k=0;k<N;k++){
+      let hh = Math.exp(-Math.pow((k-peak)/1.85, 2));
+      hh *= (0.85 + 0.30*Math.sin(k*1.7 + c.depth));
+      hs.push(hh);
+      if (hh > maxh) maxh = hh;
+    }
+
+    for (let k=0;k<N;k++){
+      const hh = (hs[k]/maxh) * bhei;
+      const xx = bx + k*bwid + bwid*0.15;
+      const ww = bwid*0.70;
+      const yy = by + bhei - hh;
+
+      const grd = ctx.createLinearGradient(0, by+bhei, 0, by);
+      grd.addColorStop(0, 'hsla(170,100%,45%,'+(a*0.85).toFixed(3)+')');
+      grd.addColorStop(1, 'hsla(90,100%,62%,'+(a*0.85).toFixed(3)+')');
+      ctx.fillStyle = grd;
+      ctx.fillRect(xx, yy, ww, hh);
+    }
+
+    /* 底部读数 */
+    const dPore = (0.06 + (7 - c.depth)*0.035) * 1000;
+    ctx.font = '8.5px "SF Mono",Consolas,monospace';
+    ctx.fillStyle = 'rgba(160,255,210,'+(a*0.75).toFixed(3)+')';
+    ctx.fillText('d_pore ≈ '+dPore.toFixed(0)+' μm', px+8, py+ph-6);
+    ctx.fillStyle = 'rgba(120,220,255,'+(a*0.7).toFixed(3)+')';
+    ctx.fillText('小孔贡献 '+(18 + c.depth*4)+'%', px+72, py+ph-6);
+  }
+  ctx.textAlign = 'start';
+}
+
+/* ============================================================
+   柱体边框
+============================================================ */
+function drawColumnBorder(){
+  ctx.strokeStyle = 'rgba(90,255,170,0.20)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(colX+0.5, colY+0.5, colW-1, colH-1);
+
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.strokeStyle = 'rgba(120,255,200,0.06)';
+  ctx.lineWidth = 6;
+  ctx.strokeRect(colX+3.5, colY+3.5, colW-7, colH-7);
+
+  /* 上下流口 */
+  const tg = ctx.createLinearGradient(0, colY-26, 0, colY+32);
+  tg.addColorStop(0, 'rgba(80,255,170,0)');
+  tg.addColorStop(1, 'rgba(80,255,170,0.11)');
+  ctx.fillStyle = tg;
+  ctx.fillRect(colX, colY-26, colW, 58);
+
+  const bg = ctx.createLinearGradient(0, colY+colH+26, 0, colY+colH-32);
+  bg.addColorStop(0, 'rgba(160,255,220,0)');
+  bg.addColorStop(1, 'rgba(160,255,220,0.09)');
+  ctx.fillStyle = bg;
+  ctx.fillRect(colX, colY+colH-32, colW, 58);
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ============================================================
+   图表（k 对数曲线 + S_v / T 联动曲线）
+============================================================ */
+const PHI_MIN = 0.25, PHI_MAX = 0.60;
+const LK_MIN  = -12.0, LK_MAX = -9.0;
+
+function drawChart(){
+  const cw = 236, ch = 208;
+  const x0 = W - cw - 26;
+  const y0 = H - ch - 30;
+
+  /* 背板 */
+  ctx.fillStyle = 'rgba(3,16,11,0.72)';
+  rrect(ctx, x0, y0, cw, ch, 10);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(80,255,160,0.18)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  /* --- 图1 : k(φ) 对数 --- */
+  ctx.font = '10px "SF Mono",Consolas,monospace';
+  ctx.fillStyle = 'rgba(140,255,200,0.85)';
+  ctx.fillText('k (φ) · 对数坐标', x0+12, y0+16);
+
+  const gx = x0 + 40, gy = y0 + 26;
+  const gw = cw - 56, gh = 96;
+
+  const mapX = p => gx + (p - PHI_MIN)/(PHI_MAX - PHI_MIN) * gw;
+  const mapY = lk => gy + gh - (lk - LK_MIN)/(LK_MAX - LK_MIN) * gh;
+
+  /* 网格 */
+  ctx.strokeStyle = 'rgba(70,190,130,0.10)';
+  ctx.lineWidth = 1;
+  for (let i=0;i<=3;i++){
+    const yy = gy + gh*i/3;
+    ctx.beginPath(); ctx.moveTo(gx,yy); ctx.lineTo(gx+gw,yy); ctx.stroke();
+  }
+  for (let i=0;i<=4;i++){
+    const xx = gx + gw*i/4;
+    ctx.beginPath(); ctx.moveTo(xx,gy); ctx.lineTo(xx,gy+gh); ctx.stroke();
+  }
+
+  /* 曲线 */
+  ctx.beginPath();
+  let first = true;
+  for (let i=0;i<=120;i++){
+    const p  = PHI_MIN + (PHI_MAX-PHI_MIN)*i/120;
+    const lk = Math.log10(kOf(p));
+    const xx = mapX(p), yy = mapY(lk);
+    if (first){ ctx.moveTo(xx,yy); first = false; }
+    else ctx.lineTo(xx,yy);
+  }
+  ctx.strokeStyle = 'rgba(120,255,180,0.92)';
+  ctx.lineWidth = 2;
+  ctx.shadowColor = 'rgba(80,255,150,0.8)';
+  ctx.shadowBlur = 10;
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  /* 参考点 φ=0.42 */
+  const rx = mapX(PHI_REF), ry = mapY(Math.log10(K_REF));
+  ctx.setLineDash([3,3]);
+  ctx.beginPath();
+  ctx.moveTo(rx, gy); ctx.lineTo(rx, gy+gh);
+  ctx.strokeStyle = 'rgba(255,180,80,0.30)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  /* 当前点 */
+  const cx = mapX(phi);
+  const cy = mapY(Math.log10(kOf(phi)));
+  ctx.beginPath();
+  ctx.arc(cx, cy, 4.5, 0, TAU);
+  ctx.fillStyle = 'rgba(255,235,180,1)';
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(cx, cy, 9.5, 0, TAU);
+  ctx.strokeStyle = 'rgba(255,190,70,0.55)';
+  ctx.lineWidth = 1.6;
+  ctx.stroke();
+
+  /* 轴标签 */
+  ctx.font = '9px "SF Mono",Consolas,monospace';
+  ctx.fillStyle = 'rgba(120,220,170,0.75)';
+  ctx.fillText('k', x0+11, gy+8);
+  ctx.fillText('φ', gx+gw-8, gy+gh+12);
+  ctx.fillText('0.25', gx-6, gy+gh+20);
+  ctx.fillText('0.60', gx+gw-14, gy+gh+20);
+  ctx.fillText('-9', x0+22, gy+8);
+  ctx.fillText('-12', x0+18, gy+gh+1);
+
+  /* --- 图2 : S_v 与 T 归一化联动 --- */
+  const gx2 = x0 + 40, gy2 = y0 + 142;
+  const gw2 = cw - 56, gh2 = 50;
+
+  const svA = SvOf(PHI_MIN), svB = SvOf(PHI_MAX);
+  const tA  = TOf(PHI_MIN),  tB  = TOf(PHI_MAX);
+
+  const mapSv = v => gy2 + gh2 - (v - svB)/(svA - svB) * gh2;
+  const mapT  = v => gy2 + gh2 - (v - tB)/(tA - tB) * gh2;
+
+  /* 曲线 S_v */
+  ctx.beginPath();
+  first = true;
+  for (let i=0;i<=100;i++){
+    const p = PHI_MIN + (PHI_MAX-PHI_MIN)*i/100;
+    const xx = gx2 + gw2*i/100;
+    const yy = mapSv(SvOf(p));
+    if (first){ ctx.moveTo(xx,yy); first = false; }
+    else ctx.lineTo(xx,yy);
+  }
+  ctx.strokeStyle = 'rgba(120,200,255,0.85)';
+  ctx.lineWidth = 1.6;
+  ctx.stroke();
+
+  /* 曲线 T */
+  ctx.beginPath();
+  first = true;
+  for (let i=0;i<=100;i++){
+    const p = PHI_MIN + (PHI_MAX-PHI_MIN)*i/100;
+    const xx = gx2 + gw2*i/100;
+    const yy = mapT(TOf(p));
+    if (first){ ctx.moveTo(xx,yy); first = false; }
+    else ctx.lineTo(xx,yy);
+  }
+  ctx.strokeStyle = 'rgba(255,170,90,0.85)';
+  ctx.lineWidth = 1.6;
+  ctx.stroke();
+
+  /* 当前标记 */
+  const cx2 = gx2 + gw2 * (phi-PHI_MIN)/(PHI_MAX-PHI_MIN);
+  ctx.beginPath();
+  ctx.arc(cx2, mapSv(SvOf(phi)), 3.2, 0, TAU);
+  ctx.fillStyle = 'rgba(160,220,255,1)';
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(cx2, mapT(TOf(phi)), 3.2, 0, TAU);
+  ctx.fillStyle = 'rgba(255,190,110,1)';
+  ctx.fill();
+
+  /* 图例 */
+  ctx.font = '8.5px "SF Mono",Consolas,monospace';
+  ctx.fillStyle = 'rgba(120,200,255,0.85)';
+  ctx.fillText('■ S_v', x0+10, y0+136);
+  ctx.fillStyle = 'rgba(255,170,90,0.85)';
+  ctx.fillText('■ T', x0+60, y0+136);
+  ctx.fillStyle = 'rgba(130,230,180,0.55)';
+  ctx.fillText('归一化', x0+96, y0+136);
+}
+
+/* ============================================================
+   暗角
+============================================================ */
+function drawVignette(){
+  const g = ctx.createRadialGradient(W/2,H/2, Math.min(W,H)*0.30,
+                                     W/2,H/2, Math.max(W,H)*0.80);
+  g.addColorStop(0,'rgba(0,0,0,0)');
+  g.addColorStop(1,'rgba(0,0,0,0.78)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0,0,W,H);
+}
+
+/* ============================================================
+   HUD
+============================================================ */
+const elPhi = document.getElementById('phiHud');
+const elK   = document.getElementById('kHud');
+const elSv  = document.getElementById('svHud');
+const elT   = document.getElementById('tHud');
+const elPv  = document.getElementById('phiv');
+const slider= document.getElementById('phi');
+
+let hudClock = 0;
+function updateHUD(dt){
+  hudClock += dt;
+  if (hudClock < 0.06) return;
+  hudClock = 0;
+
+  const k  = kOf(phi);
+  const sv = SvOf(phi);
+  const tt = TOf(phi);
+
+  elPhi.textContent = phi.toFixed(3);
+  elK.textContent   = k.toExponential(2).replace('e-','e-');
+  elSv.textContent  = sv.toExponential(2);
+  elT.textContent   = tt.toFixed(3);
+  elPv.textContent  = phi.toFixed(3);
+
+  if (!sliderDragging) slider.value = phi.toFixed(3);
+}
+
+/* ============================================================
+   布局
+============================================================ */
+function updateLayout(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  cv.width  = Math.floor(W*DPR);
+  cv.height = Math.floor(H*DPR);
+  cv.style.width  = W+'px';
+  cv.style.height = H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+
+  colW = Math.min(W*0.23, 212);
+  colH = Math.min(H*0.80, 620);
+  colX = W*0.5 - colW*0.5 - Math.min(W*0.12, 90);
+  colY = H*0.5 - colH*0.5;
+
+  treeKey = '';
+}
+
+/* ============================================================
+   交互
+============================================================ */
+let sliderDragging = false;
+
+slider.addEventListener('pointerdown', ()=>{
+  sliderDragging = true;
+  autoResume = now + 6;
+});
+slider.addEventListener('pointerup', ()=>{ sliderDragging = false; });
+slider.addEventListener('pointercancel', ()=>{ sliderDragging = false; });
+slider.addEventListener('input', ()=>{
+  phi = parseFloat(slider.value);
+  autoResume = now + 6;
+});
+
+cv.addEventListener('pointerdown', function(e){
+  const mx = e.clientX, my = e.clientY;
+  const bw = 26 * Math.pow((1-phi)/(1-PHI_REF), 1.4);
+
+  let hit = null;
+  for (let i=0;i<tree.length;i++){
+    const b = tree[i];
+    const x1 = colX + b.x1*colW, y1 = colY + b.y1*colH;
+    const x2 = colX + b.x2*colW, y2 = colY + b.y2*colH;
+    const d = distSeg(mx, my, x1, y1, x2, y2);
+    const tol = Math.max(7, b.w0*bw*0.9 + 5);
+    if (d < tol){
+      hit = { x:mx, y:my, depth:b.depth, life:4.6, max:4.6 };
+      break;
+    }
+  }
+  if (hit){
+    clicks.push(hit);
+    if (clicks.length > 4) clicks.shift();
+  }
+});
+
+window.addEventListener('resize', ()=>{
+  updateLayout();
+  rebuildTreeCanvas();
+});
+
+/* ============================================================
+   主循环
+============================================================ */
+function loop(ts){
+  requestAnimationFrame(loop);
+
+  now = ts/1000;
+  if (!loop.last){ loop.last = now; return; }
+  let dt = now - loop.last;
+  loop.last = now;
+  if (dt > 0.06) dt = 0.06;
+  if (dt < 0) dt = 0;
+
+  t += dt;
+  if (t > CYCLE) t -= CYCLE;
+
+  /* ---- 自动扫掠 φ ---- */
+  if (now > autoResume){
+    phi = 0.425 + 0.175 * Math.sin(t/CYCLE*TAU - Math.PI/2);
+    phi = clamp(phi, PHI_MIN, PHI_MAX);
+  }
+
+  /* ---- 脉动 ---- */
+  const dPhi = Math.abs(phi - lastPhi);
+  if (dPhi > 0.0004){
+    pulse = Math.min(1.2, pulse + dPhi*55);
+    lastPhi = phi;
+  }
+  pulse *= Math.pow(0.03, dt);
+  if (pulse < 0.002) pulse = 0;
+
+  /* ---- 骨架缓存刷新 ---- */
+  const key = phi.toFixed(3) + '|' + colX.toFixed(1) + '|' + colY.toFixed(1)
+            + '|' + colW.toFixed(1) + '|' + colH.toFixed(1) + '|' + DPR;
+  if (key !== treeKey){
+    treeKey = key;
+    rebuildTreeCanvas();
+  }
+
+  /* ---- 粒子更新 ---- */
+  const speedMul = 0.75 + 0.75 * (phi - PHI_MIN)/(PHI_MAX - PHI_MIN);
+  for (let i=0;i<particles.length;i++){
+    const p = particles[i];
+    p.u += p.speed * dt * speedMul;
+    if (p.u > 1){
+      p.u -= 1;
+      p.li = Math.floor(Math.random()*flowLines.length);
+    }
+  }
+
+  /* ---- 渲染 ---- */
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  ctx.clearRect(0,0,W,H);
+
+  drawBG();
+
+  /* 柱体外辉光 */
+  const glow = ctx.createRadialGradient(
+    colX+colW*0.5, colY+colH*0.5, colW*0.15,
+    colX+colW*0.5, colY+colH*0.5, colH*0.62
+  );
+  glow.addColorStop(0, 'rgba(0,180,110,0.09)');
+  glow.addColorStop(1, 'rgba(0,60,40,0)');
+  ctx.fillStyle = glow;
+  ctx.fillRect(colX-100, colY-70, colW+200, colH+140);
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(colX, colY, colW, colH);
+  ctx.clip();
+
+  drawColumnInner();
+  drawFlowLines();
+  drawParticles();
+  drawClicks(dt);
+
+  ctx.restore();
+
+  drawColumnBorder();
+  drawChart();
+  drawVignette();
+
+  /* 循环淡出 */
+  if (t > CYCLE - 1.4){
+    const a = (t - (CYCLE-1.4)) / 1.4;
+    ctx.fillStyle = 'rgba(1,4,3,'+(a*0.95).toFixed(3)+')';
+    ctx.fillRect(0,0,W,H);
+  }
+
+  updateHUD(dt);
+}
+
+/* ============================================================
+   启动
+============================================================ */
+function boot(){
+  updateLayout();
+  genTree();
+  genFlowLines();
+  genParticles();
+  rebuildTreeCanvas();
+  requestAnimationFrame(loop);
+}
+
+boot();
+
+})();
+</script>
+</body>
+</html>

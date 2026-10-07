@@ -1,0 +1,760 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>泊肃叶定律 · 层流圆管流</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100%;height:100%;overflow:hidden;background:#02040a;
+    font-family:"SF Mono",Consolas,"Courier New",monospace;cursor:crosshair}
+  canvas{display:block;position:fixed;inset:0}
+
+  .hud{
+    position:fixed;z-index:10;pointer-events:none;
+    font-size:12px;letter-spacing:.4px;line-height:2.0;
+    color:#7fe8ff;
+    text-shadow:0 0 10px rgba(0,200,255,.75),0 0 26px rgba(90,60,255,.35);
+  }
+  .hud .or{color:#ffb066;text-shadow:0 0 10px rgba(255,150,40,.85)}
+  .hud .wh{color:#f0f8ff;text-shadow:0 0 12px rgba(220,240,255,.9)}
+  .hud .pp{color:#c9a8ff;text-shadow:0 0 10px rgba(160,90,255,.85)}
+  .hud .dim{color:#4a6a88;font-size:11px;text-shadow:none}
+  .tl{top:16px;left:20px}
+  .tr{top:16px;right:20px;text-align:right}
+  .bl{bottom:18px;left:20px}
+  .br{bottom:18px;right:20px;text-align:right}
+
+  .ctrl{
+    position:fixed;z-index:12;top:16px;left:50%;transform:translateX(-50%);
+    display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:center;
+    font-size:10.5px;letter-spacing:1.2px;color:#7fe8ff;
+    text-shadow:0 0 10px rgba(0,200,255,.8);
+    background:rgba(4,12,24,.65);
+    border:1px solid rgba(80,200,255,.22);
+    border-radius:24px;padding:8px 20px;
+    backdrop-filter:blur(9px);
+    box-shadow:0 0 30px rgba(0,120,255,.12);
+    max-width:min(760px,94vw);
+  }
+  .ctrl input[type=range]{
+    -webkit-appearance:none;appearance:none;width:132px;height:4px;border-radius:4px;
+    background:linear-gradient(90deg,#0a2030,#0aa8e0,#c94aff);
+    outline:none;cursor:pointer;
+  }
+  .ctrl input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none;width:13px;height:13px;border-radius:50%;
+    background:#eafcff;border:1px solid rgba(255,255,255,.8);
+    box-shadow:0 0 12px #00d5ff,0 0 24px #a04aff;cursor:pointer;
+  }
+  .ctrl input[type=range]::-moz-range-thumb{
+    width:13px;height:13px;border:none;border-radius:50%;background:#eafcff;
+    box-shadow:0 0 12px #00d5ff;cursor:pointer;
+  }
+  .cv{color:#f0f8ff;min-width:56px;display:inline-block;text-align:right}
+
+  .hint{
+    position:fixed;z-index:10;bottom:52px;left:50%;transform:translateX(-50%);
+    font-size:10px;letter-spacing:2.6px;color:#3d5f78;
+    text-shadow:0 0 10px rgba(0,170,255,.35);
+    pointer-events:none;
+  }
+  @keyframes blink{
+    0%,100%{opacity:.35}
+    50%{opacity:1}
+  }
+  .dot{
+    display:inline-block;width:6px;height:6px;border-radius:50%;
+    background:#7fe8ff;box-shadow:0 0 10px #00c8ff;
+    margin-right:6px;vertical-align:middle;
+    animation:blink 1.5s ease-in-out infinite;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div class="hud tl">
+  <div>Q = π·Δp·R⁴ / (8μL)</div>
+  <div>u(r) = Δp·(R²−r²) / (4μL)</div>
+  <div>Q ∝ R⁴</div>
+  <div class="dim">泊肃叶定律 · 层流圆管流</div>
+</div>
+
+<div class="hud tr">
+  <div>μ = <span class="pp">1.0×10⁻³</span> Pa·s</div>
+  <div>L = <span class="wh">20</span> cm</div>
+  <div>τ<sub>w</sub> = <span class="or" id="tauHud">0.00</span> Pa</div>
+</div>
+
+<div class="hud bl">
+  <div>R = <span class="wh" id="rHud">5.00</span> mm</div>
+  <div>Δp = <span class="wh" id="dpHud">150</span> Pa</div>
+  <div class="dim"><span class="dot"></span>抛物线流速剖面 · 层流分层</div>
+</div>
+
+<div class="hud br">
+  <div>u<sub>max</sub> = <span class="wh" id="umaxHud">0.000</span> m/s</div>
+  <div>Q = <span class="or" id="qHud">0.000</span> cm³/s</div>
+</div>
+
+<div class="ctrl">
+  <span>R</span>
+  <input type="range" id="rSlider" min="1" max="8" step="0.05" value="5">
+  <span class="cv" id="rVal">5.00 mm</span>
+  <span style="opacity:.4">│</span>
+  <span>Δp</span>
+  <input type="range" id="dpSlider" min="20" max="300" step="1" value="150">
+  <span class="cv" id="dpVal">150 Pa</span>
+</div>
+
+<div class="hint">点击管内读取该径向位置流速 · 拖动滑块观察 Q∝R⁴</div>
+
+<script>
+(function(){
+"use strict";
+
+/* ============================================================
+   roundRect polyfill
+============================================================ */
+if (!CanvasRenderingContext2D.prototype.roundRect){
+  CanvasRenderingContext2D.prototype.roundRect = function(x,y,w,h,r){
+    if (typeof r === 'number') r = [r,r,r,r];
+    this.beginPath();
+    this.moveTo(x + r[0], y);
+    this.arcTo(x + w, y, x + w, y + h, r[1]);
+    this.arcTo(x + w, y + h, x, y + h, r[2]);
+    this.arcTo(x, y + h, x, y, r[3]);
+    this.arcTo(x, y, x + w, y, r[0]);
+    this.closePath();
+  };
+}
+
+/* ============================================================
+   基础
+============================================================ */
+const cv  = document.getElementById('c');
+const ctx = cv.getContext('2d', { alpha: false });
+const TAU = Math.PI * 2;
+const CYCLE = 30;
+
+const clamp = (v,a,b)=> v<a?a:(v>b?b:v);
+
+/* ============================================================
+   参数（物理）
+============================================================ */
+const P = {
+  Rmm : 5.0,      // 半径 mm
+  dp  : 150,      // 压差 Pa
+  mu  : 1.0e-3,   // 动力粘度 Pa·s
+  L   : 0.20      // 管长 m
+};
+
+let calc = { umax:0, Q:0, tauw:0, R:0 };
+
+function computeAll(){
+  const R = P.Rmm / 1000;
+  calc.umax = P.dp * R * R / (4 * P.mu * P.L);
+  calc.Q    = Math.PI * P.dp * Math.pow(R,4) / (8 * P.mu * P.L);
+  calc.tauw = P.dp * R / (2 * P.L);
+  calc.R    = R;
+}
+
+/* ============================================================
+   布局
+============================================================ */
+let W=0, H=0, DPR=1;
+let x0=0, x1=0, cy=0, Rpx=60;
+
+function updateRpx(){
+  Rpx = P.Rmm * 13.0;
+  const cap = Math.min(H*0.19, 118);
+  if (Rpx > cap) Rpx = cap;
+}
+
+function resize(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  cv.width  = Math.floor(W*DPR);
+  cv.height = Math.floor(H*DPR);
+  cv.style.width  = W+'px';
+  cv.style.height = H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+
+  x0 = W * 0.11;
+  x1 = W * 0.89;
+  cy = H * 0.475;
+  updateRpx();
+}
+
+/* ============================================================
+   速度颜色映射
+============================================================ */
+function speedColor(rt){
+  rt = clamp(rt, 0, 1);
+  const S = [
+    [0.00, 50, 28, 96],
+    [0.28, 38, 92, 78],
+    [0.58, 4, 96, 60],
+    [0.84, 322, 92, 56],
+    [1.00, 268, 88, 46]
+  ];
+  for (let i=0;i<S.length-1;i++){
+    const a = S[i], b = S[i+1];
+    if (rt <= b[0]){
+      const t = (rt - a[0]) / (b[0] - a[0]);
+      return [
+        a[1] + (b[1]-a[1])*t,
+        a[2] + (b[2]-a[2])*t,
+        a[3] + (b[3]-a[3])*t
+      ];
+    }
+  }
+  return [268, 88, 46];
+}
+
+/* ============================================================
+   粒子
+============================================================ */
+const particles = [];
+const NP = 680;
+
+function initParticles(){
+  particles.length = 0;
+  for (let i=0;i<NP;i++){
+    const r = -0.992 + 1.984 * (i + 0.5) / NP + (Math.random()-0.5)*0.0032;
+    particles.push({
+      r: clamp(r, -0.994, 0.994),
+      x: x0 + Math.random() * (x1 - x0),
+      seed: Math.random()*TAU
+    });
+  }
+}
+
+/* ============================================================
+   更新
+============================================================ */
+const VIS_SCALE = 46;   // px per (m/s)
+
+function updateParticles(dt){
+  const umax = calc.umax;
+  for (let i=0;i<particles.length;i++){
+    const p = particles[i];
+    let vx = umax * (1 - p.r*p.r) * VIS_SCALE;
+    if (vx > 1500) vx = 1500;
+    p.x += vx * dt;
+    if (p.x > x1 + 34){
+      p.x = x0 - 34 - Math.random()*40;
+    }
+  }
+}
+
+/* ============================================================
+   绘制：背景
+============================================================ */
+function drawBG(){
+  const g = ctx.createRadialGradient(W*0.5, H*0.44, 0,
+                                     W*0.5, H*0.5, Math.max(W,H)*0.85);
+  g.addColorStop(0,   '#07101c');
+  g.addColorStop(0.5, '#03060c');
+  g.addColorStop(1,   '#010204');
+  ctx.fillStyle = g;
+  ctx.fillRect(0,0,W,H);
+
+  /* 细网格 */
+  ctx.strokeStyle = 'rgba(50,140,200,0.045)';
+  ctx.lineWidth = 1;
+  const gs = 70;
+  ctx.beginPath();
+  for (let x=0;x<W;x+=gs){ ctx.moveTo(x,0); ctx.lineTo(x,H); }
+  for (let y=0;y<H;y+=gs){ ctx.moveTo(0,y); ctx.lineTo(W,y); }
+  ctx.stroke();
+}
+
+/* ============================================================
+   绘制：管腔底色（抛物线色调）
+============================================================ */
+function drawPipeFill(){
+  if (Rpx <= 1) return;
+  const yT = cy - Rpx, yB = cy + Rpx;
+  const hh = Rpx*2;
+
+  const g = ctx.createLinearGradient(0, yT, 0, yB);
+  g.addColorStop(0.000, 'rgba(48,14,110,0.62)');
+  g.addColorStop(0.070, 'rgba(92,26,150,0.55)');
+  g.addColorStop(0.170, 'rgba(168,42,130,0.50)');
+  g.addColorStop(0.290, 'rgba(224,58,62,0.50)');
+  g.addColorStop(0.400, 'rgba(255,126,26,0.56)');
+  g.addColorStop(0.470, 'rgba(255,190,70,0.68)');
+  g.addColorStop(0.500, 'rgba(255,246,208,0.86)');
+  g.addColorStop(0.530, 'rgba(255,190,70,0.68)');
+  g.addColorStop(0.600, 'rgba(255,126,26,0.56)');
+  g.addColorStop(0.710, 'rgba(224,58,62,0.50)');
+  g.addColorStop(0.830, 'rgba(168,42,130,0.50)');
+  g.addColorStop(0.930, 'rgba(92,26,150,0.55)');
+  g.addColorStop(1.000, 'rgba(48,14,110,0.62)');
+  ctx.fillStyle = g;
+  ctx.fillRect(x0, yT, x1-x0, hh);
+
+  /* 中央炽亮主流束 */
+  ctx.globalCompositeOperation = 'lighter';
+  const core = ctx.createLinearGradient(0, cy - Rpx*0.20, 0, cy + Rpx*0.20);
+  core.addColorStop(0,   'rgba(255,240,200,0)');
+  core.addColorStop(0.5, 'rgba(255,250,235,0.24)');
+  core.addColorStop(1,   'rgba(255,240,200,0)');
+  ctx.fillStyle = core;
+  ctx.fillRect(x0, cy - Rpx*0.20, x1-x0, Rpx*0.40);
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ============================================================
+   绘制：抛物线速度剖面（左侧色带）
+============================================================ */
+function drawProfileBands(){
+  if (Rpx <= 2) return;
+  const steps = 64;
+  const maxLen = Math.min(Rpx * 1.55, 128);
+
+  ctx.globalCompositeOperation = 'lighter';
+
+  const bandH = (Rpx*2) / steps + 0.8;
+
+  for (let i=0;i<steps;i++){
+    const rt = -1 + 2*(i+0.5)/steps;
+    const u  = 1 - rt*rt;
+    const y  = cy + rt*Rpx;
+    const len = u * maxLen;
+    if (len < 0.6) continue;
+
+    const c = speedColor(Math.abs(rt));
+
+    const g = ctx.createLinearGradient(x0, 0, x0 + len, 0);
+    g.addColorStop(0,   'hsla('+c[0].toFixed(0)+','+c[1].toFixed(0)+'%,'+c[2].toFixed(0)+'%,0.34)');
+    g.addColorStop(0.65,'hsla('+c[0].toFixed(0)+','+c[1].toFixed(0)+'%,'+c[2].toFixed(0)+'%,0.16)');
+    g.addColorStop(1,   'hsla('+c[0].toFixed(0)+','+c[1].toFixed(0)+'%,'+c[2].toFixed(0)+'%,0)');
+
+    ctx.fillStyle = g;
+    ctx.fillRect(x0, y - bandH*0.5, len, bandH);
+  }
+
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ============================================================
+   绘制：剖面轮廓（抛物线线）
+============================================================ */
+function drawProfileOutline(){
+  if (Rpx <= 2) return;
+  const profW = Math.min(Rpx * 1.55, 128);
+  const steps = 72;
+  const bright = clamp(0.30 + calc.umax * 0.075, 0.30, 1.0);
+
+  ctx.globalCompositeOperation = 'lighter';
+
+  ctx.beginPath();
+  for (let i=0;i<=steps;i++){
+    const rt = -1 + 2*i/steps;
+    const u  = 1 - rt*rt;
+    const px = x0 + u * profW;
+    const py = cy + rt * Rpx;
+    if (i===0) ctx.moveTo(px,py); else ctx.lineTo(px,py);
+  }
+  ctx.strokeStyle = 'rgba(255,224,150,'+(0.62*bright).toFixed(3)+')';
+  ctx.lineWidth = 1.7;
+  ctx.shadowColor = 'rgba(255,180,60,'+(0.85*bright).toFixed(3)+')';
+  ctx.shadowBlur = 10;
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  /* 轴线虚标 */
+  ctx.setLineDash([3,5]);
+  ctx.beginPath();
+  ctx.moveTo(x0, cy);
+  ctx.lineTo(x0 + profW, cy);
+  ctx.strokeStyle = 'rgba(255,240,200,0.22)';
+  ctx.lineWidth = 0.8;
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ============================================================
+   绘制：粒子（拖尾表示速度分层）
+============================================================ */
+function drawParticles(){
+  if (Rpx <= 1) return;
+  const umax = calc.umax;
+
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap = 'round';
+
+  for (let i=0;i<particles.length;i++){
+    const p = particles[i];
+    const rt = Math.abs(p.r);
+    const y  = cy + p.r * Rpx;
+
+    let vx = umax * (1 - p.r*p.r) * VIS_SCALE;
+    if (vx > 1500) vx = 1500;
+
+    const c = speedColor(rt);
+    const tail = Math.min(Math.max(vx * 0.055, 1.2), 46);
+
+    /* 拖尾 */
+    const g = ctx.createLinearGradient(p.x - tail, y, p.x, y);
+    g.addColorStop(0, 'hsla('+c[0].toFixed(0)+','+c[1].toFixed(0)+'%,'+c[2].toFixed(0)+'%,0)');
+    g.addColorStop(1, 'hsla('+c[0].toFixed(0)+','+c[1].toFixed(0)+'%,'+c[2].toFixed(0)+'%,0.68)');
+    ctx.strokeStyle = g;
+    ctx.lineWidth = 1.35;
+    ctx.beginPath();
+    ctx.moveTo(p.x - tail, y);
+    ctx.lineTo(p.x, y);
+    ctx.stroke();
+
+    /* 头部 */
+    ctx.beginPath();
+    ctx.arc(p.x, y, 1.25, 0, TAU);
+    ctx.fillStyle = 'hsla('+c[0].toFixed(0)+','+c[1].toFixed(0)+'%,'+Math.min(99,c[2]+14).toFixed(0)+'%,0.92)';
+    ctx.fill();
+  }
+
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ============================================================
+   绘制：管壁与端帽
+============================================================ */
+function drawWalls(){
+  if (Rpx <= 1) return;
+  const yT = cy - Rpx, yB = cy + Rpx;
+
+  ctx.globalCompositeOperation = 'lighter';
+
+  /* 辉光层 */
+  ctx.strokeStyle = 'rgba(96,170,255,0.16)';
+  ctx.lineWidth = 7;
+  ctx.beginPath(); ctx.moveTo(x0,yT); ctx.lineTo(x1,yT); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x0,yB); ctx.lineTo(x1,yB); ctx.stroke();
+
+  /* 内亮边 */
+  ctx.strokeStyle = 'rgba(150,230,255,0.72)';
+  ctx.lineWidth = 1.6;
+  ctx.beginPath(); ctx.moveTo(x0,yT); ctx.lineTo(x1,yT); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x0,yB); ctx.lineTo(x1,yB); ctx.stroke();
+
+  /* 端帽 */
+  ctx.strokeStyle = 'rgba(140,220,255,0.32)';
+  ctx.lineWidth = 1.4;
+  ctx.beginPath(); ctx.moveTo(x0, yT-5); ctx.lineTo(x0, yB+5); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x1, yT-5); ctx.lineTo(x1, yB+5); ctx.stroke();
+
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ============================================================
+   绘制：点击标记
+============================================================ */
+const clicks = [];
+
+function drawClicks(dt){
+  for (let i=clicks.length-1;i>=0;i--){
+    const c = clicks[i];
+    c.life -= dt;
+    if (c.life <= 0){ clicks.splice(i,1); continue; }
+
+    const a = clamp(c.life / 0.6, 0, 1);
+    const grow = (3.6 - c.life) * 9;
+
+    ctx.globalCompositeOperation = 'lighter';
+
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, 8 + grow, 0, TAU);
+    ctx.strokeStyle = 'rgba(160,240,255,'+(a*0.62).toFixed(3)+')';
+    ctx.lineWidth = 1.4;
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, 2.6, 0, TAU);
+    ctx.fillStyle = 'rgba(240,255,255,'+a.toFixed(3)+')';
+    ctx.fill();
+
+    ctx.globalCompositeOperation = 'source-over';
+
+    /* 面板 */
+    const pw = 132, ph = 60;
+    let px = c.x + 22;
+    let py = c.y - ph - 14;
+    if (px + pw > W - 12) px = c.x - pw - 22;
+    if (py < 12) py = c.y + 22;
+
+    ctx.fillStyle = 'rgba(3,14,26,'+(a*0.90).toFixed(3)+')';
+    ctx.beginPath();
+    ctx.roundRect(px, py, pw, ph, 7);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(90,200,255,'+(a*0.42).toFixed(3)+')';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    ctx.font = '9.5px "SF Mono",Consolas,monospace';
+    ctx.textAlign = 'left';
+    ctx.fillStyle = 'rgba(150,225,255,'+a.toFixed(3)+')';
+    ctx.fillText('r = ' + (c.r*P.Rmm).toFixed(2) + ' mm', px+9, py+17);
+    ctx.fillStyle = 'rgba(255,232,170,'+a.toFixed(3)+')';
+    ctx.fillText('u = ' + c.u.toFixed(4) + ' m/s', px+9, py+34);
+    ctx.fillStyle = 'rgba(200,150,255,'+a.toFixed(3)+')';
+    ctx.fillText('u/u_max = ' + (1 - c.r*c.r).toFixed(3), px+9, py+50);
+    ctx.textAlign = 'start';
+  }
+}
+
+/* ============================================================
+   绘制：Q ∝ R⁴ 图表
+============================================================ */
+function drawChart(){
+  const cw = 216, ch = 152;
+  const cx0 = W - cw - 24;
+  const cy0 = H - ch - 26;
+
+  ctx.fillStyle = 'rgba(3,12,24,0.72)';
+  ctx.beginPath();
+  ctx.roundRect(cx0, cy0, cw, ch, 9);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(80,190,255,0.20)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  const pl = 34, pr = 16, pt = 22, pb = 26;
+  const gx = cx0 + pl, gy = cy0 + pt;
+  const gw = cw - pl - pr, gh = ch - pt - pb;
+
+  /* 网格 */
+  ctx.strokeStyle = 'rgba(70,170,230,0.10)';
+  ctx.lineWidth = 1;
+  for (let i=0;i<=3;i++){
+    const yy = gy + gh*i/3;
+    ctx.beginPath(); ctx.moveTo(gx,yy); ctx.lineTo(gx+gw,yy); ctx.stroke();
+  }
+  for (let i=0;i<=3;i++){
+    const xx = gx + gw*i/3;
+    ctx.beginPath(); ctx.moveTo(xx,gy); ctx.lineTo(xx,gy+gh); ctx.stroke();
+  }
+
+  const Rmin = 1, Rmax = 8;
+  const Qmax = Math.pow(Rmax,4);
+
+  /* 曲线 */
+  ctx.beginPath();
+  for (let i=0;i<=100;i++){
+    const R = Rmin + (Rmax-Rmin)*i/100;
+    const Q = Math.pow(R,4)/Qmax;
+    const px = gx + gw*(R-Rmin)/(Rmax-Rmin);
+    const py = gy + gh - Q*gh;
+    if (i===0) ctx.moveTo(px,py); else ctx.lineTo(px,py);
+  }
+  ctx.strokeStyle = 'rgba(120,220,255,0.92)';
+  ctx.lineWidth = 2;
+  ctx.shadowColor = 'rgba(80,200,255,0.85)';
+  ctx.shadowBlur = 10;
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  /* 当前点 */
+  const Rc = clamp(P.Rmm, Rmin, Rmax);
+  const Qc = Math.pow(Rc,4)/Qmax;
+  const px = gx + gw*(Rc-Rmin)/(Rmax-Rmin);
+  const py = gy + gh - Qc*gh;
+
+  ctx.beginPath();
+  ctx.arc(px, py, 4.6, 0, TAU);
+  ctx.fillStyle = 'rgba(255,242,190,1)';
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(px, py, 9.5, 0, TAU);
+  ctx.strokeStyle = 'rgba(255,190,70,0.60)';
+  ctx.lineWidth = 1.6;
+  ctx.stroke();
+
+  /* 标签 */
+  ctx.font = '9px "SF Mono",Consolas,monospace';
+  ctx.fillStyle = 'rgba(140,220,255,0.88)';
+  ctx.fillText('Q ∝ R⁴', cx0+12, cy0+15);
+  ctx.fillStyle = 'rgba(120,200,255,0.72)';
+  ctx.fillText('Q', cx0+9, gy+9);
+  ctx.fillText('R (mm)', gx+gw-36, cy0+ch-8);
+  ctx.fillText('1', gx-3, gy+gh+14);
+  ctx.fillText('8', gx+gw-4, gy+gh+14);
+}
+
+/* ============================================================
+   绘制：暗角 + 循环淡出
+============================================================ */
+let vignette = null;
+
+function makeVignette(){
+  const g = ctx.createRadialGradient(W/2, H/2, Math.min(W,H)*0.30,
+                                     W/2, H/2, Math.max(W,H)*0.82);
+  g.addColorStop(0, 'rgba(0,0,0,0)');
+  g.addColorStop(1, 'rgba(0,1,4,0.80)');
+  vignette = g;
+}
+
+/* ============================================================
+   渲染
+============================================================ */
+function render(){
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  ctx.clearRect(0,0,W,H);
+
+  drawBG();
+
+  /* 管外辉光 */
+  if (Rpx > 2){
+    const gl = ctx.createRadialGradient(W*0.5, cy, Rpx*0.6,
+                                        W*0.5, cy, Rpx*3.6);
+    gl.addColorStop(0, 'rgba(0,120,220,0.14)');
+    gl.addColorStop(1, 'rgba(0,40,90,0)');
+    ctx.fillStyle = gl;
+    ctx.fillRect(x0-120, cy-Rpx*3.6, (x1-x0)+240, Rpx*7.2);
+  }
+
+  drawPipeFill();
+  drawProfileBands();
+  drawParticles();
+  drawProfileOutline();
+  drawWalls();
+
+  if (vignette){
+    ctx.fillStyle = vignette;
+    ctx.fillRect(0,0,W,H);
+  }
+}
+
+/* ============================================================
+   HUD
+============================================================ */
+const elTau   = document.getElementById('tauHud');
+const elR     = document.getElementById('rHud');
+const elDp    = document.getElementById('dpHud');
+const elUmax  = document.getElementById('umaxHud');
+const elQ     = document.getElementById('qHud');
+const elRVal  = document.getElementById('rVal');
+const elDpVal = document.getElementById('dpVal');
+
+let hudAcc = 0;
+function updateHUD(dt){
+  hudAcc += dt;
+  if (hudAcc < 0.06) return;
+  hudAcc = 0;
+
+  elTau.textContent  = calc.tauw.toFixed(2);
+  elR.textContent    = P.Rmm.toFixed(2);
+  elDp.textContent   = P.dp.toFixed(0);
+  elUmax.textContent = calc.umax.toFixed(3);
+  elQ.textContent    = (calc.Q * 1e6).toFixed(3);   // m³/s → cm³/s
+
+  elRVal.textContent  = P.Rmm.toFixed(2) + ' mm';
+  elDpVal.textContent = P.dp.toFixed(0) + ' Pa';
+}
+
+/* ============================================================
+   交互
+============================================================ */
+const rSlider  = document.getElementById('rSlider');
+const dpSlider = document.getElementById('dpSlider');
+
+let autoResume = 0;
+
+rSlider.addEventListener('input', function(){
+  P.Rmm = parseFloat(rSlider.value);
+  updateRpx();
+  computeAll();
+  autoResume = performance.now()/1000 + 8;
+});
+dpSlider.addEventListener('input', function(){
+  P.dp = parseFloat(dpSlider.value);
+  computeAll();
+  autoResume = performance.now()/1000 + 8;
+});
+
+cv.addEventListener('pointerdown', function(e){
+  const mx = e.clientX, my = e.clientY;
+  if (mx < x0 || mx > x1) return;
+  const dy = my - cy;
+  if (Math.abs(dy) > Rpx) return;
+
+  const r = clamp(dy / Rpx, -1, 1);
+  const u = calc.umax * (1 - r*r);
+
+  clicks.push({ x: mx, y: my, r: r, u: u, life: 3.6 });
+  if (clicks.length > 4) clicks.shift();
+});
+
+window.addEventListener('resize', function(){
+  resize();
+  makeVignette();
+});
+
+/* ============================================================
+   主循环
+============================================================ */
+let t = 0;
+let last = 0;
+
+function loop(ts){
+  requestAnimationFrame(loop);
+
+  const now = ts / 1000;
+  if (!last){ last = now; return; }
+  let dt = now - last;
+  last = now;
+  if (dt > 0.05) dt = 0.05;
+  if (dt < 0) dt = 0;
+
+  t += dt;
+  if (t >= CYCLE){
+    t -= CYCLE;
+    clicks.length = 0;
+  }
+
+  /* ---- 自动扫掠 R ---- */
+  if (now > autoResume){
+    const ph = t / CYCLE * TAU - Math.PI/2;
+    P.Rmm = 5 + 3 * Math.sin(ph);
+    P.Rmm = clamp(P.Rmm, 2, 8);
+    rSlider.value = P.Rmm.toFixed(2);
+    updateRpx();
+  }
+
+  computeAll();
+  updateParticles(dt);
+  render();
+  drawClicks(dt);
+
+  /* 循环淡出 */
+  if (t > CYCLE - 1.4){
+    const a = (t - (CYCLE-1.4)) / 1.4;
+    ctx.fillStyle = 'rgba(1,2,6,'+(a*0.95).toFixed(3)+')';
+    ctx.fillRect(0,0,W,H);
+  }
+
+  updateHUD(dt);
+}
+
+/* ============================================================
+   启动
+============================================================ */
+function boot(){
+  resize();
+  makeVignette();
+  computeAll();
+  initParticles();
+  requestAnimationFrame(loop);
+}
+
+boot();
+
+})();
+</script>
+</body>
+</html>

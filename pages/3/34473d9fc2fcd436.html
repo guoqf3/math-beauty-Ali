@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>理想气体状态方程 · PV=nRT 动力学霓虹</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{
+    height:100%;background:#010105;overflow:hidden;
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+    -webkit-tap-highlight-color:transparent;
+  }
+  canvas{position:fixed;inset:0;display:block;}
+  .hud{position:fixed;inset:0;pointer-events:none;}
+
+  /* ---- 顶部启迪 ---- */
+  .epigraph{
+    position:absolute;top:14px;left:50%;transform:translateX(-50%);
+    font-family:"Songti SC","STSong",serif;
+    font-size:clamp(13px,1.4vw,20px);
+    letter-spacing:.17em;white-space:nowrap;
+    color:#e9f4ff;
+    text-shadow:0 0 12px rgba(90,180,255,.9),0 0 34px rgba(150,80,255,.5);
+    animation:breathe 4.2s ease-in-out infinite;
+  }
+  @keyframes breathe{0%,100%{opacity:.72}50%{opacity:1}}
+
+  /* ---- 四周公式 ---- */
+  .formula{
+    position:absolute;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"PingFang SC",monospace;
+    font-size:clamp(9px,.78vw,12px);
+    line-height:1.75;letter-spacing:.02em;
+    color:rgba(145,190,255,.40);
+    text-shadow:0 0 9px rgba(70,140,255,.25);
+    white-space:nowrap;
+  }
+  .formula b{color:rgba(190,226,255,.65);font-weight:500;}
+  .tl{top:58px;left:22px;}
+  .tr{top:58px;right:22px;text-align:right;}
+  .bl{bottom:16px;left:22px;}
+  .br{bottom:16px;right:22px;text-align:right;}
+
+  /* ---- 控制条 ---- */
+  .controls{
+    position:absolute;bottom:14px;left:50%;transform:translateX(-50%);
+    display:flex;align-items:center;gap:16px;
+    pointer-events:auto;
+    font-family:ui-monospace,Menlo,Consolas,monospace;
+    font-size:11px;color:rgba(160,200,255,.80);
+    background:rgba(7,11,26,.65);
+    border:1px solid rgba(80,140,255,.22);
+    border-radius:30px;padding:8px 22px;
+    backdrop-filter:blur(10px);
+    -webkit-backdrop-filter:blur(10px);
+    box-shadow:0 0 28px rgba(60,110,255,.16);
+    white-space:nowrap;
+  }
+  .controls label{display:flex;align-items:center;gap:8px;cursor:pointer;}
+  .controls input[type=range]{
+    -webkit-appearance:none;appearance:none;
+    width:140px;height:3px;border-radius:3px;
+    background:linear-gradient(90deg,#1f4cff,#7a4dff,#ff4fc8,#ffa23d);
+    outline:none;cursor:pointer;
+  }
+  .controls input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none;width:13px;height:13px;border-radius:50%;
+    background:#eaf4ff;
+    box-shadow:0 0 10px rgba(140,200,255,.95),0 0 20px rgba(170,90,255,.75);
+    cursor:pointer;
+  }
+  .controls input[type=range]::-moz-range-thumb{
+    width:13px;height:13px;border:none;border-radius:50%;
+    background:#eaf4ff;
+    box-shadow:0 0 10px rgba(140,200,255,.95);
+    cursor:pointer;
+  }
+  .tval{
+    color:#7de0ff;font-weight:600;min-width:56px;text-align:center;
+    text-shadow:0 0 10px rgba(80,220,255,.7);
+  }
+  @media (max-width:880px){
+    .bl,.br{display:none;}
+    .controls{gap:10px;padding:7px 14px;font-size:10px;}
+    .controls input[type=range]{width:90px;}
+  }
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<div class="hud">
+  <div class="epigraph">压力不是负担，而是粒子与世界碰撞的回响</div>
+
+  <div class="formula tl">
+    <b>理想气体状态方程</b><br>
+    P V = n R T
+  </div>
+  <div class="formula tr">
+    <b>道尔顿分压定律</b><br>
+    P<sub>total</sub> = ΣP<sub>i</sub> = P₁ + P₂ + …
+  </div>
+  <div class="formula bl">
+    <b>理想气体常数</b><br>
+    R = 8.314 J/(mol·K)
+  </div>
+  <div class="formula br">
+    <b>绝热可逆过程</b><br>
+    P V<sup>γ</sup> = constant
+  </div>
+
+  <div class="controls">
+    <label>温度 T
+      <input type="range" id="tempRange" min="200" max="600" value="285" step="1">
+    </label>
+    <span class="tval" id="tempLabel">285 K</span>
+  </div>
+</div>
+
+<script>
+(() => {
+'use strict';
+
+const cv  = document.getElementById('cv');
+const ctx = cv.getContext('2d', { alpha: false });
+const TAU = Math.PI * 2;
+const MONO = 'ui-monospace,SFMono-Regular,Menlo,Consolas,"PingFang SC","Microsoft YaHei",monospace';
+
+/* ============================================================
+   常量与状态
+============================================================ */
+const N_PARTS  = 620;
+const R_GAS    = 8.314;      // J/(mol·K)
+const N_MOL    = 0.427;      // mol
+const V0       = 0.010;      // m³  (10.0 L)
+const T_REF    = 285;        // K
+const VRMS_PX  = 320;        // 285 K 时 v_rms 对应的像素速度
+
+let W = 0, H = 0, DPR = 1;
+let cxc = 0, cyc = 0, cw0 = 0, ch0 = 0;
+let bgGrad = null;
+
+let simTime = 0, lastTime = 0;
+let T = T_REF, targetT = T_REF;
+
+const parts = [];
+const flashes = [];
+let probe = null;   // 点击探测
+
+/* ============================================================
+   颜色映射
+============================================================ */
+const PALETTE = [
+  [ 40,  90, 255],
+  [  0, 200, 255],
+  [160,  90, 255],
+  [255,  80, 200],
+  [255, 190,  90],
+];
+function palColor(f) {
+  f = f < 0 ? 0 : f > 1 ? 1 : f;
+  const n = PALETTE.length - 1;
+  const i = Math.min(n - 1, (f * n) | 0);
+  const t = f * n - i;
+  const a = PALETTE[i], b = PALETTE[i + 1];
+  return [
+    a[0] + (b[0] - a[0]) * t,
+    a[1] + (b[1] - a[1]) * t,
+    a[2] + (b[2] - a[2]) * t,
+  ];
+}
+
+/* ============================================================
+   工具
+============================================================ */
+function smoothstep(x) {
+  x = x < 0 ? 0 : x > 1 ? 1 : x;
+  return x * x * (3 - 2 * x);
+}
+function gaussRand() {
+  let u = 0, v = 0;
+  while (u === 0) u = Math.random();
+  while (v === 0) v = Math.random();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(TAU * v);
+}
+/** 按麦克斯韦分布采样速率（像素/秒） */
+function sampleSpeedPx(temp) {
+  const vrms  = VRMS_PX * Math.sqrt(temp / T_REF);
+  const sigma = vrms / Math.sqrt(3);
+  const g1 = gaussRand(), g2 = gaussRand(), g3 = gaussRand();
+  return sigma * Math.sqrt(g1 * g1 + g2 * g2 + g3 * g3);
+}
+function roundRect(c, x, y, w, h, r) {
+  c.beginPath();
+  c.moveTo(x + r, y);
+  c.lineTo(x + w - r, y);
+  c.arcTo(x + w, y, x + w, y + r, r);
+  c.lineTo(x + w, y + h - r);
+  c.arcTo(x + w, y + h, x + w - r, y + h, r);
+  c.lineTo(x + r, y + h);
+  c.arcTo(x, y + h, x, y + h - r, r);
+  c.lineTo(x, y + r);
+  c.arcTo(x, y, x + r, y, r);
+  c.closePath();
+}
+
+/* ============================================================
+   容器缩放（30 秒剧本）
+   V 正比于容器宽度
+============================================================ */
+function containerScale(t) {
+  if (t < 8)  return 1;
+  if (t < 14) return 1 - 0.5 * smoothstep((t - 8) / 6);       // 压缩 1 → 0.5
+  if (t < 20) return 0.5;                                      // 保持压缩
+  if (t < 26) return 0.5 + 0.5 * smoothstep((t - 20) / 6);     // 膨胀 0.5 → 1
+  return 1;
+}
+
+/* ============================================================
+   初始化
+============================================================ */
+function initParticles() {
+  parts.length = 0;
+  for (let i = 0; i < N_PARTS; i++) {
+    const sp  = sampleSpeedPx(T);
+    const ang = Math.random() * TAU;
+    parts.push({
+      x:  cxc + (Math.random() - 0.5) * 34,
+      y:  cyc + (Math.random() - 0.5) * 34,
+      vx: Math.cos(ang) * sp,
+      vy: Math.sin(ang) * sp,
+      r:  1.05 + Math.random() * 1.9,
+      ph: Math.random() * TAU,
+    });
+  }
+}
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  cv.width  = Math.round(W * DPR);
+  cv.height = Math.round(H * DPR);
+  cv.style.width  = W + 'px';
+  cv.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  cw0 = Math.min(W * 0.66, 830);
+  ch0 = Math.min(H * 0.50, 470);
+  cxc = W / 2;
+  cyc = H * 0.505;
+
+  bgGrad = ctx.createRadialGradient(W * 0.5, H * 0.45, 0, W * 0.5, H * 0.45, Math.max(W, H) * 0.8);
+  bgGrad.addColorStop(0,    '#080a1c');
+  bgGrad.addColorStop(0.45, '#040512');
+  bgGrad.addColorStop(1,    '#010105');
+
+  if (parts.length === 0) initParticles();
+  else {
+    const s = containerScale(simTime);
+    const L = cxc - cw0 * s / 2, R = cxc + cw0 * s / 2;
+    const Top = cyc - ch0 / 2,   Bot = cyc + ch0 / 2;
+    for (const p of parts) {
+      if (p.x < L + p.r) p.x = L + p.r;
+      if (p.x > R - p.r) p.x = R - p.r;
+      if (p.y < Top + p.r) p.y = Top + p.r;
+      if (p.y > Bot - p.r) p.y = Bot - p.r;
+    }
+  }
+}
+
+/* ============================================================
+   物理更新
+============================================================ */
+function updatePhysics(dt) {
+  const s = containerScale(simTime);
+  const cw = cw0 * s, ch = ch0;
+  const L = cxc - cw / 2, R = cxc + cw / 2;
+  const Top = cyc - ch / 2, Bot = cyc + ch / 2;
+
+  let flashBudget = 7;
+
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i];
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+
+    /* --- 左壁 --- */
+    if (p.x - p.r < L) {
+      const deep = (L - (p.x - p.r)) > 1.5;
+      p.x = L + p.r;
+      p.vx = Math.abs(p.vx);
+      if (!deep && flashBudget > 0) { spawnFlash(L, p.y, 'L'); flashBudget--; }
+    }
+    /* --- 右壁 --- */
+    if (p.x + p.r > R) {
+      const deep = ((p.x + p.r) - R) > 1.5;
+      p.x = R - p.r;
+      p.vx = -Math.abs(p.vx);
+      if (!deep && flashBudget > 0) { spawnFlash(R, p.y, 'R'); flashBudget--; }
+    }
+    /* --- 上壁 --- */
+    if (p.y - p.r < Top) {
+      const deep = (Top - (p.y - p.r)) > 1.5;
+      p.y = Top + p.r;
+      p.vy = Math.abs(p.vy);
+      if (!deep && flashBudget > 0) { spawnFlash(p.x, Top, 'T'); flashBudget--; }
+    }
+    /* --- 下壁 --- */
+    if (p.y + p.r > Bot) {
+      const deep = ((p.y + p.r) - Bot) > 1.5;
+      p.y = Bot - p.r;
+      p.vy = -Math.abs(p.vy);
+      if (!deep && flashBudget > 0) { spawnFlash(p.x, Bot, 'B'); flashBudget--; }
+    }
+  }
+
+  /* --- 闪光衰减 --- */
+  for (let i = flashes.length - 1; i >= 0; i--) {
+    const f = flashes[i];
+    f.r += (f.max - f.r) * dt * 7.5;
+    f.life -= dt * 3.1;
+    if (f.life <= 0) flashes.splice(i, 1);
+  }
+
+  /* --- 探测环衰减 --- */
+  if (probe) {
+    probe.t += dt;
+    if (probe.t > 2.2) probe = null;
+  }
+}
+
+function spawnFlash(x, y, side) {
+  if (flashes.length > 90) return;
+  flashes.push({
+    x, y,
+    r: 0,
+    max: 10 + Math.random() * 15,
+    life: 1,
+    side
+  });
+}
+
+/* ============================================================
+   渲染
+============================================================ */
+function render() {
+  ctx.fillStyle = bgGrad;
+  ctx.fillRect(0, 0, W, H);
+
+  const s  = containerScale(simTime);
+  const cw = cw0 * s, ch = ch0;
+  const L  = cxc - cw / 2, R = cxc + cw / 2;
+  const Top = cyc - ch / 2, Bot = cyc + ch / 2;
+
+  /* --- 容器内发光 --- */
+  const innerGlow = ctx.createRadialGradient(cxc, cyc, 0, cxc, cyc, Math.max(cw, ch) * 0.72);
+  innerGlow.addColorStop(0,   'rgba(70,120,255,0.055)');
+  innerGlow.addColorStop(0.6, 'rgba(120,60,220,0.035)');
+  innerGlow.addColorStop(1,   'rgba(0,0,0,0)');
+  ctx.save();
+  roundRect(ctx, L, Top, cw, ch, 22);
+  ctx.clip();
+  ctx.fillStyle = innerGlow;
+  ctx.fillRect(L, Top, cw, ch);
+  ctx.restore();
+
+  /* --- 粒子 --- */
+  drawParticles();
+
+  /* --- 闪光 --- */
+  drawFlashes();
+
+  /* --- 容器边框 --- */
+  ctx.save();
+  ctx.shadowColor = 'rgba(80,180,255,0.85)';
+  ctx.shadowBlur = 26;
+  ctx.strokeStyle = 'rgba(125,205,255,0.85)';
+  ctx.lineWidth = 2.4;
+  roundRect(ctx, L, Top, cw, ch, 22);
+  ctx.stroke();
+  ctx.restore();
+
+  ctx.strokeStyle = 'rgba(180,120,255,0.32)';
+  ctx.lineWidth = 1;
+  roundRect(ctx, L + 5, Top + 5, cw - 10, ch - 10, 18);
+  ctx.stroke();
+
+  /* --- 探测环 --- */
+  if (probe) {
+    const a = Math.max(0, 1 - probe.t / 2.2);
+    ctx.beginPath();
+    ctx.arc(probe.x, probe.y, 60 + (1 - a) * 30, 0, TAU);
+    ctx.strokeStyle = `rgba(255,225,150,${a * 0.7})`;
+    ctx.lineWidth = 1.6;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(probe.x, probe.y, 3, 0, TAU);
+    ctx.fillStyle = `rgba(255,225,150,${a})`;
+    ctx.fill();
+
+    const txt = `局部压强 ≈ ${probe.P.toFixed(1)} kPa`;
+    ctx.font = '600 11px ' + MONO;
+    const tw = ctx.measureText(txt).width;
+    let bx = probe.x + 70, by = probe.y - 14;
+    if (bx + tw + 18 > W - 10) bx = probe.x - tw - 88;
+    if (by < 10) by = 10;
+    ctx.fillStyle = `rgba(20,16,40,${a * 0.88})`;
+    ctx.strokeStyle = `rgba(255,220,140,${a * 0.55})`;
+    ctx.lineWidth = 1;
+    if (ctx.roundRect) {
+      ctx.beginPath();
+      ctx.roundRect(bx, by, tw + 18, 24, 7);
+      ctx.fill(); ctx.stroke();
+    } else {
+      ctx.fillRect(bx, by, tw + 18, 24);
+      ctx.strokeRect(bx, by, tw + 18, 24);
+    }
+    ctx.fillStyle = `rgba(255,232,170,${a})`;
+    ctx.textAlign = 'left';
+    ctx.fillText(txt, bx + 9, by + 16);
+  }
+
+  /* --- 顶部读数 --- */
+  drawReadout(s, cw, Top);
+}
+
+function drawParticles() {
+  ctx.globalCompositeOperation = 'lighter';
+
+  for (let i = 0; i < parts.length; i++) {
+    const p  = parts[i];
+    const sp = Math.sqrt(p.vx * p.vx + p.vy * p.vy);
+    const c  = palColor(sp / 620);
+    const cr = c[0] | 0, cg = c[1] | 0, cb = c[2] | 0;
+
+    const tw = 0.62 + 0.38 * Math.sin(simTime * 3.1 + p.ph);
+
+    // 外发光
+    ctx.globalAlpha = 0.14 * tw;
+    ctx.fillStyle = `rgb(${cr},${cg},${cb})`;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r * 3.4, 0, TAU);
+    ctx.fill();
+
+    // 核心
+    ctx.globalAlpha = 0.90;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r, 0, TAU);
+    ctx.fill();
+  }
+
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+function drawFlashes() {
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < flashes.length; i++) {
+    const f = flashes[i];
+    const a = f.life;
+    ctx.beginPath();
+    ctx.arc(f.x, f.y, f.r, 0, TAU);
+    ctx.strokeStyle = `rgba(150,230,255,${a * 0.72})`;
+    ctx.lineWidth = 2.4 * a + 0.4;
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(f.x, f.y, f.r * 0.55, 0, TAU);
+    ctx.fillStyle = `rgba(120,200,255,${a * 0.14})`;
+    ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+function drawReadout(s, cw, Top) {
+  const V_L = 10.0 * s;                                   // 升
+  const P   = N_MOL * R_GAS * T / (V0 * s);               // Pa
+
+  const txt =
+    `P = ${(P / 1000).toFixed(1)} kPa` +
+    `    V = ${V_L.toFixed(1)} L` +
+    `    T = ${T.toFixed(0)} K` +
+    `    n = ${N_MOL} mol`;
+
+  ctx.font = '600 13px ' + MONO;
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(200,230,255,0.85)';
+  ctx.shadowColor = 'rgba(80,170,255,0.8)';
+  ctx.shadowBlur = 14;
+  ctx.fillText(txt, W / 2, Top - 38);
+  ctx.shadowBlur = 0;
+
+  /* --- 压强条 --- */
+  const barW = Math.min(cw * 0.7, 420);
+  const barH = 5;
+  const bx = W / 2 - barW / 2;
+  const by = Top - 26;
+
+  ctx.fillStyle = 'rgba(90,130,220,0.18)';
+  roundRect(ctx, bx, by, barW, barH, 3);
+  ctx.fill();
+
+  let frac = P / 400000;
+  if (frac > 1) frac = 1;
+  if (frac < 0) frac = 0;
+  if (frac > 0.01) {
+    const g = ctx.createLinearGradient(bx, 0, bx + barW, 0);
+    g.addColorStop(0,   '#2f6cff');
+    g.addColorStop(0.35,'#9b5cff');
+    g.addColorStop(0.7, '#ff4fc8');
+    g.addColorStop(1,   '#ffab3d');
+    ctx.fillStyle = g;
+    ctx.shadowColor = 'rgba(140,110,255,0.85)';
+    ctx.shadowBlur = 12;
+    roundRect(ctx, bx, by, barW * frac, barH, 3);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+  }
+}
+
+/* ============================================================
+   主循环
+============================================================ */
+function frame(now) {
+  requestAnimationFrame(frame);
+
+  if (!lastTime) lastTime = now;
+  let dt = (now - lastTime) / 1000;
+  lastTime = now;
+  if (dt > 0.05) dt = 0.05;
+  if (dt < 0) dt = 0;
+
+  simTime += dt;
+
+  /* --- 30 秒循环 --- */
+  if (simTime >= 30) {
+    simTime -= 30;
+    initParticles();
+    flashes.length = 0;
+  }
+
+  /* --- 温度平滑过渡 --- */
+  if (Math.abs(T - targetT) > 0.05) {
+    const newT = T + (targetT - T) * Math.min(1, dt * 7);
+    const scale = Math.sqrt(newT / T);
+    for (let i = 0; i < parts.length; i++) {
+      parts[i].vx *= scale;
+      parts[i].vy *= scale;
+    }
+    T = newT;
+  }
+  tempLabel.textContent = T.toFixed(0) + ' K';
+
+  updatePhysics(dt);
+  render();
+}
+
+/* ============================================================
+   交互
+============================================================ */
+const tempRange = document.getElementById('tempRange');
+const tempLabel = document.getElementById('tempLabel');
+
+tempRange.addEventListener('input', () => {
+  targetT = parseFloat(tempRange.value);
+});
+
+cv.addEventListener('pointerdown', (e) => {
+  const rect = cv.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+
+  const s = containerScale(simTime);
+  const cw = cw0 * s, ch = ch0;
+  const L = cxc - cw / 2, R = cxc + cw / 2;
+  const Top = cyc - ch / 2, Bot = cyc + ch / 2;
+
+  if (mx < L || mx > R || my < Top || my > Bot) return;
+
+  // 统计半径 70 px 内的粒子
+  const RAD = 70;
+  let count = 0;
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i];
+    const dx = p.x - mx, dy = p.y - my;
+    if (dx * dx + dy * dy < RAD * RAD) count++;
+  }
+
+  const localArea   = Math.PI * RAD * RAD;
+  const totalArea   = cw * ch;
+  const localDens   = count / localArea;
+  const avgDens     = parts.length / totalArea;
+  const P_total     = N_MOL * R_GAS * T / (V0 * s);
+  const localP      = avgDens > 0 ? P_total * (localDens / avgDens) : P_total;
+
+  probe = { x: mx, y: my, t: 0, P: localP / 1000, count };
+});
+
+window.addEventListener('resize', resize);
+
+/* ============================================================
+   启动
+============================================================ */
+resize();
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

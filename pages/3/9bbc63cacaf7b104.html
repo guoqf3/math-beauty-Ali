@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>斐波那契黄金螺旋 · 炫彩动效</title>
+<style>
+  :root{
+    --ink:#05060a;
+    --edge:#dfe7ff;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{width:100%;height:100%;overflow:hidden;background:var(--ink);}
+  body{
+    font-family:"SF Mono",Menlo,Consolas,"DejaVu Sans Mono",monospace;
+    -webkit-font-smoothing:antialiased;
+  }
+  canvas{display:block;width:100vw;height:100vh;}
+
+  /* ---------- 页面边缘的公式与数据 ---------- */
+  .edge{
+    position:fixed;
+    color:var(--edge);
+    font-size:clamp(10px,0.82vw,14px);
+    line-height:1.75;
+    letter-spacing:0.06em;
+    opacity:.72;
+    text-shadow:0 0 12px rgba(120,180,255,.45);
+    pointer-events:none;
+    user-select:none;
+    z-index:5;
+  }
+  .edge b{
+    font-weight:600;
+    color:#fff;
+    letter-spacing:.02em;
+  }
+  .edge .k{color:#7fd6ff;}
+  .edge .r{color:#ff7a8a;}
+  .edge .g{color:#8affb0;}
+
+  /* 左上：递推公式 */
+  #tl{top:18px;left:22px;}
+  #tl .big{
+    font-size:clamp(15px,1.35vw,22px);
+    color:#fff;
+    letter-spacing:.04em;
+    text-shadow:0 0 18px rgba(160,120,255,.6);
+  }
+  #tl .sub{margin-top:4px;font-size:.92em;}
+
+  /* 右上：黄金比例 */
+  #tr{
+    top:18px;right:22px;text-align:right;
+  }
+  #tr .phi{
+    font-size:clamp(15px,1.35vw,22px);
+    color:#ffe27a;
+    text-shadow:0 0 18px rgba(255,190,60,.55);
+  }
+
+  /* 左下：项值滚动 */
+  #bl{
+    bottom:18px;left:22px;
+  }
+  #seq{
+    font-size:clamp(11px,0.95vw,16px);
+    color:#cfe0ff;
+    max-width:46vw;
+    word-break:break-all;
+  }
+
+  /* 右下：当前进程 */
+  #br{
+    bottom:18px;right:22px;text-align:right;
+  }
+  #br .v{color:#fff;font-size:1.05em;}
+  #br .tag{opacity:.6}
+
+  /* 顶部/底部极细装饰线 */
+  .rule{
+    position:fixed;left:0;right:0;height:1px;z-index:4;pointer-events:none;
+    background:linear-gradient(90deg,transparent,rgba(140,170,255,.35),transparent);
+  }
+  #ruleT{top:0;}
+  #ruleB{bottom:0;}
+
+  /* 提示 */
+  #hint{
+    position:fixed;left:50%;bottom:14px;transform:translateX(-50%);
+    font-size:11px;letter-spacing:.18em;opacity:.32;color:#dfe7ff;
+    pointer-events:none;text-transform:uppercase;z-index:6;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div class="rule" id="ruleT"></div>
+<div class="rule" id="ruleB"></div>
+
+<div class="edge" id="tl">
+  <div class="big">F<sub>n</sub> = F<sub>n&minus;1</sub> + F<sub>n&minus;2</sub></div>
+  <div class="sub">F<sub>1</sub> = F<sub>2</sub> = 1</div>
+</div>
+
+<div class="edge" id="tr">
+  <div class="phi">&phi; = lim F<sub>n</sub>/F<sub>n&minus;1</sub> = (1+&radic;5)/2</div>
+  <div>&phi; &asymp; <span class="k">1.6180339887&hellip;</span></div>
+  <div><span class="tag">F<sub id="fA">1</sub></span> / <span class="tag">F<sub id="fB">1</sub></span> = <span class="r" id="ratio">1.000000</span></div>
+</div>
+
+<div class="edge" id="bl">
+  <div>SEQUENCE&nbsp;&nbsp;<span class="g" id="seq">1 1</span></div>
+</div>
+
+<div class="edge" id="br">
+  <div class="v" id="curTerm">F<sub>2</sub> = 1</div>
+  <div class="tag">SQUARE <span id="curSq">0</span> / <span id="totSq">0</span></div>
+</div>
+
+<div id="hint">click / tap to restart</div>
+
+<script>
+(() => {
+  "use strict";
+
+  const canvas = document.getElementById("c");
+  const ctx = canvas.getContext("2d");
+
+  let W = 0, H = 0, DPR = 1;
+
+  /* ============================================================
+     斐波那契数列
+     ============================================================ */
+  const N = 18;                       // 生成前 N 个斐波那契数
+  const fib = [1, 1];
+  for (let i = 2; i < N; i++) fib.push(fib[i - 1] + fib[i - 2]);
+
+  /* ============================================================
+     方形螺旋的几何构造
+     每个方形的边长 = fib[k]，从中心向外沿固定方向循环摆放：
+     右 → 下 → 左 → 上，形成经典黄金螺旋布局
+     返回：{ x, y, s, dir, depth } 其中 (x,y) 为方形左上角
+     ============================================================ */
+  function buildSquares() {
+    const out = [];
+    // 以 (0,0) 为起点，逐步向外扩展包围盒
+    let minX = 0, minY = 0, maxX = 0, maxY = 0;
+
+    // 起始方块：fib[0]=1 放在原点左上方向，作为螺旋核心
+    // 方向循环：0=右 1=下 2=左 3=上
+    // 我们让新方块贴着当前包围盒的对应边生长
+    let bx0 = 0, by0 = 0; // 当前包围盒左上
+    let bw = 1, bh = 1;
+
+    // 第 0 块：1x1 位于 (0,0)
+    out.push({ x: 0, y: 0, s: 1, depth: 0 });
+    minX = 0; minY = 0; maxX = 1; maxY = 1;
+
+    const dirs = ["right", "down", "left", "up"];
+
+    for (let k = 1; k < N; k++) {
+      const s = fib[k];
+      const d = dirs[(k - 1) % 4];
+      let x, y;
+
+      if (d === "right") {
+        // 贴在包围盒右侧：x = maxX, y = maxY - s (方块位于右下方向)
+        x = maxX;
+        y = maxY - s;
+        maxX = x + s;
+        if (y < minY) { /* 理论上不会变负太多 */ }
+      } else if (d === "down") {
+        // 贴在包围盒下方：从右往左放
+        y = maxY;
+        x = maxX - s;
+        maxY = y + s;
+        if (x < minX) { /* noop */ }
+      } else if (d === "left") {
+        // 贴在包围盒左侧
+        x = minX - s;
+        y = minY;
+        minX = x;
+      } else { // up
+        // 贴在包围盒上方
+        x = minX;
+        y = minY - s;
+        minY = y;
+      }
+
+      out.push({ x, y, s, depth: k });
+    }
+
+    return { squares: out, minX, minY, maxX, maxY };
+  }
+
+  const BUILT = buildSquares();
+  const SQUARES = BUILT.squares;
+  const BOX = {
+    minX: BUILT.minX, minY: BUILT.minY,
+    maxX: BUILT.maxX, maxY: BUILT.maxY,
+    w: BUILT.maxX - BUILT.minX,
+    h: BUILT.maxY - BUILT.minY,
+  };
+
+  /* 每个方形内的四分之一圆弧中心与起止角（用于绘制螺旋曲线） */
+  // 推导：方形按 右→下→左→上 循环贴边生长，相位 k%4 决定弧心顶点，
+  // 起止角依次旋转 90°，使第 k 段弧的终点 = 第 k+1 段弧的起点（严格连续）。
+  const ARCS = [];
+  for (let k = 0; k < SQUARES.length; k++) {
+    const sq = SQUARES[k];
+    const s = sq.s;
+    const x = sq.x, y = sq.y;
+    const phase = k % 4;
+    let cx, cy, a0, a1;
+
+    if (phase === 0) {          // 弧心 = 方形右下角
+      cx = x + s; cy = y + s;
+      a0 = Math.PI; a1 = Math.PI * 1.5;
+    } else if (phase === 1) {   // 弧心 = 方形左下角
+      cx = x; cy = y + s;
+      a0 = Math.PI * 1.5; a1 = Math.PI * 2;
+    } else if (phase === 2) {   // 弧心 = 方形左上角
+      cx = x; cy = y;
+      a0 = 0; a1 = Math.PI / 2;
+    } else {                    // 弧心 = 方形右上角
+      cx = x + s; cy = y;
+      a0 = Math.PI / 2; a1 = Math.PI;
+    }
+
+    ARCS.push({ cx, cy, r: s, a0, a1, depth: k });
+  }
+
+  /* ============================================================
+     彩虹光谱（内红外紫 / 由中心向外）
+     depth 0（中心）→ 高饱和正红（色相 0）
+     depth N-1（最外）→ 紫（色相约 285）
+     使用 HSL 保证高饱和炫彩感
+     ============================================================ */
+  function hueOf(depth) {
+    const t = Math.min(1, depth / Math.max(1, SQUARES.length - 1));
+    // 红(0/360) → 橙 → 黄 → 绿 → 青 → 蓝 → 紫(285)
+    return t * 288;
+  }
+  function colorOf(depth, alpha, light) {
+    const h = hueOf(depth);
+    const l = light === undefined ? 55 : light;
+    const a = alpha === undefined ? 1 : alpha;
+    return `hsla(${h}, 100%, ${l}%, ${a})`;
+  }
+
+  /* ============================================================
+     视口 / 缩放
+     ============================================================ */
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = Math.floor(W * DPR);
+    canvas.height = Math.floor(H * DPR);
+    canvas.style.width = W + "px";
+    canvas.style.height = H + "px";
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+  window.addEventListener("resize", resize);
+  resize();
+
+  /* 世界坐标 → 屏幕坐标变换 */
+  let view = { scale: 1, ox: 0, oy: 0 };
+  function computeView() {
+    const pad = 0.86;
+    const sx = (W * pad) / BOX.w;
+    const sy = (H * pad) / BOX.h;
+    const s = Math.min(sx, sy);
+    view.scale = s;
+    // 屏幕中心对准包围盒中心
+    const cwx = BOX.minX + BOX.w / 2;
+    const cwy = BOX.minY + BOX.h / 2;
+    view.ox = W / 2 - cwx * s;
+    view.oy = H / 2 - cwy * s;
+  }
+  computeView();
+  window.addEventListener("resize", computeView);
+
+  const TX = (x) => x * view.scale + view.ox;
+  const TY = (y) => y * view.scale + view.oy;
+
+  /* ============================================================
+     动画时间轴
+     ============================================================ */
+  const T_SQUARE = 300;   // 每个方形展开时长 ms
+  const T_GAP    = 70;    // 方形之间间隔
+  const T_ARC    = 420;   // 螺旋弧绘制时长
+  const T_TAIL   = 2800;  // 收尾/重复前停顿（欣赏完整螺旋）
+
+  const SEQ_DUR = SQUARES.length * (T_SQUARE + T_GAP);
+  const ARC_START = SEQ_DUR * 0.55;
+  const ARC_DUR = SQUARES.length * (T_ARC + 40);
+  const TOTAL = Math.max(SEQ_DUR, ARC_START + ARC_DUR) + T_TAIL;
+
+  let startTime = performance.now();
+  // 支持 ?t=毫秒数 从时间轴中间开始（调试/演示用）
+  const urlT = parseFloat(new URLSearchParams(location.search).get("t"));
+  if (!isNaN(urlT) && urlT > 0) startTime -= urlT;
+  let paused = false;
+  let rafId = null;
+
+  /* 缓动 */
+  const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
+  const easeInOutCubic = (t) =>
+    t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  const easeOutBack = (t) => {
+    const c1 = 1.70158, c3 = c1 + 1;
+    return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+  };
+
+  /* ============================================================
+     绘制：背景星尘 + 中心辉光
+     ============================================================ */
+  const stars = [];
+  function initStars() {
+    stars.length = 0;
+    const n = Math.floor((W * H) / 9000);
+    for (let i = 0; i < n; i++) {
+      stars.push({
+        x: Math.random() * W,
+        y: Math.random() * H,
+        r: Math.random() * 1.3 + 0.25,
+        a: Math.random() * 0.5 + 0.1,
+        ph: Math.random() * Math.PI * 2,
+        sp: Math.random() * 0.0016 + 0.0004,
+      });
+    }
+  }
+  initStars();
+  window.addEventListener("resize", initStars);
+
+  function drawBackground(t) {
+    // 深色底 + 轻微径向氛围
+    ctx.fillStyle = "#05060a";
+    ctx.fillRect(0, 0, W, H);
+
+    // 中心呼吸辉光
+    const cx = W / 2, cy = H / 2;
+    const breathe = 0.5 + 0.5 * Math.sin(t * 0.0012);
+    const g = ctx.createRadialGradient(
+      cx, cy, 0,
+      cx, cy, Math.max(W, H) * 0.62
+    );
+    g.addColorStop(0, `rgba(60,90,200,${0.16 + breathe * 0.10})`);
+    g.addColorStop(0.45, "rgba(30,20,80,0.10)");
+    g.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+
+    // 星尘
+    ctx.save();
+    for (const s of stars) {
+      const tw = 0.5 + 0.5 * Math.sin(t * s.sp * 6 + s.ph);
+      ctx.globalAlpha = s.a * (0.4 + tw * 0.6);
+      ctx.fillStyle = "#cfe0ff";
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  /* ============================================================
+     绘制单个方形（彩虹边框 + 内部微光填充 + 角标数字）
+     ============================================================ */
+  function drawSquare(sq, prog, t) {
+    if (prog <= 0) return;
+
+    const s = sq.s;
+    const x = TX(sq.x);
+    const y = TY(sq.y);
+    const w = s * view.scale;
+    const h = s * view.scale;
+
+    // 展开动画：从中心缩放 + 轻微回弹
+    const e = easeOutBack(Math.min(1, prog));
+    const sc = 0.15 + 0.85 * easeOutCubic(Math.min(1, prog));
+    const cx = x + w / 2, cy = y + h / 2;
+    const rw = w * sc, rh = h * sc;
+
+    const alpha = easeOutCubic(Math.min(1, prog * 1.4));
+    const depth = sq.depth;
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+
+    // 内填充：同色相极低透明度，制造"玻璃方块"的炫彩感
+    const hue = hueOf(depth);
+    const fg = ctx.createLinearGradient(x, y, x + w, y + h);
+    fg.addColorStop(0, `hsla(${hue}, 100%, 60%, 0.055)`);
+    fg.addColorStop(1, `hsla(${(hue + 40) % 360}, 100%, 55%, 0.02)`);
+    ctx.fillStyle = fg;
+    ctx.fillRect(cx - rw / 2, cy - rh / 2, rw, rh);
+
+    // 边框：外发光 + 实线
+    const lw = Math.max(1.1, Math.min(3.2, 1.0 + depth * 0.12));
+    ctx.lineWidth = lw;
+    ctx.strokeStyle = colorOf(depth, 0.95, 58);
+    ctx.shadowColor = colorOf(depth, 0.95, 58);
+    ctx.shadowBlur = 14 + depth * 1.2;
+    ctx.strokeRect(cx - rw / 2, cy - rh / 2, rw, rh);
+
+    // 二次描边：内层亮线，增强"霓虹双线"质感
+    ctx.shadowBlur = 0;
+    ctx.lineWidth = Math.max(0.6, lw * 0.4);
+    ctx.strokeStyle = colorOf(depth, 0.8, 82);
+    const inset = Math.min(4, w * 0.06);
+    ctx.strokeRect(
+      cx - rw / 2 + inset,
+      cy - rh / 2 + inset,
+      Math.max(0, rw - inset * 2),
+      Math.max(0, rh - inset * 2)
+    );
+
+    // 角标：斐波那契数值（仅对足够大的方块显示）
+    if (w > 46 && alpha > 0.6) {
+      const fs = Math.max(9, Math.min(22, w * 0.17));
+      ctx.font = `600 ${fs}px "SF Mono", Menlo, Consolas, monospace`;
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+      ctx.shadowBlur = 10;
+      ctx.shadowColor = colorOf(depth, 1, 65);
+      ctx.fillStyle = colorOf(depth, 0.92, 88);
+      const txt = String(fib[depth]);
+      ctx.fillText(txt, cx - rw / 2 + inset + 5, cy - rh / 2 + inset + 4);
+    }
+    ctx.restore();
+  }
+
+  /* ============================================================
+     绘制螺旋金线光带
+     ============================================================ */
+  function drawSpiral(arcProg, t) {
+    if (arcProg <= 0) return;
+
+    // 逐级生长：确定已经画到第几个弧、当前弧进度
+    const perArc = 1 / ARCS.length;
+    const total = arcProg * ARCS.length;
+
+    for (let i = 0; i < ARCS.length; i++) {
+      const local = Math.max(0, Math.min(1, total - i));
+      if (local <= 0) break;
+      const a = ARCS[i];
+
+      const cx = TX(a.cx);
+      const cy = TY(a.cy);
+      const r = a.r * view.scale;
+
+      const eLocal = easeInOutCubic(local);
+      const a1 = a.a0 + (a.a1 - a.a0) * eLocal;
+
+      // --- 光带主体（宽而柔） ---
+      ctx.save();
+      ctx.lineCap = "round";
+      ctx.lineWidth = Math.max(3, 9 - i * 0.28);
+      ctx.strokeStyle = `rgba(255,236,170,0.20)`;
+      ctx.shadowColor = "rgba(255,214,120,0.9)";
+      ctx.shadowBlur = 24;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, a.a0, a1);
+      ctx.stroke();
+      ctx.restore();
+
+      // --- 金线核心 ---
+      ctx.save();
+      ctx.lineCap = "round";
+      ctx.lineWidth = Math.max(1.4, 3.2 - i * 0.06);
+      const grad = ctx.createLinearGradient(
+        cx - r, cy - r, cx + r, cy + r
+      );
+      grad.addColorStop(0, "rgba(255,248,214,0.98)");
+      grad.addColorStop(0.5, "rgba(255,206,92,0.95)");
+      grad.addColorStop(1, "rgba(255,170,60,0.9)");
+      ctx.strokeStyle = grad;
+      ctx.shadowColor = "rgba(255,196,80,0.95)";
+      ctx.shadowBlur = 14;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, a.a0, a1);
+      ctx.stroke();
+      ctx.restore();
+
+      // --- 流光头：沿当前弧末端的高亮光点 ---
+      if (local < 1 || i === Math.floor(total) - 1) {
+        const hx = cx + Math.cos(a1) * r;
+        const hy = cy + Math.sin(a1) * r;
+        const pulse = 0.6 + 0.4 * Math.sin(t * 0.006);
+        ctx.save();
+        const hg = ctx.createRadialGradient(hx, hy, 0, hx, hy, 26);
+        hg.addColorStop(0, `rgba(255,255,255,${0.95 * pulse})`);
+        hg.addColorStop(0.28, `rgba(255,224,140,${0.75 * pulse})`);
+        hg.addColorStop(1, "rgba(255,180,60,0)");
+        ctx.fillStyle = hg;
+        ctx.beginPath();
+        ctx.arc(hx, hy, 26, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = "rgba(255,252,240,0.98)";
+        ctx.beginPath();
+        ctx.arc(hx, hy, 2.6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+  }
+
+  /* ============================================================
+     边缘数据更新
+     ============================================================ */
+  const el = {
+    seq: document.getElementById("seq"),
+    ratio: document.getElementById("ratio"),
+    fA: document.getElementById("fA"),
+    fB: document.getElementById("fB"),
+    curTerm: document.getElementById("curTerm"),
+    curSq: document.getElementById("curSq"),
+    totSq: document.getElementById("totSq"),
+  };
+  el.totSq.textContent = String(SQUARES.length);
+
+  let seqCache = "1 1";
+  function updateEdge(now) {
+    // 已展开的方块数
+    let shown = 0;
+    for (let i = 0; i < SQUARES.length; i++) {
+      const st = i * (T_SQUARE + T_GAP);
+      if (now >= st + T_SQUARE * 0.6) shown = i + 1;
+    }
+    shown = Math.max(2, shown);
+
+    // 序列字符串（最多显示 18 项，自动换行）
+    const arr = fib.slice(0, Math.max(shown, 2));
+    const next = arr.join(" ");
+    if (next !== seqCache) {
+      seqCache = next;
+      el.seq.textContent = next;
+    }
+
+    // 项与比值
+    const i = Math.min(arr.length, fib.length);
+    const cur = fib[i - 1];
+    const prev = i >= 2 ? fib[i - 2] : fib[0];
+    el.curSq.textContent = String(Math.max(1, i));
+    el.curTerm.innerHTML = `F<sub>${i}</sub> = ${cur}`;
+    el.fA.textContent = String(cur);
+    el.fB.textContent = String(prev);
+    el.ratio.textContent = (cur / prev).toFixed(6);
+  }
+
+  /* ============================================================
+     主循环
+     ============================================================ */
+  function frame(now) {
+    const t = now - startTime;
+
+    if (!paused && t > TOTAL) {
+      startTime = now;
+    }
+    const tt = paused ? now - startTime : (now - startTime) % TOTAL;
+
+    /* --- 背景 --- */
+    drawBackground(now);
+
+    /* --- 方形螺旋依次展开 --- */
+    for (let i = 0; i < SQUARES.length; i++) {
+      const st = i * (T_SQUARE + T_GAP);
+      const p = (tt - st) / T_SQUARE;
+      if (p <= 0) continue;
+      drawSquare(SQUARES[i], p, now);
+    }
+
+    /* --- 螺旋金线光带逐级生长 --- */
+    const arcP = (tt - ARC_START) / ARC_DUR;
+    drawSpiral(arcP, now);
+
+    /* --- 边缘数据 --- */
+    updateEdge(tt);
+
+    rafId = requestAnimationFrame(frame);
+  }
+
+  /* ============================================================
+     交互：点击重新开始
+     ============================================================ */
+  function restart() {
+    startTime = performance.now();
+    paused = false;
+  }
+  window.addEventListener("pointerdown", restart);
+  window.addEventListener("keydown", (e) => {
+    if (e.code === "Space") {
+      e.preventDefault();
+      paused = !paused;
+      if (!paused) startTime = performance.now() - (startTime % TOTAL);
+    } else if (e.code === "KeyR") {
+      restart();
+    }
+  });
+
+  rafId = requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>菲克扩散定律 · 浓度梯度场可视化</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100%;height:100%;overflow:hidden;background:#000206;
+    font-family:"SF Mono",Consolas,"Courier New",monospace;cursor:crosshair}
+  canvas{display:block;position:fixed;inset:0}
+
+  .hud{
+    position:fixed;z-index:10;pointer-events:none;
+    font-size:12px;letter-spacing:.4px;line-height:2.0;
+    color:#7fe8ff;
+    text-shadow:0 0 10px rgba(0,200,255,.75),0 0 26px rgba(90,60,255,.35);
+  }
+  .hud .pp{color:#c9a8ff;text-shadow:0 0 10px rgba(160,90,255,.85)}
+  .hud .wh{color:#f0f8ff;text-shadow:0 0 12px rgba(220,240,255,.9)}
+  .hud .or{color:#ffc46b;text-shadow:0 0 10px rgba(255,160,50,.85)}
+  .hud .dim{color:#4a6a88;font-size:11px;text-shadow:none}
+  .tl{top:16px;left:20px}
+  .tr{top:16px;right:20px;text-align:right}
+  .bl{bottom:18px;left:20px}
+  .br{bottom:18px;right:20px;text-align:right}
+
+  .hint{
+    position:fixed;z-index:10;bottom:52px;left:50%;transform:translateX(-50%);
+    font-size:10px;letter-spacing:2.6px;color:#3d5f78;
+    text-shadow:0 0 10px rgba(0,170,255,.35);
+    pointer-events:none;
+  }
+
+  @keyframes blink{
+    0%,100%{opacity:.35}
+    50%{opacity:1}
+  }
+  .dot{
+    display:inline-block;width:6px;height:6px;border-radius:50%;
+    background:#7fe8ff;box-shadow:0 0 10px #00c8ff;
+    margin-right:6px;vertical-align:middle;
+    animation:blink 1.5s ease-in-out infinite;
+  }
+
+  .probe{
+    position:fixed;z-index:11;pointer-events:none;
+    padding:7px 11px;border-radius:7px;
+    background:rgba(3,12,24,.82);
+    border:1px solid rgba(90,200,255,.30);
+    backdrop-filter:blur(6px);
+    font-size:10.5px;letter-spacing:.4px;line-height:1.75;
+    color:#9fe9ff;
+    text-shadow:0 0 8px rgba(0,200,255,.7);
+    opacity:0;transition:opacity .16s;
+    white-space:nowrap;
+  }
+  .probe.on{opacity:1}
+  .probe .k{color:#c9a8ff}
+  .probe .v{color:#f0f8ff}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div class="hud tl">
+  <div>J = −D · ∂C/∂x</div>
+  <div>∂C/∂t = D · ∇²C</div>
+  <div>D = k<sub>B</sub>T / (6π η a)</div>
+  <div class="dim">菲克第一 / 第二定律 · 斯托克斯-爱因斯坦</div>
+</div>
+
+<div class="hud tr">
+  <div>D = <span class="pp">9.7×10⁻¹⁰</span> m²/s</div>
+  <div>C₀ = <span class="wh">1.0</span> mol/L</div>
+  <div>t = <span class="wh" id="tv">0.0</span> s</div>
+</div>
+
+<div class="hud bl">
+  <div>x = √(4Dt) = <span class="or" id="xv">0.000</span> mm</div>
+  <div class="dim"><span class="dot"></span>58% 初始高浓度区 · 熵增扩散</div>
+</div>
+
+<div class="hud br">
+  <div>R² = <span class="wh" id="rv">0.00</span></div>
+  <div class="dim">扩散半径 / 特征尺度</div>
+</div>
+
+<div class="hint">点击释放源 · 移动指针读取局部浓度梯度</div>
+
+<div class="probe" id="probe"></div>
+
+<script>
+(function(){
+"use strict";
+
+/* ============================================================
+   基础工具
+============================================================ */
+const cv  = document.getElementById('c');
+const ctx = cv.getContext('2d', { alpha: false });
+const TAU = Math.PI * 2;
+
+const clamp = (v,a,b)=> v<a?a:(v>b?b:v);
+
+/* ============================================================
+   物理常数（显示用）
+============================================================ */
+const D_PHYS = 9.7e-10;      // m²/s
+const CYCLE  = 30;           // 秒
+
+/* ============================================================
+   网格
+============================================================ */
+let NX = 1, NY = 1;
+let C  = null;
+let C2 = null;
+let W = 0, H = 0, DPR = 1;
+let gmax = 1;
+
+/* ============================================================
+   离屏画布
+============================================================ */
+const offA    = document.createElement('canvas');
+const offActx = offA.getContext('2d');
+const offB    = document.createElement('canvas');
+const offBctx = offB.getContext('2d');
+let imgData = null;
+
+/* ============================================================
+   颜色查找表
+============================================================ */
+const LUT   = new Uint8Array(256*3);
+const IDX   = new Uint8Array(256);
+let vignette = null;
+
+function hsl2rgb(h,s,l){
+  h = (((h % 360) + 360) % 360) / 360;
+  let r,g,b;
+  if (s === 0){ r = g = b = l; }
+  else {
+    const hue2rgb = (p,q,t)=>{
+      if (t < 0) t += 1;
+      if (t > 1) t -= 1;
+      if (t < 1/6) return p + (q-p)*6*t;
+      if (t < 1/2) return q;
+      if (t < 2/3) return p + (q-p)*(2/3-t)*6;
+      return p;
+    };
+    const q = l < 0.5 ? l*(1+s) : l+s-l*s;
+    const p = 2*l - q;
+    r = hue2rgb(p,q,h+1/3);
+    g = hue2rgb(p,q,h);
+    b = hue2rgb(p,q,h-1/3);
+  }
+  return [r*255, g*255, b*255];
+}
+
+function buildLUT(){
+  for (let i=0;i<256;i++){
+    const t = i/255;
+
+    /* 色相：蓝紫 → 青 → 绿 → 黄白 */
+    let h;
+    if (t < 0.32)      h = 252 - (t/0.32)*62;              // 252 → 190
+    else if (t < 0.62) h = 190 - ((t-0.32)/0.30)*62;       // 190 → 128
+    else               h = 128 - ((t-0.62)/0.38)*73;       // 128 → 55
+
+    const s = 1.0 - 0.34*t;
+    const l = 0.020 + 0.935 * Math.pow(t, 1.22);
+
+    const rgb = hsl2rgb(h, s, l);
+    LUT[i*3]   = rgb[0]|0;
+    LUT[i*3+1] = rgb[1]|0;
+    LUT[i*3+2] = rgb[2]|0;
+
+    IDX[i] = (Math.pow(t, 0.62) * 255) | 0;
+  }
+}
+
+/* ============================================================
+   尺寸 / 网格分配
+============================================================ */
+function allocGrid(){
+  const cell = 6;
+  NX = Math.max(72, Math.floor(W/cell));
+  NY = Math.max(52, Math.floor(H/cell));
+
+  C  = new Float32Array(NX*NY);
+  C2 = new Float32Array(NX*NY);
+
+  offA.width  = NX;
+  offA.height = NY;
+  offB.width  = Math.max(1, Math.ceil(NX/5));
+  offB.height = Math.max(1, Math.ceil(NY/5));
+
+  imgData = offActx.createImageData(NX, NY);
+  const d = imgData.data;
+  for (let i=0;i<NX*NY;i++) d[i*4+3] = 255;
+}
+
+function makeVignette(){
+  const g = ctx.createRadialGradient(W/2, H/2, Math.min(W,H)*0.30,
+                                     W/2, H/2, Math.max(W,H)*0.82);
+  g.addColorStop(0, 'rgba(0,0,0,0)');
+  g.addColorStop(1, 'rgba(0,2,8,0.80)');
+  vignette = g;
+}
+
+function resize(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  cv.width  = Math.floor(W*DPR);
+  cv.height = Math.floor(H*DPR);
+  cv.style.width  = W+'px';
+  cv.style.height = H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+
+  allocGrid();
+  makeVignette();
+  resetSim();
+}
+
+/* ============================================================
+   源注入
+============================================================ */
+function inject(cx, cy, amp, sig){
+  const inv = 1/(2*sig*sig);
+  for (let j=0;j<NY;j++){
+    const dy  = j - cy;
+    const dyy = dy*dy*inv;
+    const row = j*NX;
+    for (let i=0;i<NX;i++){
+      const dx = i - cx;
+      C[row+i] += amp * Math.exp(-(dx*dx*inv + dyy));
+    }
+  }
+}
+
+/* ============================================================
+   重置
+============================================================ */
+function resetSim(){
+  if (!C) return;
+  C.fill(0);
+  C2.fill(0);
+
+  const cx = NX*0.5, cy = NY*0.5;
+  inject(cx, cy, 1.00, 4.2);
+  inject(cx + NX*0.175, cy - NY*0.155, 0.38, 2.9);
+  inject(cx - NX*0.155, cy + NY*0.135, 0.30, 2.6);
+
+  initParticles();
+}
+
+/* ============================================================
+   粒子
+============================================================ */
+let particles = [];
+
+function initParticles(){
+  particles.length = 0;
+  let tries = 0;
+  while (particles.length < 760 && tries < 60000){
+    tries++;
+    const x = Math.random()*NX;
+    const y = Math.random()*NY;
+    const ci = clamp(x|0, 0, NX-1);
+    const cj = clamp(y|0, 0, NY-1);
+    if (C[cj*NX+ci] > 0.045){
+      particles.push({ x: x, y: y });
+    }
+  }
+  /* 兜底 */
+  while (particles.length < 400){
+    particles.push({ x: NX*0.5 + (Math.random()-0.5)*14,
+                     y: NY*0.5 + (Math.random()-0.5)*14 });
+  }
+}
+
+const PSTEP = 0.88;
+
+function updateParticles(){
+  const xm = NX - 2, ym = NY - 2;
+  for (let i=0;i<particles.length;i++){
+    const p = particles[i];
+    p.x += (Math.random()-0.5) * PSTEP * 2;
+    p.y += (Math.random()-0.5) * PSTEP * 2;
+    if (p.x < 1) p.x = 1; else if (p.x > xm) p.x = xm;
+    if (p.y < 1) p.y = 1; else if (p.y > ym) p.y = ym;
+  }
+}
+
+/* ============================================================
+   扩散步进（显式有限差分 + Neumann 边界）
+============================================================ */
+const ALPHA    = 0.108;
+const SUBSTEPS = 2;
+
+function stepDiffusion(){
+  for (let s=0;s<SUBSTEPS;s++){
+    const src = C, dst = C2;
+    for (let j=0;j<NY;j++){
+      const row = j*NX;
+      const hasU = j > 0;
+      const hasD = j < NY-1;
+      for (let i=0;i<NX;i++){
+        const idx = row + i;
+        const c = src[idx];
+        const l = i > 0      ? src[idx-1]  : c;
+        const r = i < NX-1   ? src[idx+1]  : c;
+        const u = hasU       ? src[idx-NX] : c;
+        const d = hasD       ? src[idx+NX] : c;
+        dst[idx] = c + ALPHA*(l + r + u + d - 4*c);
+      }
+    }
+    C  = dst;
+    C2 = src;
+  }
+}
+
+/* ============================================================
+   浓度场 → 像素
+============================================================ */
+function paintField(){
+  const n = NX*NY;
+  const d = imgData.data;
+
+  let cmax = 0;
+  for (let i=0;i<n;i++){
+    const v = C[i];
+    if (v > cmax) cmax = v;
+  }
+  gmax = cmax > 1e-12 ? cmax : 1;
+  const inv = 1/gmax;
+
+  for (let i=0;i<n;i++){
+    let v = C[i]*inv;
+    if (v > 1) v = 1; else if (v < 0) v = 0;
+    const k = IDX[(v*255)|0];
+    const o = i<<2;
+    d[o]   = LUT[k*3];
+    d[o+1] = LUT[k*3+1];
+    d[o+2] = LUT[k*3+2];
+  }
+  offActx.putImageData(imgData, 0, 0);
+}
+
+/* ============================================================
+   绘制：浓度场
+============================================================ */
+function drawField(){
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+
+  /* 主体 */
+  ctx.drawImage(offA, 0, 0, W, H);
+
+  /* 柔光层（降采样后再放大，模拟高斯模糊） */
+  offBctx.clearRect(0,0,offB.width,offB.height);
+  offBctx.imageSmoothingEnabled = true;
+  offBctx.drawImage(offA, 0, 0, offB.width, offB.height);
+
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.globalAlpha = 0.52;
+  ctx.drawImage(offB, 0, 0, W, H);
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ============================================================
+   绘制：粒子云
+============================================================ */
+function drawParticles(){
+  const sx = W/NX, sy = H/NY;
+  const cx = NX*0.5, cy = NY*0.5;
+
+  ctx.globalCompositeOperation = 'lighter';
+
+  for (let i=0;i<particles.length;i++){
+    const p = particles[i];
+    const px = p.x*sx, py = p.y*sy;
+
+    const dx = p.x - cx, dy = p.y - cy;
+    const dd = Math.sqrt(dx*dx + dy*dy);
+    let hue = 55 + clamp(dd/44, 0, 1) * 193;
+    if (hue > 360) hue -= 360;
+
+    /* 光晕 */
+    ctx.beginPath();
+    ctx.arc(px, py, 2.5, 0, TAU);
+    ctx.fillStyle = 'hsla(' + hue.toFixed(0) + ',100%,66%,0.085)';
+    ctx.fill();
+
+    /* 核心 */
+    ctx.beginPath();
+    ctx.arc(px, py, 0.95, 0, TAU);
+    ctx.fillStyle = 'hsla(' + hue.toFixed(0) + ',100%,86%,0.72)';
+    ctx.fill();
+  }
+
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ============================================================
+   绘制：同心波纹等浓度线
+============================================================ */
+function drawRings(){
+  const sx = W/NX, sy = H/NY;
+  const cxp = NX*0.5*sx;
+  const cyp = NY*0.5*sy;
+
+  const phase = t / CYCLE;
+  const sigma = 4.6 + Math.sqrt(phase) * 46;
+
+  ctx.globalCompositeOperation = 'lighter';
+
+  for (let k=0;k<7;k++){
+    const rr = sigma * (0.72 + k*0.54);
+    const pulse = 0.5 + 0.5*Math.sin(t*2.15 - k*0.72);
+    const alpha = 0.105 * (1 - k/8.6) * (0.32 + 0.68*pulse);
+    if (alpha < 0.004) continue;
+
+    let hue = 250 - k*27;
+    if (hue < 0) hue += 360;
+
+    ctx.beginPath();
+    ctx.ellipse(cxp, cyp, rr*sx, rr*sy, 0, 0, TAU);
+    ctx.strokeStyle = 'hsla(' + hue.toFixed(0) + ',100%,74%,' + alpha.toFixed(4) + ')';
+    ctx.lineWidth = 1.35;
+    ctx.stroke();
+
+    /* 外侧微弱泛光 */
+    ctx.beginPath();
+    ctx.ellipse(cxp, cyp, rr*sx, rr*sy, 0, 0, TAU);
+    ctx.strokeStyle = 'hsla(' + hue.toFixed(0) + ',100%,62%,' + (alpha*0.35).toFixed(4) + ')';
+    ctx.lineWidth = 5.5;
+    ctx.stroke();
+  }
+
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ============================================================
+   绘制：指针探针
+============================================================ */
+let mouseX = -1, mouseY = -1, mouseOn = false;
+
+function drawProbe(){
+  if (!mouseOn) return;
+  const x = mouseX, y = mouseY;
+
+  ctx.globalCompositeOperation = 'lighter';
+
+  /* 十字线 */
+  ctx.strokeStyle = 'rgba(150,230,255,0.30)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(x-24, y); ctx.lineTo(x-6, y);
+  ctx.moveTo(x+6,  y); ctx.lineTo(x+24, y);
+  ctx.moveTo(x, y-24); ctx.lineTo(x, y-6);
+  ctx.moveTo(x, y+6);  ctx.lineTo(x, y+24);
+  ctx.stroke();
+
+  /* 探测环 */
+  ctx.beginPath();
+  ctx.arc(x, y, 11, 0, TAU);
+  ctx.strokeStyle = 'rgba(160,240,255,0.55)';
+  ctx.lineWidth = 1.2;
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.arc(x, y, 3.0, 0, TAU);
+  ctx.fillStyle = 'rgba(240,255,255,0.92)';
+  ctx.fill();
+
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ============================================================
+   探针面板（DOM）
+============================================================ */
+const probeEl = document.getElementById('probe');
+let probeC = 0, probeG = 0;
+
+function updateProbe(){
+  if (!mouseOn){
+    probeEl.classList.remove('on');
+    return;
+  }
+  probeEl.classList.add('on');
+
+  const px = clamp(mouseX + 18, 8, W - 190);
+  const py = clamp(mouseY + 18, 8, H - 78);
+
+  probeEl.style.transform = 'translate(' + px.toFixed(0) + 'px,' + py.toFixed(0) + 'px)';
+  probeEl.innerHTML =
+    '<div><span class="k">C</span> = <span class="v">' + probeC.toFixed(4) + '</span> mol/L</div>' +
+    '<div><span class="k">|∇C|</span> = <span class="v">' + probeG.toFixed(4) + '</span></div>' +
+    '<div><span class="k">C/C₀</span> = <span class="v">' + (probeC*100).toFixed(1) + '%</span></div>';
+}
+
+/* ============================================================
+   主渲染
+============================================================ */
+let t = 0;
+
+function render(){
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  ctx.fillStyle = '#000206';
+  ctx.fillRect(0,0,W,H);
+
+  drawField();
+  drawRings();
+  drawParticles();
+  drawProbe();
+
+  /* 暗角 */
+  if (vignette){
+    ctx.fillStyle = vignette;
+    ctx.fillRect(0,0,W,H);
+  }
+
+  /* 循环淡出 */
+  if (t > CYCLE - 1.5){
+    const a = (t - (CYCLE-1.5)) / 1.5;
+    ctx.fillStyle = 'rgba(0,1,4,' + a.toFixed(3) + ')';
+    ctx.fillRect(0,0,W,H);
+  }
+}
+
+/* ============================================================
+   HUD
+============================================================ */
+const elT = document.getElementById('tv');
+const elX = document.getElementById('xv');
+const elR = document.getElementById('rv');
+let hudAcc = 0;
+
+function updateHUD(dt){
+  hudAcc += dt;
+  if (hudAcc < 0.09) return;
+  hudAcc = 0;
+
+  const tPhys = (t/CYCLE) * 100;                    // 0 → 100 s
+  const xMm   = Math.sqrt(4*D_PHYS*tPhys) * 1000;   // mm
+
+  elT.textContent = tPhys.toFixed(1);
+  elX.textContent = xMm.toFixed(3);
+  elR.textContent = (t/CYCLE).toFixed(3);
+}
+
+/* ============================================================
+   交互
+============================================================ */
+cv.addEventListener('pointermove', function(e){
+  mouseX = e.clientX;
+  mouseY = e.clientY;
+  mouseOn = true;
+
+  const gx = mouseX / (W/NX);
+  const gy = mouseY / (H/NY);
+  const i = clamp(Math.floor(gx), 1, NX-2);
+  const j = clamp(Math.floor(gy), 1, NY-2);
+  const idx = j*NX + i;
+
+  const c = C[idx];
+  const gxx = (C[idx+1] - C[idx-1]) * 0.5;
+  const gyy = (C[idx+NX] - C[idx-NX]) * 0.5;
+
+  probeC = c / gmax;
+  probeG = Math.sqrt(gxx*gxx + gyy*gyy) / gmax;
+});
+
+cv.addEventListener('pointerleave', function(){
+  mouseOn = false;
+});
+
+cv.addEventListener('pointerdown', function(e){
+  const gx = e.clientX / (W/NX);
+  const gy = e.clientY / (H/NY);
+
+  inject(gx, gy, 0.95, 4.0);
+
+  /* 引爆新粒子云 */
+  const n = 90;
+  for (let i=0;i<n;i++){
+    const a = Math.random()*TAU;
+    const r = Math.sqrt(Math.random())*7.5;
+    particles.push({ x: gx + Math.cos(a)*r, y: gy + Math.sin(a)*r });
+  }
+  if (particles.length > 1500){
+    particles.splice(0, particles.length - 1500);
+  }
+});
+
+window.addEventListener('resize', resize);
+
+/* ============================================================
+   主循环
+============================================================ */
+let last = 0;
+
+function loop(now){
+  requestAnimationFrame(loop);
+
+  if (!last){ last = now; return; }
+  let dt = (now - last) / 1000;
+  last = now;
+  if (dt > 0.05) dt = 0.05;
+  if (dt < 0)    dt = 0;
+
+  t += dt;
+  if (t >= CYCLE){
+    t -= CYCLE;
+    resetSim();
+  }
+
+  stepDiffusion();
+  updateParticles();
+  paintField();
+  render();
+  updateHUD(dt);
+  updateProbe();
+}
+
+/* ============================================================
+   启动
+============================================================ */
+function boot(){
+  buildLUT();
+  resize();
+  requestAnimationFrame(loop);
+}
+
+boot();
+
+})();
+</script>
+</body>
+</html>

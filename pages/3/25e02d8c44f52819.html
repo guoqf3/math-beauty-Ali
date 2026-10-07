@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>几何缩放变换 · S(x,y)=(kx,ky)</title>
+<style>
+  *{box-sizing:border-box}
+  html,body{
+    margin:0;height:100%;overflow:hidden;background:#03040a;
+    font-family:"SF Mono",ui-monospace,Consolas,"Courier New",monospace;
+    cursor:crosshair;
+  }
+  canvas{display:block;position:fixed;inset:0}
+
+  /* ---------- 边缘公式 HUD ---------- */
+  .hud{
+    position:fixed;z-index:10;pointer-events:none;
+    font-size:12px;letter-spacing:.08em;line-height:1.75;
+    color:#7fe8ff;opacity:.88;
+    text-shadow:0 0 8px rgba(80,220,255,.85),0 0 24px rgba(60,150,255,.45);
+    animation:hudFlicker 4.5s infinite;
+  }
+  .hud .row{white-space:nowrap}
+  .hud .dim{
+    color:#3f8fb0;font-size:11px;
+    text-shadow:0 0 6px rgba(60,150,255,.5);
+  }
+  .tl{top:20px;left:22px}
+  .tr{top:20px;right:22px;text-align:right}
+  .bl{bottom:20px;left:22px}
+  .br{bottom:20px;right:22px;text-align:right}
+
+  /* 角落括号装饰 */
+  .tl::before,.tr::before,.bl::before,.br::before{
+    content:"";position:absolute;width:26px;height:26px;
+    border:1px solid rgba(90,220,255,.5);
+    box-shadow:0 0 10px rgba(70,190,255,.5) inset,0 0 8px rgba(70,190,255,.4);
+  }
+  .tl::before{top:-10px;left:-12px;border-right:0;border-bottom:0}
+  .tr::before{top:-10px;right:-12px;border-left:0;border-bottom:0}
+  .bl::before{bottom:-10px;left:-12px;border-right:0;border-top:0}
+  .br::before{bottom:-10px;right:-12px;border-left:0;border-top:0}
+
+  @keyframes hudFlicker{
+    0%,97%,100%{opacity:.88}
+    97.5%{opacity:.45}
+    98.2%{opacity:.95}
+    98.8%{opacity:.55}
+  }
+
+  #kval,#aval{color:#fff;text-shadow:0 0 10px #6ff,0 0 26px #2af}
+
+  /* ---------- 静音按钮 ---------- */
+  #mute{
+    position:fixed;z-index:20;bottom:18px;left:50%;transform:translateX(-50%);
+    background:rgba(10,30,50,.55);color:#7fe8ff;
+    border:1px solid rgba(90,220,255,.45);border-radius:20px;
+    padding:7px 18px;font:12px/1 "SF Mono",monospace;letter-spacing:.22em;
+    cursor:pointer;backdrop-filter:blur(6px);
+    text-shadow:0 0 8px rgba(80,220,255,.8);
+    transition:.25s;box-shadow:0 0 18px rgba(60,170,255,.25);
+  }
+  #mute:hover{background:rgba(20,60,100,.75);box-shadow:0 0 26px rgba(80,200,255,.55)}
+
+  /* ---------- 启动遮罩 ---------- */
+  #start{
+    position:fixed;inset:0;z-index:50;cursor:pointer;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;
+    background:radial-gradient(circle at 50% 50%,rgba(12,26,50,.92),rgba(2,3,8,.985) 70%);
+    transition:opacity .9s ease,visibility .9s;
+  }
+  #start.hide{opacity:0;visibility:hidden;pointer-events:none}
+  #start .ring{
+    width:88px;height:88px;border-radius:50%;
+    border:1px solid rgba(90,220,255,.55);
+    border-top-color:#9ff;border-left-color:#5cf;
+    box-shadow:0 0 30px rgba(80,200,255,.55),0 0 70px rgba(40,120,255,.35) inset;
+    animation:spin 3.2s linear infinite;
+  }
+  @keyframes spin{to{transform:rotate(360deg)}}
+  #start .txt{
+    color:#aef;font-size:15px;letter-spacing:.55em;text-indent:.55em;
+    text-shadow:0 0 14px rgba(90,220,255,.9),0 0 40px rgba(60,150,255,.6);
+    animation:pulse 2s ease-in-out infinite;
+  }
+  #start .sub{
+    color:#3f8fb0;font-size:11px;letter-spacing:.24em;
+  }
+  @keyframes pulse{0%,100%{opacity:.6}50%{opacity:1}}
+
+  @media (max-width:640px){
+    .hud{font-size:10px}
+    .hud .dim{font-size:9px}
+  }
+</style>
+</head>
+<body>
+
+<canvas id="scene"></canvas>
+
+<!-- 四角公式 -->
+<div class="hud tl">
+  <div class="row">S(x, y) = (k·x , k·y)</div>
+  <div class="row dim">k &gt; 1 → 放大　|　0 &lt; k &lt; 1 → 缩小</div>
+</div>
+<div class="hud tr">
+  <div class="row">k(t) = 1.25 + 0.75·sin(ωt)</div>
+  <div class="row dim">k ∈ [ 0.5 , 2.0 ]</div>
+</div>
+<div class="hud bl">
+  <div class="row">P′ = O + k·(P − O)</div>
+  <div class="row dim">以中心 O 为缩放原点</div>
+</div>
+<div class="hud br">
+  <div class="row">k = <span id="kval">1.000</span></div>
+  <div class="row dim">A′ / A = k² = <span id="aval">1.000</span></div>
+</div>
+
+<button id="mute">♪ SOUND ON</button>
+
+<div id="start">
+  <div class="ring"></div>
+  <div class="txt">点 击 启 动</div>
+  <div class="sub">CLICK TO INITIALIZE · 含背景音效</div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* =========================================================
+     1. 画布 & 基础工具
+     ========================================================= */
+  const canvas = document.getElementById('scene');
+  const ctx = canvas.getContext('2d', { alpha: false });
+  const kvalEl = document.getElementById('kval');
+  const avalEl = document.getElementById('aval');
+  const startEl = document.getElementById('start');
+  const muteEl  = document.getElementById('mute');
+
+  let W = 0, H = 0, DPR = 1;
+
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width  = Math.floor(W * DPR);
+    canvas.height = Math.floor(H * DPR);
+    canvas.style.width  = W + 'px';
+    canvas.style.height = H + 'px';
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  /* =========================================================
+     2. 图形配置（多边形层）
+     ========================================================= */
+  const SHAPES = [
+    { n: 8,  hue: 190, kMul: 1.00, spin:  0.18, alpha: 1.00, lw: 3.0, rot: 0.00 },
+    { n: 6,  hue: 295, kMul: 0.74, spin: -0.26, alpha: 0.85, lw: 2.6, rot: 0.50 },
+    { n: 4,  hue:  48, kMul: 1.20, spin:  0.34, alpha: 0.72, lw: 2.4, rot: 0.92 },
+    { n: 3,  hue: 150, kMul: 0.52, spin: -0.45, alpha: 0.70, lw: 2.2, rot: 1.30 }
+  ];
+
+  const ORBS = [
+    { off: 0.0, hue: 200, spd:  0.35, dist: 1.5, rad: 1.5 },
+    { off: 2.1, hue: 300, spd: -0.28, dist: 1.9, rad: 1.3 },
+    { off: 4.2, hue:  58, spd:  0.22, dist: 1.2, rad: 1.7 },
+    { off: 5.4, hue: 155, spd: -0.40, dist: 2.1, rad: 1.1 }
+  ];
+
+  /* =========================================================
+     3. 绘制函数
+     ========================================================= */
+  function drawGrid(t) {
+    const step = 70;
+    const off = (t * 14) % step;
+    ctx.save();
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(60,140,220,0.085)';
+    ctx.beginPath();
+    for (let x = -off; x < W + step; x += step) { ctx.moveTo(x, 0); ctx.lineTo(x, H); }
+    for (let y = -off; y < H + step; y += step) { ctx.moveTo(0, y); ctx.lineTo(W, y); }
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /* 五彩斑斓的反射光晕（缓慢环绕旋转） */
+  function drawOrbs(t, k, cx, cy, R) {
+    for (let i = 0; i < ORBS.length; i++) {
+      const o = ORBS[i];
+      const a = t * o.spd + o.off;
+      const d = R * o.dist * k * 0.85;
+      const ox = cx + Math.cos(a) * d;
+      const oy = cy + Math.sin(a) * d * 0.92;
+      const rad = R * o.rad * k;
+      const hue = (o.hue + t * 25) % 360;
+
+      const g = ctx.createRadialGradient(ox, oy, 0, ox, oy, rad);
+      g.addColorStop(0,    'hsla(' + hue + ',100%,66%,0.22)');
+      g.addColorStop(0.42, 'hsla(' + ((hue + 45) % 360) + ',100%,55%,0.075)');
+      g.addColorStop(1,    'rgba(0,0,0,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(ox, oy, rad, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  /* 单个多边形：每条边不同霓虹色 + 顶点光点 */
+  function drawShape(s, t, k, cx, cy, R) {
+    const n = s.n;
+    const rot = s.rot + t * s.spin;
+    const r = R * s.kMul * k;
+
+    const pts = [];
+    for (let i = 0; i < n; i++) {
+      const a = rot + i * Math.PI * 2 / n;
+      pts.push({ x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r });
+    }
+
+    /* 内部全息填充 */
+    const rr = Math.max(r, 1);
+    const fill = ctx.createRadialGradient(cx, cy, 0, cx, cy, rr);
+    fill.addColorStop(0,   'hsla(' + s.hue + ',100%,78%,0.10)');
+    fill.addColorStop(0.7, 'hsla(' + ((s.hue + 70) % 360) + ',100%,58%,0.045)');
+    fill.addColorStop(1,   'rgba(0,0,0,0)');
+    ctx.fillStyle = fill;
+    ctx.beginPath();
+    for (let i = 0; i < n; i++) {
+      if (i === 0) ctx.moveTo(pts[i].x, pts[i].y);
+      else ctx.lineTo(pts[i].x, pts[i].y);
+    }
+    ctx.closePath();
+    ctx.fill();
+
+    /* 边 —— 每条边独立霓虹色 */
+    ctx.lineJoin = 'round';
+    ctx.lineCap  = 'round';
+    for (let i = 0; i < n; i++) {
+      const p = pts[i];
+      const q = pts[(i + 1) % n];
+      const hue = (s.hue + i * 360 / n + t * 35) % 360;
+
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y);
+      ctx.lineTo(q.x, q.y);
+
+      // 外发光层
+      ctx.shadowBlur  = 28;
+      ctx.shadowColor = 'hsl(' + hue + ',100%,60%)';
+      ctx.strokeStyle = 'hsla(' + hue + ',100%,62%,' + (s.alpha * 0.85) + ')';
+      ctx.lineWidth   = s.lw * (1.55 + 0.55 * Math.sin(t * 3 + i));
+      ctx.stroke();
+
+      // 高亮内芯
+      ctx.shadowBlur  = 12;
+      ctx.shadowColor = 'hsl(' + hue + ',100%,75%)';
+      ctx.strokeStyle = 'hsla(' + hue + ',100%,92%,' + s.alpha + ')';
+      ctx.lineWidth   = s.lw * 0.55;
+      ctx.stroke();
+    }
+
+    /* 顶点光点 + 局部光晕 */
+    for (let i = 0; i < n; i++) {
+      const p = pts[i];
+      const hue = (s.hue + i * 360 / n + t * 35) % 360;
+      const pr = 2.4 + 2.6 * Math.abs(Math.sin(t * 2.5 + i * 0.9));
+
+      const lg = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, pr * 7.5);
+      lg.addColorStop(0,   'hsla(' + hue + ',100%,82%,0.38)');
+      lg.addColorStop(0.45,'hsla(' + hue + ',100%,62%,0.10)');
+      lg.addColorStop(1,   'rgba(0,0,0,0)');
+      ctx.fillStyle = lg;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, pr * 7.5, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, pr, 0, Math.PI * 2);
+      ctx.fillStyle = 'hsla(' + hue + ',100%,90%,0.95)';
+      ctx.shadowBlur = 22;
+      ctx.shadowColor = 'hsl(' + hue + ',100%,62%)';
+      ctx.fill();
+    }
+
+    ctx.shadowBlur = 0;
+  }
+
+  /* 中心闪耀白光 */
+  function drawCore(t, k, cx, cy, R) {
+    const cr = R * (0.34 + 0.85 * k) * (0.9 + 0.1 * Math.sin(t * 6));
+
+    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, cr);
+    g.addColorStop(0,    'rgba(255,255,255,1)');
+    g.addColorStop(0.10, 'rgba(235,248,255,0.88)');
+    g.addColorStop(0.28, 'rgba(165,215,255,0.36)');
+    g.addColorStop(0.58, 'rgba(90,150,255,0.12)');
+    g.addColorStop(1,    'rgba(0,0,0,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(cx, cy, cr, 0, Math.PI * 2);
+    ctx.fill();
+
+    /* 旋转十字星芒 */
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(t * 0.55);
+    const len = cr * 5.2;
+    for (let i = 0; i < 4; i++) {
+      ctx.rotate(Math.PI / 2);
+      const lg = ctx.createLinearGradient(0, 0, len, 0);
+      lg.addColorStop(0,   'rgba(255,255,255,0.55)');
+      lg.addColorStop(0.25,'rgba(180,225,255,0.14)');
+      lg.addColorStop(1,   'rgba(0,0,0,0)');
+      ctx.fillStyle = lg;
+      ctx.beginPath();
+      ctx.moveTo(0, -cr * 0.13);
+      ctx.lineTo(len, 0);
+      ctx.lineTo(0, cr * 0.13);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  /* =========================================================
+     4. 主绘制
+     ========================================================= */
+  function render(t, k) {
+    const cx = W / 2;
+    const cy = H / 2;
+    const R  = Math.min(W, H) * 0.17;
+
+    /* --- 背景 --- */
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = '#03040a';
+    ctx.fillRect(0, 0, W, H);
+
+    const bg = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(W, H) * 0.68);
+    bg.addColorStop(0,   'rgba(20,44,86,0.55)');
+    bg.addColorStop(0.5, 'rgba(8,16,36,0.35)');
+    bg.addColorStop(1,   'rgba(0,0,0,0)');
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, W, H);
+
+    drawGrid(t);
+
+    /* --- 叠加发光层 --- */
+    ctx.globalCompositeOperation = 'lighter';
+
+    drawOrbs(t, k, cx, cy, R);
+
+    for (let i = 0; i < SHAPES.length; i++) {
+      drawShape(SHAPES[i], t, k, cx, cy, R);
+    }
+
+    drawCore(t, k, cx, cy, R);
+
+    /* --- 暗角 --- */
+    ctx.globalCompositeOperation = 'source-over';
+    const vg = ctx.createRadialGradient(
+      cx, cy, Math.min(W, H) * 0.28,
+      cx, cy, Math.max(W, H) * 0.78
+    );
+    vg.addColorStop(0, 'rgba(0,0,0,0)');
+    vg.addColorStop(1, 'rgba(0,0,0,0.78)');
+    ctx.fillStyle = vg;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  /* =========================================================
+     5. 动画循环  —— k = 1.25 + 0.75·sin(ωt) ∈ [0.5, 2.0]
+     ========================================================= */
+  const OMEGA = 1.15;      // 角速度
+  let phase = 0;
+  let last  = performance.now() / 1000;
+  let hudAcc = 0;
+
+  function loop(nowMs) {
+    const now = nowMs / 1000;
+    let dt = now - last;
+    last = now;
+    if (dt > 0.1) dt = 0.1;
+    if (dt < 0)  dt = 0;
+
+    phase += dt * OMEGA;
+
+    const k = 1.25 + 0.75 * Math.sin(phase);   // 缩放因子 0.5 ~ 2.0
+
+    render(now, k);
+
+    /* 音效随缩放因子联动：k 越大，音色越明亮 */
+    if (audioReady && droneLP && !muted) {
+      droneLP.frequency.setTargetAtTime(170 + k * 320, AC.currentTime, 0.12);
+    }
+
+    /* HUD 数值（每 4 帧刷新一次即可） */
+    hudAcc++;
+    if (hudAcc % 4 === 0) {
+      kvalEl.textContent = k.toFixed(3);
+      avalEl.textContent = (k * k).toFixed(3);
+    }
+
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+
+  /* =========================================================
+     6. Web Audio 科技感背景音效
+     ========================================================= */
+  let AC = null, master = null, droneLP = null, delayNode = null;
+  let audioReady = false, muted = false;
+
+  const SCALE = [0, 2, 3, 5, 7, 8, 10, 12, 14, 15, 17, 19];
+
+  function initAudio() {
+    if (audioReady) return;
+    const Ctor = window.AudioContext || window.webkitAudioContext;
+    if (!Ctor) return;
+
+    AC = new Ctor();
+
+    /* 总输出 */
+    master = AC.createGain();
+    master.gain.value = 0;
+    master.connect(AC.destination);
+    master.gain.setTargetAtTime(0.7, AC.currentTime, 1.6);
+
+    /* --- 空间回声 --- */
+    delayNode = AC.createDelay(1.0);
+    delayNode.delayTime.value = 0.42;
+    const fb  = AC.createGain(); fb.gain.value  = 0.45;
+    const wet = AC.createGain(); wet.gain.value = 0.38;
+    delayNode.connect(fb);  fb.connect(delayNode);
+    delayNode.connect(wet); wet.connect(master);
+
+    /* --- 低频科技铺底 --- */
+    droneLP = AC.createBiquadFilter();
+    droneLP.type = 'lowpass';
+    droneLP.frequency.value = 300;
+    droneLP.Q.value = 7;
+
+    const droneGain = AC.createGain();
+    droneGain.gain.value = 0.32;
+    droneLP.connect(droneGain);
+    droneGain.connect(master);
+    droneGain.connect(delayNode);
+
+    [55, 55.4, 82.5, 110].forEach(function (f, i) {
+      const o = AC.createOscillator();
+      o.type = i < 2 ? 'sawtooth' : (i === 2 ? 'square' : 'sine');
+      o.frequency.value = f;
+      const g = AC.createGain();
+      g.gain.value = i < 2 ? 0.32 : (i === 2 ? 0.05 : 0.10);
+      o.connect(g);
+      g.connect(droneLP);
+      o.start();
+    });
+
+    /* 滤波器扫频 LFO —— 制造"呼吸"的科技感 */
+    const lfo  = AC.createOscillator();
+    lfo.frequency.value = 0.06;
+    const lfoG = AC.createGain();
+    lfoG.gain.value = 180;
+    lfo.connect(lfoG);
+    lfoG.connect(droneLP.frequency);
+    lfo.start();
+
+    /* --- 高频微光层 --- */
+    const shim = AC.createOscillator();
+    shim.type = 'sine';
+    shim.frequency.value = 1320;
+    const shimG = AC.createGain();
+    shimG.gain.value = 0.010;
+    shim.connect(shimG);
+    shimG.connect(master);
+    shimG.connect(delayNode);
+    shim.start();
+
+    const shimLfo  = AC.createOscillator();
+    shimLfo.frequency.value = 0.17;
+    const shimLfoG = AC.createGain();
+    shimLfoG.gain.value = 0.010;
+    shimLfo.connect(shimLfoG);
+    shimLfoG.connect(shimG.gain);
+    shimLfo.start();
+
+    audioReady = true;
+    schedulePing();
+  }
+
+  /* --- 随机电子音粒 --- */
+  function schedulePing() {
+    if (!AC) return;
+    const semi = SCALE[(Math.random() * SCALE.length) | 0];
+    const oct  = Math.random() < 0.3 ? 2 : 1;
+    playPing(196 * Math.pow(2, semi / 12) * oct);
+    setTimeout(schedulePing, 260 + Math.random() * 720);
+  }
+
+  function playPing(f) {
+    if (!AC || !master) return;
+    const t0 = AC.currentTime;
+    const o = AC.createOscillator();
+    o.type = 'triangle';
+    o.frequency.setValueAtTime(f, t0);
+
+    const g = AC.createGain();
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(0.085, t0 + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + 1.3);
+
+    o.connect(g);
+    g.connect(master);
+    g.connect(delayNode);
+    o.start(t0);
+    o.stop(t0 + 1.4);
+  }
+
+  /* =========================================================
+     7. 交互
+     ========================================================= */
+  function start() {
+    startEl.classList.add('hide');
+    initAudio();
+    if (AC && AC.state === 'suspended') AC.resume();
+  }
+  startEl.addEventListener('click', start, { once: false });
+  window.addEventListener('keydown', function (e) {
+    if (e.key === ' ' || e.key === 'Enter') start();
+  });
+
+  muteEl.addEventListener('click', function (e) {
+    e.stopPropagation();
+    if (!audioReady) { initAudio(); }
+    if (!AC) return;
+    if (AC.state === 'suspended') AC.resume();
+
+    muted = !muted;
+    master.gain.setTargetAtTime(muted ? 0 : 0.7, AC.currentTime, 0.15);
+    muteEl.textContent = muted ? '♪ SOUND OFF' : '♪ SOUND ON';
+    muteEl.style.opacity = muted ? 0.5 : 1;
+  });
+
+  /* 页面隐藏时轻微降载 */
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) last = performance.now() / 1000;
+  });
+
+})();
+</script>
+</body>
+</html>

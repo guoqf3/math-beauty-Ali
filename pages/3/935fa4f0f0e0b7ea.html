@@ -1,0 +1,795 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>库埃特剪切流动 · 粘性应力分布剖面</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{height:100%;background:#010006;overflow:hidden;
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+    -webkit-tap-highlight-color:transparent;}
+  canvas{position:fixed;inset:0;display:block;}
+  .hud{position:fixed;inset:0;pointer-events:none;}
+
+  .epigraph{
+    position:absolute;top:14px;left:50%;transform:translateX(-50%);
+    font-family:"Songti SC","STSong",serif;
+    font-size:clamp(12px,1.35vw,19px);
+    letter-spacing:.16em;white-space:nowrap;
+    color:#eaf6ff;
+    text-shadow:0 0 12px rgba(120,190,255,.9),0 0 34px rgba(120,90,255,.5);
+    animation:breathe 4.3s ease-in-out infinite;
+  }
+  @keyframes breathe{0%,100%{opacity:.72}50%{opacity:1}}
+
+  .formula{
+    position:absolute;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"PingFang SC",monospace;
+    font-size:clamp(9px,.76vw,12px);
+    line-height:1.75;letter-spacing:.02em;
+    color:rgba(140,190,255,.40);
+    text-shadow:0 0 9px rgba(70,140,255,.25);
+    white-space:nowrap;
+  }
+  .formula b{color:rgba(190,225,255,.66);font-weight:500;}
+  .tl{top:56px;left:22px;}
+  .tr{top:56px;right:22px;text-align:right;}
+  .bl{bottom:16px;left:22px;}
+  .br{bottom:16px;right:22px;text-align:right;}
+
+  .controls{
+    position:absolute;bottom:12px;left:50%;transform:translateX(-50%);
+    display:flex;align-items:center;gap:16px;
+    pointer-events:auto;
+    font-family:ui-monospace,Menlo,Consolas,monospace;
+    font-size:11px;color:rgba(165,205,255,.85);
+    background:rgba(6,10,28,.70);
+    border:1px solid rgba(80,150,255,.24);
+    border-radius:30px;padding:8px 22px;
+    backdrop-filter:blur(10px);
+    -webkit-backdrop-filter:blur(10px);
+    box-shadow:0 0 28px rgba(60,130,255,.18);
+    white-space:nowrap;
+  }
+  .controls label{display:flex;align-items:center;gap:8px;cursor:pointer;}
+  .controls input[type=range]{
+    -webkit-appearance:none;appearance:none;
+    width:140px;height:3px;border-radius:3px;
+    background:linear-gradient(90deg,#2ef0ff,#4a7dff,#a04dff,#ff4fd8,#ff9a3d);
+    outline:none;cursor:pointer;
+  }
+  .controls input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none;width:13px;height:13px;border-radius:50%;
+    background:#eaf4ff;
+    box-shadow:0 0 10px rgba(120,220,255,.95),0 0 22px rgba(160,90,255,.75);
+    cursor:pointer;
+  }
+  .controls input[type=range]::-moz-range-thumb{
+    width:13px;height:13px;border:none;border-radius:50%;
+    background:#eaf4ff;
+    box-shadow:0 0 10px rgba(120,220,255,.95);
+    cursor:pointer;
+  }
+  .uval{color:#7de0ff;font-weight:600;min-width:64px;text-align:center;
+    text-shadow:0 0 10px rgba(80,220,255,.7);}
+  .tauval{color:#ff9ad8;font-weight:600;
+    text-shadow:0 0 10px rgba(255,110,220,.7);}
+
+  @media (max-width:900px){
+    .bl,.br{display:none;}
+    .controls{gap:10px;padding:7px 14px;font-size:10px;}
+    .controls input[type=range]{width:88px;}
+    .uval{min-width:52px;}
+  }
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<div class="hud">
+  <div class="epigraph">速度有梯度，人生有分寸，各安其位方成流</div>
+
+  <div class="formula tl">
+    <b>牛顿粘性定律</b><br>
+    τ = μ · (du/dy)
+  </div>
+  <div class="formula tr">
+    <b>库埃特流速度剖面</b><br>
+    u(y) = (y/h) · U<sub>top</sub>
+  </div>
+  <div class="formula bl">
+    <b>壁面剪切应力</b><br>
+    τ<sub>w</sub> = μ · U / h
+  </div>
+  <div class="formula br">
+    <b>无滑移边界条件</b><br>
+    y = 0 → u = 0　　y = h → u = U<sub>top</sub>
+  </div>
+
+  <div class="controls">
+    <label>上板速度 U<sub>top</sub>
+      <input type="range" id="uRange" min="0.20" max="2.40" value="1.20" step="0.01">
+    </label>
+    <span class="uval" id="uLabel">1.20 m/s</span>
+    <span class="tauval" id="tauLabel">τ = 30.0 Pa</span>
+  </div>
+</div>
+
+<script>
+(() => {
+'use strict';
+
+/* ============================================================
+   常量
+============================================================ */
+const TAU = Math.PI * 2;
+
+const MU       = 0.05;         // Pa·s  动力粘度
+const H_REF_PX = 240;          // 240 px 对应 h = 2 mm
+const H_REF_M  = 0.002;
+const U_REF    = 2.40;         // 剖面图参考最大速度
+const SPEED_PX = 140;          // 1 m/s → 140 px/s 的视觉速度
+
+/* 颜色渐变节点：底部青蓝 → 顶部橙 */
+const STOPS = [
+  [0.00,  46, 235, 255],
+  [0.25,  90, 130, 255],
+  [0.50, 165,  80, 255],
+  [0.75, 255,  85, 210],
+  [1.00, 255, 160,  70]
+];
+const CLUT = (() => {
+  const out = [];
+  for (let i = 0; i <= 64; i++) {
+    const f = i / 64;
+    let a = STOPS[0], b = STOPS[STOPS.length - 1];
+    for (let k = 0; k < STOPS.length - 1; k++) {
+      if (f >= STOPS[k][0] && f <= STOPS[k + 1][0]) { a = STOPS[k]; b = STOPS[k + 1]; break; }
+    }
+    const span = (b[0] - a[0]) || 1;
+    const t = (f - a[0]) / span;
+    out.push([
+      a[1] + (b[1] - a[1]) * t,
+      a[2] + (b[2] - a[2]) * t,
+      a[3] + (b[3] - a[3]) * t
+    ]);
+  }
+  return out;
+})();
+function fColor(f) {
+  f = f < 0 ? 0 : f > 1 ? 1 : f;
+  return CLUT[(f * 64) | 0];
+}
+
+/* ============================================================
+   画布与布局
+============================================================ */
+const cv  = document.getElementById('cv');
+const ctx = cv.getContext('2d', { alpha: false });
+
+let W = 0, H = 0, DPR = 1;
+let bgGrad = null;
+
+let xL = 0, xR = 0, channelW = 0;
+let cy = 0, gapPx = 240;
+let plateTopY = 0, plateBotY = 0;
+
+let profX = 0, profScale = 0;
+
+/* ============================================================
+   状态
+============================================================ */
+let simTime = 0, lastTime = 0;
+
+let U = 1.20;              // m/s
+let targetU = 1.20;
+let autoU = true;
+
+let plateMarkOff = 0;
+let probe = null;
+
+const parts = [];
+let initDone = false;
+
+/* ============================================================
+   工具
+============================================================ */
+function smoothstep(x) { x = x < 0 ? 0 : x > 1 ? 1 : x; return x * x * (3 - 2 * x); }
+function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+function rr(c, x, y, w, h, r) {
+  c.beginPath();
+  c.moveTo(x + r, y);
+  c.lineTo(x + w - r, y); c.arcTo(x + w, y, x + w, y + r, r);
+  c.lineTo(x + w, y + h - r); c.arcTo(x + w, y + h, x + w - r, y + h, r);
+  c.lineTo(x + r, y + h); c.arcTo(x, y + h, x, y + h - r, r);
+  c.lineTo(x, y + r); c.arcTo(x, y, x + r, y, r);
+  c.closePath();
+}
+
+/* ============================================================
+   几何更新
+============================================================ */
+function updateGeo() {
+  const maxGap = Math.min(H * 0.46, 430);
+  gapPx = clamp(gapPx, 110, maxGap);
+  plateTopY = cy - gapPx / 2;
+  plateBotY = cy + gapPx / 2;
+}
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  cv.width  = Math.round(W * DPR);
+  cv.height = Math.round(H * DPR);
+  cv.style.width  = W + 'px';
+  cv.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  xL = Math.max(W * 0.27, 130);
+  xR = W * 0.965;
+  channelW = xR - xL;
+
+  cy = H * 0.50;
+
+  profX = W * 0.055;
+  profScale = Math.min(W * 0.155, 230);
+
+  updateGeo();
+
+  bgGrad = ctx.createRadialGradient(
+    W * 0.55, H * 0.46, 0,
+    W * 0.55, H * 0.46, Math.max(W, H) * 0.85
+  );
+  bgGrad.addColorStop(0,    '#080d20');
+  bgGrad.addColorStop(0.45, '#040616');
+  bgGrad.addColorStop(1,    '#010006');
+
+  if (!initDone) { initParticles(); initDone = true; }
+}
+
+/* ============================================================
+   粒子
+============================================================ */
+function initParticles() {
+  parts.length = 0;
+  const ROWS = 26, PER = 24;
+  for (let i = 0; i < ROWS; i++) {
+    const baseF = (i + 0.5) / ROWS;
+    for (let j = 0; j < PER; j++) {
+      parts.push({
+        f:  clamp(baseF + (Math.random() - 0.5) * (1 / ROWS) * 0.82, 0.005, 0.995),
+        x:  Math.random(),
+        r:  1.0 + Math.random() * 1.5,
+        ph: Math.random() * TAU,
+        gl: Math.random() < 0.22
+      });
+    }
+  }
+}
+
+/* ============================================================
+   30 秒自动速度剧本
+============================================================ */
+function autoUValue(t) {
+  if (t < 6)  return 1.20;
+  if (t < 12) return 1.20 + (2.40 - 1.20) * smoothstep((t - 6) / 6);
+  if (t < 18) return 2.40;
+  if (t < 24) return 2.40 - (2.40 - 0.60) * smoothstep((t - 18) / 6);
+  if (t < 30) return 0.60 + (1.20 - 0.60) * smoothstep((t - 24) / 6);
+  return 1.20;
+}
+
+/* ============================================================
+   物理量
+============================================================ */
+function hMeters() { return gapPx / H_REF_PX * H_REF_M; }
+function tauWall() { return MU * U / hMeters(); }
+
+/* ============================================================
+   更新
+============================================================ */
+function update(dt) {
+  simTime += dt;
+  if (simTime >= 30) simTime -= 30;
+
+  if (autoU) {
+    targetU = autoUValue(simTime);
+    uRange.value = targetU.toFixed(2);
+  }
+
+  U += (targetU - U) * Math.min(1, dt * 6);
+  uLabel.textContent = U.toFixed(2) + ' m/s';
+  tauLabel.textContent = 'τ = ' + tauWall().toFixed(1) + ' Pa';
+
+  /* 板上刻度随上板移动（无滑移：与顶层粒子同速） */
+  plateMarkOff += U * SPEED_PX * dt;
+
+  /* 粒子水平位移 */
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i];
+    const uLocal = p.f * U;                 // m/s
+    p.x += (uLocal * SPEED_PX) * dt / channelW;
+    while (p.x > 1) p.x -= 1;
+    while (p.x < 0) p.x += 1;
+  }
+
+  if (probe) {
+    probe.t += dt;
+    if (probe.t > 3.2) probe = null;
+  }
+}
+
+/* ============================================================
+   渲染 · 通道背景
+============================================================ */
+function drawChannelBG() {
+  /* 垂直渐变底色 */
+  const g = ctx.createLinearGradient(0, plateTopY, 0, plateBotY);
+  g.addColorStop(0.00, 'rgba(255,150,60,0.085)');
+  g.addColorStop(0.28, 'rgba(255,80,200,0.070)');
+  g.addColorStop(0.55, 'rgba(150,80,255,0.062)');
+  g.addColorStop(0.80, 'rgba(80,130,255,0.058)');
+  g.addColorStop(1.00, 'rgba(46,235,255,0.075)');
+  ctx.fillStyle = g;
+  ctx.fillRect(xL, plateTopY, channelW, gapPx);
+
+  /* 内发光 */
+  const rg = ctx.createRadialGradient(
+    xL + channelW / 2, cy, 0,
+    xL + channelW / 2, cy, Math.max(channelW, gapPx) * 0.62
+  );
+  rg.addColorStop(0, 'rgba(120,90,255,0.045)');
+  rg.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = rg;
+  ctx.fillRect(xL, plateTopY, channelW, gapPx);
+
+  /* 分层色带（细水平条） */
+  const N = 34;
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < N; i++) {
+    const f0 = i / N, f1 = (i + 1) / N;
+    const y0 = plateBotY - f1 * gapPx;
+    const hh = (f1 - f0) * gapPx;
+    const c = fColor((f0 + f1) / 2);
+    ctx.fillStyle = `rgba(${c[0]|0},${c[1]|0},${c[2]|0},0.030)`;
+    ctx.fillRect(xL, y0, channelW, hh);
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ============================================================
+   渲染 · 粒子
+============================================================ */
+function drawParticles() {
+  ctx.globalCompositeOperation = 'lighter';
+  const t = simTime;
+
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i];
+    const px = xL + p.x * channelW;
+    const py = plateBotY - p.f * gapPx;
+
+    const c = fColor(p.f);
+    const cs = `${c[0]|0},${c[1]|0},${c[2]|0}`;
+    const tw = 0.62 + 0.38 * Math.sin(t * 2.6 + p.ph);
+
+    if (p.gl) {
+      ctx.globalAlpha = 0.13 * tw;
+      ctx.fillStyle = `rgb(${cs})`;
+      ctx.beginPath();
+      ctx.arc(px, py, p.r * 3.6, 0, TAU);
+      ctx.fill();
+    }
+
+    ctx.globalAlpha = 0.92;
+    ctx.beginPath();
+    ctx.arc(px, py, p.r, 0, TAU);
+    ctx.fill();
+  }
+
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ============================================================
+   渲染 · 上下板
+============================================================ */
+function drawPlates() {
+  const PH = 11;
+
+  /* ---------- 下板（固定，冷色） ---------- */
+  ctx.save();
+  ctx.shadowColor = 'rgba(70,200,255,0.75)';
+  ctx.shadowBlur = 22;
+  const gb = ctx.createLinearGradient(0, plateBotY - 2, 0, plateBotY + PH);
+  gb.addColorStop(0, '#2ea8e0');
+  gb.addColorStop(1, '#0d3a6a');
+  ctx.fillStyle = gb;
+  rr(ctx, xL, plateBotY, channelW, PH, 4);
+  ctx.fill();
+  ctx.restore();
+
+  /* 固定标记（斜纹） */
+  ctx.save();
+  rr(ctx, xL, plateBotY, channelW, PH, 4);
+  ctx.clip();
+  ctx.strokeStyle = 'rgba(180,230,255,0.30)';
+  ctx.lineWidth = 1.4;
+  for (let x = xL - PH; x < xR + PH; x += 12) {
+    ctx.beginPath();
+    ctx.moveTo(x, plateBotY + PH);
+    ctx.lineTo(x + PH, plateBotY);
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  /* ---------- 上板（移动，荧光蓝） ---------- */
+  ctx.save();
+  ctx.shadowColor = 'rgba(120,210,255,0.95)';
+  ctx.shadowBlur = 30;
+  const gt = ctx.createLinearGradient(0, plateTopY - PH, 0, plateTopY + 2);
+  gt.addColorStop(0, '#d8f4ff');
+  gt.addColorStop(0.42, '#5cc8ff');
+  gt.addColorStop(1, '#12529a');
+  ctx.fillStyle = gt;
+  rr(ctx, xL, plateTopY - PH, channelW, PH, 4);
+  ctx.fill();
+  ctx.restore();
+
+  /* 移动刻度 */
+  ctx.save();
+  rr(ctx, xL, plateTopY - PH, channelW, PH, 4);
+  ctx.clip();
+  const spacing = 56;
+  const off = plateMarkOff % spacing;
+  for (let x = xL - spacing + off; x < xR + spacing; x += spacing) {
+    const gg = ctx.createLinearGradient(x, 0, x + 22, 0);
+    gg.addColorStop(0, 'rgba(255,255,255,0)');
+    gg.addColorStop(0.5, 'rgba(255,255,255,0.78)');
+    gg.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = gg;
+    ctx.fillRect(x, plateTopY - PH, 22, PH);
+  }
+  ctx.restore();
+
+  /* 上板方向箭头 */
+  const arrowY = plateTopY - PH - 20;
+  for (let i = 0; i < 3; i++) {
+    const bx = xL + channelW * (0.22 + i * 0.28) +
+               (plateMarkOff % 160) * 0.55;
+    const bxm = bx % (xR - xL) + xL;
+    ctx.beginPath();
+    ctx.moveTo(bxm, arrowY);
+    ctx.lineTo(bxm - 13, arrowY - 6);
+    ctx.lineTo(bxm - 13, arrowY + 6);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(140,220,255,0.55)';
+    ctx.fill();
+  }
+
+  /* 板标签 */
+  ctx.font = '600 11px ui-monospace,Menlo,Consolas,monospace';
+  ctx.textAlign = 'left';
+  ctx.fillStyle = 'rgba(150,225,255,0.85)';
+  ctx.fillText(`上板  U_top = ${U.toFixed(2)} m/s  →`, xL + 8, plateTopY - 32);
+
+  ctx.textAlign = 'left';
+  ctx.fillStyle = 'rgba(90,190,240,0.72)';
+  ctx.fillText('下板  固定  u = 0  (无滑移)', xL + 8, plateBotY + PH + 18);
+}
+
+/* ============================================================
+   渲染 · 速度剖面（左侧）
+============================================================ */
+function drawProfile() {
+  const N = 34;
+
+  /* 竖直基线 */
+  ctx.beginPath();
+  ctx.moveTo(profX, plateTopY);
+  ctx.lineTo(profX, plateBotY);
+  ctx.strokeStyle = 'rgba(120,170,255,0.20)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  /* 速度矢量线 */
+  ctx.globalCompositeOperation = 'lighter';
+  const pts = [];
+  for (let i = 0; i <= N; i++) {
+    const f = i / N;
+    const y = plateBotY - f * gapPx;
+    const uLocal = f * U;
+    const len = (uLocal / U_REF) * profScale;
+    pts.push({ x: profX + len, y, f });
+
+    const c = fColor(f);
+    ctx.beginPath();
+    ctx.moveTo(profX, y);
+    ctx.lineTo(profX + len, y);
+    ctx.strokeStyle = `rgba(${c[0]|0},${c[1]|0},${c[2]|0},0.42)`;
+    ctx.lineWidth = 1.1;
+    ctx.stroke();
+  }
+
+  /* 剖面线（端点连线） */
+  ctx.beginPath();
+  for (let i = 0; i < pts.length; i++) {
+    if (i === 0) ctx.moveTo(pts[i].x, pts[i].y);
+    else ctx.lineTo(pts[i].x, pts[i].y);
+  }
+  ctx.strokeStyle = 'rgba(220,240,255,0.90)';
+  ctx.lineWidth = 2.0;
+  ctx.shadowColor = 'rgba(150,200,255,0.95)';
+  ctx.shadowBlur = 16;
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  /* 剖面与基线之间填充 */
+  ctx.beginPath();
+  ctx.moveTo(profX, plateBotY);
+  for (let i = 0; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+  ctx.lineTo(profX, plateTopY);
+  ctx.closePath();
+  const fillG = ctx.createLinearGradient(0, plateTopY, 0, plateBotY);
+  fillG.addColorStop(0, 'rgba(255,150,60,0.14)');
+  fillG.addColorStop(1, 'rgba(46,235,255,0.10)');
+  ctx.fillStyle = fillG;
+  ctx.fill();
+  ctx.globalCompositeOperation = 'source-over';
+
+  /* 标注 */
+  ctx.font = '600 10.5px ui-monospace,Menlo,Consolas,monospace';
+  ctx.textAlign = 'left';
+  ctx.fillStyle = 'rgba(160,215,255,0.72)';
+  ctx.fillText('u(y) 剖面', profX - 4, plateTopY - 12);
+
+  ctx.font = '500 9.5px ui-monospace,Menlo,Consolas,monospace';
+  ctx.fillStyle = 'rgba(160,215,255,0.48)';
+  ctx.fillText('线性', profX + 4, cy + 3);
+
+  /* 端点高亮 */
+  const topLen = profScale * (U / U_REF);
+  ctx.beginPath();
+  ctx.arc(profX + topLen, plateTopY, 4, 0, TAU);
+  ctx.fillStyle = 'rgba(255,200,120,0.95)';
+  ctx.shadowColor = 'rgba(255,190,90,0.9)';
+  ctx.shadowBlur = 14;
+  ctx.fill();
+  ctx.shadowBlur = 0;
+}
+
+/* ============================================================
+   渲染 · 间隙刻度（右侧）
+============================================================ */
+function drawGapScale() {
+  const sx = xR + 14;
+  if (sx > W - 30) return;
+
+  ctx.beginPath();
+  ctx.moveTo(sx, plateTopY);
+  ctx.lineTo(sx, plateBotY);
+  ctx.strokeStyle = 'rgba(150,190,255,0.30)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  /* 端点横线 */
+  for (const y of [plateTopY, plateBotY]) {
+    ctx.beginPath();
+    ctx.moveTo(sx - 5, y);
+    ctx.lineTo(sx + 5, y);
+    ctx.stroke();
+  }
+
+  /* h 标签 */
+  ctx.save();
+  ctx.translate(sx + 17, cy);
+  ctx.rotate(-Math.PI / 2);
+  ctx.font = '600 10.5px ui-monospace,Menlo,Consolas,monospace';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(160,215,255,0.72)';
+  ctx.fillText('h = ' + (hMeters() * 1000).toFixed(2) + ' mm', 0, 0);
+  ctx.restore();
+}
+
+/* ============================================================
+   渲染 · 点击探测
+============================================================ */
+function drawProbe() {
+  if (!probe) return;
+  const a = Math.max(0, 1 - probe.t / 3.2);
+  if (a <= 0) { probe = null; return; }
+
+  const y = plateBotY - probe.f * gapPx;
+
+  /* 水平高亮线 */
+  ctx.beginPath();
+  ctx.moveTo(xL, y);
+  ctx.lineTo(xR, y);
+  ctx.strokeStyle = `rgba(255,225,150,${a * 0.75})`;
+  ctx.lineWidth = 1.4;
+  ctx.setLineDash([6, 5]);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  /* 该高度的局部速度箭头 */
+  const len = (probe.u / U_REF) * profScale;
+  ctx.beginPath();
+  ctx.moveTo(profX, y);
+  ctx.lineTo(profX + len, y);
+  ctx.strokeStyle = `rgba(255,225,150,${a})`;
+  ctx.lineWidth = 2.2;
+  ctx.shadowColor = 'rgba(255,210,120,0.9)';
+  ctx.shadowBlur = 14;
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  ctx.beginPath();
+  ctx.arc(profX + len, y, 4.5, 0, TAU);
+  ctx.fillStyle = `rgba(255,235,170,${a})`;
+  ctx.fill();
+
+  /* 信息卡 */
+  const lines = [
+    `高度  y = ${(probe.f * hMeters() * 1000).toFixed(3)} mm`,
+    `速度  u = ${probe.u.toFixed(3)} m/s`,
+    `剪切应力  τ = ${probe.tau.toFixed(2)} Pa`,
+    `速度梯度  du/dy = ${(U / hMeters()).toFixed(0)} s⁻¹`
+  ];
+
+  ctx.font = '600 10.5px ui-monospace,Menlo,Consolas,monospace';
+  let mw = 0;
+  for (const l of lines) mw = Math.max(mw, ctx.measureText(l).width);
+
+  const bw = mw + 22, bh = lines.length * 16 + 14;
+  let bx = W * 0.5 - bw / 2;
+  let by = y + 18;
+  if (by + bh > H - 80) by = y - bh - 18;
+
+  ctx.fillStyle = `rgba(16,14,40,${a * 0.94})`;
+  ctx.strokeStyle = `rgba(255,215,140,${a * 0.60})`;
+  ctx.lineWidth = 1;
+  rr(ctx, bx, by, bw, bh, 9);
+  ctx.fill(); ctx.stroke();
+
+  ctx.textAlign = 'left';
+  for (let i = 0; i < lines.length; i++) {
+    ctx.fillStyle = i === 0
+      ? `rgba(255,232,170,${a})`
+      : `rgba(210,225,255,${a * 0.88})`;
+    ctx.fillText(lines[i], bx + 11, by + 20 + i * 16);
+  }
+}
+
+/* ============================================================
+   渲染 · 底部读数
+============================================================ */
+function drawReadout() {
+  const y = H - 74;
+  const txt =
+    `μ = ${MU.toFixed(2)} Pa·s    ` +
+    `h = ${(hMeters() * 1000).toFixed(2)} mm    ` +
+    `U = ${U.toFixed(2)} m/s    ` +
+    `τ_w = μU/h = ${tauWall().toFixed(1)} Pa`;
+
+  ctx.font = '600 12px ui-monospace,Menlo,Consolas,monospace';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(205,230,255,0.85)';
+  ctx.shadowColor = 'rgba(90,170,255,0.85)';
+  ctx.shadowBlur = 14;
+  ctx.fillText(txt, W / 2, y);
+  ctx.shadowBlur = 0;
+}
+
+/* ============================================================
+   渲染主函数
+============================================================ */
+function render() {
+  ctx.fillStyle = bgGrad;
+  ctx.fillRect(0, 0, W, H);
+
+  drawChannelBG();
+  drawParticles();
+  drawProfile();
+  drawPlates();
+  drawGapScale();
+  drawProbe();
+  drawReadout();
+}
+
+/* ============================================================
+   主循环
+============================================================ */
+function loop(now) {
+  requestAnimationFrame(loop);
+
+  if (!lastTime) lastTime = now;
+  let dt = (now - lastTime) / 1000;
+  lastTime = now;
+  if (dt > 0.05) dt = 0.05;
+  if (dt < 0) dt = 0;
+
+  update(dt);
+  render();
+}
+
+/* ============================================================
+   交互
+============================================================ */
+const uRange    = document.getElementById('uRange');
+const uLabel    = document.getElementById('uLabel');
+const tauLabel  = document.getElementById('tauLabel');
+
+uRange.addEventListener('input', () => {
+  autoU = false;
+  targetU = parseFloat(uRange.value);
+});
+
+/* --- 指针：点击探测 / 拖动改变间距 --- */
+let ptrDown = false, ptrStartX = 0, ptrStartY = 0;
+let dragMode = false, dragStartGap = 0, dragStartY = 0;
+
+cv.addEventListener('pointerdown', (e) => {
+  ptrDown = true;
+  dragMode = false;
+  ptrStartX = e.clientX;
+  ptrStartY = e.clientY;
+  dragStartGap = gapPx;
+  dragStartY = e.clientY;
+  cv.setPointerCapture(e.pointerId);
+});
+
+cv.addEventListener('pointermove', (e) => {
+  if (!ptrDown) return;
+
+  const dx = e.clientX - ptrStartX;
+  const dy = e.clientY - ptrStartY;
+
+  if (!dragMode && (dx * dx + dy * dy) > 64) {
+    dragMode = true;
+  }
+
+  if (dragMode) {
+    /* 向上拖 → 增大间距 */
+    const delta = dragStartY - e.clientY;
+    const maxGap = Math.min(H * 0.46, 430);
+    gapPx = clamp(dragStartGap + delta * 1.6, 110, maxGap);
+    updateGeo();
+  }
+});
+
+cv.addEventListener('pointerup', (e) => {
+  if (!ptrDown) return;
+  ptrDown = false;
+
+  if (dragMode) { dragMode = false; return; }
+
+  /* --- 单击：探测 --- */
+  const rect = cv.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+
+  if (mx < xL || mx > xR) return;
+  if (my < plateTopY || my > plateBotY) return;
+
+  const f = clamp((plateBotY - my) / gapPx, 0, 1);
+  probe = {
+    f,
+    u: f * U,
+    tau: tauWall(),
+    t: 0
+  };
+});
+
+window.addEventListener('resize', resize);
+
+/* ============================================================
+   启动
+============================================================ */
+resize();
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>

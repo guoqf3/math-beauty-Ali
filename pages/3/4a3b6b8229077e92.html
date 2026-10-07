@@ -1,0 +1,706 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>赫尔姆霍兹自由能 · 最小自由能原理</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{
+    height:100%;background:#010006;overflow:hidden;
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+    -webkit-tap-highlight-color:transparent;
+  }
+  canvas{position:fixed;inset:0;display:block;}
+  .hud{position:fixed;inset:0;pointer-events:none;}
+
+  .epigraph{
+    position:absolute;top:14px;left:50%;transform:translateX(-50%);
+    font-family:"Songti SC","STSong",serif;
+    font-size:clamp(12px,1.35vw,19px);
+    letter-spacing:.16em;white-space:nowrap;
+    color:#f2ecff;
+    text-shadow:0 0 12px rgba(180,90,255,.9),0 0 34px rgba(90,160,255,.5);
+    animation:breathe 4.3s ease-in-out infinite;
+  }
+  @keyframes breathe{0%,100%{opacity:.72}50%{opacity:1}}
+
+  .formula{
+    position:absolute;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"PingFang SC",monospace;
+    font-size:clamp(9px,.76vw,12px);
+    line-height:1.75;letter-spacing:.02em;
+    color:rgba(150,185,255,.40);
+    text-shadow:0 0 9px rgba(80,130,255,.25);
+    white-space:nowrap;
+  }
+  .formula b{color:rgba(195,220,255,.66);font-weight:500;}
+  .tl{top:56px;left:22px;}
+  .tr{top:56px;right:22px;text-align:right;}
+  .bl{bottom:16px;left:22px;}
+  .br{bottom:16px;right:22px;text-align:right;}
+
+  .controls{
+    position:absolute;bottom:12px;left:50%;transform:translateX(-50%);
+    display:flex;align-items:center;gap:18px;
+    pointer-events:auto;
+    font-family:ui-monospace,Menlo,Consolas,monospace;
+    font-size:11px;color:rgba(170,200,255,.85);
+    background:rgba(10,6,26,.68);
+    border:1px solid rgba(130,90,255,.24);
+    border-radius:30px;padding:8px 22px;
+    backdrop-filter:blur(10px);
+    -webkit-backdrop-filter:blur(10px);
+    box-shadow:0 0 28px rgba(120,70,255,.18);
+    white-space:nowrap;
+  }
+  .controls label{display:flex;align-items:center;gap:8px;cursor:pointer;}
+  .controls input[type=checkbox]{
+    -webkit-appearance:none;appearance:none;
+    width:34px;height:17px;border-radius:9px;
+    background:rgba(100,110,200,.28);
+    position:relative;cursor:pointer;transition:background .25s;
+  }
+  .controls input[type=checkbox]::after{
+    content:"";position:absolute;top:2px;left:2px;
+    width:13px;height:13px;border-radius:50%;
+    background:#a8b6e0;transition:transform .25s,background .25s;
+  }
+  .controls input[type=checkbox]:checked{background:rgba(150,80,255,.75);}
+  .controls input[type=checkbox]:checked::after{transform:translateX(17px);background:#f2ecff;}
+
+  @media (max-width:900px){
+    .bl,.br{display:none;}
+    .controls{gap:12px;padding:7px 16px;font-size:10px;}
+  }
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<div class="hud">
+  <div class="epigraph">翻越能垒，自由能终将引你归谷</div>
+
+  <div class="formula tl">
+    <b>赫尔姆霍兹自由能</b><br>
+    F = U − T·S
+  </div>
+  <div class="formula tr">
+    <b>吉布斯自由能</b><br>
+    G = H − T·S = F + pV
+  </div>
+  <div class="formula bl">
+    <b>自发条件</b><br>
+    ΔG &lt; 0 自发　ΔG = 0 平衡　ΔG &gt; 0 非自发
+  </div>
+  <div class="formula br">
+    <b>麦克斯韦关系式</b><br>
+    (∂S/∂V)<sub>T</sub> = (∂p/∂T)<sub>V</sub>
+  </div>
+
+  <div class="controls">
+    <label>
+      <input type="checkbox" id="reverseToggle">
+      反向反应路径
+    </label>
+  </div>
+</div>
+
+<script>
+(() => {
+'use strict';
+
+/* ============================================================
+   常量
+============================================================ */
+const TAU = 2 * Math.PI;
+
+/* 曲线参数：双势阱 + 中间能垒 */
+const PEAK_H  = 0.60;   // 能垒高度
+const WELL_L  = 0.15;   // 左侧势阱深度（浅 → 高能态）
+const WELL_R  = 0.35;   // 右侧势阱深度（深 → 低能态）
+const WELL_W  = 0.13;   // 势阱宽度
+const PEAK_W  = 0.22;   // 能垒宽度
+const BASE    = 0.30;   // 基准偏移
+
+/* 显示范围 */
+const G_MIN = -0.05;
+const G_MAX =  0.95;
+const G_RNG = G_MAX - G_MIN;
+
+/* 周期 */
+const CYCLE = 30;
+
+/* ============================================================
+   画布与布局
+============================================================ */
+const cv  = document.getElementById('cv');
+const ctx = cv.getContext('2d', { alpha: false });
+
+let W = 0, H = 0, DPR = 1;
+
+let X0 = 0, X1 = 0, YB = 0, YT = 0;
+let bgGrad = null;
+
+/* ============================================================
+   曲线函数
+============================================================ */
+function G(xi){
+  const p  = PEAK_H * Math.exp(-Math.pow((xi - 0.5) / PEAK_W, 2));
+  const wl = WELL_L * Math.exp(-Math.pow((xi - 0.15) / WELL_W, 2));
+  const wr = WELL_R * Math.exp(-Math.pow((xi - 0.85) / WELL_W, 2));
+  return p - wl - wr + BASE;
+}
+
+/* 数值导数 */
+function Gprime(xi){
+  const e = 0.0008;
+  return (G(xi + e) - G(xi - e)) / (2 * e);
+}
+
+/* 关键点（由曲线参数决定，用于标注） */
+const XI_REACT = 0.15;
+const XI_TS    = 0.50;
+const XI_PROD  = 0.85;
+const G_REACT  = G(XI_REACT);
+const G_TS     = G(XI_TS);
+const G_PROD   = G(XI_PROD);
+
+/* 映射 */
+function xiToX(xi){ return X0 + xi * (X1 - X0); }
+function gToY(g){
+  const u = (g - G_MIN) / G_RNG;
+  return YB - u * (YB - YT);
+}
+
+/* ============================================================
+   状态
+============================================================ */
+let simTime = 0, lastTime = 0;
+let reverse = false;
+
+/* 轨迹历史（用于绘制小球拖尾） */
+const trail = [];
+const TRAIL_MAX = 60;
+
+/* 能量脉冲效果 */
+const bursts = [];
+
+/* ============================================================
+   小球位置 —— 30 秒关键帧轨迹
+============================================================ */
+function ballXi(t){
+  const tt = ((t % CYCLE) + CYCLE) % CYCLE;
+
+  /* --- 0 ~ 6 s：在左侧势阱中轻微晃动 --- */
+  if (tt < 6){
+    const amp = 0.022 * Math.max(0, 1 - tt / 6);
+    return XI_REACT + amp * Math.sin(tt * 5.5);
+  }
+
+  /* --- 6 ~ 13 s：从势阱爬向鞍点（缓入缓出） --- */
+  if (tt < 13){
+    const u = (tt - 6) / 7;
+    const e = u * u * (3 - 2 * u);
+    return XI_REACT + (XI_TS - XI_REACT) * e;
+  }
+
+  /* --- 13 ~ 19 s：越过鞍点滑入产物势阱（加速） --- */
+  if (tt < 19){
+    const u = (tt - 13) / 6;
+    const e = u * u;
+    return XI_TS + (XI_PROD - XI_TS) * e;
+  }
+
+  /* --- 19 ~ 27 s：在右侧势阱中阻尼振荡 --- */
+  if (tt < 27){
+    const u = tt - 19;
+    const decay = Math.exp(-u * 0.52);
+    return XI_PROD + 0.034 * Math.sin(u * 5.2) * decay;
+  }
+
+  /* --- 27 ~ 30 s：稳定 --- */
+  return XI_PROD;
+}
+
+/* ============================================================
+   窗口尺寸
+============================================================ */
+function resize(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  cv.width  = Math.round(W * DPR);
+  cv.height = Math.round(H * DPR);
+  cv.style.width  = W + 'px';
+  cv.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  X0 = W * 0.10;
+  X1 = W * 0.90;
+  YB = H * 0.80;
+  YT = H * 0.18;
+
+  bgGrad = ctx.createRadialGradient(
+    W * 0.5, H * 0.48, 0,
+    W * 0.5, H * 0.48, Math.max(W, H) * 0.82
+  );
+  bgGrad.addColorStop(0,    '#0a0620');
+  bgGrad.addColorStop(0.45, '#050312');
+  bgGrad.addColorStop(1,    '#010006');
+
+  trail.length = 0;
+}
+
+/* ============================================================
+   渲染 · 背景
+============================================================ */
+function drawBackground(){
+  ctx.fillStyle = bgGrad;
+  ctx.fillRect(0, 0, W, H);
+
+  /* 底纹网格 */
+  ctx.strokeStyle = 'rgba(100,120,220,0.045)';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 10; i++){
+    const y = YT + (YB - YT) * i / 10;
+    ctx.beginPath();
+    ctx.moveTo(X0 - 30, y);
+    ctx.lineTo(X1 + 30, y);
+    ctx.stroke();
+  }
+}
+
+/* ============================================================
+   渲染 · 能量地形
+============================================================ */
+function drawTerrain(){
+  const N = 220;
+
+  /* ---- 主填充：横向霓虹渐变 ---- */
+  const grad = ctx.createLinearGradient(X0, 0, X1, 0);
+  grad.addColorStop(0.00, 'rgba(255, 55, 30, 0.38)');   // 高能 · 暗红
+  grad.addColorStop(0.22, 'rgba(225, 45, 140, 0.32)');  // 洋红过渡
+  grad.addColorStop(0.46, 'rgba(150, 75, 255, 0.26)');  // 紫
+  grad.addColorStop(0.72, 'rgba(70, 165, 255, 0.22)');  // 蓝
+  grad.addColorStop(1.00, 'rgba(30, 220, 240, 0.30)');  // 低能 · 青蓝
+
+  ctx.beginPath();
+  ctx.moveTo(X0, YB);
+  for (let i = 0; i <= N; i++){
+    const xi = i / N;
+    ctx.lineTo(xiToX(xi), gToY(G(xi)));
+  }
+  ctx.lineTo(X1, YB);
+  ctx.closePath();
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  /* ---- 底部渐变阴影 ---- */
+  const shadow = ctx.createLinearGradient(0, YT, 0, YB);
+  shadow.addColorStop(0, 'rgba(0,0,0,0)');
+  shadow.addColorStop(1, 'rgba(0,0,0,0.55)');
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(X0, YB);
+  for (let i = 0; i <= N; i++){
+    const xi = i / N;
+    ctx.lineTo(xiToX(xi), gToY(G(xi)));
+  }
+  ctx.lineTo(X1, YB);
+  ctx.closePath();
+  ctx.clip();
+  ctx.fillStyle = shadow;
+  ctx.fillRect(X0, YT, X1 - X0, YB - YT);
+  ctx.restore();
+
+  /* ---- 发光轮廓线 ---- */
+  ctx.save();
+  ctx.beginPath();
+  for (let i = 0; i <= N; i++){
+    const xi = i / N;
+    const px = xiToX(xi);
+    const py = gToY(G(xi));
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+  ctx.strokeStyle = 'rgba(255,255,255,0.88)';
+  ctx.lineWidth = 2.2;
+  ctx.shadowColor = 'rgba(200,140,255,0.95)';
+  ctx.shadowBlur = 22;
+  ctx.stroke();
+  ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+  ctx.lineWidth = 1;
+  ctx.shadowBlur = 8;
+  ctx.stroke();
+  ctx.restore();
+
+  /* ---- 底部基线 ---- */
+  ctx.beginPath();
+  ctx.moveTo(X0, YB);
+  ctx.lineTo(X1, YB);
+  ctx.strokeStyle = 'rgba(140,170,255,0.22)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+}
+
+/* ============================================================
+   渲染 · 关键点标注
+============================================================ */
+function drawKeyPoints(){
+  /* --- 反应物势阱 --- */
+  const xr = xiToX(XI_REACT);
+  const yr = gToY(G_REACT);
+  ctx.setLineDash([4, 6]);
+  ctx.strokeStyle = 'rgba(255,130,80,0.35)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(xr, yr);
+  ctx.lineTo(xr, YB + 18);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.font = '600 11px ui-monospace,Menlo,Consolas,monospace';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(255,150,90,0.85)';
+  ctx.fillText('反应物', xr, YB + 36);
+  ctx.font = '500 10px ui-monospace,Menlo,Consolas,monospace';
+  ctx.fillStyle = 'rgba(255,150,90,0.55)';
+  ctx.fillText('高能态', xr, YB + 50);
+
+  /* --- 鞍点 --- */
+  const xt = xiToX(XI_TS);
+  const yt = gToY(G_TS);
+  ctx.setLineDash([4, 6]);
+  ctx.strokeStyle = 'rgba(255,80,80,0.40)';
+  ctx.beginPath();
+  ctx.moveTo(xt, yt);
+  ctx.lineTo(xt, YB + 18);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.font = '600 11px ui-monospace,Menlo,Consolas,monospace';
+  ctx.fillStyle = 'rgba(255,110,110,0.88)';
+  ctx.fillText('过渡态', xt, YB + 36);
+  ctx.font = '500 10px ui-monospace,Menlo,Consolas,monospace';
+  ctx.fillStyle = 'rgba(255,110,110,0.55)';
+  ctx.fillText('活化能峰', xt, YB + 50);
+
+  /* --- 产物势阱 --- */
+  const xp = xiToX(XI_PROD);
+  const yp = gToY(G_PROD);
+  ctx.setLineDash([4, 6]);
+  ctx.strokeStyle = 'rgba(80,220,255,0.35)';
+  ctx.beginPath();
+  ctx.moveTo(xp, yp);
+  ctx.lineTo(xp, YB + 18);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.font = '600 11px ui-monospace,Menlo,Consolas,monospace';
+  ctx.fillStyle = 'rgba(100,225,255,0.88)';
+  ctx.fillText('产物', xp, YB + 36);
+  ctx.font = '500 10px ui-monospace,Menlo,Consolas,monospace';
+  ctx.fillStyle = 'rgba(100,225,255,0.55)';
+  ctx.fillText('低能态', xp, YB + 50);
+
+  /* --- 鞍点辉光（脉动） --- */
+  const pulse = 0.5 + 0.5 * Math.sin(simTime * 2.8);
+  const rGlow = 22 + 14 * pulse;
+  const gg = ctx.createRadialGradient(xt, yt, 0, xt, yt, rGlow * 2);
+  gg.addColorStop(0, `rgba(255,90,90,${0.22 + 0.14 * pulse})`);
+  gg.addColorStop(1, 'rgba(255,90,90,0)');
+  ctx.fillStyle = gg;
+  ctx.beginPath();
+  ctx.arc(xt, yt, rGlow * 2, 0, TAU);
+  ctx.fill();
+}
+
+/* ============================================================
+   渲染 · 活化能 / ΔG 箭头
+============================================================ */
+function drawEnergyArrows(){
+  /* --- 正向活化能 Ea --- */
+  const xEa = xiToX(XI_TS) + 18;
+  const y1 = gToY(G_REACT);
+  const y2 = gToY(G_TS);
+
+  ctx.strokeStyle = 'rgba(255,170,90,0.60)';
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  ctx.moveTo(xEa, y1);
+  ctx.lineTo(xEa, y2);
+  ctx.stroke();
+
+  arrowHead(xEa, y1, 'down', 'rgba(255,170,90,0.70)');
+  arrowHead(xEa, y2, 'up',   'rgba(255,170,90,0.70)');
+
+  ctx.font = '600 10px ui-monospace,Menlo,Consolas,monospace';
+  ctx.textAlign = 'left';
+  ctx.fillStyle = 'rgba(255,190,120,0.85)';
+  ctx.fillText('Ea', xEa + 8, (y1 + y2) / 2 + 3);
+
+  /* --- ΔG 箭头（产物 − 反应物） --- */
+  const xDG = xiToX(XI_PROD) + 60;
+  const yR  = gToY(G_REACT);
+  const yP  = gToY(G_PROD);
+
+  ctx.setLineDash([3, 5]);
+  ctx.strokeStyle = 'rgba(160,220,255,0.30)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(xiToX(XI_REACT), yR);
+  ctx.lineTo(xDG + 4, yR);
+  ctx.moveTo(xiToX(XI_PROD), yP);
+  ctx.lineTo(xDG + 4, yP);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.strokeStyle = 'rgba(100,225,255,0.70)';
+  ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  ctx.moveTo(xDG, yR);
+  ctx.lineTo(xDG, yP);
+  ctx.stroke();
+
+  arrowHead(xDG, yP, 'down', 'rgba(100,225,255,0.85)');
+  arrowHead(xDG, yR, 'up',   'rgba(100,225,255,0.85)');
+
+  ctx.font = '700 11px ui-monospace,Menlo,Consolas,monospace';
+  ctx.textAlign = 'left';
+  ctx.fillStyle = 'rgba(140,240,255,0.95)';
+  ctx.shadowColor = 'rgba(80,220,255,0.85)';
+  ctx.shadowBlur = 12;
+  ctx.fillText('ΔG < 0', xDG + 10, (yR + yP) / 2 + 4);
+  ctx.shadowBlur = 0;
+
+  ctx.font = '500 9px ui-monospace,Menlo,Consolas,monospace';
+  ctx.fillStyle = 'rgba(140,240,255,0.55)';
+  ctx.fillText('自发方向', xDG + 10, (yR + yP) / 2 + 18);
+}
+
+function arrowHead(x, y, dir, color){
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  if (dir === 'up'){
+    ctx.moveTo(x, y);
+    ctx.lineTo(x - 4, y + 7);
+    ctx.lineTo(x + 4, y + 7);
+  } else {
+    ctx.moveTo(x, y);
+    ctx.lineTo(x - 4, y - 7);
+    ctx.lineTo(x + 4, y - 7);
+  }
+  ctx.closePath();
+  ctx.fill();
+}
+
+/* ============================================================
+   渲染 · 小球与拖尾
+============================================================ */
+function drawBall(xi){
+  const px = xiToX(xi);
+  const py = gToY(G(xi));
+
+  /* --- 拖尾 --- */
+  if (trail.length > 1){
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < trail.length - 1; i++){
+      const a = i / trail.length;
+      const tp = trail[i];
+      const tpx = xiToX(tp.xi);
+      const tpy = gToY(G(tp.xi));
+      ctx.beginPath();
+      ctx.arc(tpx, tpy, 2 + a * 2, 0, TAU);
+      ctx.fillStyle = `rgba(255,200,120,${a * 0.25})`;
+      ctx.fill();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  /* --- 外发光 --- */
+  const glowR = 26 + 6 * Math.sin(simTime * 5);
+  const gg = ctx.createRadialGradient(px, py, 0, px, py, glowR);
+  gg.addColorStop(0,   'rgba(255,220,140,0.55)');
+  gg.addColorStop(0.4, 'rgba(255,160,80,0.22)');
+  gg.addColorStop(1,   'rgba(255,120,60,0)');
+  ctx.fillStyle = gg;
+  ctx.beginPath();
+  ctx.arc(px, py, glowR, 0, TAU);
+  ctx.fill();
+
+  /* --- 核心球体 --- */
+  const coreR = 7.5;
+  const cg = ctx.createRadialGradient(px - 2, py - 2, 0, px, py, coreR);
+  cg.addColorStop(0, '#fffdf0');
+  cg.addColorStop(0.45, '#ffd070');
+  cg.addColorStop(1, '#ff8a30');
+  ctx.fillStyle = cg;
+  ctx.beginPath();
+  ctx.arc(px, py, coreR, 0, TAU);
+  ctx.fill();
+
+  /* --- 高光 --- */
+  ctx.beginPath();
+  ctx.arc(px - 2.4, py - 2.4, 2.4, 0, TAU);
+  ctx.fillStyle = 'rgba(255,255,255,0.92)';
+  ctx.fill();
+
+  /* --- 位置读数 --- */
+  ctx.font = '600 10.5px ui-monospace,Menlo,Consolas,monospace';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(255,225,160,0.80)';
+  ctx.fillText('ξ = ' + xi.toFixed(3), px, py - 26);
+}
+
+/* ============================================================
+   渲染 · 能量脉冲
+============================================================ */
+function drawBursts(dt){
+  for (let i = bursts.length - 1; i >= 0; i--){
+    const b = bursts[i];
+    b.r += (b.max - b.r) * dt * 6;
+    b.life -= dt * 1.8;
+    if (b.life <= 0){ bursts.splice(i, 1); continue; }
+
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, b.r, 0, TAU);
+    ctx.strokeStyle = `rgba(255,220,120,${b.life * 0.7})`;
+    ctx.lineWidth = 2.4 * b.life + 0.4;
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, b.r * 0.6, 0, TAU);
+    ctx.fillStyle = `rgba(255,180,80,${b.life * 0.14})`;
+    ctx.fill();
+  }
+}
+
+/* ============================================================
+   渲染 · 坐标轴
+============================================================ */
+function drawAxes(){
+  /* --- 反应坐标 --- */
+  ctx.font = '500 11px ui-monospace,Menlo,Consolas,monospace';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(150,180,255,0.42)';
+  ctx.fillText('反应坐标  ξ  →', (X0 + X1) / 2, YB + 74);
+
+  /* --- 自由能 --- */
+  ctx.save();
+  ctx.translate(X0 - 42, (YT + YB) / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(150,180,255,0.42)';
+  ctx.fillText('自由能  G', 0, 0);
+  ctx.restore();
+
+  /* --- 刻度 --- */
+  ctx.strokeStyle = 'rgba(140,170,255,0.14)';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++){
+    const xi = i / 4;
+    const px = xiToX(xi);
+    ctx.beginPath();
+    ctx.moveTo(px, YB);
+    ctx.lineTo(px, YB + 6);
+    ctx.stroke();
+  }
+  ctx.textAlign = 'center';
+  ctx.font = '10px ui-monospace,Menlo,Consolas,monospace';
+  ctx.fillStyle = 'rgba(140,170,255,0.30)';
+  for (let i = 0; i <= 4; i++){
+    ctx.fillText((i / 4).toFixed(2), xiToX(i / 4), YB + 20);
+  }
+}
+
+/* ============================================================
+   渲染 · 顶部实时读数
+============================================================ */
+function drawReadout(xi){
+  const g   = G(xi);
+  const gR  = G_REACT;
+  const gP  = G_PROD;
+  const dG  = gP - gR;
+
+  const txt =
+    `ΔG⁰ = ${(dG * 100).toFixed(1)} kJ/mol    ` +
+    `当前 G = ${(g * 100).toFixed(1)}    ` +
+    (dG < 0 ? '自发反应' : '非自发');
+
+  ctx.font = '600 12px ui-monospace,Menlo,Consolas,monospace';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(205,225,255,0.82)';
+  ctx.shadowColor = 'rgba(150,110,255,0.85)';
+  ctx.shadowBlur = 14;
+  ctx.fillText(txt, W / 2, YT - 40);
+  ctx.shadowBlur = 0;
+}
+
+/* ============================================================
+   主循环
+============================================================ */
+function loop(now){
+  requestAnimationFrame(loop);
+
+  if (!lastTime) lastTime = now;
+  let dt = (now - lastTime) / 1000;
+  lastTime = now;
+  if (dt > 0.05) dt = 0.05;
+  if (dt < 0) dt = 0;
+
+  simTime += dt;
+  if (simTime > CYCLE) simTime -= CYCLE;
+
+  /* --- 小球位置 --- */
+  let xi = ballXi(simTime);
+  if (reverse) xi = 1 - xi;
+
+  /* --- 拖尾更新 --- */
+  trail.push({ xi });
+  if (trail.length > TRAIL_MAX) trail.shift();
+
+  /* --- 能量脉冲：在 t=6 和 t=13 触发 --- */
+  const tt = simTime;
+  if (tt > 6 && tt < 6.06 && bursts.length === 0){
+    const px = xiToX(XI_REACT);
+    const py = gToY(G_REACT);
+    bursts.push({ x: px, y: py, r: 0, max: 60, life: 1 });
+  }
+  if (tt > 13 && tt < 13.06 && bursts.length === 0){
+    const px = xiToX(XI_TS);
+    const py = gToY(G_TS);
+    bursts.push({ x: px, y: py, r: 0, max: 80, life: 1 });
+  }
+
+  /* --- 绘制 --- */
+  drawBackground();
+  drawTerrain();
+  drawKeyPoints();
+  drawEnergyArrows();
+  drawAxes();
+  drawBall(xi);
+  drawBursts(dt);
+  drawReadout(xi);
+}
+
+/* ============================================================
+   交互
+============================================================ */
+const reverseToggle = document.getElementById('reverseToggle');
+reverseToggle.addEventListener('change', () => {
+  reverse = reverseToggle.checked;
+  trail.length = 0;
+});
+
+window.addEventListener('resize', resize);
+
+/* ============================================================
+   启动
+============================================================ */
+resize();
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>

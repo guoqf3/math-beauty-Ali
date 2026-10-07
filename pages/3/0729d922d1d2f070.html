@@ -1,0 +1,846 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>达西定律 · 多孔介质渗透率测定</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100%;height:100%;overflow:hidden;background:#02040a;
+    font-family:"SF Mono",Consolas,"Courier New",monospace;cursor:crosshair}
+  canvas{display:block;position:fixed;inset:0}
+
+  .hud{
+    position:fixed;z-index:10;pointer-events:none;
+    font-size:12px;letter-spacing:.5px;line-height:2.05;
+    color:#5fe0ff;
+    text-shadow:0 0 10px rgba(0,190,255,.7),0 0 26px rgba(60,120,255,.35);
+  }
+  .hud .warm{color:#ffb056;text-shadow:0 0 10px rgba(255,140,40,.8)}
+  .hud .wh{color:#e8f8ff;text-shadow:0 0 12px rgba(200,240,255,.85)}
+  .hud .dim{color:#4a7188;font-size:11px;text-shadow:none}
+  .hud .lime{color:#9dffb0;text-shadow:0 0 10px rgba(80,255,140,.7)}
+  .tl{top:16px;left:20px}
+  .tr{top:16px;right:20px;text-align:right}
+  .bl{bottom:18px;left:20px}
+  .br{bottom:18px;right:20px;text-align:right}
+
+  .ctrl{
+    position:fixed;z-index:12;top:16px;left:50%;transform:translateX(-50%);
+    display:flex;align-items:center;gap:14px;
+    font-size:11px;letter-spacing:1.4px;color:#5fe0ff;
+    text-shadow:0 0 10px rgba(0,190,255,.8);
+    background:rgba(5,16,30,.62);
+    border:1px solid rgba(80,200,255,.22);
+    border-radius:24px;padding:9px 22px;
+    backdrop-filter:blur(9px);
+    box-shadow:0 0 30px rgba(0,120,255,.12);
+  }
+  .ctrl input[type=range]{
+    -webkit-appearance:none;appearance:none;width:190px;height:4px;border-radius:4px;
+    background:linear-gradient(90deg,#062033,#0aa8e0,#7a3cff);
+    outline:none;cursor:pointer;
+  }
+  .ctrl input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none;width:14px;height:14px;border-radius:50%;
+    background:#eafcff;border:1px solid rgba(255,255,255,.8);
+    box-shadow:0 0 12px #00d5ff,0 0 26px #4b7cff;cursor:pointer;
+  }
+  .ctrl input[type=range]::-moz-range-thumb{
+    width:14px;height:14px;border:none;border-radius:50%;background:#eafcff;
+    box-shadow:0 0 12px #00d5ff;cursor:pointer;
+  }
+  #dpv{color:#e8f8ff;min-width:66px;display:inline-block;text-align:right}
+  #turb{
+    font-family:inherit;font-size:10px;letter-spacing:1.5px;
+    color:#5fe0ff;background:rgba(10,40,70,.7);
+    border:1px solid rgba(80,200,255,.35);border-radius:14px;
+    padding:4px 12px;cursor:pointer;transition:all .25s;
+    text-shadow:0 0 8px rgba(0,190,255,.7);
+  }
+  #turb.on{
+    color:#ffb0ff;border-color:rgba(255,120,255,.55);
+    background:rgba(60,10,70,.7);
+    text-shadow:0 0 10px rgba(255,120,255,.9);
+  }
+  #turb:hover{transform:translateY(-1px)}
+
+  .hint{
+    position:fixed;z-index:10;bottom:52px;left:50%;transform:translateX(-50%);
+    font-size:10px;letter-spacing:2.6px;color:#3d637a;
+    text-shadow:0 0 10px rgba(0,160,255,.35);
+    pointer-events:none;
+  }
+
+  @keyframes pulse{
+    0%,100%{opacity:.55}
+    50%{opacity:1}
+  }
+  .dot{
+    display:inline-block;width:6px;height:6px;border-radius:50%;
+    background:#5fe0ff;box-shadow:0 0 10px #00c8ff;
+    margin-right:6px;vertical-align:middle;
+    animation:pulse 1.8s ease-in-out infinite;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div class="hud tl">
+  <div>Q = − (k·A / μ) · (Δp / L)</div>
+  <div>k = − Q·μ·L / (A·Δp)</div>
+  <div class="dim">达西定律 · Darcy's Law</div>
+</div>
+
+<div class="hud tr">
+  <div>Re = ρ·u·d<sub>p</sub> / μ &nbsp;≪&nbsp; 1</div>
+  <div class="lime"><span class="dot"></span>Re = 0.38 · 层流</div>
+</div>
+
+<div class="hud bl">
+  <div>L = <span class="wh">30</span> cm &nbsp;·&nbsp; A = <span class="wh">7.07</span> cm²</div>
+  <div>μ = <span class="wh">1.0×10⁻³</span> Pa·s</div>
+  <div class="dim">圆柱砂柱 · 石英砂介质</div>
+</div>
+
+<div class="hud br">
+  <div>k = <span class="warm">5.8×10⁻¹¹ m²</span></div>
+  <div>Δp = <span class="wh" id="dpv2">1.20</span> kPa</div>
+  <div>Q = <span class="wh" id="qv">0.164</span> cm³/s</div>
+</div>
+
+<div class="ctrl">
+  <span>Δp</span>
+  <input type="range" id="dp" min="0.2" max="3.0" step="0.01" value="1.2">
+  <span id="dpv">1.20 kPa</span>
+  <button id="turb">层流</button>
+</div>
+
+<div class="hint">拖动重构孔喉 · 双击重置介质</div>
+
+<script>
+(function(){
+"use strict";
+
+/* ============================================================
+   常量
+============================================================ */
+const NX = 26, NY = 64;
+const TAU = Math.PI * 2;
+const CYCLE = 30;
+const NPART = 420;
+const ITERS = 250;
+
+const clamp = (v,a,b)=> v<a?a:(v>b?b:v);
+
+/* ============================================================
+   网格场
+============================================================ */
+const solid = new Uint8Array(NX*NY);
+const pres  = new Float32Array(NX*NY);
+const vx    = new Float32Array(NX*NY);
+const vy    = new Float32Array(NX*NY);
+let   beads = [];
+
+/* ============================================================
+   Canvas / 布局
+============================================================ */
+const cv  = document.getElementById('c');
+const ctx = cv.getContext('2d');
+let W=0,H=0,DPR=1;
+let colX=0, colY=0, colW=0, colH=0, cw=1, ch=1;
+
+let bgCv = null, bgCtx = null;
+let beadSprite = null;
+
+/* ============================================================
+   状态
+============================================================ */
+let t = 0, lastT = 0;
+let dp = 1.2;
+let turbulent = false;
+let autoSweep = true;
+let autoTimer = null;
+
+let particles = [];
+let dragging = false;
+let needSolve = false, solveClock = 0;
+
+/* ============================================================
+   颜色工具
+============================================================ */
+function hslToRgb(h, s, l){
+  h = (((h % 360) + 360) % 360) / 360;
+  let r,g,b;
+  if (s === 0){ r=g=b=l; }
+  else {
+    const hue2rgb = (p,q,tt)=>{
+      if (tt<0) tt+=1;
+      if (tt>1) tt-=1;
+      if (tt<1/6) return p + (q-p)*6*tt;
+      if (tt<1/2) return q;
+      if (tt<2/3) return p + (q-p)*(2/3-tt)*6;
+      return p;
+    };
+    const q = l < 0.5 ? l*(1+s) : l+s-l*s;
+    const p = 2*l - q;
+    r = hue2rgb(p,q,h+1/3);
+    g = hue2rgb(p,q,h);
+    b = hue2rgb(p,q,h-1/3);
+  }
+  return [r*255, g*255, b*255];
+}
+
+/* ============================================================
+   尺寸
+============================================================ */
+function resize(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  cv.width  = Math.floor(W*DPR);
+  cv.height = Math.floor(H*DPR);
+  cv.style.width  = W+'px';
+  cv.style.height = H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+
+  colW = Math.min(W*0.26, 250);
+  colH = Math.min(H*0.82, 640);
+  colX = W*0.5 - colW*0.5;
+  colY = H*0.5 - colH*0.5;
+  cw = colW / NX;
+  ch = colH / NY;
+
+  initParticles();
+}
+
+/* ============================================================
+   珠子生成
+============================================================ */
+function buildBeads(){
+  beads = [];
+  const sp = 2.42;
+  for (let j = 2.2; j < NY-2.0; j += sp){
+    for (let i = 1.6; i < NX-1.6; i += sp){
+      if (Math.random() < 0.10) continue;          // 随机缺失 → 大孔道
+      const bx = i + (Math.random()-0.5)*1.05;
+      const by = j + (Math.random()-0.5)*1.05;
+      const r  = 0.86 + Math.random()*0.46;
+      beads.push({ x:bx, y:by, r:r });
+    }
+  }
+}
+
+/* ============================================================
+   栅格化
+============================================================ */
+function rasterize(){
+  solid.fill(0);
+  for (let n=0;n<beads.length;n++){
+    const b = beads[n];
+    const ri = b.r + 0.8;
+    const i0 = Math.max(0, Math.floor(b.x-ri));
+    const i1 = Math.min(NX-1, Math.ceil(b.x+ri));
+    const j0 = Math.max(0, Math.floor(b.y-ri));
+    const j1 = Math.min(NY-1, Math.ceil(b.y+ri));
+    const r2 = b.r*b.r;
+    for (let j=j0;j<=j1;j++){
+      const row = j*NX;
+      const dy = j+0.5-b.y;
+      for (let i=i0;i<=i1;i++){
+        const dx = i+0.5-b.x;
+        if (dx*dx + dy*dy < r2) solid[row+i] = 1;
+      }
+    }
+  }
+  // 上下边界保持畅通
+  for (let i=0;i<NX;i++){
+    solid[i] = 0;
+    solid[NX+i] = 0;
+    solid[(NY-2)*NX+i] = 0;
+    solid[(NY-1)*NX+i] = 0;
+  }
+}
+
+/* ============================================================
+   压力场求解 (Gauss-Seidel)
+============================================================ */
+function solvePressure(){
+  for (let j=0;j<NY;j++){
+    const v = 1 - j/(NY-1);
+    for (let i=0;i<NX;i++) pres[j*NX+i] = v;
+  }
+  for (let it=0; it<ITERS; it++){
+    for (let i=0;i<NX;i++){
+      const top = i, bot = (NY-1)*NX + i;
+      if (!solid[top]) pres[top] = 1;
+      if (!solid[bot]) pres[bot] = 0;
+    }
+    for (let j=1;j<NY-1;j++){
+      const row = j*NX;
+      for (let i=1;i<NX-1;i++){
+        const idx = row+i;
+        if (solid[idx]) continue;
+        const pc = pres[idx];
+        const l = solid[idx-1]  ? pc : pres[idx-1];
+        const r = solid[idx+1]  ? pc : pres[idx+1];
+        const u = solid[idx-NX] ? pc : pres[idx-NX];
+        const d = solid[idx+NX] ? pc : pres[idx+NX];
+        pres[idx] = (l+r+u+d) * 0.25;
+      }
+    }
+  }
+}
+
+/* ============================================================
+   速度场
+============================================================ */
+function computeVel(){
+  let sum = 0, cnt = 0;
+  for (let j=1;j<NY-1;j++){
+    const row = j*NX;
+    for (let i=1;i<NX-1;i++){
+      const idx = row+i;
+      if (solid[idx]){ vx[idx]=0; vy[idx]=0; continue; }
+      const pc = pres[idx];
+      const pl = solid[idx-1]  ? pc : pres[idx-1];
+      const pr = solid[idx+1]  ? pc : pres[idx+1];
+      const pu = solid[idx-NX] ? pc : pres[idx-NX];
+      const pd = solid[idx+NX] ? pc : pres[idx+NX];
+      const gx = (pr-pl) * 0.5;
+      const gy = (pd-pu) * 0.5;
+      vx[idx] = -gx;
+      vy[idx] = -gy;
+      sum += Math.abs(gy);
+      cnt++;
+    }
+  }
+  const mean = cnt > 0 ? sum/cnt : 1;
+  const k = mean > 1e-9 ? 1/mean : 0;
+  for (let i=0;i<NX*NY;i++){ vx[i]*=k; vy[i]*=k; }
+}
+
+/* ============================================================
+   压力背景离屏渲染
+============================================================ */
+function renderPressureBG(){
+  if (!bgCtx) return;
+  const img = bgCtx.createImageData(NX, NY);
+  const d = img.data;
+  for (let idx=0; idx<NX*NY; idx++){
+    let r,g,b;
+    if (solid[idx]){
+      r = 6; g = 10; b = 20;
+    } else {
+      const p = pres[idx];
+      const h = 208 - p*186;
+      const rgb = hslToRgb(h, 0.88, 0.13 + p*0.20);
+      r = rgb[0]; g = rgb[1]; b = rgb[2];
+    }
+    d[idx*4]   = r;
+    d[idx*4+1] = g;
+    d[idx*4+2] = b;
+    d[idx*4+3] = 255;
+  }
+  bgCtx.putImageData(img, 0, 0);
+}
+
+/* ============================================================
+   重建管线
+============================================================ */
+function rebuild(){
+  rasterize();
+  solvePressure();
+  computeVel();
+  renderPressureBG();
+}
+
+/* ============================================================
+   粒子
+============================================================ */
+function respawn(p, anywhere){
+  for (let k=0;k<50;k++){
+    let i, j;
+    if (anywhere){
+      i = Math.floor(Math.random()*NX);
+      j = Math.floor(Math.random()*NY);
+    } else {
+      i = Math.floor(Math.random()*NX);
+      j = Math.floor(Math.random()*3);
+    }
+    if (!solid[j*NX+i]){
+      p.x = colX + (i+0.5)*cw + (Math.random()-0.5)*cw*0.8;
+      p.y = colY + (j+0.5)*ch + (Math.random()-0.5)*ch*0.8;
+      for (let m=0;m<p.hist.length;m++){
+        p.hist[m].x = p.x;
+        p.hist[m].y = p.y;
+      }
+      return;
+    }
+  }
+  p.x = colX + colW*0.5;
+  p.y = colY + 4;
+  for (let m=0;m<p.hist.length;m++){ p.hist[m].x = p.x; p.hist[m].y = p.y; }
+}
+
+function initParticles(){
+  particles = [];
+  for (let n=0;n<NPART;n++){
+    const p = {
+      x:0, y:0,
+      hist:[{x:0,y:0},{x:0,y:0},{x:0,y:0},{x:0,y:0}],
+      hue: 182 + Math.random()*48,
+      sat: 92 + Math.random()*8
+    };
+    respawn(p, true);
+    particles.push(p);
+  }
+}
+
+/* ============================================================
+   速度采样
+============================================================ */
+function sampleVel(x, y){
+  const fx = (x - colX)/cw - 0.5;
+  const fy = (y - colY)/ch - 0.5;
+  let i = Math.floor(fx), j = Math.floor(fy);
+  i = clamp(i, 0, NX-2);
+  j = clamp(j, 0, NY-2);
+  const tx = clamp(fx - i, 0, 1);
+  const ty = clamp(fy - j, 0, 1);
+
+  const i00 = j*NX + i;
+  const i10 = i00 + 1;
+  const i01 = i00 + NX;
+  const i11 = i01 + 1;
+
+  const rx = (vx[i00]*(1-tx)+vx[i10]*tx)*(1-ty) + (vx[i01]*(1-tx)+vx[i11]*tx)*ty;
+  const ry = (vy[i00]*(1-tx)+vy[i10]*tx)*(1-ty) + (vy[i01]*(1-tx)+vy[i11]*tx)*ty;
+  return [rx, ry];
+}
+
+/* ============================================================
+   粒子更新
+============================================================ */
+function updateParticles(dt){
+  const dpF = dp / 1.2;
+  const baseSpd = 5.2 * Math.pow(dpF, 0.55);
+  const wander = turbulent ? 2.0 : 0.32;
+
+  for (let n=0;n<particles.length;n++){
+    const p = particles[n];
+
+    const v = sampleVel(p.x, p.y);
+    let mx = v[0] * baseSpd;
+    let my = v[1] * baseSpd;
+
+    mx += (Math.random()-0.5) * baseSpd * wander;
+    my += (Math.random()-0.5) * baseSpd * wander;
+
+    p.x += mx * dt;
+    p.y += my * dt;
+
+    // 历史位移
+    const h = p.hist;
+    for (let k=h.length-1;k>0;k--){ h[k].x = h[k-1].x; h[k].y = h[k-1].y; }
+    h[0].x = p.x; h[0].y = p.y;
+
+    // 卡在固体里 → 轻推
+    const ci = Math.floor((p.x - colX)/cw);
+    const cj = Math.floor((p.y - colY)/ch);
+    if (ci>=0 && ci<NX && cj>=0 && cj<NY && solid[cj*NX+ci]){
+      p.x += (Math.random()-0.5) * cw * 2.2;
+      p.y += (Math.random()-0.5) * ch * 2.2;
+    }
+
+    // 回收
+    if (p.y > colY + colH + 10 ||
+        p.x < colX - 28 || p.x > colX + colW + 28 ||
+        p.y < colY - 28){
+      respawn(p, false);
+    }
+  }
+}
+
+/* ============================================================
+   珠子精灵
+============================================================ */
+function makeBeadSprite(){
+  const S = 72;
+  beadSprite = document.createElement('canvas');
+  beadSprite.width = S; beadSprite.height = S;
+  const c = beadSprite.getContext('2d');
+
+  const g = c.createRadialGradient(S*0.36, S*0.32, S*0.04, S*0.5, S*0.5, S*0.52);
+  g.addColorStop(0,    'rgba(168,208,242,1)');
+  g.addColorStop(0.28, 'rgba(92,132,178,1)');
+  g.addColorStop(0.62, 'rgba(42,62,94,1)');
+  g.addColorStop(0.88, 'rgba(20,30,50,1)');
+  g.addColorStop(1,    'rgba(8,14,26,1)');
+  c.fillStyle = g;
+  c.beginPath();
+  c.arc(S*0.5, S*0.5, S*0.5-1.5, 0, TAU);
+  c.fill();
+
+  // 边缘冷光
+  c.strokeStyle = 'rgba(110,200,255,0.34)';
+  c.lineWidth = 1.6;
+  c.beginPath();
+  c.arc(S*0.5, S*0.5, S*0.5-2.2, Math.PI*0.62, Math.PI*1.62);
+  c.stroke();
+
+  // 高光点
+  const hg = c.createRadialGradient(S*0.34, S*0.30, 0, S*0.34, S*0.30, S*0.17);
+  hg.addColorStop(0, 'rgba(230,250,255,0.85)');
+  hg.addColorStop(1, 'rgba(230,250,255,0)');
+  c.fillStyle = hg;
+  c.beginPath();
+  c.arc(S*0.34, S*0.30, S*0.17, 0, TAU);
+  c.fill();
+}
+
+/* ============================================================
+   绘制
+============================================================ */
+function drawBG(){
+  const g = ctx.createRadialGradient(W*0.5, H*0.45, 0, W*0.5, H*0.5, Math.max(W,H)*0.85);
+  g.addColorStop(0,   '#08111f');
+  g.addColorStop(0.55,'#04080f');
+  g.addColorStop(1,   '#010205');
+  ctx.fillStyle = g;
+  ctx.fillRect(0,0,W,H);
+
+  // 细网格
+  ctx.strokeStyle = 'rgba(50,120,180,0.045)';
+  ctx.lineWidth = 1;
+  const gs = 64;
+  ctx.beginPath();
+  for (let x=0;x<W;x+=gs){ ctx.moveTo(x,0); ctx.lineTo(x,H); }
+  for (let y=0;y<H;y+=gs){ ctx.moveTo(0,y); ctx.lineTo(W,y); }
+  ctx.stroke();
+}
+
+function drawBeads(){
+  if (!beadSprite) return;
+  const base = cw * 2.35;
+  for (let n=0;n<beads.length;n++){
+    const b = beads[n];
+    const x = colX + b.x*cw;
+    const y = colY + b.y*ch;
+    const r = b.r * cw;
+    ctx.drawImage(beadSprite, x-r, y-r, r*2, r*2);
+  }
+}
+
+function drawParticles(){
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  for (let n=0;n<particles.length;n++){
+    const p = particles[n];
+    const h = p.hist;
+
+    const dx = h[0].x - h[3].x;
+    const dy = h[0].y - h[3].y;
+    const spd = Math.hypot(dx, dy);
+
+    const alpha = clamp(0.16 + spd*0.055, 0.14, 0.95);
+
+    let hue;
+    if (turbulent){
+      hue = 288 + Math.sin(n*0.7 + t*2.0) * 46;
+    } else {
+      hue = p.hue;
+    }
+    const sat = turbulent ? 96 : p.sat;
+
+    // 拖尾
+    ctx.beginPath();
+    ctx.moveTo(h[3].x, h[3].y);
+    ctx.lineTo(h[2].x, h[2].y);
+    ctx.lineTo(h[1].x, h[1].y);
+    ctx.lineTo(h[0].x, h[0].y);
+    ctx.strokeStyle = 'hsla(' + hue.toFixed(0) + ',' + sat.toFixed(0) + '%,72%,' + (alpha*0.34).toFixed(3) + ')';
+    ctx.lineWidth = 1.15;
+    ctx.stroke();
+
+    // 头部
+    const headR = turbulent ? 1.9 : 1.55;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, headR, 0, TAU);
+    ctx.fillStyle = 'hsla(' + hue.toFixed(0) + ',' + sat.toFixed(0) + '%,86%,' + alpha.toFixed(3) + ')';
+    ctx.fill();
+
+    // 光晕
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, headR*3.0, 0, TAU);
+    ctx.fillStyle = 'hsla(' + hue.toFixed(0) + ',' + sat.toFixed(0) + '%,62%,' + (alpha*0.09).toFixed(3) + ')';
+    ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* 速度矢量箭头（长尾摆动） */
+function drawArrows(){
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap = 'round';
+
+  for (let n=0;n<particles.length;n+=5){
+    const p = particles[n];
+    const h = p.hist;
+    const dx = h[0].x - h[2].x;
+    const dy = h[0].y - h[2].y;
+    const len = Math.hypot(dx, dy);
+    if (len < 0.35) continue;
+
+    const ux = dx/len, uy = dy/len;
+    const tail = clamp(len*5.5, 10, 34);
+    const ex = p.x + ux*tail;
+    const ey = p.y + uy*tail;
+
+    const hue = turbulent ? 300 : 192;
+
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y);
+    ctx.lineTo(ex, ey);
+    ctx.strokeStyle = 'hsla(' + hue + ',100%,72%,0.20)';
+    ctx.lineWidth = 1.0;
+    ctx.stroke();
+
+    // 箭头
+    const ax = ex, ay = ey;
+    const px = -uy, py = ux;
+    const s = 4.2;
+    ctx.beginPath();
+    ctx.moveTo(ax, ay);
+    ctx.lineTo(ax - ux*s + px*s*0.5, ay - uy*s + py*s*0.5);
+    ctx.lineTo(ax - ux*s - px*s*0.5, ay - uy*s - py*s*0.5);
+    ctx.closePath();
+    ctx.fillStyle = 'hsla(' + hue + ',100%,78%,0.30)';
+    ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ============================================================
+   渲染主函数
+============================================================ */
+function render(){
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  ctx.clearRect(0,0,W,H);
+
+  drawBG();
+
+  // 柱体外发光
+  const glow = ctx.createRadialGradient(
+    colX+colW*0.5, colY+colH*0.5, colW*0.2,
+    colX+colW*0.5, colY+colH*0.5, colH*0.62
+  );
+  glow.addColorStop(0, 'rgba(0,110,200,0.10)');
+  glow.addColorStop(1, 'rgba(0,40,90,0)');
+  ctx.fillStyle = glow;
+  ctx.fillRect(colX-90, colY-60, colW+180, colH+120);
+
+  // 柱体基底
+  ctx.fillStyle = '#04080f';
+  ctx.fillRect(colX, colY, colW, colH);
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(colX, colY, colW, colH);
+  ctx.clip();
+
+  // 压力场背景
+  if (bgCv){
+    ctx.imageSmoothingEnabled = true;
+    ctx.globalAlpha = 0.92;
+    ctx.drawImage(bgCv, colX, colY, colW, colH);
+    ctx.globalAlpha = 1;
+  }
+
+  drawBeads();
+  drawParticles();
+  drawArrows();
+
+  ctx.restore();
+
+  // 柱体边框
+  ctx.strokeStyle = 'rgba(80,190,255,0.22)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(colX+0.5, colY+0.5, colW-1, colH-1);
+  ctx.strokeStyle = 'rgba(140,220,255,0.08)';
+  ctx.lineWidth = 5;
+  ctx.strokeRect(colX+3.5, colY+3.5, colW-7, colH-7);
+
+  // 上下流动口
+  ctx.globalCompositeOperation = 'lighter';
+  const tg = ctx.createLinearGradient(0, colY-24, 0, colY+30);
+  tg.addColorStop(0, 'rgba(80,200,255,0)');
+  tg.addColorStop(1, 'rgba(80,200,255,0.13)');
+  ctx.fillStyle = tg;
+  ctx.fillRect(colX, colY-24, colW, 54);
+
+  const bg2 = ctx.createLinearGradient(0, colY+colH+24, 0, colY+colH-30);
+  bg2.addColorStop(0, 'rgba(180,240,255,0)');
+  bg2.addColorStop(1, 'rgba(180,240,255,0.11)');
+  ctx.fillStyle = bg2;
+  ctx.fillRect(colX, colY+colH-30, colW, 54);
+  ctx.globalCompositeOperation = 'source-over';
+
+  // 暗角
+  const vg = ctx.createRadialGradient(W/2,H/2, Math.min(W,H)*0.30, W/2,H/2, Math.max(W,H)*0.78);
+  vg.addColorStop(0, 'rgba(0,0,0,0)');
+  vg.addColorStop(1, 'rgba(0,0,0,0.76)');
+  ctx.fillStyle = vg;
+  ctx.fillRect(0,0,W,H);
+}
+
+/* ============================================================
+   HUD
+============================================================ */
+const dpvEl  = document.getElementById('dpv');
+const dpv2El = document.getElementById('dpv2');
+const qvEl   = document.getElementById('qv');
+const slider = document.getElementById('dp');
+const turbBtn= document.getElementById('turb');
+
+let hudClock = 0;
+function updateHUD(dt){
+  hudClock += dt;
+  if (hudClock < 0.06) return;
+  hudClock = 0;
+
+  // Q = k·A·Δp / (μ·L)  →  cm³/s
+  const Q = 0.1367 * dp;
+
+  dpvEl.textContent  = dp.toFixed(2) + ' kPa';
+  dpv2El.textContent = dp.toFixed(2);
+  qvEl.textContent   = Q.toFixed(3);
+
+  if (autoSweep){
+    slider.value = dp.toFixed(2);
+  }
+}
+
+/* ============================================================
+   交互
+============================================================ */
+function cellAt(x, y){
+  const i = Math.floor((x - colX)/cw);
+  const j = Math.floor((y - colY)/ch);
+  return {i, j};
+}
+
+function carve(x, y){
+  const {i,j} = cellAt(x, y);
+  if (i<0||i>=NX||j<0||j>=NY) return;
+  const R = 3.0;
+  let changed = false;
+  for (let n=beads.length-1;n>=0;n--){
+    const b = beads[n];
+    const d = Math.hypot(b.x - (i+0.5), b.y - (j+0.5));
+    if (d < R + b.r){
+      beads.splice(n,1);
+      changed = true;
+    }
+  }
+  if (changed){
+    needSolve = true;
+  }
+}
+
+cv.addEventListener('pointerdown', function(e){
+  dragging = true;
+  carve(e.clientX, e.clientY);
+});
+cv.addEventListener('pointermove', function(e){
+  if (!dragging) return;
+  carve(e.clientX, e.clientY);
+});
+window.addEventListener('pointerup', function(){
+  if (dragging){
+    dragging = false;
+    rebuild();
+  }
+});
+cv.addEventListener('dblclick', function(){
+  buildBeads();
+  rebuild();
+});
+
+slider.addEventListener('input', function(){
+  dp = parseFloat(slider.value);
+  autoSweep = false;
+  clearTimeout(autoTimer);
+  autoTimer = setTimeout(function(){ autoSweep = true; }, 8000);
+});
+
+turbBtn.addEventListener('click', function(){
+  turbulent = !turbulent;
+  turbBtn.classList.toggle('on', turbulent);
+  turbBtn.textContent = turbulent ? '湍流' : '层流';
+});
+
+window.addEventListener('resize', function(){
+  resize();
+});
+
+/* ============================================================
+   主循环
+============================================================ */
+function loop(now){
+  requestAnimationFrame(loop);
+
+  if (!lastT){ lastT = now; return; }
+  let dt = (now - lastT) / 1000;
+  lastT = now;
+  if (dt > 0.06) dt = 0.06;
+  if (dt < 0) dt = 0;
+
+  t += dt;
+  if (t > CYCLE) t -= CYCLE;
+
+  // 自动扫掠 Δp
+  if (autoSweep){
+    const ph = t / CYCLE;
+    dp = 0.42 + 2.36 * (0.5 - 0.5*Math.cos(ph * TAU));
+  }
+
+  // 拖动重建节流
+  if (needSolve && now - solveClock > 110){
+    rebuild();
+    needSolve = false;
+    solveClock = now;
+  }
+
+  updateParticles(dt);
+  render();
+  updateHUD(dt);
+}
+
+/* ============================================================
+   启动
+============================================================ */
+function boot(){
+  // 离屏压力图
+  bgCv  = document.createElement('canvas');
+  bgCv.width = NX;
+  bgCv.height = NY;
+  bgCtx = bgCv.getContext('2d');
+
+  makeBeadSprite();
+  resize();
+  buildBeads();
+  rebuild();
+
+  requestAnimationFrame(loop);
+}
+
+boot();
+
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NEON SHEAR · 斜切变换</title>
+<style>
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;background:#03010a;overflow:hidden}
+  body{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace;}
+  canvas{position:fixed;inset:0;display:block}
+
+  .hud{
+    position:fixed;z-index:6;pointer-events:none;
+    font-size:12px;line-height:1.75;letter-spacing:.06em;
+    color:#9ff0ff;opacity:.85;white-space:pre;
+    text-shadow:0 0 6px rgba(80,220,255,.9),0 0 18px rgba(255,50,200,.5);
+    mix-blend-mode:screen;
+  }
+  #hudTL{top:16px;left:18px}
+  #hudTR{top:16px;right:18px;text-align:right}
+  #hudBL{bottom:16px;left:18px}
+  #hudBR{bottom:16px;right:18px;text-align:right}
+  .pk{color:#ff62e0;text-shadow:0 0 8px rgba(255,80,220,1),0 0 22px rgba(255,0,170,.7)}
+  .gr{color:#a6ff5c;text-shadow:0 0 8px rgba(150,255,80,1),0 0 22px rgba(90,255,0,.6)}
+  .dim{opacity:.5}
+
+  .scan{
+    position:fixed;inset:0;z-index:7;pointer-events:none;
+    background:repeating-linear-gradient(0deg,rgba(255,255,255,.035) 0 1px,transparent 1px 3px);
+    mix-blend-mode:overlay;opacity:.5;
+  }
+
+  #gate{
+    position:fixed;inset:0;z-index:20;display:flex;align-items:center;justify-content:center;
+    flex-direction:column;gap:20px;cursor:pointer;
+    background:radial-gradient(ellipse at center,rgba(24,0,48,.6),rgba(2,0,8,.94));
+    transition:opacity .9s ease;
+  }
+  #gate.hide{opacity:0;pointer-events:none}
+  .gt{font-size:clamp(20px,4vw,42px);letter-spacing:.34em;color:#fff;font-weight:600;
+      text-shadow:0 0 12px #ff3fd0,0 0 34px #00d4ff,0 0 72px #ff00c8;animation:flick 3.4s infinite}
+  .gs{font-size:clamp(11px,1.6vw,15px);color:#8ff;letter-spacing:.18em;opacity:.85;
+      text-shadow:0 0 10px rgba(0,220,255,.9)}
+  .gb{margin-top:10px;font-size:12px;letter-spacing:.22em;color:#0ff;
+      border:1px solid rgba(0,255,255,.45);padding:10px 24px;border-radius:999px;
+      background:rgba(0,255,255,.05);
+      box-shadow:0 0 18px rgba(0,230,255,.35) inset,0 0 22px rgba(0,200,255,.25);
+      animation:pulse 2.2s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:.6}50%{opacity:1}}
+  @keyframes flick{0%,100%{opacity:1}47%{opacity:1}49%{opacity:.55}51%{opacity:1}}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div class="hud" id="hudTL">Sh(x, y) = (x + k·y , y)</div>
+
+<div class="hud" id="hudTR">k = A·sin(ωt)
+<span class="pk">k</span> = <span id="kOut">+0.000</span></div>
+
+<div class="hud" id="hudBL">M = ⎡ 1  k ⎤
+    ⎣ 0  1 ⎦</div>
+
+<div class="hud" id="hudBR"><span class="gr">x' = x + k·y</span>
+y' = y
+det(M) = 1</div>
+
+<div class="scan"></div>
+
+<div id="gate">
+  <div class="gt">NEON SHEAR</div>
+  <div class="gs">Sh(x,y) = (x + k·y , y)</div>
+  <div class="gb">点击进入 · 启动音效</div>
+</div>
+
+<script>
+(() => {
+"use strict";
+
+/* ============ 基础 ============ */
+const cv  = document.getElementById('c');
+const ctx = cv.getContext('2d');
+const kOut = document.getElementById('kOut');
+
+let W = 0, H = 0, cx = 0, cy = 0, DPR = 1;
+
+function resize(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  cx = W / 2; cy = H / 2;
+  cv.width  = Math.floor(W * DPR);
+  cv.height = Math.floor(H * DPR);
+  cv.style.width  = W + 'px';
+  cv.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.fillStyle = '#03010a';
+  ctx.fillRect(0, 0, W, H);
+}
+window.addEventListener('resize', resize);
+resize();
+
+/* ============ 调色板：紫红 → 亮蓝 → 荧光绿 ============ */
+const C1 = [255, 38, 190];   // 紫红
+const C2 = [ 55, 175, 255];  // 亮蓝
+const C3 = [140, 255,  80];  // 荧光绿
+
+function mix(a, b, t){
+  return [a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t, a[2]+(b[2]-a[2])*t];
+}
+function palette(u){
+  u = u < 0 ? 0 : (u > 1 ? 1 : u);
+  return u < 0.5 ? mix(C1, C2, u * 2) : mix(C2, C3, (u - 0.5) * 2);
+}
+function rgba(c, a){
+  return 'rgba(' + (c[0]|0) + ',' + (c[1]|0) + ',' + (c[2]|0) + ',' + a + ')';
+}
+
+/* ============ 状态 ============ */
+const K_MAX = 0.75;     // 剪切参数最大值
+const OMEGA = 0.55;     // 角频率 → 周期约 11.4s
+
+let t = 0, k = 0, prevK = 0;
+let lastT = performance.now();
+let lastHud = 0, lastAudio = 0;
+
+/* ============ 渲染 ============ */
+function drawGlow(){
+  const r = Math.max(W, H) * 0.62;
+  const a = 0.02 + 0.035 * Math.min(1, Math.abs(k) / K_MAX);
+  const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+  g.addColorStop(0,    'rgba(105,0,160,' + (a * 1.4) + ')');
+  g.addColorStop(0.45, 'rgba(0,90,170,'  + (a * 0.8) + ')');
+  g.addColorStop(1,    'rgba(0,0,0,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+}
+
+function drawGrid(){
+  const a    = Math.min(1, Math.abs(k) / K_MAX);
+  const amp  = 6 + 26 * a;                       // 波浪振幅随剪切强度变化
+
+  const hStep = Math.max(9,  H / 95);
+  const vStep = Math.max(20, W / 80);
+  const x0 = -W * 0.25, x1 = W * 1.25;
+  const yA = -hStep * 2, yB = H + hStep * 2;
+
+  ctx.lineCap = 'round';
+
+  /* ---- 水平线：紫红 → 亮蓝 → 荧光绿 的霓虹渐变 ---- */
+  for (let y = yA; y <= yB; y += hStep){
+    const off = k * (y - cy);                    // 剪切位移 x' = x + k·y
+    const gx0 = x0 + off, gx1 = x1 + off;
+
+    const g = ctx.createLinearGradient(gx0, 0, gx1, 0);
+    g.addColorStop(0.00, rgba(palette(0.00), 0.00));
+    g.addColorStop(0.10, rgba(palette(0.10), 0.90));
+    g.addColorStop(0.50, rgba(palette(0.50), 1.00));
+    g.addColorStop(0.90, rgba(palette(0.90), 0.90));
+    g.addColorStop(1.00, rgba(palette(1.00), 0.00));
+    ctx.strokeStyle = g;
+
+    ctx.beginPath();
+    let first = true;
+    for (let p = x0; p <= x1; p += 9){
+      const X = p + off + amp * Math.sin(p * 0.0055 + t * 1.8 + y * 0.012);
+      if (first){ ctx.moveTo(X, y); first = false; }
+      else ctx.lineTo(X, y);
+    }
+    // 外层辉光
+    ctx.globalAlpha = 0.085; ctx.lineWidth = 7.5; ctx.stroke();
+    // 内层锐线
+    ctx.globalAlpha = 0.92;  ctx.lineWidth = 1.25; ctx.stroke();
+  }
+
+  /* ---- 垂直线：沿 x 取色，形成交错漩涡 ---- */
+  ctx.globalAlpha = 1;
+  for (let x = -vStep * 2; x <= W + vStep * 2; x += vStep){
+    const col = palette(x / W);
+    ctx.strokeStyle = rgba(col, 0.26);
+    ctx.lineWidth = 1;
+
+    ctx.beginPath();
+    let first = true;
+    for (let y = yA; y <= yB; y += 9){
+      const X = x + k * (y - cy) + amp * Math.sin(x * 0.0055 + t * 1.8 + y * 0.012);
+      if (first){ ctx.moveTo(X, y); first = false; }
+      else ctx.lineTo(X, y);
+    }
+    ctx.stroke();
+  }
+
+  ctx.globalAlpha = 1;
+}
+
+/* ============ 主循环 ============ */
+function frame(now){
+  requestAnimationFrame(frame);
+
+  let dt = (now - lastT) / 1000;
+  lastT = now;
+  if (dt > 0.08) dt = 0.08;
+  if (dt < 0)    dt = 0;
+  t += dt;
+
+  prevK = k;
+  k = K_MAX * Math.sin(t * OMEGA);
+
+  // 拖尾淡出（运动残影）
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = 'rgba(3,1,10,0.26)';
+  ctx.fillRect(0, 0, W, H);
+
+  // 叠加发光
+  ctx.globalCompositeOperation = 'lighter';
+  drawGlow();
+  drawGrid();
+  ctx.globalCompositeOperation = 'source-over';
+
+  // HUD 数值
+  if (now - lastHud > 60){
+    lastHud = now;
+    kOut.textContent = (k >= 0 ? '+' : '') + k.toFixed(3);
+  }
+
+  // 音频与视觉联动
+  if (audio && now - lastAudio > 80){
+    lastAudio = now;
+    const at = audio.ac.currentTime;
+    const a  = Math.abs(k) / K_MAX;
+    audio.padFilter.frequency.setTargetAtTime(240 + a * 1200, at, 0.15);
+    audio.noiseFilter.frequency.setTargetAtTime(500 + (k / K_MAX + 1) * 900, at, 0.2);
+    audio.padGain.gain.setTargetAtTime(0.10 + a * 0.08, at, 0.2);
+  }
+
+  // 过零点触发音效
+  if (audio && prevK * k < 0 && Math.abs(k - prevK) > 1e-6){
+    ping(1200 + Math.random() * 900, 0.18, 0.045, 'sine');
+  }
+}
+
+/* ============ 音频引擎（Web Audio 合成） ============ */
+let audio = null;
+let seqId = null;
+
+function initAudio(){
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return null;
+  const ac = new AC();
+
+  const master = ac.createGain();
+  master.gain.value = 0.0001;
+  master.connect(ac.destination);
+  master.gain.exponentialRampToValueAtTime(0.62, ac.currentTime + 4);
+
+  // 反馈延迟（空间感）
+  const delay = ac.createDelay(1.0);
+  delay.delayTime.value = 0.3;
+  const fb  = ac.createGain(); fb.gain.value = 0.45;
+  const wet = ac.createGain(); wet.gain.value = 0.45;
+  delay.connect(fb); fb.connect(delay);
+  delay.connect(wet); wet.connect(master);
+
+  // 低频 Pad
+  const padGain = ac.createGain(); padGain.gain.value = 0.12;
+  const padFilter = ac.createBiquadFilter();
+  padFilter.type = 'lowpass';
+  padFilter.frequency.value = 400;
+  padFilter.Q.value = 8;
+  padGain.connect(padFilter);
+  padFilter.connect(master);
+
+  [55, 55.35, 82.5, 110.2].forEach((f, i) => {
+    const o = ac.createOscillator();
+    o.type = i < 2 ? 'sawtooth' : 'triangle';
+    o.frequency.value = f;
+    const g = ac.createGain();
+    g.gain.value = i < 2 ? 0.35 : 0.22;
+    o.connect(g); g.connect(padGain);
+    o.start();
+  });
+
+  // 滤波器扫频 LFO
+  const lfo = ac.createOscillator();
+  lfo.frequency.value = 0.07;
+  const lfoG = ac.createGain();
+  lfoG.gain.value = 260;
+  lfo.connect(lfoG); lfoG.connect(padFilter.frequency);
+  lfo.start();
+
+  // 噪声风声
+  const len = Math.floor(ac.sampleRate * 2);
+  const buf = ac.createBuffer(1, len, ac.sampleRate);
+  const ch  = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) ch[i] = Math.random() * 2 - 1;
+  const noise = ac.createBufferSource();
+  noise.buffer = buf; noise.loop = true;
+  const nf = ac.createBiquadFilter();
+  nf.type = 'bandpass'; nf.frequency.value = 800; nf.Q.value = 1.2;
+  const ng = ac.createGain(); ng.gain.value = 0.055;
+  noise.connect(nf); nf.connect(ng); ng.connect(master);
+  noise.start();
+
+  return { ac, master, delay, padFilter, noiseFilter: nf, padGain };
+}
+
+function ping(freq, dur, vol, type){
+  if (!audio) return;
+  const ac = audio.ac;
+  const o = ac.createOscillator();
+  o.type = type || 'sine';
+  o.frequency.value = freq;
+  const g = ac.createGain();
+  const now = ac.currentTime;
+  g.gain.setValueAtTime(0.0001, now);
+  g.gain.exponentialRampToValueAtTime(vol, now + 0.008);
+  g.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+  o.connect(g);
+  g.connect(audio.master);
+  g.connect(audio.delay);
+  o.start(now);
+  o.stop(now + dur + 0.06);
+}
+
+const SCALE = [0, 2, 3, 7, 10, 12, 14, 15, 19, 22];
+
+function startSeq(){
+  let step = 0;
+  seqId = setInterval(() => {
+    if (!audio) return;
+    if (step % 8 === 0) ping(55,   1.1, 0.22, 'sine');
+    if (step % 8 === 4) ping(82.5, 0.8, 0.16, 'sine');
+    if (step % 2 === 0 && Math.random() < 0.75){
+      const d = SCALE[(Math.random() * SCALE.length) | 0];
+      ping(220 * Math.pow(2, d / 12), 0.45, 0.05, 'sine');
+    }
+    if (Math.random() < 0.10){
+      ping(900 + Math.random() * 1400, 0.22, 0.028, 'triangle');
+    }
+    step++;
+  }, 260);
+}
+
+/* ============ 启动 ============ */
+const gate = document.getElementById('gate');
+gate.addEventListener('click', () => {
+  if (!audio){
+    audio = initAudio();
+    startSeq();
+  }
+  if (audio && audio.ac.state === 'suspended') audio.ac.resume();
+  gate.classList.add('hide');
+});
+
+/* 页面隐藏时降低负载 */
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden){
+    if (audio && audio.ac.state === 'running') audio.ac.suspend();
+  } else {
+    if (audio && audio.ac.state === 'suspended') audio.ac.resume();
+  }
+});
+
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

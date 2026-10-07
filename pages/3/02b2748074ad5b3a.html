@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NEON HILBERT · 空间填充曲线</title>
+<style>
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;background:#01020a;overflow:hidden}
+  body{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace}
+  canvas{position:fixed;inset:0;display:block}
+
+  .hud{
+    position:fixed;z-index:6;pointer-events:none;
+    font-size:12.5px;line-height:1.9;letter-spacing:.07em;
+    color:#a8e8ff;opacity:.92;white-space:pre;
+    text-shadow:0 0 6px rgba(80,200,255,.85),0 0 18px rgba(60,140,255,.5);
+  }
+  #hudTL{top:16px;left:18px}
+  #hudTR{top:16px;right:18px;text-align:right}
+  #hudBL{bottom:16px;left:18px}
+  #hudBR{bottom:16px;right:18px;text-align:right}
+  .w{color:#fff;text-shadow:0 0 10px #fff,0 0 26px rgba(180,240,255,.9)}
+  .o{color:#ffb347;text-shadow:0 0 8px rgba(255,170,60,1),0 0 24px rgba(255,120,0,.6)}
+  .g{color:#8dff6a;text-shadow:0 0 8px rgba(140,255,100,1),0 0 24px rgba(80,255,60,.6)}
+  .b{color:#5fd0ff;text-shadow:0 0 8px rgba(90,210,255,1),0 0 24px rgba(0,160,255,.6)}
+  .dim{opacity:.45}
+
+  .scan{
+    position:fixed;inset:0;z-index:7;pointer-events:none;
+    background:repeating-linear-gradient(0deg,rgba(255,255,255,.028) 0 1px,transparent 1px 3px);
+    mix-blend-mode:overlay;opacity:.6;
+  }
+
+  #gate{
+    position:fixed;inset:0;z-index:20;display:flex;align-items:center;justify-content:center;
+    flex-direction:column;gap:18px;cursor:pointer;
+    background:radial-gradient(ellipse at center,rgba(10,22,68,.74),rgba(1,2,10,.96));
+    transition:opacity .9s ease;
+  }
+  #gate.hide{opacity:0;pointer-events:none}
+  .gt{
+    font-size:clamp(17px,3.3vw,40px);letter-spacing:.28em;color:#fff;font-weight:600;
+    text-shadow:0 0 12px #ff9a3c,0 0 34px #6dff8a,0 0 76px #4ab4ff;
+    animation:flick 3.6s infinite;
+  }
+  .gs{
+    font-size:clamp(11px,1.6vw,15px);color:#a8e8ff;letter-spacing:.18em;opacity:.9;
+    text-shadow:0 0 10px rgba(0,200,255,.9);
+  }
+  .gb{
+    margin-top:10px;font-size:12px;letter-spacing:.22em;color:#7ff;
+    border:1px solid rgba(0,255,255,.4);padding:10px 26px;border-radius:999px;
+    background:rgba(0,255,255,.05);
+    box-shadow:0 0 18px rgba(0,230,255,.3) inset,0 0 22px rgba(0,200,255,.25);
+    animation:pulse 2.2s ease-in-out infinite;
+  }
+  @keyframes pulse{0%,100%{opacity:.55}50%{opacity:1}}
+  @keyframes flick{0%,100%{opacity:1}48%{opacity:1}50%{opacity:.5}52%{opacity:1}}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div class="hud" id="hudTL">Hilbert Curve · 空间填充曲线
+H : [0,1] → [0,1]²  ·  连续满射</div>
+
+<div class="hud" id="hudTR">阶数 n = <span class="w" id="nOut">1</span>
+网格   <span class="w" id="gridOut">2 × 2</span>
+生长   <span class="o" id="growOut">0%</span></div>
+
+<div class="hud" id="hudBL"><span class="o">■</span> 暖橙  →  <span class="w">■</span> 明黄
+<span class="g">■</span> 荧光绿 → <span class="b">■</span> 天蓝</div>
+
+<div class="hud" id="hudBR">线段数  4ⁿ − 1 = <span class="w" id="segOut">3</span>
+分形维数 dim = 2.000</div>
+
+<div class="scan"></div>
+
+<div id="gate">
+  <div class="gt">NEON HILBERT</div>
+  <div class="gs">希尔伯特曲线 · 第 1 级 → 第 8 级</div>
+  <div class="gb">点击进入 · 启动音效</div>
+</div>
+
+<script>
+(function(){
+"use strict";
+
+/* ================= 基础 ================= */
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+
+const nOut    = document.getElementById('nOut');
+const gridOut = document.getElementById('gridOut');
+const growOut = document.getElementById('growOut');
+const segOut  = document.getElementById('segOut');
+
+const TAU = Math.PI * 2;
+
+let W = 0, H = 0, DPR = 1, cx = 0, cy = 0, bgGrad = null;
+
+function resize(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  cv.width  = Math.floor(W * DPR);
+  cv.height = Math.floor(H * DPR);
+  cv.style.width  = W + 'px';
+  cv.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  cx = W / 2;
+  cy = H / 2;
+
+  bgGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(W, H) * 0.86);
+  bgGrad.addColorStop(0.00, '#081540');
+  bgGrad.addColorStop(0.48, '#04091f');
+  bgGrad.addColorStop(1.00, '#01020a');
+}
+window.addEventListener('resize', resize);
+
+/* ================= 颜色 ================= */
+function mix(a, b, t){
+  return [a[0] + (b[0] - a[0]) * t,
+          a[1] + (b[1] - a[1]) * t,
+          a[2] + (b[2] - a[2]) * t];
+}
+function rgba(c, a){
+  return 'rgba(' + (c[0] | 0) + ',' + (c[1] | 0) + ',' + (c[2] | 0) + ',' + a + ')';
+}
+
+/* 暖橙 → 明黄 → 荧光绿 → 天蓝 */
+const PAL = [
+  [255, 138,  36],
+  [255, 230,  72],
+  [134, 255, 102],
+  [ 72, 198, 255]
+];
+function pathColor(u){
+  u = u < 0 ? 0 : (u > 1 ? 1 : u);
+  const x = u * 3;
+  const i = Math.min(2, Math.floor(x));
+  return mix(PAL[i], PAL[i + 1], x - i);
+}
+
+/* ================= 希尔伯特曲线生成 ================= */
+const cache = {};
+
+function buildHilbert(order){
+  if (cache[order]) return cache[order];
+
+  const pts = [];
+  const n = 1 << order;                 // 2^order
+
+  (function rec(x, y, xi, xj, yi, yj, k){
+    if (k <= 0){
+      pts.push(x + (xi + yi) * 0.5, y + (xj + yj) * 0.5);
+      return;
+    }
+    const hxi = xi * 0.5, hxj = xj * 0.5;
+    const hyi = yi * 0.5, hyj = yj * 0.5;
+
+    rec(x, y, hyi, hyj, hxi, hxj, k - 1);
+    rec(x + hxi, y + hxj, hxi, hxj, hyi, hyj, k - 1);
+    rec(x + hxi + hyi, y + hxj + hyj, hxi, hxj, hyi, hyj, k - 1);
+    rec(x + hxi + yi, y + hxj + yj, -hyi, -hyj, -hxi, -hxj, k - 1);
+  })(0, 0, n, 0, 0, n, order);
+
+  let out = pts;
+
+  /* 高阶降采样，保证帧率 */
+  const N = pts.length >> 1;
+  const MAXN = 24000;
+  if (N > MAXN){
+    const stride = Math.ceil(N / MAXN);
+    const d = new Float32Array(((N / stride) | 0) * 2 + 2);
+    let w = 0;
+    for (let i = 0; i < N; i += stride){
+      d[w++] = pts[i * 2];
+      d[w++] = pts[i * 2 + 1];
+    }
+    d[w++] = pts[(N - 1) * 2];
+    d[w++] = pts[(N - 1) * 2 + 1];
+    out = d.subarray(0, w);
+  }
+
+  cache[order] = out;
+  return out;
+}
+
+/* ================= 粒子 ================= */
+const particles = [];
+const MAX_P = 420;
+
+function spawnParticle(x, y, col, burst){
+  if (particles.length >= MAX_P) return;
+  const ang = Math.random() * TAU;
+  const spd = (burst ? 60 : 16) + Math.random() * (burst ? 120 : 40);
+  particles.push({
+    x: x, y: y,
+    vx: Math.cos(ang) * spd,
+    vy: Math.sin(ang) * spd,
+    life: 0,
+    maxLife: 0.5 + Math.random() * 1.1,
+    size: 2 + Math.random() * 8,
+    col: col,
+    wob: Math.random() * TAU
+  });
+}
+
+function updateParticles(dt){
+  for (let i = particles.length - 1; i >= 0; i--){
+    const p = particles[i];
+    p.life += dt;
+    if (p.life >= p.maxLife){ particles.splice(i, 1); continue; }
+    p.vx *= 0.965;
+    p.vy *= 0.965;
+    p.x += (p.vx + Math.sin(t * 2 + p.wob) * 10) * dt;
+    p.y += (p.vy + Math.cos(t * 2 + p.wob) * 10) * dt;
+  }
+}
+
+function drawParticles(){
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < particles.length; i++){
+    const p = particles[i];
+    const lt = p.life / p.maxLife;
+    const a = (1 - lt) * (1 - lt);
+    if (a < 0.015) continue;
+    const r = p.size * (0.4 + (1 - lt) * 0.9);
+    const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r);
+    g.addColorStop(0.00, rgba(mix(p.col, [255,255,255], 0.6), a * 0.95));
+    g.addColorStop(0.35, rgba(p.col, a * 0.45));
+    g.addColorStop(1.00, rgba(p.col, 0));
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, r, 0, TAU);
+    ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ================= 背景网格 ================= */
+let bgDots = null;
+function buildBgDots(){
+  bgDots = [];
+  for (let i = 0; i < 130; i++){
+    bgDots.push({
+      x: Math.random() * W,
+      y: Math.random() * H,
+      r: 0.6 + Math.random() * 1.8,
+      ph: Math.random() * TAU,
+      sp: 0.15 + Math.random() * 0.5
+    });
+  }
+}
+
+function drawBg(){
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = bgGrad;
+  ctx.fillRect(0, 0, W, H);
+
+  /* 暗格 */
+  const gs = Math.max(W, H) / 26;
+  ctx.strokeStyle = 'rgba(48,96,190,0.055)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let x = (cx % gs); x < W; x += gs){
+    ctx.moveTo(Math.round(x) + 0.5, 0);
+    ctx.lineTo(Math.round(x) + 0.5, H);
+  }
+  for (let y = (cy % gs); y < H; y += gs){
+    ctx.moveTo(0, Math.round(y) + 0.5);
+    ctx.lineTo(W, Math.round(y) + 0.5);
+  }
+  ctx.stroke();
+
+  /* 漂浮光尘 */
+  if (!bgDots) buildBgDots();
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < bgDots.length; i++){
+    const d = bgDots[i];
+    const a = 0.10 + 0.16 * (0.5 + 0.5 * Math.sin(t * d.sp + d.ph));
+    ctx.fillStyle = 'rgba(130,205,255,' + a + ')';
+    ctx.beginPath();
+    ctx.arc(d.x, d.y, d.r, 0, TAU);
+    ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ================= 音频引擎 ================= */
+let audio = null;
+let seqTimer = null;
+
+function initAudio(){
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return null;
+  const ac = new AC();
+
+  const master = ac.createGain();
+  master.gain.value = 0.0001;
+  master.connect(ac.destination);
+  master.gain.exponentialRampToValueAtTime(0.5, ac.currentTime + 5);
+
+  /* 空间延迟 */
+  const delay = ac.createDelay(1.0);
+  delay.delayTime.value = 0.36;
+  const fb  = ac.createGain(); fb.gain.value = 0.44;
+  const wet = ac.createGain(); wet.gain.value = 0.38;
+  delay.connect(fb); fb.connect(delay);
+  delay.connect(wet); wet.connect(master);
+
+  /* 低频 Pad */
+  const padF = ac.createBiquadFilter();
+  padF.type = 'lowpass';
+  padF.frequency.value = 380;
+  padF.Q.value = 6;
+
+  const padG = ac.createGain();
+  padG.gain.value = 0.10;
+  padG.connect(padF);
+  padF.connect(master);
+
+  [55, 55.4, 82.4, 110.2].forEach(function(f, i){
+    const o = ac.createOscillator();
+    o.type = i < 2 ? 'sawtooth' : 'triangle';
+    o.frequency.value = f;
+    const g = ac.createGain();
+    g.gain.value = i < 2 ? 0.28 : 0.15;
+    o.connect(g); g.connect(padG);
+    o.start();
+  });
+
+  /* 滤波器缓扫 */
+  const lfo = ac.createOscillator();
+  lfo.frequency.value = 0.048;
+  const lfoG = ac.createGain();
+  lfoG.gain.value = 230;
+  lfo.connect(lfoG);
+  lfoG.connect(padF.frequency);
+  lfo.start();
+
+  /* 带通噪声 */
+  const len = Math.floor(ac.sampleRate * 2);
+  const buf = ac.createBuffer(1, len, ac.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+  const ns = ac.createBufferSource();
+  ns.buffer = buf; ns.loop = true;
+  const nf = ac.createBiquadFilter();
+  nf.type = 'bandpass'; nf.frequency.value = 900; nf.Q.value = 1.3;
+  const ng = ac.createGain(); ng.gain.value = 0.045;
+  ns.connect(nf); nf.connect(ng); ng.connect(master);
+  ns.start();
+
+  return { ac: ac, master: master, delay: delay, padF: padF, nf: nf };
+}
+
+function ping(freq, dur, vol, type){
+  if (!audio) return;
+  const ac = audio.ac, now = ac.currentTime;
+  const o = ac.createOscillator();
+  o.type = type || 'sine';
+  o.frequency.value = freq;
+  const g = ac.createGain();
+  g.gain.setValueAtTime(0.0001, now);
+  g.gain.exponentialRampToValueAtTime(vol, now + 0.008);
+  g.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+  o.connect(g);
+  g.connect(audio.master);
+  g.connect(audio.delay);
+  o.start(now);
+  o.stop(now + dur + 0.08);
+}
+
+function sweep(f0, f1, dur, vol){
+  if (!audio) return;
+  const ac = audio.ac, now = ac.currentTime;
+  const o = ac.createOscillator();
+  o.type = 'sine';
+  o.frequency.setValueAtTime(f0, now);
+  o.frequency.exponentialRampToValueAtTime(f1, now + dur);
+  const g = ac.createGain();
+  g.gain.setValueAtTime(0.0001, now);
+  g.gain.exponentialRampToValueAtTime(vol, now + 0.015);
+  g.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+  o.connect(g); g.connect(audio.master);
+  o.start(now); o.stop(now + dur + 0.08);
+}
+
+const SCALE = [0, 2, 4, 7, 9, 12, 14, 16, 19, 21, 24];
+
+function startSeq(){
+  let step = 0;
+  seqTimer = setInterval(function(){
+    if (!audio) return;
+    const ac = audio.ac, now = ac.currentTime;
+
+    if (step % 8 === 0){
+      const o = ac.createOscillator();
+      o.type = 'sine';
+      o.frequency.setValueAtTime(120, now);
+      o.frequency.exponentialRampToValueAtTime(44, now + 0.65);
+      const g = ac.createGain();
+      g.gain.setValueAtTime(0.0001, now);
+      g.gain.exponentialRampToValueAtTime(0.24, now + 0.015);
+      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.85);
+      o.connect(g); g.connect(audio.master);
+      o.start(now); o.stop(now + 0.9);
+    }
+
+    if (step % 2 === 0 && Math.random() < 0.72){
+      const dg = SCALE[(Math.random() * SCALE.length) | 0];
+      const base = 240 + ordIdx * 26;
+      ping(base * Math.pow(2, dg / 12), 0.6, 0.032, 'sine');
+    }
+    if (Math.random() < 0.10){
+      ping(1500 + Math.random() * 1800, 0.18, 0.018, 'triangle');
+    }
+    step++;
+  }, 300);
+}
+
+/* ================= 时间轴 ================= */
+const ORDERS = [1, 2, 3, 4, 5, 6, 7, 8];
+
+function levelDuration(o){
+  return 1180 + o * 250;      /* 毫秒 */
+}
+
+let ordIdx = 0;
+let lt = 0;
+let t = 0;
+let lastT = performance.now();
+let lastHud = 0, lastAud = 0;
+let flash = 0;
+let prevGrow = 0;
+
+/* ================= 主循环 ================= */
+function frame(now){
+  requestAnimationFrame(frame);
+
+  let dt = (now - lastT) / 1000;
+  lastT = now;
+  if (dt > 0.05) dt = 0.05;
+  if (dt < 0)    dt = 0;
+  t += dt;
+
+  /* ---------- 时间轴推进 ---------- */
+  lt += dt * 1000;
+
+  let order = ORDERS[ordIdx];
+  let dur   = levelDuration(order);
+
+  while (lt >= dur){
+    lt -= dur;
+    ordIdx = (ordIdx + 1) % ORDERS.length;
+    order = ORDERS[ordIdx];
+    dur   = levelDuration(order);
+    flash = 1;
+    sweep(420, 1300, 0.45, 0.055);
+  }
+
+  const p    = lt / dur;
+  const grow = p < 0.86 ? p / 0.86 : 1;
+  const n    = 1 << order;                 // 2^order
+
+  if (grow >= 1 && prevGrow < 1){
+    /* 刚满格：顶点炸开 */
+    const pts = buildHilbert(order);
+    const NN = pts.length >> 1;
+    const side = Math.min(W, H) * 0.78;
+    const sx = cx - side / 2, sy = cy - side / 2;
+    const sc = side / (n - 1);
+    const hx = sx + (pts[(NN - 1) * 2] - 0.5) * sc;
+    const hy = sy + (pts[(NN - 1) * 2 + 1] - 0.5) * sc;
+    for (let i = 0; i < 26; i++) spawnParticle(hx, hy, pathColor(1), true);
+    ping(880, 0.7, 0.05, 'sine');
+  }
+  prevGrow = grow;
+
+  /* ---------- 背景 ---------- */
+  drawBg();
+
+  /* ---------- 布局 ---------- */
+  const pts  = buildHilbert(order);
+  const N    = pts.length >> 1;
+  const side = Math.min(W, H) * 0.78;
+  const sx   = cx - side / 2;
+  const sy   = cy - side / 2;
+  const sc   = side / (n - 1);
+
+  /* ---------- 边框 ---------- */
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.strokeStyle = 'rgba(90,170,255,0.20)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(sx - 10, sy - 10, side + 20, side + 20);
+  ctx.strokeStyle = 'rgba(90,170,255,0.08)';
+  ctx.lineWidth = 5;
+  ctx.strokeRect(sx - 10, sy - 10, side + 20, side + 20);
+
+  /* ---------- 曲线 ---------- */
+  const maxI = Math.max(1, Math.floor(grow * (N - 1)));
+  drawCurve(pts, n, sx, sy, sc, maxI, 1);
+
+  /* ---------- 生长头部 ---------- */
+  const hi = Math.min(maxI, N - 1);
+  const hx = sx + (pts[hi * 2] - 0.5) * sc;
+  const hy = sy + (pts[hi * 2 + 1] - 0.5) * sc;
+  const hcol = pathColor(maxI / (N - 1));
+
+  const pulse = 0.65 + 0.35 * Math.sin(t * 8);
+  const HR = 20 + 14 * pulse;
+  const hg = ctx.createRadialGradient(hx, hy, 0, hx, hy, HR);
+  hg.addColorStop(0.00, 'rgba(255,255,255,0.98)');
+  hg.addColorStop(0.18, rgba(mix(hcol, [255, 255, 255], 0.5), 0.72));
+  hg.addColorStop(0.48, rgba(hcol, 0.26));
+  hg.addColorStop(1.00, rgba(hcol, 0));
+  ctx.fillStyle = hg;
+  ctx.beginPath(); ctx.arc(hx, hy, HR, 0, TAU); ctx.fill();
+
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath(); ctx.arc(hx, hy, 3.2 * pulse + 1.2, 0, TAU); ctx.fill();
+
+  /* ---------- 头部撒粒子 ---------- */
+  if (grow < 1){
+    const cnt = order >= 6 ? 2 : 3;
+    for (let i = 0; i < cnt; i++) spawnParticle(hx, hy, hcol, false);
+  }
+
+  updateParticles(dt);
+  drawParticles();
+
+  /* ---------- 升级闪光 ---------- */
+  if (flash > 0){
+    flash -= dt * 2.4;
+    if (flash < 0) flash = 0;
+    ctx.fillStyle = 'rgba(180,230,255,' + (flash * 0.10) + ')';
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  ctx.globalCompositeOperation = 'source-over';
+
+  /* ---------- HUD ---------- */
+  if (now - lastHud > 90){
+    lastHud = now;
+    nOut.textContent    = order;
+    gridOut.textContent = n + ' × ' + n;
+    growOut.textContent = Math.round(grow * 100) + '%';
+    segOut.textContent  = (Math.pow(4, order) - 1).toLocaleString();
+  }
+
+  /* ---------- 音频联动 ---------- */
+  if (audio && now - lastAud > 120){
+    lastAud = now;
+    const at = audio.ac.currentTime;
+    const u  = ordIdx / 7;
+    audio.padF.frequency.setTargetAtTime(300 + u * 1500, at, 0.35);
+    audio.nf.frequency.setTargetAtTime(600 + u * 1700, at, 0.4);
+  }
+}
+
+/* ================= 曲线绘制 ================= */
+function drawCurve(pts, n, sx, sy, sc, maxI, alpha){
+  const N = pts.length >> 1;
+  if (N < 2 || maxI < 1) return;
+
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  const CH = Math.min(88, Math.max(12, Math.floor(N / 9)));
+  const stepF = (N - 1) / CH;
+
+  for (let c = 0; c < CH; c++){
+    const i0 = Math.floor(c * stepF);
+    const i1 = Math.floor((c + 1) * stepF);
+    if (i0 >= maxI) break;
+    const iE = Math.min(i1, maxI);
+
+    const col = pathColor((c + 0.6) / CH);
+
+    ctx.beginPath();
+    ctx.moveTo(sx + (pts[i0 * 2] - 0.5) * sc,
+               sy + (pts[i0 * 2 + 1] - 0.5) * sc);
+    for (let i = i0 + 1; i <= iE; i++){
+      ctx.lineTo(sx + (pts[i * 2] - 0.5) * sc,
+                 sy + (pts[i * 2 + 1] - 0.5) * sc);
+    }
+
+    /* 外层霓虹光晕 */
+    ctx.lineWidth   = 10;
+    ctx.strokeStyle = rgba(col, 0.075 * alpha);
+    ctx.stroke();
+
+    /* 中层辉光 */
+    ctx.lineWidth   = 4;
+    ctx.strokeStyle = rgba(col, 0.20 * alpha);
+    ctx.stroke();
+
+    /* 亮芯 */
+    ctx.lineWidth   = 1.5;
+    ctx.strokeStyle = rgba(mix(col, [255, 255, 255], 0.28), 0.95 * alpha);
+    ctx.stroke();
+  }
+
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ================= 启动 ================= */
+const gate = document.getElementById('gate');
+
+gate.addEventListener('click', function(){
+  if (!audio){
+    audio = initAudio();
+    if (audio) startSeq();
+  }
+  if (audio && audio.ac.state === 'suspended') audio.ac.resume();
+
+  /* 预生成全部层级，避免运行时卡顿 */
+  for (let o = 1; o <= 8; o++) buildHilbert(o);
+
+  gate.classList.add('hide');
+  sweep(220, 900, 1.1, 0.05);
+});
+
+document.addEventListener('visibilitychange', function(){
+  if (!audio) return;
+  if (document.hidden){
+    if (audio.ac.state === 'running') audio.ac.suspend();
+  } else {
+    if (audio.ac.state === 'suspended') audio.ac.resume();
+  }
+});
+
+/* 首帧初始化 */
+resize();
+lastT = performance.now();
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

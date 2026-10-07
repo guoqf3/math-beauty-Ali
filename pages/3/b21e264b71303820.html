@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NEON FRACTAL TREE · 分形树</title>
+<style>
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;background:#01020a;overflow:hidden}
+  body{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace}
+  canvas{position:fixed;inset:0;display:block}
+
+  .hud{
+    position:fixed;z-index:6;pointer-events:none;
+    font-size:12.5px;line-height:1.9;letter-spacing:.07em;
+    color:#a8e8ff;opacity:.92;white-space:pre;
+    text-shadow:0 0 6px rgba(80,200,255,.85),0 0 18px rgba(60,140,255,.5);
+  }
+  #hudTL{top:16px;left:18px}
+  #hudTR{top:16px;right:18px;text-align:right}
+  #hudBL{bottom:16px;left:18px}
+  #hudBR{bottom:16px;right:18px;text-align:right}
+  .pk{color:#c07aff;text-shadow:0 0 8px rgba(180,110,255,1),0 0 24px rgba(140,60,255,.6)}
+  .yl{color:#ffe14a;text-shadow:0 0 8px rgba(255,220,70,1),0 0 24px rgba(255,180,0,.6)}
+  .gr{color:#8dff6a;text-shadow:0 0 8px rgba(140,255,100,1),0 0 24px rgba(80,255,60,.6)}
+  .w {color:#ffffff;text-shadow:0 0 10px #fff,0 0 26px rgba(180,240,255,.9)}
+  .dim{opacity:.45}
+
+  .scan{
+    position:fixed;inset:0;z-index:7;pointer-events:none;
+    background:repeating-linear-gradient(0deg,rgba(255,255,255,.028) 0 1px,transparent 1px 3px);
+    mix-blend-mode:overlay;opacity:.6;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div class="hud" id="hudTL">Fractal Tree · 分形树
+Bₙ → 2 · Bₙ₊₁   二叉递归</div>
+
+<div class="hud" id="hudTR">级别 n = <span class="w" id="nOut">0</span>
+分支数 2ⁿ⁺¹ − 1 = <span class="w" id="bOut">1</span>
+长度比 r = 0.72</div>
+
+<div class="hud" id="hudBL"><span class="pk">■</span> 深紫  →  <span class="yl">■</span> 亮黄  →  <span class="gr">■</span> 嫩绿
+Lₙ = L₀ · rⁿ    θ = ± 28°</div>
+
+<div class="hud" id="hudBR">自相似维数
+D = log 2 / log(1/r) ≈ <span class="yl">2.11</span></div>
+
+<div class="scan"></div>
+
+<script>
+(function(){
+"use strict";
+
+/* ================= 基础 ================= */
+const cv  = document.getElementById('c');
+const ctx = cv.getContext('2d');
+
+const nOut = document.getElementById('nOut');
+const bOut = document.getElementById('bOut');
+
+const TAU = Math.PI / 2 * 4;
+const PI  = Math.PI;
+
+let W = 0, H = 0, DPR = 1, bgGrad = null;
+
+/* ================= 参数 ================= */
+const MAXD   = 10;                       // 递归深度
+const RATIO  = 0.72;                     // 长度收缩比
+const SPREAD = 28 * PI / 180;            // 分叉半角
+
+/* ================= 树的拓扑结构 ================= */
+const nodes  = [];                       // {depth,parent,side,phase,lenU,len,x,y,ang}
+let   byDepth = [];                      // byDepth[d] = 该深度节点索引数组
+
+let SCALE = 1, ROOT_X = 0, ROOT_Y = 0;
+
+function buildTree(){
+  nodes.length = 0;
+  byDepth = [];
+
+  (function add(depth, parent, side){
+    const idx = nodes.length;
+    nodes.push({
+      depth : depth,
+      parent: parent,
+      side  : side,
+      phase : Math.random() * PI * 2,
+      lenU  : Math.pow(RATIO, depth),
+      len   : 1,
+      x: 0, y: 0, ang: -PI / 2
+    });
+    if (!byDepth[depth]) byDepth[depth] = [];
+    byDepth[depth].push(idx);
+
+    if (depth < MAXD){
+      add(depth + 1, idx, -1);
+      add(depth + 1, idx, +1);
+    }
+  })(0, -1, 0);
+}
+
+/* ================= 布局：缩放 + 居中 ================= */
+function layout(){
+  /* --- 用单位长度做一次静态定位 --- */
+  for (let i = 0; i < nodes.length; i++){
+    const nd = nodes[i];
+    nd.len = nd.lenU;
+    if (nd.parent < 0){
+      nd.x = 0; nd.y = 0; nd.ang = -PI / 2;
+    } else {
+      const p = nodes[nd.parent];
+      nd.x = p.x + Math.cos(p.ang) * p.len;
+      nd.y = p.y + Math.sin(p.ang) * p.len;
+      nd.ang = p.ang + nd.side * SPREAD;
+    }
+  }
+
+  /* --- 包围盒（含枝梢端点） --- */
+  let minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9;
+  for (let i = 0; i < nodes.length; i++){
+    const nd = nodes[i];
+    const ex = nd.x + Math.cos(nd.ang) * nd.len;
+    const ey = nd.y + Math.sin(nd.ang) * nd.len;
+    if (nd.x < minX) minX = nd.x;
+    if (nd.x > maxX) maxX = nd.x;
+    if (ex   < minX) minX = ex;
+    if (ex   > maxX) maxX = ex;
+    if (nd.y < minY) minY = nd.y;
+    if (nd.y > maxY) maxY = nd.y;
+    if (ey   < minY) minY = ey;
+    if (ey   > maxY) maxY = ey;
+  }
+
+  const bw = Math.max(0.0001, maxX - minX);
+  const bh = Math.max(0.0001, maxY - minY);
+
+  SCALE  = Math.min(W * 0.84 / bw, H * 0.80 / bh);
+  ROOT_X = W * 0.5 - (minX + maxX) * 0.5 * SCALE;
+  ROOT_Y = H * 0.90 - maxY * SCALE;
+
+  /* --- 把缩放烘焙进每段枝长 --- */
+  for (let i = 0; i < nodes.length; i++) nodes[i].len = nodes[i].lenU * SCALE;
+}
+
+/* ================= 尺寸 ================= */
+function resize(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  cv.width  = Math.floor(W * DPR);
+  cv.height = Math.floor(H * DPR);
+  cv.style.width  = W + 'px';
+  cv.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  bgGrad = ctx.createRadialGradient(W * 0.5, H * 0.72, 0, W * 0.5, H * 0.5, Math.max(W, H) * 0.9);
+  bgGrad.addColorStop(0.00, '#0b1140');
+  bgGrad.addColorStop(0.40, '#050a26');
+  bgGrad.addColorStop(1.00, '#01020a');
+
+  buildStars();
+  layout();
+}
+window.addEventListener('resize', resize);
+
+/* ================= 颜色 ================= */
+function mix(a, b, t){
+  return [a[0] + (b[0] - a[0]) * t,
+          a[1] + (b[1] - a[1]) * t,
+          a[2] + (b[2] - a[2]) * t];
+}
+function rgba(c, a){
+  return 'rgba(' + (c[0] | 0) + ',' + (c[1] | 0) + ',' + (c[2] | 0) + ',' + a + ')';
+}
+function hsla(h, s, l, a){
+  return 'hsla(' + ((h % 360 + 360) % 360).toFixed(1) + ',' + s + '%,' + l + '%,' + a + ')';
+}
+
+/* 根部深紫 → 枝梢亮黄 → 嫩绿 */
+const C_PURPLE = [118,  46, 232];
+const C_YELLOW = [255, 218,  66];
+const C_GREEN  = [140, 255, 108];
+
+function treeColor(u){
+  u = u < 0 ? 0 : (u > 1 ? 1 : u);
+  return u < 0.52
+    ? mix(C_PURPLE, C_YELLOW, u / 0.52)
+    : mix(C_YELLOW, C_GREEN, (u - 0.52) / 0.48);
+}
+
+/* ================= 星空 ================= */
+let stars = [];
+function buildStars(){
+  stars = [];
+  const cnt = Math.min(220, Math.round((W * H) / 8600));
+  for (let i = 0; i < cnt; i++){
+    stars.push({
+      x: Math.random() * W,
+      y: Math.random() * H,
+      r: 0.4 + Math.random() * 1.6,
+      ph: Math.random() * 6.283,
+      sp: 0.4 + Math.random() * 1.7,
+      hu: Math.random() * 360
+    });
+  }
+}
+
+function drawStars(){
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < stars.length; i++){
+    const s = stars[i];
+    const tw = 0.30 + 0.70 * (0.5 + 0.5 * Math.sin(t * s.sp + s.ph));
+    const a = tw * 0.5;
+    if (a < 0.03) continue;
+    const r = s.r * (0.8 + 0.5 * tw);
+    const g = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, r * 3.4);
+    g.addColorStop(0.00, hsla(s.hu, 100, 92, a));
+    g.addColorStop(0.42, hsla(s.hu, 100, 66, a * 0.32));
+    g.addColorStop(1.00, hsla(s.hu, 100, 60, 0));
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(s.x, s.y, r * 3.4, 0, 6.283); ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ================= 树冠粒子（七彩光斑） ================= */
+const particles = [];
+const MAX_P = 320;
+let spawnAcc = 0;
+
+function spawnCanopy(){
+  if (particles.length >= MAX_P) return;
+  const arr = byDepth[MAXD];
+  if (!arr || !arr.length) return;
+
+  const nd = nodes[arr[(Math.random() * arr.length) | 0]];
+  const tx = nd.x + Math.cos(nd.ang) * nd.len;
+  const ty = nd.y + Math.sin(nd.ang) * nd.len;
+
+  particles.push({
+    x: tx, y: ty,
+    vx: (Math.random() - 0.5) * 14,
+    vy: -10 - Math.random() * 22,
+    life: 0,
+    maxLife: 1.5 + Math.random() * 2.4,
+    size: 3 + Math.random() * 10,
+    hue: Math.random() * 360,
+    wob: Math.random() * 6.283
+  });
+}
+
+function updateParticles(dt){
+  for (let i = particles.length - 1; i >= 0; i--){
+    const p = particles[i];
+    p.life += dt;
+    if (p.life >= p.maxLife){ particles.splice(i, 1); continue; }
+    p.vx *= 0.975;
+    p.vy *= 0.985;
+    p.x += (p.vx + Math.sin(t * 1.8 + p.wob) * 12) * dt;
+    p.y += (p.vy + Math.cos(t * 1.4 + p.wob) * 8) * dt;
+    p.hue += dt * 55;
+  }
+}
+
+function drawParticles(){
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < particles.length; i++){
+    const p = particles[i];
+    const lt = p.life / p.maxLife;
+    const a = Math.sin(PI * lt) * 0.85;
+    if (a <= 0.02) continue;
+    const r = p.size * (0.5 + 0.7 * Math.sin(PI * lt));
+    const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r);
+    g.addColorStop(0.00, hsla(p.hue, 100, 82, a * 0.95));
+    g.addColorStop(0.35, hsla(p.hue, 100, 62, a * 0.40));
+    g.addColorStop(1.00, hsla(p.hue + 70, 100, 55, 0));
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, 6.283); ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ================= 主循环 ================= */
+let t = 0, lastT = performance.now();
+let lastHud = 0;
+
+function ease(x){
+  return x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2;
+}
+
+function frame(now){
+  requestAnimationFrame(frame);
+
+  let dt = (now - lastT) / 1000;
+  lastT = now;
+  if (dt > 0.05) dt = 0.05;
+  if (dt < 0)    dt = 0;
+  t += dt;
+
+  /* ---------- 生长循环 ---------- */
+  const CYC = 13;
+  const cyc = t % CYC;
+  let reveal, fade;
+  if (cyc < 5.0){
+    reveal = ease(cyc / 5.0);
+    fade   = 1;
+  } else if (cyc < 11.0){
+    reveal = 1;
+    fade   = 1;
+  } else {
+    reveal = 1;
+    fade   = Math.max(0, 1 - (cyc - 11.0) / 2.0);
+  }
+
+  /* ---------- 风 ---------- */
+  const gust = 0.75 + 0.45 * Math.sin(t * 0.43) + 0.20 * Math.sin(t * 1.27);
+  const rootSway = 0.020 * gust * Math.sin(t * 1.05);
+
+  /* ---------- 更新所有节点位置 ---------- */
+  for (let i = 0; i < nodes.length; i++){
+    const nd = nodes[i];
+    if (nd.parent < 0){
+      nd.x = ROOT_X;
+      nd.y = ROOT_Y;
+      nd.ang = -PI / 2 + rootSway;
+    } else {
+      const p = nodes[nd.parent];
+      nd.x = p.x + Math.cos(p.ang) * p.len;
+      nd.y = p.y + Math.sin(p.ang) * p.len;
+      const amp = (0.0040 + 0.0032 * nd.depth) * gust;
+      nd.ang = p.ang + nd.side * SPREAD
+             + amp * Math.sin(t * 1.65 + nd.depth * 0.55 + nd.phase);
+    }
+  }
+
+  /* ---------- 背景 ---------- */
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = bgGrad;
+  ctx.fillRect(0, 0, W, H);
+
+  drawStars();
+
+  /* 根部氛围光晕 */
+  ctx.globalCompositeOperation = 'lighter';
+  const rootGlow = ctx.createRadialGradient(ROOT_X, ROOT_Y, 0, ROOT_X, ROOT_Y, 240);
+  rootGlow.addColorStop(0.00, 'rgba(150,80,255,0.11)');
+  rootGlow.addColorStop(0.45, 'rgba(110,60,200,0.045)');
+  rootGlow.addColorStop(1.00, 'rgba(80,40,160,0)');
+  ctx.fillStyle = rootGlow;
+  ctx.beginPath(); ctx.arc(ROOT_X, ROOT_Y, 240, 0, 6.283); ctx.fill();
+  ctx.globalCompositeOperation = 'source-over';
+
+  /* ---------- 绘制分形树（按深度分组） ---------- */
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap = 'round';
+
+  const rv = reveal * (MAXD + 1);
+
+  for (let d = 0; d <= MAXD; d++){
+    if (d >= rv) break;
+
+    const a = Math.min(1, rv - d) * fade;
+    if (a <= 0.012) continue;
+
+    const arr = byDepth[d];
+    if (!arr || !arr.length) continue;
+
+    /* 该深度的所有枝段合成一条路径 */
+    const path = new Path2D();
+    for (let k = 0; k < arr.length; k++){
+      const nd = nodes[arr[k]];
+      path.moveTo(nd.x, nd.y);
+      path.lineTo(nd.x + Math.cos(nd.ang) * nd.len,
+                  nd.y + Math.sin(nd.ang) * nd.len);
+    }
+
+    const col   = treeColor(d / MAXD);
+    const w     = Math.max(0.9, 3.4 * Math.pow(0.85, d));
+    const flick = 0.82 + 0.18 * Math.sin(t * 2.8 + d * 1.1);
+
+    /* 外层霓虹光晕 */
+    ctx.lineWidth   = w * 5.5;
+    ctx.strokeStyle = rgba(col, 0.048 * a * flick);
+    ctx.stroke(path);
+
+    /* 中层辉光 */
+    ctx.lineWidth   = w * 2.2;
+    ctx.strokeStyle = rgba(col, 0.135 * a * flick);
+    ctx.stroke(path);
+
+    /* 亮芯 */
+    ctx.lineWidth   = w;
+    ctx.strokeStyle = rgba(mix(col, [255, 255, 255], 0.32), 0.86 * a * flick);
+    ctx.stroke(path);
+  }
+
+  /* ---------- 树冠七彩光斑 ---------- */
+  if (reveal > 0.72){
+    spawnAcc += dt * 52;
+    while (spawnAcc > 1){
+      spawnAcc -= 1;
+      spawnCanopy();
+    }
+  } else {
+    spawnAcc = 0;
+  }
+
+  updateParticles(dt);
+  drawParticles();
+
+  ctx.globalCompositeOperation = 'source-over';
+
+  /* ---------- HUD ---------- */
+  if (now - lastHud > 90){
+    lastHud = now;
+    const shown = Math.min(MAXD, Math.floor(rv));
+    nOut.textContent = shown;
+    bOut.textContent = (Math.pow(2, shown + 1) - 1).toLocaleString();
+  }
+}
+
+/* ================= 启动 ================= */
+buildTree();
+resize();
+lastT = performance.now();
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,790 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>波动方程 · 驻波与谐振模态</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{height:100%;background:#010006;overflow:hidden;
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+    -webkit-tap-highlight-color:transparent;}
+  canvas{position:fixed;inset:0;display:block;}
+  .hud{position:fixed;inset:0;pointer-events:none;}
+
+  .epigraph{
+    position:absolute;top:14px;left:50%;transform:translateX(-50%);
+    font-family:"Songti SC","STSong",serif;
+    font-size:clamp(12px,1.35vw,19px);
+    letter-spacing:.16em;white-space:nowrap;
+    color:#eafff8;
+    text-shadow:0 0 12px rgba(90,240,200,.9),0 0 34px rgba(150,90,255,.5);
+    animation:breathe 4.3s ease-in-out infinite;
+  }
+  @keyframes breathe{0%,100%{opacity:.72}50%{opacity:1}}
+
+  .formula{
+    position:absolute;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"PingFang SC",monospace;
+    font-size:clamp(9px,.76vw,12px);
+    line-height:1.75;letter-spacing:.02em;
+    color:rgba(140,215,255,.42);
+    text-shadow:0 0 9px rgba(80,180,255,.25);
+    white-space:nowrap;
+  }
+  .formula b{color:rgba(190,230,255,.68);font-weight:500;}
+  .tl{top:56px;left:22px;}
+  .tr{top:56px;right:22px;text-align:right;}
+  .bl{bottom:16px;left:22px;}
+  .br{bottom:16px;right:22px;text-align:right;}
+
+  .controls{
+    position:absolute;bottom:12px;left:50%;transform:translateX(-50%);
+    display:flex;align-items:center;gap:14px;
+    pointer-events:auto;
+    font-family:ui-monospace,Menlo,Consolas,monospace;
+    font-size:11px;color:rgba(160,215,255,.85);
+    background:rgba(6,12,26,.72);
+    border:1px solid rgba(80,180,255,.24);
+    border-radius:30px;padding:8px 22px;
+    backdrop-filter:blur(10px);
+    -webkit-backdrop-filter:blur(10px);
+    box-shadow:0 0 28px rgba(60,160,255,.18);
+    white-space:nowrap;
+  }
+  .controls label{display:flex;align-items:center;gap:7px;cursor:pointer;}
+  .controls input[type=range]{
+    -webkit-appearance:none;appearance:none;
+    width:120px;height:3px;border-radius:3px;
+    background:linear-gradient(90deg,#2ef0c8,#4a9dff,#a04dff,#ff4fd8);
+    outline:none;cursor:pointer;
+  }
+  .controls input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none;width:12px;height:12px;border-radius:50%;
+    background:#eaf4ff;
+    box-shadow:0 0 10px rgba(120,220,255,.95),0 0 20px rgba(160,90,255,.75);
+    cursor:pointer;
+  }
+  .controls input[type=range]::-moz-range-thumb{
+    width:12px;height:12px;border:none;border-radius:50%;
+    background:#eaf4ff;
+    box-shadow:0 0 10px rgba(120,220,255,.95);
+    cursor:pointer;
+  }
+  .val{color:#7de0ff;font-weight:600;min-width:56px;text-align:center;
+    text-shadow:0 0 10px rgba(80,220,255,.7);}
+  .fval{color:#ffb340;font-weight:600;min-width:96px;text-align:center;
+    text-shadow:0 0 10px rgba(255,170,60,.75);}
+
+  @media (max-width:960px){
+    .bl,.br{display:none;}
+    .controls{gap:8px;padding:7px 14px;font-size:10px;}
+    .controls input[type=range]{width:70px;}
+    .val{min-width:46px;}
+    .fval{min-width:76px;}
+  }
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<div class="hud">
+  <div class="epigraph">波有节点方成调，心有静处始生音</div>
+
+  <div class="formula tl">
+    <b>一维波动方程</b><br>
+    ∂²y/∂t² = v² · ∂²y/∂x²
+  </div>
+  <div class="formula tr">
+    <b>波速与弦参数</b><br>
+    v = √(T / μ)
+  </div>
+  <div class="formula bl">
+    <b>驻波与谐振频率</b><br>
+    λₙ = 2L/n　fₙ = n·v / (2L)
+  </div>
+  <div class="formula br">
+    <b>吉他弦 · 参考值</b><br>
+    L = 0.65 m　T = 89.2 N　μ = 1.3 g/m<br>
+    v = 262 m/s　f₁ ≈ 201.5 Hz
+  </div>
+
+  <div class="controls">
+    <label>张力 T
+      <input type="range" id="tRange" min="40" max="180" value="89.2" step="0.1">
+    </label>
+    <span class="val" id="tLabel">89.2 N</span>
+    <span class="fval" id="fLabel">f₁ = 201.5 Hz</span>
+    <label>
+      <input type="checkbox" id="twToggle">
+      行波分量
+    </label>
+  </div>
+</div>
+
+<script>
+(() => {
+'use strict';
+
+const cv  = document.getElementById('cv');
+const ctx = cv.getContext('2d', { alpha: false });
+const TAU = Math.PI * 2;
+
+/* ============================================================
+   物理参数
+============================================================ */
+const L     = 0.65;       // 弦长 (m)
+const MU    = 0.0013;     // 线密度 (kg/m)
+const T_REF = 89.2;       // 参考张力 (N)
+const F1_VIS_BASE = 0.35; // 基频视觉频率 (Hz)
+const AMP_FACTOR  = 0.92; // 视觉振幅系数
+
+/* ============================================================
+   状态
+============================================================ */
+let W = 0, H = 0, DPR = 1;
+let xL = 0, xR = 0, yC = 0, maxAmp = 0;
+let bgGrad = null;
+
+let simTime = 0, lastTime = 0;
+let phase = 0;              // 相位累积，保证频率变化时相位连续
+
+let T = T_REF, targetT = T_REF;
+let autoPlay = true;
+
+let showTraveling = false;
+let probe = null;
+
+const travelPhase = { a: 0, b: 0 };  // 两列行波各自的相位
+
+/* ============================================================
+   工具
+============================================================ */
+function clamp(v, a, b){ return v < a ? a : v > b ? b : v; }
+function smoothstep(x){ x = clamp(x, 0, 1); return x*x*(3 - 2*x); }
+function rr(c2, x, y, w, h, r){
+  c2.beginPath();
+  c2.moveTo(x + r, y);
+  c2.lineTo(x + w - r, y); c2.arcTo(x + w, y, x + w, y + r, r);
+  c2.lineTo(x + w, y + h - r); c2.arcTo(x + w, y + h, x + w - r, y + h, r);
+  c2.lineTo(x + r, y + h); c2.arcTo(x, y + h, x, y + h - r, r);
+  c2.lineTo(x, y + r); c2.arcTo(x, y, x + r, y, r);
+  c2.closePath();
+}
+
+/* ============================================================
+   物理量
+============================================================ */
+function vWave()      { return Math.sqrt(T / MU); }
+function f1Actual()   { return vWave() / (2 * L); }
+function f1Vis()      { return F1_VIS_BASE * Math.sqrt(T / T_REF); }
+
+/* ============================================================
+   30 秒剧本 · 模式振幅
+============================================================ */
+function getModeAmps(t){
+  const out = [0, 0, 0, 0];
+
+  if (t < 8){
+    out[0] = 1;
+  } else if (t < 10){
+    const u = smoothstep((t - 8) / 2);
+    out[0] = 1 - u;
+    out[1] = u;
+  } else if (t < 18){
+    out[1] = 1;
+  } else if (t < 20){
+    const u = smoothstep((t - 18) / 2);
+    out[1] = 1 - u;
+    out[2] = u;
+  } else if (t < 28){
+    out[2] = 1;
+  } else {
+    const u = smoothstep((t - 28) / 2);
+    out[2] = 1 - u;
+    out[0] = u;
+  }
+  return out;
+}
+
+function dominantN(t){
+  if (t < 9) return 1;
+  if (t < 19) return 2;
+  if (t < 28) return 3;
+  return 1;
+}
+
+/* 30 秒内张力自动变化 */
+function autoTValue(t){
+  if (t < 10) return T_REF;
+  if (t < 18) return T_REF + (150 - T_REF) * smoothstep((t - 10) / 8);
+  if (t < 22) return 150;
+  if (t < 30) return 150 - (150 - T_REF) * smoothstep((t - 22) / 8);
+  return T_REF;
+}
+
+/* ============================================================
+   弦的形状
+============================================================ */
+function stringY(xi, amps){
+  let y = 0;
+  for (let n = 1; n <= 4; n++){
+    if (amps[n - 1] > 0.001){
+      y += amps[n - 1] *
+           Math.sin(n * Math.PI * xi) *
+           Math.cos(n * phase);
+    }
+  }
+  return y;
+}
+
+/* ============================================================
+   尺寸
+============================================================ */
+function resize(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  cv.width  = Math.round(W * DPR);
+  cv.height = Math.round(H * DPR);
+  cv.style.width  = W + 'px';
+  cv.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  xL = W * 0.085;
+  xR = W * 0.915;
+  yC = H * 0.455;
+  maxAmp = H * 0.175;
+
+  bgGrad = ctx.createRadialGradient(
+    W * 0.5, H * 0.44, 0,
+    W * 0.5, H * 0.44, Math.max(W, H) * 0.85
+  );
+  bgGrad.addColorStop(0,    '#080a1e');
+  bgGrad.addColorStop(0.48, '#040412');
+  bgGrad.addColorStop(1,    '#010006');
+}
+
+/* ============================================================
+   渲染 · 背景与参考线
+============================================================ */
+function drawReference(){
+  /* 中心平衡线 */
+  ctx.setLineDash([6, 8]);
+  ctx.strokeStyle = 'rgba(120, 160, 255, 0.14)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(xL, yC);
+  ctx.lineTo(xR, yC);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  /* 弦端点固定支座 */
+  for (const x of [xL, xR]){
+    ctx.beginPath();
+    ctx.arc(x, yC, 6, 0, TAU);
+    ctx.fillStyle = 'rgba(30, 20, 60, 0.9)';
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(x, yC, 6, 0, TAU);
+    ctx.strokeStyle = 'rgba(180, 220, 255, 0.55)';
+    ctx.lineWidth = 1.4;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(x, yC, 2, 0, TAU);
+    ctx.fillStyle = 'rgba(200, 240, 255, 0.9)';
+    ctx.fill();
+  }
+}
+
+/* ============================================================
+   渲染 · 行波分量
+============================================================ */
+function drawTraveling(amps){
+  if (!showTraveling) return;
+
+  const N = 200;
+  const f1 = f1Vis();
+
+  /* 两列反向行波分别绘制 */
+  for (let k = 0; k < 2; k++){
+    const dir = k === 0 ? 1 : -1;
+
+    ctx.beginPath();
+    for (let i = 0; i <= N; i++){
+      const xi = i / N;
+      let y = 0;
+      for (let n = 1; n <= 4; n++){
+        if (amps[n - 1] > 0.001){
+          /* 单列行波：A/2 · sin(nπξ ∓ n·phase) */
+          const ph = n * phase * dir;
+          y += amps[n - 1] * 0.5 *
+               Math.sin(n * Math.PI * xi - ph);
+        }
+      }
+      const sx = xL + xi * (xR - xL);
+      const sy = yC + y * maxAmp;
+      if (i === 0) ctx.moveTo(sx, sy);
+      else ctx.lineTo(sx, sy);
+    }
+
+    ctx.strokeStyle = k === 0
+      ? 'rgba(80, 210, 255, 0.42)'    /* 右行波：青蓝 */
+      : 'rgba(255, 130, 90, 0.42)';   /* 左行波：橙红 */
+    ctx.lineWidth = 1.4;
+    ctx.setLineDash([5, 4]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+}
+
+/* ============================================================
+   渲染 · 主驻波
+============================================================ */
+function drawWave(amps){
+  const N = 240;
+  const pts = [];
+
+  for (let i = 0; i <= N; i++){
+    const xi = i / N;
+    const y = stringY(xi, amps) * AMP_FACTOR;
+    pts.push({
+      x: xL + xi * (xR - xL),
+      y: yC + y * maxAmp,
+      yRaw: y,
+      xi: xi
+    });
+  }
+
+  /* --- 填充区域 --- */
+  ctx.beginPath();
+  ctx.moveTo(pts[0].x, yC);
+  for (let i = 0; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+  ctx.lineTo(pts[pts.length - 1].x, yC);
+  ctx.closePath();
+
+  const fillG = ctx.createLinearGradient(xL, 0, xR, 0);
+  fillG.addColorStop(0.00, 'rgba(46, 240, 200, 0.13)');
+  fillG.addColorStop(0.30, 'rgba(74, 157, 255, 0.15)');
+  fillG.addColorStop(0.62, 'rgba(160, 77, 255, 0.15)');
+  fillG.addColorStop(1.00, 'rgba(255, 79, 216, 0.13)');
+  ctx.fillStyle = fillG;
+  ctx.fill();
+
+  /* --- 描边 --- */
+  ctx.beginPath();
+  for (let i = 0; i < pts.length; i++){
+    if (i === 0) ctx.moveTo(pts[i].x, pts[i].y);
+    else ctx.lineTo(pts[i].x, pts[i].y);
+  }
+  const lineG = ctx.createLinearGradient(xL, 0, xR, 0);
+  lineG.addColorStop(0.00, '#2ef0c8');
+  lineG.addColorStop(0.30, '#4a9dff');
+  lineG.addColorStop(0.62, '#a04dff');
+  lineG.addColorStop(1.00, '#ff4fd8');
+  ctx.strokeStyle = lineG;
+  ctx.lineWidth = 2.6;
+  ctx.shadowColor = 'rgba(120, 200, 255, 0.95)';
+  ctx.shadowBlur = 18;
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  /* --- 内层高光 --- */
+  ctx.beginPath();
+  for (let i = 0; i < pts.length; i++){
+    if (i === 0) ctx.moveTo(pts[i].x, pts[i].y);
+    else ctx.lineTo(pts[i].x, pts[i].y);
+  }
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.55)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+}
+
+/* ============================================================
+   渲染 · 包络线
+============================================================ */
+function drawEnvelope(amps, t30){
+  const n = dominantN(t30);
+  const envAmp = amps[n - 1];
+  if (envAmp < 0.02) return;
+
+  const N = 180;
+  const alpha = 0.10 + 0.28 * envAmp;
+
+  /* 上包络 */
+  ctx.beginPath();
+  for (let i = 0; i <= N; i++){
+    const xi = i / N;
+    const env = Math.abs(Math.sin(n * Math.PI * xi));
+    const x = xL + xi * (xR - xL);
+    const y = yC - env * maxAmp * AMP_FACTOR;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.strokeStyle = `rgba(255, 205, 120, ${alpha})`;
+  ctx.lineWidth = 1;
+  ctx.setLineDash([5, 6]);
+  ctx.stroke();
+
+  /* 下包络 */
+  ctx.beginPath();
+  for (let i = 0; i <= N; i++){
+    const xi = i / N;
+    const env = Math.abs(Math.sin(n * Math.PI * xi));
+    const x = xL + xi * (xR - xL);
+    const y = yC + env * maxAmp * AMP_FACTOR;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+/* ============================================================
+   渲染 · 节点与波腹
+============================================================ */
+function drawNodesAntinodes(amps, t30){
+  const n = dominantN(t30);
+
+  /* --- 节点（暗斑） --- */
+  for (let k = 0; k <= n; k++){
+    const xi = k / n;
+    const x = xL + xi * (xR - xL);
+
+    /* 暗色底板 */
+    const g = ctx.createRadialGradient(x, yC, 0, x, yC, 14);
+    g.addColorStop(0, 'rgba(8, 2, 20, 0.95)');
+    g.addColorStop(0.6, 'rgba(15, 4, 35, 0.65)');
+    g.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(x, yC, 14, 0, TAU);
+    ctx.fill();
+
+    /* 紫色环 */
+    ctx.beginPath();
+    ctx.arc(x, yC, 5, 0, TAU);
+    ctx.strokeStyle = 'rgba(160, 90, 255, 0.65)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    /* 核心暗点 */
+    ctx.beginPath();
+    ctx.arc(x, yC, 2.4, 0, TAU);
+    ctx.fillStyle = 'rgba(90, 40, 160, 0.9)';
+    ctx.fill();
+  }
+
+  /* --- 波腹（亮斑） --- */
+  for (let k = 0; k < n; k++){
+    const xi = (2 * k + 1) / (2 * n);
+    const yDisp = stringY(xi, amps) * AMP_FACTOR;
+    const x = xL + xi * (xR - xL);
+    const y = yC + yDisp * maxAmp;
+
+    const pulse = 0.7 + 0.3 * Math.sin(simTime * 5 + k * 1.3);
+    const g = ctx.createRadialGradient(x, y, 0, x, y, 28 * pulse);
+    g.addColorStop(0,    'rgba(255, 235, 180, 0.42)');
+    g.addColorStop(0.28, 'rgba(255, 175, 80, 0.22)');
+    g.addColorStop(0.65, 'rgba(255, 110, 50, 0.08)');
+    g.addColorStop(1,    'rgba(255, 80, 30, 0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(x, y, 28 * pulse, 0, TAU);
+    ctx.fill();
+
+    /* 核心亮点 */
+    ctx.beginPath();
+    ctx.arc(x, y, 2.2, 0, TAU);
+    ctx.fillStyle = 'rgba(255, 245, 210, 0.92)';
+    ctx.fill();
+  }
+}
+
+/* ============================================================
+   渲染 · 频谱柱状图
+============================================================ */
+function drawSpectrum(amps){
+  const baseY = H - 132;
+  const barW  = 26;
+  const gap   = 22;
+  const totalW = barW * 4 + gap * 3;
+  const startX = W / 2 - totalW / 2;
+
+  /* 面板底板 */
+  ctx.fillStyle = 'rgba(6, 10, 26, 0.62)';
+  rr(ctx, startX - 26, baseY - 82, totalW + 52, 108, 12);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(90, 150, 255, 0.18)';
+  ctx.lineWidth = 1;
+  rr(ctx, startX - 26, baseY - 82, totalW + 52, 108, 12);
+  ctx.stroke();
+
+  /* 标题 */
+  ctx.font = '600 10.5px ui-monospace,Menlo,Consolas,monospace';
+  ctx.textAlign = 'left';
+  ctx.fillStyle = 'rgba(170, 215, 255, 0.72)';
+  ctx.fillText('谐振分量', startX - 18, baseY - 64);
+
+  ctx.font = '500 9px ui-monospace,Menlo,Consolas,monospace';
+  ctx.fillStyle = 'rgba(140, 180, 255, 0.40)';
+  ctx.textAlign = 'right';
+  ctx.fillText('振幅', startX + totalW + 18, baseY - 64);
+
+  /* 柱体 */
+  const MAX_H = 56;
+  for (let n = 1; n <= 4; n++){
+    const x = startX + (n - 1) * (barW + gap);
+    const h = amps[n - 1] * MAX_H;
+
+    /* 背景柱 */
+    ctx.fillStyle = 'rgba(40, 60, 120, 0.22)';
+    rr(ctx, x, baseY - MAX_H, barW, MAX_H, 4);
+    ctx.fill();
+
+    /* 填充柱 */
+    if (h > 0.8){
+      const g = ctx.createLinearGradient(0, baseY, 0, baseY - h);
+      if (n === 1){
+        g.addColorStop(0, '#2ef0c8');
+        g.addColorStop(1, '#4a9dff');
+      } else if (n === 2){
+        g.addColorStop(0, '#4a9dff');
+        g.addColorStop(1, '#a04dff');
+      } else if (n === 3){
+        g.addColorStop(0, '#a04dff');
+        g.addColorStop(1, '#ff4fd8');
+      } else {
+        g.addColorStop(0, '#ff4fd8');
+        g.addColorStop(1, '#ffb340');
+      }
+      ctx.fillStyle = g;
+      ctx.shadowColor = 'rgba(140, 180, 255, 0.85)';
+      ctx.shadowBlur = 12;
+      rr(ctx, x, baseY - h, barW, h, 4);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+
+      /* 顶端高光 */
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.65)';
+      ctx.fillRect(x + 2, baseY - h, barW - 4, 1.4);
+    }
+
+    /* 标签 */
+    ctx.font = '600 10px ui-monospace,Menlo,Consolas,monospace';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = 'rgba(180, 215, 255, 0.72)';
+    ctx.fillText('n=' + n, x + barW / 2, baseY + 15);
+  }
+}
+
+/* ============================================================
+   渲染 · 点击探测
+============================================================ */
+function drawProbe(amps){
+  if (!probe) return;
+  const a = Math.max(0, 1 - probe.t / 4.0);
+  if (a <= 0){ probe = null; return; }
+
+  const x = probe.x;
+  const y = probe.y;
+
+  /* 竖直参考线 */
+  ctx.setLineDash([4, 5]);
+  ctx.strokeStyle = `rgba(255, 220, 140, ${a * 0.42})`;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(x, yC - maxAmp * 1.05);
+  ctx.lineTo(x, yC + maxAmp * 1.05);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  /* 脉冲环 */
+  ctx.beginPath();
+  ctx.arc(x, y, 15 + (1 - a) * 22, 0, TAU);
+  ctx.strokeStyle = `rgba(255, 220, 140, ${a * 0.68})`;
+  ctx.lineWidth = 1.6;
+  ctx.stroke();
+
+  /* 标记点 */
+  ctx.beginPath();
+  ctx.arc(x, y, 5.5, 0, TAU);
+  ctx.fillStyle = `rgba(255, 235, 170, ${a})`;
+  ctx.shadowColor = 'rgba(255, 210, 120, 0.95)';
+  ctx.shadowBlur = 16;
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  /* 信息卡 */
+  const n = dominantN(simTime % 30);
+  const lines = [
+    `ξ = ${probe.xi.toFixed(3)}`,
+    `位移 y = ${(probe.yRaw * maxAmp).toFixed(1)} px`,
+    `模态 n = ${n}　λ = 2L/n`,
+    `瞬时方向 ${probe.yRaw > 0.01 ? '↑ 向上' : probe.yRaw < -0.01 ? '↓ 向下' : '— 静止'}`
+  ];
+
+  ctx.font = '600 10.5px ui-monospace,Menlo,Consolas,monospace';
+  let mw = 0;
+  for (const l of lines) mw = Math.max(mw, ctx.measureText(l).width);
+
+  const bw = mw + 20, bh = lines.length * 16 + 14;
+  let bx = x + 18;
+  let by = y - bh / 2;
+  if (bx + bw > W - 12) bx = x - bw - 18;
+  if (by < 10) by = 10;
+  if (by + bh > H - 90) by = H - 90 - bh;
+
+  ctx.fillStyle = `rgba(18, 14, 34, ${a * 0.94})`;
+  ctx.strokeStyle = `rgba(255, 215, 140, ${a * 0.58})`;
+  ctx.lineWidth = 1;
+  rr(ctx, bx, by, bw, bh, 9);
+  ctx.fill(); ctx.stroke();
+
+  ctx.textAlign = 'left';
+  for (let i = 0; i < lines.length; i++){
+    ctx.fillStyle = i === 0
+      ? `rgba(255, 232, 170, ${a})`
+      : `rgba(210, 228, 255, ${a * 0.88})`;
+    ctx.fillText(lines[i], bx + 10, by + 19 + i * 16);
+  }
+}
+
+/* ============================================================
+   渲染 · 顶部读数
+============================================================ */
+function drawReadout(amps){
+  const t30 = simTime % 30;
+  const n = dominantN(t30);
+
+  const v = vWave();
+  const f1 = f1Actual();
+  const fn = n * f1;
+
+  const txt =
+    `v = √(T/μ) = ${v.toFixed(1)} m/s    ` +
+    `f₁ = ${f1.toFixed(1)} Hz    ` +
+    `当前模态 n = ${n}    ` +
+    `fₙ = ${fn.toFixed(1)} Hz    ` +
+    `λₙ = ${(2 * L / n * 100).toFixed(1)} cm`;
+
+  ctx.font = '600 12px ui-monospace,Menlo,Consolas,monospace';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(205, 235, 255, 0.85)';
+  ctx.shadowColor = 'rgba(90, 200, 255, 0.85)';
+  ctx.shadowBlur = 14;
+  ctx.fillText(txt, W / 2, yC - maxAmp - 40);
+  ctx.shadowBlur = 0;
+}
+
+/* ============================================================
+   主渲染
+============================================================ */
+function render(){
+  ctx.fillStyle = bgGrad;
+  ctx.fillRect(0, 0, W, H);
+
+  const t30 = simTime % 30;
+  const amps = getModeAmps(t30);
+
+  drawReference();
+  drawTraveling(amps);
+  drawEnvelope(amps, t30);
+  drawWave(amps);
+  drawNodesAntinodes(amps, t30);
+  drawProbe(amps);
+  drawSpectrum(amps);
+  drawReadout(amps);
+}
+
+/* ============================================================
+   主循环
+============================================================ */
+function loop(now){
+  requestAnimationFrame(loop);
+
+  if (!lastTime) lastTime = now;
+  let dt = (now - lastTime) / 1000;
+  lastTime = now;
+  if (dt > 0.05) dt = 0.05;
+  if (dt < 0) dt = 0;
+
+  simTime += dt;
+
+  /* --- 自动张力剧本 --- */
+  if (autoPlay){
+    const t30 = simTime % 30;
+    targetT = autoTValue(t30);
+    tRange.value = targetT.toFixed(1);
+  }
+
+  /* --- 张力平滑 + 相位连续累积 --- */
+  T += (targetT - T) * Math.min(1, dt * 3.5);
+  T = clamp(T, 40, 180);
+
+  phase += TAU * f1Vis() * dt;
+  while (phase > TAU * 1024) phase -= TAU * 1024;
+
+  /* --- 标签 --- */
+  tLabel.textContent = T.toFixed(1) + ' N';
+  fLabel.textContent = 'f₁ = ' + f1Actual().toFixed(1) + ' Hz';
+
+  /* --- 探测计时 --- */
+  if (probe){
+    probe.t += dt;
+    if (probe.t > 4.0) probe = null;
+  }
+
+  render();
+}
+
+/* ============================================================
+   交互
+============================================================ */
+const tRange   = document.getElementById('tRange');
+const tLabel   = document.getElementById('tLabel');
+const fLabel   = document.getElementById('fLabel');
+const twToggle = document.getElementById('twToggle');
+
+tRange.addEventListener('input', () => {
+  autoPlay = false;
+  targetT = parseFloat(tRange.value);
+});
+
+twToggle.addEventListener('change', () => {
+  showTraveling = twToggle.checked;
+});
+
+cv.addEventListener('pointerdown', (e) => {
+  const rect = cv.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+
+  if (mx < xL - 30 || mx > xR + 30) return;
+  if (my < yC - maxAmp * 1.35 || my > yC + maxAmp * 1.35) return;
+
+  const xi = clamp((mx - xL) / (xR - xL), 0, 1);
+  const t30 = simTime % 30;
+  const amps = getModeAmps(t30);
+  const yRaw = stringY(xi, amps) * AMP_FACTOR;
+
+  probe = {
+    x: xL + xi * (xR - xL),
+    y: yC + yRaw * maxAmp,
+    xi: xi,
+    yRaw: yRaw,
+    t: 0
+  };
+});
+
+window.addEventListener('resize', resize);
+
+/* ============================================================
+   启动
+============================================================ */
+resize();
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>

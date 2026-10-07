@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>傅里叶导热 · 温度梯度场演化</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100%;height:100%;overflow:hidden;background:#02040a;
+    font-family:"SF Mono",Consolas,"Courier New",monospace;cursor:crosshair}
+  canvas{display:block;position:fixed;inset:0}
+
+  .hud{
+    position:fixed;z-index:10;pointer-events:none;
+    font-size:12px;letter-spacing:.4px;line-height:2.0;
+    color:#ff9c5a;
+    text-shadow:0 0 10px rgba(255,120,40,.75),0 0 26px rgba(255,60,0,.3);
+  }
+  .hud .cy{color:#7fe8ff;text-shadow:0 0 10px rgba(0,200,255,.8)}
+  .hud .wh{color:#fff2dc;text-shadow:0 0 12px rgba(255,220,180,.9)}
+  .hud .pp{color:#c9a8ff;text-shadow:0 0 10px rgba(160,90,255,.85)}
+  .hud .dim{color:#7a5a48;font-size:11px;text-shadow:none}
+  .tl{top:16px;left:20px}
+  .tr{top:16px;right:20px;text-align:right}
+  .bl{bottom:18px;left:20px}
+  .br{bottom:18px;right:20px;text-align:right}
+
+  .hint{
+    position:fixed;z-index:10;bottom:52px;left:50%;transform:translateX(-50%);
+    font-size:10px;letter-spacing:2.6px;color:#6a4a38;
+    text-shadow:0 0 10px rgba(255,140,40,.35);
+    pointer-events:none;
+  }
+  @keyframes blink{
+    0%,100%{opacity:.35}
+    50%{opacity:1}
+  }
+  .dot{
+    display:inline-block;width:6px;height:6px;border-radius:50%;
+    background:#ff9c5a;box-shadow:0 0 10px #ff6a00;
+    margin-right:6px;vertical-align:middle;
+    animation:blink 1.5s ease-in-out infinite;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div class="hud tl">
+  <div>q = −k · ∇T</div>
+  <div>∂T/∂t = α · ∇²T &nbsp;·&nbsp; α = k/(ρ·c<sub>p</sub>)</div>
+  <div>δ ≈ √(α·t)</div>
+  <div class="dim">傅里叶导热定律 · 热扩散方程</div>
+</div>
+
+<div class="hud tr">
+  <div>k = <span class="wh">401</span> W/(m·K)</div>
+  <div>ρ = <span class="wh">8960</span> kg/m³</div>
+  <div>c<sub>p</sub> = <span class="wh">385</span> J/(kg·K)</div>
+  <div>α = <span class="pp" id="alphaHud">1.16e-4</span> m²/s</div>
+</div>
+
+<div class="hud bl">
+  <div>T<sub>热端</sub> = <span class="wh">200</span> °C</div>
+  <div>T<sub>冷端</sub> = <span class="wh">20</span> °C</div>
+  <div class="dim"><span class="dot"></span>铜棒 · 红外热成像</div>
+</div>
+
+<div class="hud br">
+  <div>t = <span class="wh" id="tHud">0.0</span> s</div>
+  <div>δ = <span class="cy" id="deltaHud">0.000</span> m</div>
+  <div>q = <span class="wh" id="qHud">0.00e+0</span> W/m²</div>
+</div>
+
+<div class="hint">点击棒体读取局域温度 · 观察热量向右推移</div>
+
+<script>
+(function(){
+"use strict";
+
+/* ============================================================
+   常量与状态
+============================================================ */
+const T_HOT  = 200;         // °C
+const T_COLD = 20;          // °C
+const ALPHA  = 1.163e-4;    // m²/s
+const L_ROD  = 0.20;        // m
+const K_CU   = 401;         // W/(m·K)
+const CYCLE  = 30;          // 循环秒
+const SIM_MAX= 250;         // 循环内模拟时间 (s)
+
+const N = 200;
+
+const T    = new Float32Array(N);
+const dA   = new Float32Array(N);
+const dB   = new Float32Array(N);
+const dC   = new Float32Array(N);
+const dD   = new Float32Array(N);
+const dX   = new Float32Array(N);
+const cp   = new Float32Array(N);
+const dp   = new Float32Array(N);
+
+/* ============================================================
+   画布
+============================================================ */
+const cv  = document.getElementById('c');
+const ctx = cv.getContext('2d', { alpha:false });
+const TAU = Math.PI*2;
+const clamp = (v,a,b)=> v<a?a:(v>b?b:v);
+
+let W=0, H=0, DPR=1;
+let barX=0, barY=0, barW=0, barH=0;
+let curveBaseY=0, curveH=0;
+
+/* 热图离屏 */
+let rodOff, rodOffCtx, rodImg;
+
+/* 时间 */
+let tt = 0;          // 循环时间
+let simTime = 0;
+
+/* 粒子 */
+const embers = [];
+
+/* 探针 */
+const probes = [];
+
+/* ============================================================
+   颜色 LUT (红外调色板)
+============================================================ */
+const LUT_N = 256;
+const LUT_R = new Uint8Array(LUT_N);
+const LUT_G = new Uint8Array(LUT_N);
+const LUT_B = new Uint8Array(LUT_N);
+
+const STOPS = [
+  [0.00,   6,   6,  26],
+  [0.10,  32,   8,  72],
+  [0.22,  92,  12,  78],
+  [0.36, 152,  30,  58],
+  [0.50, 212,  56,  26],
+  [0.64, 246,  98,  22],
+  [0.78, 255, 156,  46],
+  [0.90, 255, 212, 112],
+  [1.00, 255, 250, 220]
+];
+
+function buildLUT(){
+  for (let i=0;i<LUT_N;i++){
+    const t = i/(LUT_N-1);
+    let r=0, g=0, b=0;
+    for (let k=0;k<STOPS.length-1;k++){
+      const a = STOPS[k], c = STOPS[k+1];
+      if (t <= c[0]){
+        const kk = (t - a[0]) / (c[0] - a[0]);
+        r = a[1] + (c[1]-a[1])*kk;
+        g = a[2] + (c[2]-a[2])*kk;
+        b = a[3] + (c[3]-a[3])*kk;
+        break;
+      }
+    }
+    LUT_R[i] = r|0;
+    LUT_G[i] = g|0;
+    LUT_B[i] = b|0;
+  }
+}
+
+function tempToIdx(tc){
+  const u = (tc - T_COLD)/(T_HOT - T_COLD);
+  return clamp((u*(LUT_N-1))|0, 0, LUT_N-1);
+}
+
+/* ============================================================
+   尺寸
+============================================================ */
+function resize(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  cv.width  = Math.floor(W*DPR);
+  cv.height = Math.floor(H*DPR);
+  cv.style.width  = W+'px';
+  cv.style.height = H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+
+  barW = Math.min(W*0.78, 980);
+  barH = Math.min(H*0.13, 120);
+  barX = (W - barW)*0.5;
+  barY = H*0.50;
+
+  curveBaseY = barY - 2;
+  curveH = Math.min(H*0.22, 220);
+
+  /* 离屏棒热图 */
+  if (!rodOff){
+    rodOff = document.createElement('canvas');
+    rodOff.width = N;
+    rodOff.height = 1;
+    rodOffCtx = rodOff.getContext('2d');
+    rodImg = rodOffCtx.createImageData(N, 1);
+  }
+}
+
+/* ============================================================
+   初始条件
+============================================================ */
+function initField(){
+  for (let i=0;i<N;i++) T[i] = T_COLD;
+  T[0] = T_HOT;
+  simTime = 0;
+  embers.length = 0;
+  probes.length = 0;
+}
+
+/* ============================================================
+   热传导求解 — 后向欧拉 + Thomas 三对角算法
+============================================================ */
+function stepHeat(dt){
+  if (dt <= 0) return;
+  const dx = L_ROD/(N-1);
+  const r  = ALPHA * dt / (dx*dx);
+  const n  = N - 2;   // 内部点数（不含两端）
+
+  /* 组装三对角系统 */
+  for (let j=0;j<n;j++){
+    dA[j] = (j > 0)    ? -r : 0;
+    dB[j] = 1 + 2*r;
+    dC[j] = (j < n-1)  ? -r : 0;
+    dD[j] = T[j+1];
+    if (j === 0)   dD[j] += r * T_HOT;
+    if (j === n-1) dD[j] += r * T_COLD;
+  }
+
+  /* Thomas 前向消元 */
+  cp[0] = dC[0]/dB[0];
+  dp[0] = dD[0]/dB[0];
+  for (let j=1;j<n;j++){
+    const m = dB[j] - dA[j]*cp[j-1];
+    cp[j] = dC[j]/m;
+    dp[j] = (dD[j] - dA[j]*dp[j-1])/m;
+  }
+
+  /* 回代 */
+  dX[n-1] = dp[n-1];
+  for (let j=n-2;j>=0;j--){
+    dX[j] = dp[j] - cp[j]*dX[j+1];
+  }
+
+  /* 写回 */
+  for (let j=0;j<n;j++) T[j+1] = dX[j];
+  T[0]     = T_HOT;
+  T[N-1]   = T_COLD;
+}
+
+/* ============================================================
+   等温线位置查找
+============================================================ */
+function findXForTemp(target){
+  if (target >= T[0])     return 0;
+  if (target <= T[N-1])   return N-1;
+  let lo = 0, hi = N-1;
+  while (hi - lo > 1){
+    const mid = (lo + hi) >> 1;
+    if (T[mid] > target) lo = mid;
+    else hi = mid;
+  }
+  const denom = T[lo] - T[hi];
+  const frac = denom > 1e-9 ? (T[lo] - target)/denom : 0;
+  return lo + frac;
+}
+
+/* ============================================================
+   粒子更新
+============================================================ */
+function updateEmbers(dt){
+  /* 从热端生成 */
+  if (Math.random() < dt * 26){
+    const y = barY + Math.random()*barH;
+    embers.push({
+      x: barX + Math.random()*barW*0.08,
+      y: y,
+      vx: 60 + Math.random()*140,
+      vy: (Math.random()-0.5)*16,
+      life: 1.6 + Math.random()*1.6,
+      max: 3.2,
+      hue: 18 + Math.random()*40
+    });
+  }
+
+  for (let i=embers.length-1;i>=0;i--){
+    const p = embers[i];
+    p.life -= dt;
+    if (p.life <= 0){ embers.splice(i,1); continue; }
+    p.x += p.vx*dt;
+    p.y += p.vy*dt;
+    p.vy += (Math.random()-0.5)*40*dt;
+    if (p.x > barX + barW + 20) embers.splice(i,1);
+  }
+}
+
+/* ============================================================
+   绘制：背景
+============================================================ */
+function drawBackground(){
+  const g = ctx.createRadialGradient(W*0.5, H*0.5, 0,
+                                     W*0.5, H*0.5, Math.max(W,H)*0.85);
+  g.addColorStop(0,   '#0c0a14');
+  g.addColorStop(0.5, '#05040a');
+  g.addColorStop(1,   '#010105');
+  ctx.fillStyle = g;
+  ctx.fillRect(0,0,W,H);
+
+  /* 星尘 */
+  ctx.globalCompositeOperation = 'lighter';
+  const n = Math.floor(W*H/28000);
+  for (let i=0;i<n;i++){
+    const sx = (i*137.51 + tt*4) % W;
+    const sy = (i*91.73  + tt*2) % H;
+    const a = 0.02 + 0.06*Math.abs(Math.sin(i*1.7 + tt*0.5));
+    ctx.fillStyle = 'rgba(255,180,120,'+a.toFixed(3)+')';
+    ctx.fillRect(sx, sy, 1.2, 1.2);
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ============================================================
+   绘制：温度曲线（棒上方热浪）
+============================================================ */
+function drawTemperatureCurve(){
+  /* ---- 填充体 ---- */
+  ctx.beginPath();
+  ctx.moveTo(barX, curveBaseY);
+  for (let i=0;i<N;i++){
+    const x = barX + barW * i/(N-1);
+    const u = (T[i] - T_COLD)/(T_HOT - T_COLD);
+    const y = curveBaseY - u * curveH;
+    ctx.lineTo(x, y);
+  }
+  ctx.lineTo(barX + barW, curveBaseY);
+  ctx.closePath();
+
+  const fillG = ctx.createLinearGradient(0, curveBaseY - curveH, 0, curveBaseY);
+  fillG.addColorStop(0,    'rgba(255,240,200,0.16)');
+  fillG.addColorStop(0.35, 'rgba(255,120,30,0.10)');
+  fillG.addColorStop(1,    'rgba(120,20,0,0.02)');
+  ctx.fillStyle = fillG;
+  ctx.fill();
+
+  /* ---- 轮廓曲线（分段按温度着色） ---- */
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  /* 底层辉光 */
+  ctx.beginPath();
+  for (let i=0;i<N;i++){
+    const x = barX + barW * i/(N-1);
+    const u = (T[i] - T_COLD)/(T_HOT - T_COLD);
+    const y = curveBaseY - u * curveH;
+    if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+  }
+  ctx.strokeStyle = 'rgba(255,140,40,0.26)';
+  ctx.lineWidth = 7;
+  ctx.stroke();
+
+  /* 主曲线：按温度取色 */
+  const segs = 60;
+  for (let s=0;s<segs;s++){
+    const i0 = Math.floor(N*s/segs);
+    const i1 = Math.min(N-1, Math.floor(N*(s+1)/segs));
+    if (i1 <= i0) continue;
+
+    const tc = T[(i0+i1)>>1];
+    const idx = tempToIdx(tc);
+
+    ctx.beginPath();
+    for (let i=i0;i<=i1;i++){
+      const x = barX + barW * i/(N-1);
+      const u = (T[i] - T_COLD)/(T_HOT - T_COLD);
+      const y = curveBaseY - u * curveH;
+      if (i===i0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+    }
+    ctx.strokeStyle = 'rgb('+LUT_R[idx]+','+LUT_G[idx]+','+LUT_B[idx]+')';
+    ctx.lineWidth = 2.0;
+    ctx.stroke();
+  }
+
+  /* 亮芯 */
+  ctx.beginPath();
+  for (let i=0;i<N;i++){
+    const x = barX + barW * i/(N-1);
+    const u = (T[i] - T_COLD)/(T_HOT - T_COLD);
+    const y = curveBaseY - u * curveH;
+    if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+  }
+  ctx.strokeStyle = 'rgba(255,250,230,0.55)';
+  ctx.lineWidth = 0.8;
+  ctx.stroke();
+
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ============================================================
+   绘制：铜棒热图
+============================================================ */
+function drawRod(){
+  /* --- 更新离屏像素 --- */
+  const d = rodImg.data;
+  for (let i=0;i<N;i++){
+    const idx = tempToIdx(T[i]);
+    d[i*4]   = LUT_R[idx];
+    d[i*4+1] = LUT_G[idx];
+    d[i*4+2] = LUT_B[idx];
+    d[i*4+3] = 255;
+  }
+  rodOffCtx.putImageData(rodImg, 0, 0);
+
+  /* --- 棒体基底 --- */
+  ctx.fillStyle = '#050208';
+  ctx.fillRect(barX, barY, barW, barH);
+
+  /* --- 热图绘制 --- */
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(rodOff, 0, 0, N, 1, barX, barY, barW, barH);
+
+  /* --- 圆柱金属质感叠加 --- */
+  const metal = ctx.createLinearGradient(0, barY, 0, barY+barH);
+  metal.addColorStop(0,    'rgba(255,255,255,0.10)');
+  metal.addColorStop(0.28, 'rgba(255,255,255,0.03)');
+  metal.addColorStop(0.55, 'rgba(0,0,0,0.06)');
+  metal.addColorStop(0.82, 'rgba(0,0,0,0.18)');
+  metal.addColorStop(1,    'rgba(0,0,0,0.34)');
+  ctx.fillStyle = metal;
+  ctx.fillRect(barX, barY, barW, barH);
+
+  /* --- 外侧辉光 --- */
+  ctx.globalCompositeOperation = 'lighter';
+
+  const glow = ctx.createLinearGradient(0, barY-barH*0.9, 0, barY+barH*1.9);
+  glow.addColorStop(0,    'rgba(255,120,30,0)');
+  glow.addColorStop(0.30, 'rgba(255,140,40,0.09)');
+  glow.addColorStop(0.50, 'rgba(255,170,60,0.13)');
+  glow.addColorStop(0.70, 'rgba(255,140,40,0.09)');
+  glow.addColorStop(1,    'rgba(255,120,30,0)');
+  ctx.fillStyle = glow;
+  ctx.fillRect(barX-16, barY-barH*0.9, barW+32, barH*2.8);
+
+  ctx.globalCompositeOperation = 'source-over';
+
+  /* --- 上下高光边 --- */
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.strokeStyle = 'rgba(255,220,170,0.28)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(barX, barY+0.5); ctx.lineTo(barX+barW, barY+0.5);
+  ctx.moveTo(barX, barY+barH-0.5); ctx.lineTo(barX+barW, barY+barH-0.5);
+  ctx.stroke();
+  ctx.globalCompositeOperation = 'source-over';
+
+  /* --- 端面 --- */
+  ctx.strokeStyle = 'rgba(255,200,140,0.42)';
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  ctx.moveTo(barX+0.5, barY-4); ctx.lineTo(barX+0.5, barY+barH+4);
+  ctx.moveTo(barX+barW-0.5, barY-4); ctx.lineTo(barX+barW-0.5, barY+barH+4);
+  ctx.stroke();
+}
+
+/* ============================================================
+   绘制：等温线
+============================================================ */
+function drawIsotherms(){
+  ctx.globalCompositeOperation = 'lighter';
+
+  for (let temp=40; temp<200; temp+=20){
+    const xi = findXForTemp(temp);
+    const x  = barX + barW * xi/(N-1);
+
+    /* 距热端越远，越暗 */
+    const fade = 1 - (temp - 20)/200;
+    const alpha = 0.10 + 0.32*fade;
+
+    const idx = tempToIdx(temp);
+
+    /* 光晕层 */
+    ctx.beginPath();
+    ctx.moveTo(x, barY-3);
+    ctx.lineTo(x, barY+barH+3);
+    ctx.strokeStyle = 'rgba('+LUT_R[idx]+','+LUT_G[idx]+','+LUT_B[idx]+','+(alpha*0.34).toFixed(3)+')';
+    ctx.lineWidth = 5;
+    ctx.stroke();
+
+    /* 亮线 */
+    ctx.beginPath();
+    ctx.moveTo(x, barY-2);
+    ctx.lineTo(x, barY+barH+2);
+    ctx.strokeStyle = 'rgba('+LUT_R[idx]+','+LUT_G[idx]+','+LUT_B[idx]+','+alpha.toFixed(3)+')';
+    ctx.lineWidth = 1.05;
+    ctx.stroke();
+
+    /* 白色细芯 */
+    ctx.beginPath();
+    ctx.moveTo(x, barY);
+    ctx.lineTo(x, barY+barH);
+    ctx.strokeStyle = 'rgba(255,255,255,'+(alpha*0.36).toFixed(3)+')';
+    ctx.lineWidth = 0.45;
+    ctx.stroke();
+  }
+
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ============================================================
+   绘制：热流箭头
+============================================================ */
+function drawArrows(){
+  const nArrow = 22;
+  const dx = L_ROD/(N-1);
+
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap = 'round';
+
+  for (let a=0;a<nArrow;a++){
+    const i = Math.round((a + 0.5)/nArrow * (N-1));
+    if (i < 1 || i > N-2) continue;
+
+    const x = barX + barW * i/(N-1);
+    const y = barY - 16;
+
+    /* 温度梯度 → 热流强度 */
+    const dTdx = (T[i+1] - T[i-1])/(2*dx);
+    const qLocal = Math.abs(K_CU * dTdx);
+
+    /* 归一化至显示范围 */
+    const qRef = K_CU * (T_HOT - T_COLD)/L_ROD;
+    const qn = clamp(qLocal/qRef, 0, 1);
+
+    if (qn < 0.02) continue;
+
+    const len = 6 + qn * 26;
+    const alpha = 0.10 + qn * 0.65;
+    const idx = tempToIdx(T[i]);
+
+    /* 杆 */
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + len, y);
+    ctx.strokeStyle = 'rgba('+LUT_R[idx]+','+LUT_G[idx]+','+LUT_B[idx]+','+alpha.toFixed(3)+')';
+    ctx.lineWidth = 1.1;
+    ctx.stroke();
+
+    /* 箭头 */
+    const hs = 3.6;
+    ctx.beginPath();
+    ctx.moveTo(x + len + hs, y);
+    ctx.lineTo(x + len - hs*0.3, y - hs*0.62);
+    ctx.lineTo(x + len - hs*0.3, y + hs*0.62);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba('+LUT_R[idx]+','+LUT_G[idx]+','+LUT_B[idx]+','+(alpha*0.95).toFixed(3)+')';
+    ctx.fill();
+  }
+
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ============================================================
+   绘制：粒子
+============================================================ */
+function drawEmbers(){
+  ctx.globalCompositeOperation = 'lighter';
+
+  for (let i=0;i<embers.length;i++){
+    const p = embers[i];
+    const a = clamp(p.life/p.max, 0, 1);
+    const r = 1.1 + a*1.2;
+
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, r*2.8, 0, TAU);
+    ctx.fillStyle = 'hsla('+p.hue.toFixed(0)+',100%,58%,'+(a*0.09).toFixed(3)+')';
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, r, 0, TAU);
+    ctx.fillStyle = 'hsla('+p.hue.toFixed(0)+',100%,78%,'+(a*0.85).toFixed(3)+')';
+    ctx.fill();
+  }
+
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ============================================================
+   绘制：两端光源
+============================================================ */
+function drawEndSources(){
+  const pulse = 0.75 + 0.25*Math.sin(tt*4.2);
+
+  /* 热端 */
+  ctx.globalCompositeOperation = 'lighter';
+  const gHot = ctx.createRadialGradient(
+    barX, barY+barH*0.5, 0,
+    barX, barY+barH*0.5, barH*2.6
+  );
+  gHot.addColorStop(0,   'rgba(255,240,200,'+(0.55*pulse).toFixed(3)+')');
+  gHot.addColorStop(0.28,'rgba(255,140,40,'+(0.32*pulse).toFixed(3)+')');
+  gHot.addColorStop(0.62,'rgba(255,70,10,0.13)');
+  gHot.addColorStop(1,   'rgba(255,40,0,0)');
+  ctx.fillStyle = gHot;
+  ctx.fillRect(barX-barH*2.6, barY+barH*0.5-barH*2.6, barH*5.2, barH*5.2);
+
+  /* 冷端 */
+  const gCold = ctx.createRadialGradient(
+    barX+barW, barY+barH*0.5, 0,
+    barX+barW, barY+barH*0.5, barH*2.0
+  );
+  gCold.addColorStop(0,   'rgba(140,210,255,0.24)');
+  gCold.addColorStop(0.5, 'rgba(80,140,220,0.09)');
+  gCold.addColorStop(1,   'rgba(40,80,160,0)');
+  ctx.fillStyle = gCold;
+  ctx.fillRect(barX+barW-barH*2, barY+barH*0.5-barH*2, barH*4, barH*4);
+
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ============================================================
+   绘制：温度探针
+============================================================ */
+function drawProbes(dt){
+  for (let i=probes.length-1;i>=0;i--){
+    const p = probes[i];
+    p.life -= dt;
+    if (p.life <= 0){ probes.splice(i,1); continue; }
+
+    const a = clamp(p.life/1.6, 0, 1);
+    const y = barY + barH*0.5;
+
+    ctx.globalCompositeOperation = 'lighter';
+
+    ctx.beginPath();
+    ctx.arc(p.x, y, 7 + (1.6 - p.life)*8, 0, TAU);
+    ctx.strokeStyle = 'rgba(200,240,255,'+(a*0.55).toFixed(3)+')';
+    ctx.lineWidth = 1.3;
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(p.x, y, 2.6, 0, TAU);
+    ctx.fillStyle = 'rgba(255,255,255,'+a.toFixed(3)+')';
+    ctx.fill();
+
+    /* 竖线 */
+    ctx.beginPath();
+    ctx.moveTo(p.x, y-6);
+    ctx.lineTo(p.x, y+6);
+    ctx.strokeStyle = 'rgba(180,230,255,'+(a*0.5).toFixed(3)+')';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    ctx.globalCompositeOperation = 'source-over';
+
+    /* 标签 */
+    const lx = clamp(p.x + 14, 8, W - 140);
+    const ly = clamp(y - 42, 8, H - 34);
+
+    ctx.fillStyle = 'rgba(4,10,20,'+(a*0.90).toFixed(3)+')';
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(lx, ly, 118, 26, 6);
+    else ctx.rect(lx, ly, 118, 26);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,170,80,'+(a*0.42).toFixed(3)+')';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    ctx.font = '10px "SF Mono",Consolas,monospace';
+    ctx.fillStyle = 'rgba(255,220,170,'+a.toFixed(3)+')';
+    ctx.textAlign = 'left';
+    ctx.fillText('T = ' + p.temp.toFixed(1) + ' °C', lx+9, ly+17);
+    ctx.textAlign = 'start';
+  }
+}
+
+/* ============================================================
+   暗角
+============================================================ */
+let vignette = null;
+
+function makeVignette(){
+  const g = ctx.createRadialGradient(W/2, H/2, Math.min(W,H)*0.30,
+                                     W/2, H/2, Math.max(W,H)*0.82);
+  g.addColorStop(0, 'rgba(0,0,0,0)');
+  g.addColorStop(1, 'rgba(0,1,4,0.82)');
+  vignette = g;
+}
+
+/* ============================================================
+   渲染主流程
+============================================================ */
+function render(dt){
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  ctx.clearRect(0,0,W,H);
+
+  drawBackground();
+  drawTemperatureCurve();
+  drawArrows();
+  drawRod();
+  drawIsotherms();
+  drawEmbers();
+  drawEndSources();
+  drawProbes(dt);
+
+  if (vignette){
+    ctx.fillStyle = vignette;
+    ctx.fillRect(0,0,W,H);
+  }
+
+  /* 循环淡出 */
+  if (tt > CYCLE - 1.6){
+    const a = (tt - (CYCLE-1.6))/1.6;
+    ctx.fillStyle = 'rgba(2,4,10,'+(a*0.94).toFixed(3)+')';
+    ctx.fillRect(0,0,W,H);
+  }
+}
+
+/* ============================================================
+   HUD 更新
+============================================================ */
+const elT     = document.getElementById('tHud');
+const elDelta = document.getElementById('deltaHud');
+const elQ     = document.getElementById('qHud');
+
+let hudAcc = 0;
+
+function updateHUD(dt){
+  hudAcc += dt;
+  if (hudAcc < 0.08) return;
+  hudAcc = 0;
+
+  const delta = Math.sqrt(ALPHA * Math.max(simTime, 0.001));
+  const q = K_CU * (T_HOT - T_COLD)/L_ROD;
+
+  elT.textContent     = simTime.toFixed(1);
+  elDelta.textContent = delta.toFixed(4);
+  elQ.textContent     = q.toExponential(2);
+}
+
+/* ============================================================
+   主循环
+============================================================ */
+let last = 0;
+
+function loop(now){
+  requestAnimationFrame(loop);
+
+  if (!last){ last = now; return; }
+  let dt = (now - last)/1000;
+  last = now;
+  if (dt > 0.05) dt = 0.05;
+  if (dt < 0)    dt = 0;
+
+  tt += dt;
+  if (tt >= CYCLE){
+    tt -= CYCLE;
+    initField();
+  }
+
+  /* 模拟时间推进 */
+  const target = (tt/CYCLE) * SIM_MAX;
+  const simDt = Math.max(0, target - simTime);
+  if (simDt > 0){
+    stepHeat(simDt);
+    simTime = target;
+  }
+
+  updateEmbers(dt);
+  render(dt);
+  updateHUD(dt);
+}
+
+/* ============================================================
+   交互
+============================================================ */
+cv.addEventListener('pointerdown', function(e){
+  const mx = e.clientX, my = e.clientY;
+  if (mx < barX || mx > barX+barW) return;
+  if (my < barY-14 || my > barY+barH+14) return;
+
+  const i = clamp(Math.round((mx-barX)/barW*(N-1)), 0, N-1);
+  probes.push({ x: mx, temp: T[i], life: 1.6 });
+  if (probes.length > 4) probes.shift();
+});
+
+window.addEventListener('resize', function(){
+  resize();
+  makeVignette();
+});
+
+/* ============================================================
+   启动
+============================================================ */
+function boot(){
+  buildLUT();
+  resize();
+  makeVignette();
+  initField();
+  requestAnimationFrame(loop);
+}
+
+boot();
+
+})();
+</script>
+</body>
+</html>

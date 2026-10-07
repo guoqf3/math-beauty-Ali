@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NEON SIEVE · 埃拉托斯特尼筛法</title>
+<style>
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;background:#01020a;overflow:hidden}
+  body{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace}
+  canvas{position:fixed;inset:0;display:block}
+
+  .hud{
+    position:fixed;z-index:6;pointer-events:none;
+    font-size:12.5px;line-height:1.95;letter-spacing:.07em;
+    color:#a8e8ff;opacity:.92;white-space:pre;
+    text-shadow:0 0 6px rgba(80,200,255,.85),0 0 18px rgba(60,140,255,.5);
+  }
+  #hudTL{top:16px;left:18px}
+  #hudTR{top:16px;right:18px;text-align:right}
+  #hudBL{bottom:16px;left:18px}
+  #hudBR{bottom:16px;right:18px;text-align:right}
+  .w {color:#ffffff;text-shadow:0 0 10px #fff,0 0 26px rgba(180,240,255,.9)}
+  .rd{color:#ff5a5a;text-shadow:0 0 8px rgba(255,90,90,1),0 0 24px rgba(255,20,20,.6)}
+  .or{color:#ffa63c;text-shadow:0 0 8px rgba(255,166,60,1),0 0 24px rgba(255,110,0,.6)}
+  .yl{color:#ffe14a;text-shadow:0 0 8px rgba(255,225,70,1),0 0 24px rgba(255,180,0,.6)}
+  .gr{color:#8dff6a;text-shadow:0 0 8px rgba(140,255,100,1),0 0 24px rgba(80,255,60,.6)}
+  .cy{color:#5ffff0;text-shadow:0 0 8px rgba(95,255,240,1),0 0 24px rgba(0,230,220,.6)}
+  .bl{color:#6aa8ff;text-shadow:0 0 8px rgba(100,170,255,1),0 0 24px rgba(40,110,255,.6)}
+  .pu{color:#c07aff;text-shadow:0 0 8px rgba(180,110,255,1),0 0 24px rgba(140,60,255,.6)}
+  .dim{opacity:.45}
+
+  .scan{
+    position:fixed;inset:0;z-index:7;pointer-events:none;
+    background:repeating-linear-gradient(0deg,rgba(255,255,255,.028) 0 1px,transparent 1px 3px);
+    mix-blend-mode:overlay;opacity:.6;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div class="hud" id="hudTL">Sieve of Eratosthenes · 埃拉托斯特尼筛法
+1 – 100 素数分布图谱</div>
+
+<div class="hud" id="hudTR">当前素数  p = <span class="w" id="pOut">—</span>
+已划除倍数  <span class="rd" id="cOut">0</span> 个</div>
+
+<div class="hud" id="hudBL">n 为素数   ⇔   ∀ d ∈ (1, n) ,  d ∤ n
+p | m   ⇒   m 被划除</div>
+
+<div class="hud" id="hudBR">π(100) = <span class="yl">25</span>   剩余素数
+阶段  <span class="cy" id="phaseOut">准备中</span></div>
+
+<div class="scan"></div>
+
+<script>
+(function(){
+"use strict";
+
+/* ================= 基础 ================= */
+const cvs = document.getElementById('c');
+const ctx = cvs.getContext('2d');
+
+const pOut     = document.getElementById('pOut');
+const cOut     = document.getElementById('cOut');
+const phaseOut = document.getElementById('phaseOut');
+
+const PI2 = Math.PI * 2;
+
+let W = 0, H = 0, DPR = 1, bgGrad = null;
+let gx = 0, gy = 0, cell = 60, side = 600;
+
+/* ================= 参数 ================= */
+const N     = 100;
+const COLS  = 10;
+
+/* ================= 素数表 ================= */
+const isPrime = new Array(N + 1).fill(true);
+isPrime[0] = isPrime[1] = false;
+for (let i = 2; i * i <= N; i++){
+  if (isPrime[i]){
+    for (let j = i * i; j <= N; j += i) isPrime[j] = false;
+  }
+}
+
+const primes = [];
+for (let i = 2; i <= N; i++) if (isPrime[i]) primes.push(i);
+
+/* 光谱：红 → 橙 → 黄 → 绿 → 青 → 蓝 → 紫 */
+const SPECTRUM = [0, 26, 54, 120, 178, 218, 278];
+function spectrumHue(u){
+  u = u < 0 ? 0 : (u > 1 ? 1 : u);
+  const x = u * (SPECTRUM.length - 1);
+  const i = Math.min(SPECTRUM.length - 2, Math.floor(x));
+  const f = x - i;
+  return SPECTRUM[i] + (SPECTRUM[i + 1] - SPECTRUM[i]) * f;
+}
+
+/* ================= 格子状态 ================= */
+const cells = [];
+for (let i = 0; i < N; i++){
+  const n = i + 1;
+  cells.push({
+    n: n,
+    idx: i,
+    prime: isPrime[n],
+    crossed: false,
+    crossProg: 0,
+    lit: false,
+    litProg: 0,
+    baseHue: 0,
+    flash: 0
+  });
+}
+primes.forEach(function(p, i){
+  const c = cells[p - 1];
+  c.baseHue = spectrumHue(i / (primes.length - 1));
+});
+
+/* ================= 布局 ================= */
+function resize(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  cvs.width  = Math.floor(W * DPR);
+  cvs.height = Math.floor(H * DPR);
+  cvs.style.width  = W + 'px';
+  cvs.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  side = Math.min(W * 0.68, H * 0.76, 820);
+  cell = side / COLS;
+  gx = (W - side) / 2;
+  gy = (H - side) / 2;
+
+  bgGrad = ctx.createRadialGradient(W * 0.5, H * 0.5, 0, W * 0.5, H * 0.5, Math.max(W, H) * 0.92);
+  bgGrad.addColorStop(0.00, '#0a1240');
+  bgGrad.addColorStop(0.42, '#050a26');
+  bgGrad.addColorStop(1.00, '#01020a');
+
+  buildStars();
+}
+window.addEventListener('resize', resize);
+
+/* ================= 星空 ================= */
+let stars = [];
+function buildStars(){
+  stars = [];
+  const cnt = Math.min(200, Math.round((W * H) / 9200));
+  for (let i = 0; i < cnt; i++){
+    stars.push({
+      x: Math.random() * W,
+      y: Math.random() * H,
+      r: 0.4 + Math.random() * 1.6,
+      ph: Math.random() * PI2,
+      sp: 0.4 + Math.random() * 1.6,
+      hu: Math.random() * 360
+    });
+  }
+}
+
+function drawStars(){
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < stars.length; i++){
+    const s = stars[i];
+    const tw = 0.30 + 0.70 * (0.5 + 0.5 * Math.sin(t * s.sp + s.ph));
+    const a = tw * 0.45;
+    if (a < 0.03) continue;
+    const r = s.r * (0.8 + 0.5 * tw);
+    const g = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, r * 3.4);
+    g.addColorStop(0.00, 'hsla(' + s.hu + ',100%,92%,' + a + ')');
+    g.addColorStop(0.42, 'hsla(' + s.hu + ',100%,66%,' + (a * 0.30) + ')');
+    g.addColorStop(1.00, 'hsla(' + s.hu + ',100%,60%,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(s.x, s.y, r * 3.4, 0, PI2); ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ================= 圆角矩形 ================= */
+function roundRect(c, x, y, w, h, r){
+  r = Math.min(r, w * 0.5, h * 0.5);
+  c.beginPath();
+  c.moveTo(x + r, y);
+  c.arcTo(x + w, y,     x + w, y + h, r);
+  c.arcTo(x + w, y + h, x,     y + h, r);
+  c.arcTo(x,     y + h, x,     y,     r);
+  c.arcTo(x,     y,     x + w, y,     r);
+  c.closePath();
+}
+
+/* ================= 状态机 ================= */
+let mode = 'intro';
+let modeT = 0;
+let pi = 0;
+let mi = 0;
+let ri = 0;
+let mulList = [];
+let subMode = 'highlight';
+let currentPrime = 0;
+let flowT = 0;
+
+function resetAll(){
+  for (let i = 0; i < cells.length; i++){
+    const c = cells[i];
+    c.crossed = false;
+    c.lit = false;
+  }
+  mode = 'intro'; modeT = 0;
+  pi = 0; mi = 0; ri = 0;
+  subMode = 'highlight';
+  currentPrime = 0;
+  flowT = 0;
+}
+
+function updateState(dt){
+  /* --- 平滑过渡 --- */
+  const k1 = Math.min(1, dt * 9);
+  const k2 = Math.min(1, dt * 7);
+  for (let i = 0; i < cells.length; i++){
+    const c = cells[i];
+    c.crossProg += ((c.crossed ? 1 : 0) - c.crossProg) * k1;
+    c.litProg   += ((c.lit ? 1 : 0) - c.litProg) * k2;
+    c.flash     *= Math.exp(-dt * 3.2);
+  }
+
+  if (mode === 'final') flowT += dt;
+
+  switch (mode){
+
+    /* ---------- 开场 ---------- */
+    case 'intro':
+      if (modeT > 1.5){
+        mode = 'sieve'; modeT = 0;
+        pi = 0; subMode = 'highlight';
+        currentPrime = primes[0];
+      }
+      break;
+
+    /* ---------- 筛法 ---------- */
+    case 'sieve': {
+      const p = primes[pi];
+      currentPrime = p;
+
+      /* 当前素数格持续脉冲 */
+      cells[p - 1].flash = 0.62 + 0.38 * Math.sin(t * 12);
+
+      if (subMode === 'highlight'){
+        if (modeT > 0.26){
+          subMode = 'sieve';
+          modeT = 0;
+          mulList = [];
+          for (let m = p * 2; m <= N; m += p) mulList.push(m);
+          mi = 0;
+        }
+      } else {
+        if (modeT > 0.038){
+          modeT = 0;
+          if (mi < mulList.length){
+            cells[mulList[mi] - 1].crossed = true;
+            mi++;
+          } else {
+            pi++;
+            if (pi >= primes.length){
+              mode = 'reveal'; modeT = 0; ri = 0;
+            } else {
+              subMode = 'highlight'; modeT = 0;
+            }
+          }
+        }
+      }
+      break;
+    }
+
+    /* ---------- 依次点亮素数 ---------- */
+    case 'reveal':
+      if (modeT > 0.085){
+        modeT = 0;
+        if (ri < primes.length){
+          cells[primes[ri] - 1].lit = true;
+          ri++;
+        } else {
+          mode = 'final'; modeT = 0; flowT = 0;
+        }
+      }
+      break;
+
+    /* ---------- 流动七彩 ---------- */
+    case 'final':
+      if (modeT > 8.2){
+        resetAll();
+      }
+      break;
+  }
+}
+
+/* ================= 绘制格子 ================= */
+function drawCell(c, i, fade){
+  const col = i % COLS;
+  const row = (i / COLS) | 0;
+
+  const x = gx + col * cell;
+  const y = gy + row * cell;
+  const pad = Math.max(1.5, cell * 0.062);
+  const s = cell - pad * 2;
+  const rad = cell * 0.16;
+
+  const cp = c.crossProg;
+  const lp = c.litProg;
+
+  /* ---------- 底色 ---------- */
+  let r = 16, g = 26, b = 58, a = 0.74;
+  r += (26 - r) * cp; g += (27 - g) * cp; b += (37 - b) * cp; a += (0.30 - a) * cp;
+
+  ctx.fillStyle = 'rgba(' + (r|0) + ',' + (g|0) + ',' + (b|0) + ',' + (a * fade) + ')';
+  roundRect(ctx, x + pad, y + pad, s, s, rad);
+  ctx.fill();
+
+  /* ---------- 边框 ---------- */
+  let br = 80, bg2 = 150, bb = 255, ba = 0.15;
+  br += (62 - br) * cp; bg2 += (62 - bg2) * cp;
+  bb += (78 - bb) * cp; ba += (0.05 - ba) * cp;
+
+  ctx.strokeStyle = 'rgba(' + (br|0) + ',' + (bg2|0) + ',' + (bb|0) + ',' + (ba * fade) + ')';
+  ctx.lineWidth = 1;
+  roundRect(ctx, x + pad, y + pad, s, s, rad);
+  ctx.stroke();
+
+  /* ---------- 划除斜杠 ---------- */
+  if (cp > 0.15){
+    const al = (cp - 0.15) / 0.85;
+    ctx.strokeStyle = 'rgba(112,118,138,' + (0.46 * al * fade) + ')';
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.moveTo(x + pad + s * 0.24, y + pad + s * 0.24);
+    ctx.lineTo(x + pad + s * 0.76, y + pad + s * 0.76);
+    ctx.stroke();
+  }
+
+  /* ---------- 素数点亮覆盖层 ---------- */
+  if (lp > 0.01){
+    let hue = c.baseHue;
+    if (mode === 'final') hue = (c.baseHue + flowT * 52) % 360;
+
+    const pulse = mode === 'final'
+      ? 0.72 + 0.28 * Math.sin(t * 3.4 - c.idx * 0.34)
+      : 1;
+
+    const cx1 = x + cell * 0.5;
+    const cy1 = y + cell * 0.5;
+    const gr = s * 0.92;
+
+    ctx.globalCompositeOperation = 'lighter';
+
+    const grd = ctx.createRadialGradient(cx1, cy1, 0, cx1, cy1, gr);
+    grd.addColorStop(0.00, 'hsla(' + hue + ',100%,66%,' + (0.58 * lp * pulse * fade) + ')');
+    grd.addColorStop(0.55, 'hsla(' + hue + ',100%,56%,' + (0.20 * lp * pulse * fade) + ')');
+    grd.addColorStop(1.00, 'hsla(' + hue + ',100%,50%,0)');
+    ctx.fillStyle = grd;
+    roundRect(ctx, x + pad, y + pad, s, s, rad);
+    ctx.fill();
+
+    /* 边框辉光 */
+    ctx.save();
+    ctx.shadowColor = 'hsla(' + hue + ',100%,62%,' + (0.92 * lp * fade) + ')';
+    ctx.shadowBlur = 16 * lp * pulse;
+    ctx.strokeStyle = 'hsla(' + hue + ',100%,72%,' + (0.95 * lp * pulse * fade) + ')';
+    ctx.lineWidth = 1.6;
+    roundRect(ctx, x + pad, y + pad, s, s, rad);
+    ctx.stroke();
+    ctx.restore();
+
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  /* ---------- 当前素数白闪 ---------- */
+  if (c.flash > 0.02){
+    const fa = c.flash * fade;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.shadowColor = 'rgba(255,255,255,' + fa + ')';
+    ctx.shadowBlur = 22 * fa;
+    ctx.strokeStyle = 'rgba(255,255,255,' + (0.9 * fa) + ')';
+    ctx.lineWidth = 2;
+    roundRect(ctx, x + pad, y + pad, s, s, rad);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /* ---------- 数字 ---------- */
+  const fs = Math.max(8, cell * 0.30);
+  ctx.font = '700 ' + fs.toFixed(1) + 'px "SF Mono", ui-monospace, Menlo, monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const tx = x + cell * 0.5;
+  const ty = y + cell * 0.5;
+
+  if (lp > 0.01){
+    let hue = c.baseHue;
+    if (mode === 'final') hue = (c.baseHue + flowT * 52) % 360;
+    const pulse = mode === 'final'
+      ? 0.75 + 0.25 * Math.sin(t * 3.4 - c.idx * 0.34)
+      : 1;
+    ctx.save();
+    ctx.shadowColor = 'hsla(' + hue + ',100%,68%,1)';
+    ctx.shadowBlur = 12 * pulse;
+    ctx.fillStyle = 'rgba(255,255,255,' + ((0.55 + 0.45 * lp) * fade) + ')';
+    ctx.fillText(c.n, tx, ty);
+    ctx.restore();
+  } else {
+    let tr = 142, tg = 202, tb = 255, ta = 0.56;
+    tr += (88 - tr) * cp; tg += (90 - tg) * cp;
+    tb += (104 - tb) * cp; ta += (0.22 - ta) * cp;
+    ctx.fillStyle = 'rgba(' + (tr|0) + ',' + (tg|0) + ',' + (tb|0) + ',' + (ta * fade) + ')';
+    ctx.fillText(c.n, tx, ty);
+  }
+}
+
+/* ================= 主循环 ================= */
+let t = 0, lastT = performance.now();
+let lastHud = 0;
+
+function frame(now){
+  requestAnimationFrame(frame);
+
+  let dt = (now - lastT) / 1000;
+  lastT = now;
+  if (dt > 0.05) dt = 0.05;
+  if (dt < 0)    dt = 0;
+  t += dt;
+  modeT += dt;
+
+  updateState(dt);
+
+  /* ---------- 背景 ---------- */
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = bgGrad;
+  ctx.fillRect(0, 0, W, H);
+
+  drawStars();
+
+  /* ---------- 网格区氛围光 ---------- */
+  ctx.globalCompositeOperation = 'lighter';
+  const auraHue = mode === 'final' ? (flowT * 40) % 360 : 210;
+  const ag = ctx.createRadialGradient(
+    gx + side * 0.5, gy + side * 0.5, 0,
+    gx + side * 0.5, gy + side * 0.5, side * 0.78
+  );
+  ag.addColorStop(0.00, 'hsla(' + auraHue + ',100%,58%,0.075)');
+  ag.addColorStop(0.55, 'hsla(' + auraHue + ',100%,52%,0.025)');
+  ag.addColorStop(1.00, 'hsla(' + auraHue + ',100%,50%,0)');
+  ctx.fillStyle = ag;
+  ctx.fillRect(0, 0, W, H);
+  ctx.globalCompositeOperation = 'source-over';
+
+  /* ---------- 网格淡出 ---------- */
+  let fade = 1;
+  if (mode === 'final' && modeT > 7.4){
+    fade = Math.max(0, 1 - (modeT - 7.4) / 0.8);
+  }
+  if (mode === 'intro'){
+    fade = Math.min(1, modeT / 0.9);
+  }
+
+  /* ---------- 绘制格子 ---------- */
+  for (let i = 0; i < N; i++) drawCell(cells[i], i, fade);
+
+  /* ---------- 筛法扫描光带 ---------- */
+  if (mode === 'sieve' && subMode === 'sieve' && mulList.length){
+    const p = currentPrime;
+    const hx = ((currentPrime * 53 + mi * 17) % 360);
+    ctx.globalCompositeOperation = 'lighter';
+    const scanY = gy + (((mi / Math.max(1, mulList.length)) * side));
+    const sg = ctx.createLinearGradient(0, scanY - cell, 0, scanY + cell);
+    sg.addColorStop(0.0, 'hsla(' + hx + ',100%,60%,0)');
+    sg.addColorStop(0.5, 'hsla(' + hx + ',100%,62%,0.10)');
+    sg.addColorStop(1.0, 'hsla(' + hx + ',100%,60%,0)');
+    ctx.fillStyle = sg;
+    ctx.fillRect(gx, scanY - cell, side, cell * 2);
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  /* ---------- HUD ---------- */
+  if (now - lastHud > 90){
+    lastHud = now;
+
+    let crossedN = 0;
+    for (let i = 0; i < N; i++) if (cells[i].crossed) crossedN++;
+    cOut.textContent = crossedN;
+
+    if (mode === 'sieve' && currentPrime){
+      pOut.textContent = currentPrime;
+    } else if (mode === 'reveal' || mode === 'final'){
+      pOut.textContent = '—';
+    }
+
+    let ph = '准备中';
+    if (mode === 'sieve'){
+      ph = subMode === 'highlight' ? '高亮素数' : '划除倍数';
+    } else if (mode === 'reveal'){
+      ph = '点亮素数';
+    } else if (mode === 'final'){
+      ph = '流动七彩';
+    } else if (mode === 'intro'){
+      ph = '初始化';
+    }
+    phaseOut.textContent = ph;
+  }
+}
+
+/* ================= 启动 ================= */
+resize();
+lastT = performance.now();
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,727 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>威布尔断裂强度统计 · 岩石拉伸断裂谱</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100%;height:100%;overflow:hidden;background:#020306;
+    font-family:"SF Mono",Consolas,"Courier New",monospace;}
+  canvas{display:block;position:fixed;inset:0}
+
+  .hud{
+    position:fixed;z-index:10;pointer-events:none;
+    font-size:12px;letter-spacing:.6px;line-height:1.95;
+    color:#ffb066;
+    text-shadow:0 0 8px rgba(255,120,20,.8),0 0 24px rgba(255,70,0,.35);
+    opacity:.88;
+  }
+  .hud .dim{color:#c98a55;opacity:.7;font-size:11px;text-shadow:none}
+  .hud .cy{color:#7fe8ff;text-shadow:0 0 8px rgba(60,200,255,.75),0 0 20px rgba(0,150,255,.35)}
+  .hud .wh{color:#fff2d8;text-shadow:0 0 10px rgba(255,200,120,.9)}
+  .tl{top:16px;left:20px}
+  .tr{top:16px;right:20px;text-align:right}
+  .bl{bottom:16px;left:20px}
+  .br{bottom:16px;right:20px;text-align:right}
+
+  .ctrl{
+    position:fixed;z-index:10;top:16px;left:50%;transform:translateX(-50%);
+    display:flex;align-items:center;gap:10px;
+    font-size:11px;letter-spacing:1px;color:#ffb066;
+    text-shadow:0 0 8px rgba(255,120,20,.8);
+    background:rgba(20,10,4,.45);
+    border:1px solid rgba(255,140,40,.22);
+    border-radius:20px;padding:6px 16px;
+    backdrop-filter:blur(6px);
+  }
+  .ctrl input[type=range]{
+    -webkit-appearance:none;appearance:none;width:120px;height:3px;border-radius:3px;
+    background:linear-gradient(90deg,#ff4d00,#ffb400);outline:none;cursor:pointer;
+  }
+  .ctrl input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none;width:12px;height:12px;border-radius:50%;
+    background:#fff3d0;box-shadow:0 0 10px #ff8c1a,0 0 22px #ff4d00;cursor:pointer;
+  }
+  .ctrl input[type=range]::-moz-range-thumb{
+    width:12px;height:12px;border:none;border-radius:50%;
+    background:#fff3d0;box-shadow:0 0 10px #ff8c1a;cursor:pointer;
+  }
+  #ratev{color:#7fe8ff;min-width:32px;display:inline-block;text-align:right}
+
+  .bar{
+    position:fixed;z-index:10;bottom:26px;left:50%;transform:translateX(-50%);
+    width:min(420px,42vw);height:3px;border-radius:3px;
+    background:rgba(255,140,40,.14);overflow:hidden;
+    box-shadow:0 0 12px rgba(255,90,0,.25);
+  }
+  .bar .fill{
+    height:100%;width:0%;border-radius:3px;
+    background:linear-gradient(90deg,#8a1b00,#ff5a00,#ffc400,#fff6dd);
+    box-shadow:0 0 12px rgba(255,140,20,.9);
+    transition:width .08s linear;
+  }
+  .hint{
+    position:fixed;z-index:10;bottom:46px;left:50%;transform:translateX(-50%);
+    font-size:10px;letter-spacing:2px;color:#8a6a52;
+    text-shadow:0 0 8px rgba(255,120,20,.4);
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div class="hud tl">
+  <div>P(σ) = exp[ −(σ/σ₀)<sup>m</sup> ]</div>
+  <div>F(σ) = 1 − P(σ)</div>
+  <div class="dim">Weibull 生存概率 / 失效概率</div>
+</div>
+
+<div class="hud tr">
+  <div>σ = E · ε</div>
+  <div>m = <span class="cy">8.7</span> &nbsp; σ₀ = <span class="cy">58.3</span> MPa</div>
+  <div class="dim">脆性 · 岩石拉伸</div>
+</div>
+
+<div class="hud bl">
+  <div>ε<sub>f</sub> = <span class="wh">0.58 %</span></div>
+  <div>σ = 50 MPa → P = 92.7 %</div>
+</div>
+
+<div class="hud br">
+  <div>σ = <span class="wh" id="sig">0.0</span> MPa</div>
+  <div>ε = <span class="wh" id="eps">0.000</span> %</div>
+  <div>P(σ) = <span class="cy" id="pv">1.000</span></div>
+</div>
+
+<div class="ctrl">
+  <span>加载速率</span>
+  <input type="range" id="rate" min="0.35" max="2" step="0.05" value="1">
+  <span id="ratev">1.00</span>
+</div>
+
+<div class="bar"><div class="fill" id="fill"></div></div>
+<div class="hint">点击裂纹尖端 · 追踪扩展路径 / 声发射事件</div>
+
+<script>
+(function(){
+"use strict";
+
+const cv  = document.getElementById('c');
+const ctx = cv.getContext('2d');
+let W = 0, H = 0, DPR = 1;
+let vignette = null;
+
+/* ---------------- 尺寸 ---------------- */
+function resize(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = document.documentElement.clientWidth;
+  H = document.documentElement.clientHeight;
+  cv.width  = Math.floor(W * DPR);
+  cv.height = Math.floor(H * DPR);
+  cv.style.width  = W + 'px';
+  cv.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  const g = ctx.createRadialGradient(W/2, H/2, Math.min(W,H)*0.32, W/2, H/2, Math.max(W,H)*0.78);
+  g.addColorStop(0, 'rgba(0,0,0,0)');
+  g.addColorStop(1, 'rgba(0,0,0,0.80)');
+  vignette = g;
+
+  reset();
+}
+
+/* ---------------- 工具 ---------------- */
+const rand = (a,b) => a + Math.random()*(b-a);
+const clamp = (v,a,b) => v < a ? a : (v > b ? b : v);
+
+/* ---------------- 时间轴 ---------------- */
+const CYCLE     = 30.0;   // 总循环 30s
+const T_CRACK0  = 7.0;    // 裂纹萌生
+const T_BREAK   = 15.5;   // 断裂瞬间
+const T_FADE    = 27.0;   // 开始淡出
+
+/* ---------------- 全局状态 ---------------- */
+let scene = null;
+let frags = [], sparks = [], waves = [], marks = [];
+let flash = 0, shake = 0, didBreak = false;
+let t = 0, lastT = -1, lastNow = 0, startTime = 0, started = false;
+let groundY = 0;
+let loadRate = 1.0;
+let dust = [];
+
+/* ---------------- 裂纹生成 ---------------- */
+function makeBranch(x0, y0, ang0, len, straighten){
+  const pts = [{x:x0, y:y0, len:0}];
+  let x = x0, y = y0, l = 0, a = ang0;
+  while(l < len){
+    const step = rand(8, 15);
+    a += rand(-0.62, 0.62);
+    a += (ang0 - a) * straighten;             // 拉回主方向，形成锯齿
+    x += Math.cos(a) * step;
+    y += Math.sin(a) * step;
+    l += step;
+    pts.push({x, y, len:l});
+  }
+  return {pts, total:l};
+}
+
+function pointAt(br, L){
+  const pts = br.pts;
+  if (L >= br.total) return pts[pts.length-1];
+  if (L <= 0) return pts[0];
+  for (let i = 1; i < pts.length; i++){
+    if (pts[i].len >= L){
+      const a = pts[i-1], b = pts[i];
+      const f = (L - a.len) / ((b.len - a.len) || 1);
+      return {x: a.x + (b.x-a.x)*f, y: a.y + (b.y-a.y)*f};
+    }
+  }
+  return pts[pts.length-1];
+}
+
+/* ---------------- 场景构建 ---------------- */
+function buildScene(){
+  const cx = W * 0.5;
+  const cy = H * 0.44;
+  const sw = Math.min(W * 0.155, 150);
+  const sh = Math.min(H * 0.44, 400);
+
+  const N = 26;
+  const sideL = [], sideR = [];
+  for (let i = 0; i <= N; i++){ sideL.push(rand(-4.5, 4.5)); sideR.push(rand(-4.5, 4.5)); }
+
+  const crackLen = sw * 0.5 + 26;
+  const right = makeBranch(cx, cy, 0, crackLen, 0.22);
+  const left  = makeBranch(cx, cy, Math.PI, crackLen, 0.22);
+
+  const subs = [];
+  for (let i = 0; i < 12; i++){
+    const L = rand(0.18, 0.92) * crackLen;
+    const side = Math.random() < 0.5 ? right : left;
+    const p = pointAt(side, L);
+    const ang = rand(0, Math.PI*2);
+    subs.push({ br: makeBranch(p.x, p.y, ang, rand(12, 42), 0.05), start: L, side: side });
+  }
+
+  return { cx, cy, sw, sh, N, sideL, sideR, right, left, subs, crackLen };
+}
+
+/* ---------------- 粒子生成 ---------------- */
+function makePoly(n){
+  const pts = [];
+  for (let i = 0; i < n; i++){
+    const a = (i/n) * Math.PI * 2 + rand(-0.35, 0.35);
+    const r = rand(0.55, 1.25);
+    pts.push([Math.cos(a)*r, Math.sin(a)*r]);
+  }
+  return pts;
+}
+
+function spawnSpark(x, y, vx, vy){
+  sparks.push({ x, y, vx, vy, life: rand(0.35, 1.3), max: 1.3, size: rand(1, 2.6) });
+}
+
+/* ---------------- 重置 ---------------- */
+function reset(){
+  scene = buildScene();
+  frags = []; sparks = []; waves = []; marks = [];
+  flash = 0; shake = 0; didBreak = false;
+  groundY = H * 0.88;
+  dust = [];
+  const dn = Math.floor((W*H) / 26000);
+  for (let i = 0; i < dn; i++){
+    dust.push({
+      x: rand(0, W), y: rand(0, H),
+      r: rand(0.4, 1.5), a: rand(0.06, 0.30),
+      sp: rand(4, 20), ph: rand(0, Math.PI*2)
+    });
+  }
+}
+
+/* ---------------- 应力 / 应变 ---------------- */
+function strainRatio(tt){
+  if (tt < T_CRACK0) return 0.72 * (tt / T_CRACK0);
+  if (tt < T_BREAK)  return 0.72 + 0.28 * ((tt - T_CRACK0) / (T_BREAK - T_CRACK0));
+  return Math.max(0, 1 - (tt - T_BREAK) * 6);
+}
+
+function crackProgress(tt){
+  if (tt < T_CRACK0) return 0;
+  if (tt >= T_BREAK) return 1;
+  const u = (tt - T_CRACK0) / (T_BREAK - T_CRACK0);
+  return Math.pow(u, 1.8);
+}
+
+/* ---------------- 断裂 ---------------- */
+function doBreak(){
+  didBreak = true;
+  flash = 1;
+  shake = 1;
+
+  waves.push({ x: scene.cx, y: scene.cy, r: 6, max: Math.max(W,H)*1.05, a: 1 });
+
+  // 碎块
+  const n = 130;
+  for (let i = 0; i < n; i++){
+    const dirx = Math.random() < 0.5 ? -1 : 1;
+    const spd  = rand(120, 620);
+    frags.push({
+      x: scene.cx + rand(-scene.sw*0.95, scene.sw*0.95),
+      y: scene.cy + rand(-scene.sh*0.5, scene.sh*0.5),
+      vx: dirx * spd * rand(0.45, 1.15) + rand(-80, 80),
+      vy: rand(-780, -140),
+      r: rand(2, 9),
+      rot: rand(0, Math.PI*2),
+      vr: rand(-9, 9),
+      poly: makePoly(Math.floor(rand(3, 8))),
+      age: 0,
+      heat: rand(0.72, 1.0)
+    });
+  }
+
+  // 火花 / 声发射微粒子
+  for (let i = 0; i < 240; i++){
+    const a = rand(0, Math.PI*2);
+    const s = rand(80, 900);
+    spawnSpark(
+      scene.cx + rand(-scene.sw*0.9, scene.sw*0.9),
+      scene.cy + rand(-scene.sh*0.45, scene.sh*0.45),
+      Math.cos(a) * s,
+      Math.sin(a) * s * 0.8 - rand(0, 260)
+    );
+  }
+}
+
+/* ---------------- 绘制：背景 ---------------- */
+function drawBackground(){
+  const g = ctx.createRadialGradient(W*0.5, H*0.44, 0, W*0.5, H*0.44, Math.max(W,H)*0.85);
+  g.addColorStop(0,   '#0e1119');
+  g.addColorStop(0.45,'#07080f');
+  g.addColorStop(1,   '#020306');
+  ctx.fillStyle = g;
+  ctx.fillRect(-70, -70, W+140, H+140);
+
+  // 浮尘
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < dust.length; i++){
+    const d = dust[i];
+    const y = (d.y - t * d.sp) % H;
+    const yy = y < 0 ? y + H : y;
+    const x = d.x + Math.sin(t * 0.6 + d.ph) * 8;
+    ctx.fillStyle = `rgba(255,170,90,${d.a})`;
+    ctx.fillRect(x, yy, d.r, d.r);
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ---------------- 绘制：试件 + 应力云图 ---------------- */
+function drawSpecimen(sr){
+  if (didBreak) return;
+  const s = scene;
+  const stretch  = 1 + 0.07 * sr;
+  const contract = 1 - 0.03 * sr;
+  const w = s.sw * contract;
+  const h = s.sh * stretch;
+  const hw = w * 0.5, hh = h * 0.5;
+  const cx = s.cx, cy = s.cy;
+
+  ctx.save();
+  ctx.beginPath();
+  for (let i = 0; i <= s.N; i++){
+    const y = cy - hh + h * i / s.N;
+    const x = cx - hw + s.sideL[i];
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  for (let i = s.N; i >= 0; i--){
+    const y = cy - hh + h * i / s.N;
+    ctx.lineTo(cx + hw + s.sideR[i], y);
+  }
+  ctx.closePath();
+
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = '#120d0a';
+  ctx.fill();
+
+  ctx.save();
+  ctx.clip();
+  ctx.globalCompositeOperation = 'lighter';
+
+  const heat = clamp(sr, 0, 1);
+  const rad = Math.max(w, h) * 0.85;
+  const g1 = ctx.createRadialGradient(cx, cy, 0, cx, cy, rad);
+  g1.addColorStop(0,    `rgba(255,${(80+150*heat)|0},${(10+55*heat)|0},${0.18 + 0.48*heat})`);
+  g1.addColorStop(0.42, `rgba(200,55,6,${0.08 + 0.30*heat})`);
+  g1.addColorStop(1,    'rgba(20,0,0,0)');
+  ctx.fillStyle = g1;
+  ctx.fillRect(cx - hw - 12, cy - hh - 12, w + 24, h + 24);
+
+  // 上下端部应力带
+  const gTop = ctx.createLinearGradient(0, cy - hh, 0, cy - hh + h*0.22);
+  gTop.addColorStop(0, `rgba(255,${(120+100*heat)|0},40,${0.14 + 0.26*heat})`);
+  gTop.addColorStop(1, 'rgba(255,80,0,0)');
+  ctx.fillStyle = gTop;
+  ctx.fillRect(cx - hw - 4, cy - hh - 4, w + 8, h*0.24);
+
+  const gBot = ctx.createLinearGradient(0, cy + hh, 0, cy + hh - h*0.22);
+  gBot.addColorStop(0, `rgba(255,${(120+100*heat)|0},40,${0.14 + 0.26*heat})`);
+  gBot.addColorStop(1, 'rgba(255,80,0,0)');
+  ctx.fillStyle = gBot;
+  ctx.fillRect(cx - hw - 4, cy + hh - h*0.24 + 4, w + 8, h*0.24);
+
+  ctx.restore();
+
+  // 轮廓
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = `rgba(255,${(110 + 90*heat)|0},50,${0.16 + 0.30*heat})`;
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+/* ---------------- 绘制：裂纹 ---------------- */
+function pathBranch(br, L){
+  if (L <= 0.4) return;
+  const pts = br.pts;
+  ctx.moveTo(pts[0].x, pts[0].y);
+  for (let i = 1; i < pts.length; i++){
+    if (pts[i].len <= L){
+      ctx.lineTo(pts[i].x, pts[i].y);
+    } else {
+      const q = pointAt(br, L);
+      ctx.lineTo(q.x, q.y);
+      return;
+    }
+  }
+}
+
+function drawCrack(p, sr){
+  if (p <= 0.001) return;
+  const s = scene;
+  const L = s.crackLen * p;
+
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  const layers = [
+    { w: 15,  c: 'rgba(255,70,5,0.085)'   },
+    { w: 8.5, c: 'rgba(255,110,15,0.16)'  },
+    { w: 4.2, c: 'rgba(255,165,45,0.30)'  },
+    { w: 1.9, c: 'rgba(255,215,150,0.62)' },
+    { w: 0.75,c: 'rgba(255,255,255,0.95)' }
+  ];
+
+  for (let k = 0; k < layers.length; k++){
+    ctx.strokeStyle = layers[k].c;
+    ctx.lineWidth = layers[k].w;
+    ctx.beginPath();
+    pathBranch(s.right, L);
+    pathBranch(s.left, L);
+    // 分支微裂纹
+    for (let i = 0; i < s.subs.length; i++){
+      const sb = s.subs[i];
+      const sub = Math.min(sb.br.total, Math.max(0, (L - sb.start) * 0.95));
+      if (sub > 1) pathBranch(sb.br, sub);
+    }
+    ctx.stroke();
+  }
+
+  // 裂尖辉光
+  const tipR = pointAt(s.right, L);
+  const tipL = pointAt(s.left, L);
+  const pulse = 1 + 0.32 * Math.sin(t * 24);
+  const heatBoost = 0.55 + 0.45 * clamp(sr, 0, 1);
+
+  drawTip(tipR.x, tipR.y, pulse, heatBoost);
+  drawTip(tipL.x, tipL.y, pulse, heatBoost);
+}
+
+function drawTip(x, y, pulse, boost){
+  const R = 30 * pulse * (0.7 + 0.6 * boost);
+  const g = ctx.createRadialGradient(x, y, 0, x, y, R);
+  g.addColorStop(0,    `rgba(255,255,255,${0.95 * boost + 0.05})`);
+  g.addColorStop(0.16, `rgba(255,244,190,${0.80 * boost})`);
+  g.addColorStop(0.42, `rgba(255,130,25,${0.42 * boost})`);
+  g.addColorStop(0.75, `rgba(255,45,0,${0.16 * boost})`);
+  g.addColorStop(1,    'rgba(255,20,0,0)');
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(x, y, R, 0, Math.PI*2);
+  ctx.fill();
+}
+
+/* ---------------- 绘制：碎块 / 火花 / 冲击波 ---------------- */
+function drawFragments(){
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < frags.length; i++){
+    const f = frags[i];
+    const heat = Math.max(0, f.heat - f.age * 0.30);
+    const hue = 18 + 40 * heat;
+    const li  = 16 + 64 * heat;
+
+    ctx.save();
+    ctx.translate(f.x, f.y);
+    ctx.rotate(f.rot);
+    ctx.beginPath();
+    const poly = f.poly;
+    for (let j = 0; j < poly.length; j++){
+      const px = poly[j][0] * f.r, py = poly[j][1] * f.r;
+      if (j === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.fillStyle = 'hsl(' + hue.toFixed(0) + ',95%,' + li.toFixed(0) + '%)';
+    ctx.fill();
+    ctx.restore();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+function drawSparks(){
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < sparks.length; i++){
+    const p = sparks[i];
+    const a = Math.max(0, p.life / p.max);
+    ctx.fillStyle = 'rgba(255,' + ((110 + 130*a)|0) + ',' + ((35*a)|0) + ',' + a.toFixed(2) + ')';
+    ctx.fillRect(p.x - p.size*0.5, p.y - p.size*0.5, p.size, p.size);
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+function drawWaves(){
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < waves.length; i++){
+    const wv = waves[i];
+    if (wv.a <= 0.01) continue;
+    ctx.beginPath();
+    ctx.arc(wv.x, wv.y, wv.r, 0, Math.PI*2);
+    ctx.strokeStyle = 'rgba(255,' + ((150 * wv.a)|0) + ',40,' + (wv.a * 0.55).toFixed(3) + ')';
+    ctx.lineWidth = 2 + 10 * wv.a;
+    ctx.stroke();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ---------------- 物理更新 ---------------- */
+function updatePhysics(dt){
+  flash = Math.max(0, flash - dt * 1.7);
+  shake = Math.max(0, shake - dt * 1.6);
+
+  for (let i = frags.length - 1; i >= 0; i--){
+    const f = frags[i];
+    f.age += dt;
+    f.vy += 1250 * dt;
+    f.vx *= (1 - 0.55 * dt);
+    f.x += f.vx * dt;
+    f.y += f.vy * dt;
+    f.rot += f.vr * dt;
+
+    if (f.y + f.r > groundY){
+      f.y = groundY - f.r;
+      if (Math.abs(f.vy) > 60){
+        f.vy *= -0.45;
+        f.vx *= 0.74;
+        f.vr *= 0.68;
+        if (Math.random() < 0.22) spawnSpark(f.x, groundY, rand(-140,140), rand(-280,-70));
+      } else {
+        f.vy = 0;
+        f.vx *= (1 - 4*dt);
+        f.vr *= (1 - 4*dt);
+      }
+    }
+    if (f.x < 14 && f.vx < 0) f.vx *= -0.6;
+    if (f.x > W - 14 && f.vx > 0) f.vx *= -0.6;
+
+    if (f.age > 26) frags.splice(i, 1);
+  }
+
+  for (let i = sparks.length - 1; i >= 0; i--){
+    const p = sparks[i];
+    p.life -= dt;
+    if (p.life <= 0){ sparks.splice(i, 1); continue; }
+    p.vy += 900 * dt;
+    p.vx *= (1 - 1.4 * dt);
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    if (p.y > groundY){ p.y = groundY; p.vy *= -0.42; p.vx *= 0.7; }
+  }
+
+  for (let i = waves.length - 1; i >= 0; i--){
+    const wv = waves[i];
+    wv.r += 1500 * dt;
+    wv.a = Math.max(0, 1 - wv.r / wv.max);
+    if (wv.a <= 0.01) waves.splice(i, 1);
+  }
+
+  for (let i = marks.length - 1; i >= 0; i--){
+    const m = marks[i];
+    m.life -= dt;
+    if (m.life <= 0) marks.splice(i, 1);
+  }
+}
+
+/* ---------------- 渲染 ---------------- */
+function render(){
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+
+  ctx.save();
+  if (shake > 0.02){
+    ctx.translate(rand(-1,1) * shake * 16, rand(-1,1) * shake * 16);
+  }
+
+  drawBackground();
+
+  const sr = strainRatio(t);
+
+  if (!didBreak){
+    drawSpecimen(sr);
+    drawCrack(crackProgress(t), sr);
+  } else {
+    drawFragments();
+    drawSparks();
+    drawWaves();
+  }
+
+  // 追踪标记
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < marks.length; i++){
+    const m = marks[i];
+    const a = clamp(m.life / m.max, 0, 1);
+    ctx.beginPath();
+    ctx.arc(m.x, m.y, 6 + (1 - a) * 46, 0, Math.PI*2);
+    ctx.strokeStyle = 'rgba(120,235,255,' + (a * 0.85).toFixed(3) + ')';
+    ctx.lineWidth = 1.6;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(m.x, m.y, 2.4, 0, Math.PI*2);
+    ctx.fillStyle = 'rgba(220,255,255,' + a.toFixed(3) + ')';
+    ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+
+  ctx.restore();
+
+  // 爆闪
+  if (flash > 0.001){
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = 'rgba(255,236,200,' + (flash * 0.82).toFixed(3) + ')';
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  // 暗角
+  if (vignette){
+    ctx.fillStyle = vignette;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  // 循环淡出
+  if (t > T_FADE){
+    const a = Math.min(1, (t - T_FADE) / (CYCLE - T_FADE));
+    ctx.fillStyle = 'rgba(2,3,6,' + a.toFixed(3) + ')';
+    ctx.fillRect(0, 0, W, H);
+  }
+}
+
+/* ---------------- HUD ---------------- */
+const elSig = document.getElementById('sig');
+const elEps = document.getElementById('eps');
+const elPv  = document.getElementById('pv');
+const elFill = document.getElementById('fill');
+let hudAcc = 0;
+
+function updateHUD(dt, sr){
+  hudAcc += dt;
+  if (hudAcc < 0.06) return;
+  hudAcc = 0;
+
+  const sigma = 58.3 * sr;
+  const eps   = 0.58 * sr;
+  const P = Math.exp(-Math.pow(sigma / 58.3, 8.7));
+
+  elSig.textContent = sigma.toFixed(1);
+  elEps.textContent = eps.toFixed(3);
+  elPv.textContent  = P.toFixed(3);
+  elFill.style.width = (clamp(sr, 0, 1) * 100).toFixed(1) + '%';
+}
+
+/* ---------------- 主循环 ---------------- */
+function loop(now){
+  requestAnimationFrame(loop);
+
+  if (!started){
+    started = true;
+    lastNow = now;
+    startTime = now;
+    lastT = -1;
+    reset();
+  }
+
+  let dt = (now - lastNow) / 1000;
+  lastNow = now;
+  if (dt > 0.05) dt = 0.05;
+  if (dt < 0) dt = 0;
+
+  const elapsed = (now - startTime) / 1000;
+  t = elapsed % CYCLE;
+
+  if (t < lastT) reset();
+  lastT = t;
+
+  // 速率影响裂纹形态（重新生成分支随机性由 reset 承担，这里影响扩展速度感）
+  const sr = strainRatio(t);
+
+  if (!didBreak && t >= T_BREAK) doBreak();
+  if (didBreak) updatePhysics(dt);
+
+  render();
+  updateHUD(dt, sr);
+}
+
+/* ---------------- 交互 ---------------- */
+document.addEventListener('pointerdown', function(e){
+  const x = e.clientX, y = e.clientY;
+  const s = scene;
+  const L = s.crackLen * crackProgress(t);
+  const tipR = pointAt(s.right, L);
+  const tipL = pointAt(s.left, L);
+
+  const dR = Math.hypot(x - tipR.x, y - tipR.y);
+  const dL = Math.hypot(x - tipL.x, y - tipL.y);
+
+  if (Math.min(dR, dL) < 90){
+    const near = dR < dL ? tipR : tipL;
+    marks.push({ x: near.x, y: near.y, life: 1.6, max: 1.6 });
+    // 声发射能量峰值
+    for (let i = 0; i < 26; i++){
+      const a = rand(0, Math.PI*2);
+      const sp = rand(60, 320);
+      spawnSpark(near.x, near.y, Math.cos(a)*sp, Math.sin(a)*sp);
+    }
+    waves.push({ x: near.x, y: near.y, r: 4, max: Math.max(W,H)*0.5, a: 1 });
+  } else {
+    marks.push({ x, y, life: 1.0, max: 1.0 });
+  }
+});
+
+const rateEl = document.getElementById('rate');
+const ratevEl = document.getElementById('ratev');
+rateEl.addEventListener('input', function(){
+  loadRate = parseFloat(rateEl.value);
+  ratevEl.textContent = loadRate.toFixed(2);
+});
+
+window.addEventListener('resize', function(){
+  resize();
+});
+
+/* ---------------- 启动 ---------------- */
+resize();
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>

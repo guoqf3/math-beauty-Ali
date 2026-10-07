@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>化学平衡 · 勒夏特列原理</title>
+<style>
+  html,body{
+    margin:0;height:100%;background:#030308;overflow:hidden;
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+    -webkit-tap-highlight-color:transparent;
+  }
+  canvas{display:block;position:fixed;inset:0;}
+  .hud{position:fixed;inset:0;pointer-events:none;}
+  .epi{
+    position:absolute;top:20px;left:50%;transform:translateX(-50%);
+    font-family:"Songti SC","STSong",serif;
+    font-size:clamp(14px,1.5vw,21px);
+    letter-spacing:.2em;white-space:nowrap;
+    color:#eaf6ff;
+    text-shadow:0 0 10px rgba(110,190,255,.9),0 0 28px rgba(160,80,255,.55);
+    animation:breathe 4.5s ease-in-out infinite;
+  }
+  @keyframes breathe{0%,100%{opacity:.7;}50%{opacity:1;}}
+  .fm{
+    position:absolute;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    font-size:clamp(9px,.82vw,12.5px);
+    line-height:1.78;letter-spacing:.04em;
+    color:rgba(150,195,255,.38);
+    text-shadow:0 0 9px rgba(70,150,255,.28);
+    white-space:nowrap;
+  }
+  .fm b{color:rgba(190,225,255,.6);font-weight:500;}
+  .tl{top:64px;left:24px;}
+  .tr{top:64px;right:24px;text-align:right;}
+  .bl{bottom:20px;left:24px;}
+  .br{bottom:20px;right:24px;text-align:right;}
+  @media (max-width:760px){
+    .fm{font-size:9px;}
+    .tl,.tr{top:58px;}
+    .tl,.bl{left:12px;}
+    .tr,.br{right:12px;}
+  }
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<div class="hud">
+  <div class="epi">平衡不是静止，而是在扰动中不断回归的从容</div>
+  <div class="fm tl"><b>质量作用定律</b><br>K = [C]ᶜ·[D]ᵈ / ([A]ᵃ·[B]ᵇ)</div>
+  <div class="fm tr"><b>吉布斯自由能</b><br>ΔG = ΔG⁰ + RT·ln Q<br>平衡时 ΔG = 0</div>
+  <div class="fm bl"><b>范特霍夫方程</b><br>d lnK / dT = ΔH⁰ / (RT²)</div>
+  <div class="fm br"><b>合成氨 · 哈伯法</b><br>N₂ + 3H₂ ⇌ 2NH₃<br>K_p = 9.5×10⁻³ @450°C</div>
+</div>
+<script>
+(() => {
+'use strict';
+
+const cvs = document.getElementById('cv');
+const ctx = cvs.getContext('2d', { alpha: false });
+const TAU = Math.PI * 2;
+
+let W = 0, H = 0, DPR = 1;
+let xL = 0, xR = 0, yC = 0, rx = 0, ry = 0;
+let bgGrad, glowL, glowR, glowC;
+
+/* ---------------- 颜色缓存 ---------------- */
+const COL = [], COL_G = [];
+(function () {
+  const A = [255, 140, 46], B = [190, 92, 255], C = [70, 228, 255];
+  for (let i = 0; i <= 32; i++) {
+    const u = i / 32;
+    let r, g, b;
+    if (u < 0.5) {
+      const t = u * 2;
+      r = A[0] + (B[0] - A[0]) * t; g = A[1] + (B[1] - A[1]) * t; b = A[2] + (B[2] - A[2]) * t;
+    } else {
+      const t = (u - 0.5) * 2;
+      r = B[0] + (C[0] - B[0]) * t; g = B[1] + (C[1] - B[1]) * t; b = B[2] + (C[2] - B[2]) * t;
+    }
+    COL.push(`rgba(${r | 0},${g | 0},${b | 0},0.92)`);
+    COL_G.push(`rgba(${r | 0},${g | 0},${b | 0},0.085)`);
+  }
+})();
+
+/* ---------------- 粒子 ---------------- */
+const TOTAL = 300;
+const parts = [];
+for (let i = 0; i < TOTAL; i++) {
+  parts.push({
+    u: 0,
+    ox: Math.random() * 2 - 1,
+    oy: Math.random() * 2 - 1,
+    ch: Math.random() * 2 - 1,
+    size: 1.1 + Math.random() * 2.1,
+    moving: false,
+    dir: 0,
+    speed: 0.80 + Math.random() * 1.05,
+    phase: Math.random() * TAU,
+    dp: 0.22 + Math.random() * 0.55,
+  });
+}
+
+/* ---------------- 状态 ---------------- */
+let simT = 0, last = 0;
+let reacting = false, disturbed = false;
+let theta = 0.5, thetaV = 0, thetaTarget = 0.5;
+let qTilde = 0.03, qVel = 0;
+let qHist = [];
+let lastQPush = -1;
+const pulses = [];
+
+/* ---------------- 布局 ---------------- */
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  cvs.width = Math.round(W * DPR); cvs.height = Math.round(H * DPR);
+  cvs.style.width = W + 'px'; cvs.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  xL = W * 0.185; xR = W * 0.815;
+  yC = H * 0.495;
+  rx = Math.min(W * 0.125, 250);
+  ry = Math.min(H * 0.235, 215);
+
+  buildGrads();
+}
+
+function buildGrads() {
+  bgGrad = ctx.createRadialGradient(W / 2, yC, 0, W / 2, yC, Math.max(W, H) * 0.78);
+  bgGrad.addColorStop(0, '#0c0a1c');
+  bgGrad.addColorStop(0.5, '#070613');
+  bgGrad.addColorStop(1, '#030308');
+
+  glowL = ctx.createRadialGradient(xL, yC, 0, xL, yC, rx * 2.7);
+  glowL.addColorStop(0, 'rgba(255,120,40,0.10)');
+  glowL.addColorStop(1, 'rgba(255,120,40,0)');
+
+  glowR = ctx.createRadialGradient(xR, yC, 0, xR, yC, rx * 2.7);
+  glowR.addColorStop(0, 'rgba(40,220,255,0.10)');
+  glowR.addColorStop(1, 'rgba(40,220,255,0)');
+
+  glowC = ctx.createRadialGradient(W / 2, yC, 0, W / 2, yC, rx * 2.3);
+  glowC.addColorStop(0, 'rgba(170,80,255,0.13)');
+  glowC.addColorStop(1, 'rgba(170,80,255,0)');
+}
+
+/* ---------------- 更新 ---------------- */
+function update(dt) {
+  simT += dt;
+
+  if (simT > 1.0) reacting = true;
+
+  /* --- 扰动：t=12s 注入 N₂ --- */
+  if (simT > 12 && !disturbed) {
+    disturbed = true;
+    thetaTarget = 0.72;          // 平衡向产物侧移动
+    qTilde = 0.35;               // Q 骤降
+    qVel = -2.0;
+    pulses.push({ x: xL, y: yC, r: 0, max: rx * 2.6, life: 1, hue: '255,140,50' });
+    pulses.push({ x: xL, y: yC, r: 0, max: rx * 1.5, life: 1, hue: '255,200,120' });
+  }
+
+  if (simT > 30) resetAll();
+
+  /* --- θ 阻尼振荡 --- */
+  const om = 2.55, ze = 0.125;
+  thetaV += ((thetaTarget - theta) * om * om - 2 * ze * om * thetaV) * dt;
+  theta += thetaV * dt;
+  if (theta < 0.05) { theta = 0.05; thetaV *= -0.3; }
+  if (theta > 0.95) { theta = 0.95; thetaV *= -0.3; }
+
+  /* --- Q 向 K 收敛 --- */
+  const om2 = 2.0, ze2 = 0.27;
+  qVel += ((1 - qTilde) * om2 * om2 - 2 * ze2 * om2 * qVel) * dt;
+  qTilde += qVel * dt;
+
+  if (simT - lastQPush > 0.045) {
+    lastQPush = simT;
+    qHist.push({ t: simT, q: qTilde });
+  }
+
+  /* --- 反应速率 --- */
+  const base = reacting ? Math.min(0.30, Math.max(0, (simT - 1.0) * 0.14)) : 0;
+  const r = theta / (1 - theta);
+  const pF = Math.min(1.4, base * r);
+  const pR = base;
+
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i];
+    if (!p.moving && base > 0.001) {
+      if (p.u <= 0.02) {
+        if (Math.random() < pF * dt) { p.moving = true; p.dir = 1; }
+      } else if (p.u >= 0.98) {
+        if (Math.random() < pR * dt) { p.moving = true; p.dir = -1; }
+      }
+    }
+    if (p.moving) {
+      p.u += p.dir * p.speed * dt;
+      if (p.dir > 0 && p.u >= 1) { p.u = 1; p.moving = false; }
+      if (p.dir < 0 && p.u <= 0) { p.u = 0; p.moving = false; }
+    }
+  }
+
+  /* --- 脉冲 --- */
+  for (let i = pulses.length - 1; i >= 0; i--) {
+    const q = pulses[i];
+    q.r += (q.max - q.r) * dt * 2.6;
+    q.life -= dt * 0.95;
+    if (q.life <= 0) pulses.splice(i, 1);
+  }
+}
+
+function resetAll() {
+  simT = 0; last = 0;
+  reacting = false; disturbed = false;
+  theta = 0.5; thetaV = 0; thetaTarget = 0.5;
+  qTilde = 0.03; qVel = 0;
+  qHist = []; lastQPush = -1;
+  pulses.length = 0;
+  for (const p of parts) { p.u = 0; p.moving = false; p.dir = 0; }
+}
+
+/* ---------------- 渲染 ---------------- */
+function render() {
+  ctx.fillStyle = bgGrad;
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.fillStyle = glowL; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = glowC; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = glowR; ctx.fillRect(0, 0, W, H);
+
+  /* --- 脉冲环 --- */
+  ctx.globalCompositeOperation = 'lighter';
+  for (const q of pulses) {
+    ctx.beginPath();
+    ctx.arc(q.x, q.y, q.r, 0, TAU);
+    ctx.strokeStyle = `rgba(${q.hue},${0.5 * q.life})`;
+    ctx.lineWidth = 2.5 * q.life + 0.5;
+    ctx.stroke();
+  }
+
+  /* --- 粒子云 --- */
+  const t = simT;
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i];
+    const u = p.u;
+    const sp = 0.10 + 0.90 * Math.abs(Math.cos(Math.PI * u));
+
+    const ox = Math.sin(t * p.dp + p.phase) * 0.75 + Math.sin(t * p.dp * 0.53 + p.phase * 1.7) * 0.25;
+    const oy = Math.cos(t * p.dp * 0.87 + p.phase * 1.3) * 0.70 + Math.sin(t * p.dp * 0.41 + p.phase * 0.7) * 0.30;
+
+    const px = xL + (xR - xL) * u + ox * rx * sp;
+    const py = yC + oy * ry * sp + p.ch * 72 * Math.sin(Math.PI * u);
+
+    let ci = (u * 32) | 0;
+    if (ci < 0) ci = 0; if (ci > 32) ci = 32;
+
+    const rr = p.size * (1 + 0.45 * Math.sin(t * 3.1 + p.phase));
+
+    ctx.fillStyle = COL_G[ci];
+    ctx.beginPath(); ctx.arc(px, py, rr * 3.4, 0, TAU); ctx.fill();
+    ctx.fillStyle = COL[ci];
+    ctx.beginPath(); ctx.arc(px, py, rr, 0, TAU); ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+
+  /* --- 区域标签 --- */
+  const labY = Math.min(yC + ry + 36, H - 150);
+  ctx.textAlign = 'center';
+  ctx.font = '500 11px ui-monospace, Menlo, monospace';
+  ctx.fillStyle = 'rgba(255,160,90,0.42)';
+  ctx.fillText('反应物  R', xL, labY);
+  ctx.fillStyle = 'rgba(190,120,255,0.42)';
+  ctx.fillText('过渡态  TS', W / 2, labY);
+  ctx.fillStyle = 'rgba(90,220,255,0.42)';
+  ctx.fillText('产物  P', xR, labY);
+
+  /* --- Q 曲线 --- */
+  drawQCurve();
+
+  /* --- 扰动闪光文字 --- */
+  if (disturbed) {
+    const age = simT - 12;
+    if (age < 2.6) {
+      const a = Math.max(0, 1 - age / 2.6);
+      ctx.textAlign = 'center';
+      ctx.font = '700 20px ui-monospace, Menlo, monospace';
+      ctx.fillStyle = `rgba(255,190,120,${a * 0.85})`;
+      ctx.shadowColor = 'rgba(255,140,50,0.9)';
+      ctx.shadowBlur = 18;
+      ctx.fillText('+ N₂ 注入', xL, yC - ry - 18);
+      ctx.shadowBlur = 0;
+    }
+  }
+
+  /* --- 当前 θ 提示 --- */
+  ctx.textAlign = 'center';
+  ctx.font = '500 11px ui-monospace, Menlo, monospace';
+  ctx.fillStyle = 'rgba(150,190,240,0.30)';
+  const pct = Math.round(theta * 100);
+  ctx.fillText('平衡转化率  ' + pct + '%', W / 2, H - 118);
+}
+
+/* ---------------- Q 曲线绘制 ---------------- */
+function drawQCurve() {
+  const x0 = W * 0.16, x1 = W * 0.84;
+  const y0 = H - 96, y1 = H - 32;
+  const hh = y1 - y0;
+  const ky = y1 - hh * 0.5;
+
+  // K 参考线
+  ctx.setLineDash([5, 7]);
+  ctx.strokeStyle = 'rgba(110,215,255,0.26)';
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(x0, ky); ctx.lineTo(x1, ky); ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.textAlign = 'left';
+  ctx.font = '500 10px ui-monospace, Menlo, monospace';
+  ctx.fillStyle = 'rgba(110,215,255,0.55)';
+  ctx.fillText('K', x0 - 16, ky + 3.5);
+
+  if (qHist.length < 2) return;
+
+  // Q 曲线
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.beginPath();
+  let started = false;
+  let lastPt = null;
+  for (let i = 0; i < qHist.length; i++) {
+    const pt = qHist[i];
+    const px = x0 + (pt.t / 30) * (x1 - x0);
+    let q = pt.q;
+    if (q > 2) q = 2; else if (q < -0.4) q = -0.4;
+    const py = y1 - (q / 2) * hh;
+    if (!started) { ctx.moveTo(px, py); started = true; }
+    else ctx.lineTo(px, py);
+    lastPt = { x: px, y: py };
+  }
+  ctx.strokeStyle = 'rgba(175,120,255,0.92)';
+  ctx.lineWidth = 1.8;
+  ctx.shadowColor = 'rgba(175,120,255,0.9)';
+  ctx.shadowBlur = 14;
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  // 当前点
+  if (lastPt) {
+    ctx.beginPath();
+    ctx.arc(lastPt.x, lastPt.y, 4, 0, TAU);
+    ctx.fillStyle = 'rgba(210,180,255,0.95)';
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(lastPt.x, lastPt.y, 10, 0, TAU);
+    ctx.fillStyle = 'rgba(175,120,255,0.16)';
+    ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+
+  ctx.textAlign = 'left';
+  ctx.fillStyle = 'rgba(180,140,255,0.55)';
+  ctx.fillText('Q', x0 - 16, y0 + 10);
+  ctx.textAlign = 'right';
+  ctx.fillStyle = 'rgba(150,190,240,0.28)';
+  ctx.fillText('反应商 Q → 收敛于 K', x1, y0 + 10);
+}
+
+/* ---------------- 主循环 ---------------- */
+function loop(now) {
+  if (!last) last = now;
+  let dt = (now - last) / 1000;
+  last = now;
+  if (dt > 0.05) dt = 0.05;
+  if (dt < 0) dt = 0;
+
+  update(dt);
+  render();
+
+  requestAnimationFrame(loop);
+}
+
+/* ---------------- 交互 ---------------- */
+cvs.addEventListener('pointerdown', (e) => {
+  if (!reacting) return;
+  pulses.push({ x: e.clientX, y: e.clientY, r: 0, max: 200, life: 1, hue: '150,200,255' });
+  qTilde = Math.max(0.18, qTilde - 0.28);
+  qVel -= 1.3;
+});
+
+window.addEventListener('resize', resize);
+
+/* ---------------- 启动 ---------------- */
+resize();
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>

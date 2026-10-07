@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NEON KOCH · 科赫雪花</title>
+<style>
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;background:#01020a;overflow:hidden}
+  body{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace}
+  canvas{position:fixed;inset:0;display:block}
+
+  .hud{
+    position:fixed;z-index:6;pointer-events:none;
+    font-size:12.5px;line-height:1.9;letter-spacing:.07em;
+    color:#a8e8ff;opacity:.92;white-space:pre;
+    text-shadow:0 0 6px rgba(80,200,255,.85),0 0 18px rgba(60,140,255,.5);
+  }
+  #hudTL{top:16px;left:18px}
+  #hudTR{top:16px;right:18px;text-align:right}
+  #hudBL{bottom:16px;left:18px}
+  #hudBR{bottom:16px;right:18px;text-align:right}
+  .pk{color:#ff78cd;text-shadow:0 0 8px rgba(255,120,205,1),0 0 24px rgba(255,60,180,.6)}
+  .pp{color:#b07bff;text-shadow:0 0 8px rgba(176,123,255,1),0 0 24px rgba(140,60,255,.6)}
+  .cy{color:#5ffff0;text-shadow:0 0 8px rgba(95,255,240,1),0 0 24px rgba(0,230,220,.6)}
+  .w {color:#ffffff;text-shadow:0 0 10px #fff,0 0 26px rgba(180,240,255,.9)}
+  .dim{opacity:.45}
+
+  .scan{
+    position:fixed;inset:0;z-index:7;pointer-events:none;
+    background:repeating-linear-gradient(0deg,rgba(255,255,255,.028) 0 1px,transparent 1px 3px);
+    mix-blend-mode:overlay;opacity:.6;
+  }
+
+  #gate{
+    position:fixed;inset:0;z-index:20;display:flex;align-items:center;justify-content:center;
+    flex-direction:column;gap:18px;cursor:pointer;
+    background:radial-gradient(ellipse at center,rgba(28,10,62,.74),rgba(1,2,10,.96));
+    transition:opacity .9s ease;
+  }
+  #gate.hide{opacity:0;pointer-events:none}
+  .gt{
+    font-size:clamp(17px,3.3vw,40px);letter-spacing:.28em;color:#fff;font-weight:600;
+    text-shadow:0 0 12px #ff78cd,0 0 34px #b07bff,0 0 76px #5ffff0;
+    animation:flick 3.6s infinite;
+  }
+  .gs{
+    font-size:clamp(11px,1.6vw,15px);color:#a8e8ff;letter-spacing:.18em;opacity:.9;
+    text-shadow:0 0 10px rgba(0,200,255,.9);
+  }
+  .gb{
+    margin-top:10px;font-size:12px;letter-spacing:.22em;color:#7ff;
+    border:1px solid rgba(0,255,255,.4);padding:10px 26px;border-radius:999px;
+    background:rgba(0,255,255,.05);
+    box-shadow:0 0 18px rgba(0,230,255,.3) inset,0 0 22px rgba(0,200,255,.25);
+    animation:pulse 2.2s ease-in-out infinite;
+  }
+  @keyframes pulse{0%,100%{opacity:.55}50%{opacity:1}}
+  @keyframes flick{0%,100%{opacity:1}48%{opacity:1}50%{opacity:.5}52%{opacity:1}}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div class="hud" id="hudTL">Koch Snowflake · 科赫雪花
+每边三等分 · 中段外凸 60°</div>
+
+<div class="hud" id="hudTR">级别 n = <span class="w" id="nOut">1</span>
+顶点 3·4ⁿ = <span class="pk" id="vOut">12</span>
+边长 s / 3ⁿ</div>
+
+<div class="hud" id="hudBL">Pₙ = 3s · (4/3)ⁿ  →  <span class="pp">∞</span>
+A = (8/5)·A₀  <span class="dim">( 有限 )</span></div>
+
+<div class="hud" id="hudBR">分形维数
+D = log 4 / log 3 ≈ <span class="cy">1.2619</span></div>
+
+<div class="scan"></div>
+
+<div id="gate">
+  <div class="gt">NEON KOCH</div>
+  <div class="gs">科赫雪花 · 周长无穷 · 面积有限</div>
+  <div class="gb">点击进入 · 启动音效</div>
+</div>
+
+<script>
+(function(){
+"use strict";
+
+/* ================= 基础 ================= */
+const cv  = document.getElementById('c');
+const ctx = cv.getContext('2d');
+
+const nOut = document.getElementById('nOut');
+const vOut = document.getElementById('vOut');
+
+const TAU = Math.PI * 2;
+
+let W = 0, H = 0, DPR = 1, cx = 0, cy = 0, R = 200, bgGrad = null;
+
+function resize(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  cv.width  = Math.floor(W * DPR);
+  cv.height = Math.floor(H * DPR);
+  cv.style.width  = W + 'px';
+  cv.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  cx = W / 2;
+  cy = H / 2;
+  R  = Math.min(W, H) * 0.40;
+
+  bgGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(W, H) * 0.86);
+  bgGrad.addColorStop(0.00, '#0d1140');
+  bgGrad.addColorStop(0.42, '#060a26');
+  bgGrad.addColorStop(1.00, '#01020a');
+
+  buildStars();
+}
+window.addEventListener('resize', resize);
+
+/* ================= 颜色 ================= */
+function mix(a, b, t){
+  return [a[0] + (b[0] - a[0]) * t,
+          a[1] + (b[1] - a[1]) * t,
+          a[2] + (b[2] - a[2]) * t];
+}
+function rgba(c, a){
+  return 'rgba(' + (c[0] | 0) + ',' + (c[1] | 0) + ',' + (c[2] | 0) + ',' + a + ')';
+}
+
+/* 粉蓝 → 亮紫 → 荧光青 */
+const C_PK = [255, 120, 205];
+const C_PP = [170,  95, 255];
+const C_CY = [ 80, 255, 235];
+const TRI = [C_PK, C_PP, C_CY];
+
+function cycleColor(u){
+  u = ((u % 1) + 1) % 1;
+  const x = u * 3;
+  const i = Math.floor(x) % 3;
+  const f = x - Math.floor(x);
+  return mix(TRI[i], TRI[(i + 1) % 3], f);
+}
+
+/* ================= 科赫雪花生成 ================= */
+const kochCache = {};
+
+function getKoch(level){
+  if (kochCache[level]) return kochCache[level];
+
+  let px = [], py = [];
+  for (let i = 0; i < 3; i++){
+    const a = -Math.PI / 2 + i * TAU / 3;
+    px.push(Math.cos(a));
+    py.push(Math.sin(a));
+  }
+
+  const COS = Math.cos(-Math.PI / 3);
+  const SIN = Math.sin(-Math.PI / 3);
+
+  for (let L = 0; L < level; L++){
+    const nx = [], ny = [];
+    const M = px.length;
+    for (let i = 0; i < M; i++){
+      const j  = (i + 1) % M;
+      const x0 = px[i], y0 = py[i];
+      const x1 = px[j], y1 = py[j];
+      const dx = x1 - x0, dy = y1 - y0;
+
+      const ax = x0 + dx / 3,       ay = y0 + dy / 3;
+      const bx = x0 + dx * 2 / 3,   by = y0 + dy * 2 / 3;
+      const mx = bx - ax,           my = by - ay;
+
+      nx.push(x0, ax, ax + mx * COS - my * SIN, bx);
+      ny.push(y0, ay, ay + mx * SIN + my * COS, by);
+    }
+    px = nx; py = ny;
+  }
+
+  const n = px.length;
+  const flat = new Float32Array(n * 2);
+  for (let i = 0; i < n; i++){
+    flat[i * 2]     = px[i];
+    flat[i * 2 + 1] = py[i];
+  }
+  const res = { pts: flat, n: n, count: n };
+  kochCache[level] = res;
+  return res;
+}
+
+/* ================= 星空 ================= */
+let stars = [];
+function buildStars(){
+  stars = [];
+  const cnt = Math.round((W * H) / 9000);
+  for (let i = 0; i < cnt; i++){
+    stars.push({
+      x: Math.random() * W,
+      y: Math.random() * H,
+      r: 0.4 + Math.random() * 1.7,
+      ph: Math.random() * TAU,
+      sp: 0.4 + Math.random() * 1.8,
+      hu: Math.random()
+    });
+  }
+}
+
+function drawStars(){
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < stars.length; i++){
+    const s = stars[i];
+    const tw = 0.30 + 0.70 * (0.5 + 0.5 * Math.sin(t * s.sp + s.ph));
+    const a  = tw * 0.55;
+    if (a < 0.03) continue;
+    const col = cycleColor(s.hu + t * 0.02);
+    const r = s.r * (0.8 + 0.5 * tw);
+    const g = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, r * 3.5);
+    g.addColorStop(0.00, rgba(mix(col, [255, 255, 255], 0.55), a));
+    g.addColorStop(0.40, rgba(col, a * 0.35));
+    g.addColorStop(1.00, rgba(col, 0));
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, r * 3.5, 0, TAU);
+    ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ================= 绘制雪花 ================= */
+function drawKoch(data, rot, progress, lvIdx){
+  const pts = data.pts;
+  const N   = data.n;
+  if (N < 3) return;
+
+  const cosR = Math.cos(rot);
+  const sinR = Math.sin(rot);
+
+  const drawn = Math.max(1, Math.min(N, Math.floor(progress * N)));
+  const CHUNKS = 150;
+
+  const lw = Math.max(0.55, 1.75 - lvIdx * 0.16);
+
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap  = 'round';
+  ctx.lineJoin = 'round';
+
+  for (let c = 0; c < CHUNKS; c++){
+    const s0 = Math.floor(c * N / CHUNKS);
+    const s1 = Math.floor((c + 1) * N / CHUNKS);
+    if (s0 >= drawn) break;
+    const sE = Math.min(s1, drawn - 1);
+    if (sE < s0) continue;
+
+    /* 颜色：路径位置 + 时间 + 级别 三重偏移 */
+    const col = cycleColor(c / CHUNKS * 1.0 + t * 0.055 + lvIdx * 0.13);
+
+    ctx.beginPath();
+    let first = true;
+    for (let s = s0; s <= sE + 1; s++){
+      const ii = (s % N) * 2;
+      const x  = pts[ii], y = pts[ii + 1];
+      const rx = cx + (x * cosR - y * sinR) * R;
+      const ry = cy + (x * sinR + y * cosR) * R;
+      if (first){ ctx.moveTo(rx, ry); first = false; }
+      else ctx.lineTo(rx, ry);
+    }
+
+    /* 外层霓虹光晕 */
+    ctx.lineWidth   = lw * 7.5;
+    ctx.strokeStyle = rgba(col, 0.045);
+    ctx.stroke();
+
+    /* 中层辉光 */
+    ctx.lineWidth   = lw * 3.6;
+    ctx.strokeStyle = rgba(col, 0.13);
+    ctx.stroke();
+
+    /* 亮芯 */
+    ctx.lineWidth   = lw;
+    ctx.strokeStyle = rgba(mix(col, [255, 255, 255], 0.32), 0.92);
+    ctx.stroke();
+  }
+
+  /* ---------- 生长头部光点 ---------- */
+  if (progress < 1){
+    const hIdx = drawn % N;
+    const hx0 = pts[hIdx * 2], hy0 = pts[hIdx * 2 + 1];
+    const hx  = cx + (hx0 * cosR - hy0 * sinR) * R;
+    const hy  = cy + (hx0 * sinR + hy0 * cosR) * R;
+
+    const col = cycleColor(t * 0.15 + lvIdx * 0.13);
+    const pulse = 0.62 + 0.38 * Math.sin(t * 9);
+    const HR = 16 + 14 * pulse;
+
+    const g = ctx.createRadialGradient(hx, hy, 0, hx, hy, HR);
+    g.addColorStop(0.00, 'rgba(255,255,255,0.98)');
+    g.addColorStop(0.18, rgba(mix(col, [255, 255, 255], 0.5), 0.72));
+    g.addColorStop(0.50, rgba(col, 0.24));
+    g.addColorStop(1.00, rgba(col, 0));
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(hx, hy, HR, 0, TAU); ctx.fill();
+
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath(); ctx.arc(hx, hy, 2.6 * pulse + 1, 0, TAU); ctx.fill();
+  }
+
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ================= 爆裂圆环 ================= */
+const bursts = [];
+function addBurst(col){
+  bursts.push({ r: R * 0.42, life: 0, max: 1.05, col: col });
+}
+
+function drawBursts(dt){
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = bursts.length - 1; i >= 0; i--){
+    const b = bursts[i];
+    b.life += dt;
+    if (b.life >= b.max){ bursts.splice(i, 1); continue; }
+    const p = b.life / b.max;
+    const r = b.r + p * R * 0.75;
+    const a = (1 - p) * (1 - p) * 0.55;
+    ctx.strokeStyle = rgba(b.col, a);
+    ctx.lineWidth = 2.2 * (1 - p) + 0.4;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, TAU);
+    ctx.stroke();
+
+    ctx.strokeStyle = rgba(mix(b.col, [255, 255, 255], 0.6), a * 0.5);
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r * 0.96, 0, TAU);
+    ctx.stroke();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ================= 音频引擎 ================= */
+let audio = null;
+let seqTimer = null;
+
+function initAudio(){
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return null;
+  const ac = new AC();
+
+  const master = ac.createGain();
+  master.gain.value = 0.0001;
+  master.connect(ac.destination);
+  master.gain.exponentialRampToValueAtTime(0.5, ac.currentTime + 5);
+
+  const delay = ac.createDelay(1.0);
+  delay.delayTime.value = 0.36;
+  const fb  = ac.createGain(); fb.gain.value = 0.44;
+  const wet = ac.createGain(); wet.gain.value = 0.38;
+  delay.connect(fb); fb.connect(delay);
+  delay.connect(wet); wet.connect(master);
+
+  const padF = ac.createBiquadFilter();
+  padF.type = 'lowpass';
+  padF.frequency.value = 400;
+  padF.Q.value = 6;
+
+  const padG = ac.createGain();
+  padG.gain.value = 0.10;
+  padG.connect(padF);
+  padF.connect(master);
+
+  [55, 55.5, 82.4, 110.2, 164.8].forEach(function(f, i){
+    const o = ac.createOscillator();
+    o.type = i < 2 ? 'sawtooth' : 'triangle';
+    o.frequency.value = f;
+    const g = ac.createGain();
+    g.gain.value = i < 2 ? 0.26 : 0.13;
+    o.connect(g); g.connect(padG);
+    o.start();
+  });
+
+  const lfo  = ac.createOscillator();
+  lfo.frequency.value = 0.05;
+  const lfoG = ac.createGain();
+  lfoG.gain.value = 240;
+  lfo.connect(lfoG);
+  lfoG.connect(padF.frequency);
+  lfo.start();
+
+  const len = Math.floor(ac.sampleRate * 2);
+  const buf = ac.createBuffer(1, len, ac.sampleRate);
+  const d   = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+  const ns = ac.createBufferSource();
+  ns.buffer = buf; ns.loop = true;
+  const nf = ac.createBiquadFilter();
+  nf.type = 'bandpass'; nf.frequency.value = 1000; nf.Q.value = 1.3;
+  const ng = ac.createGain(); ng.gain.value = 0.045;
+  ns.connect(nf); nf.connect(ng); ng.connect(master);
+  ns.start();
+
+  return { ac: ac, master: master, delay: delay, padF: padF, nf: nf };
+}
+
+function ping(freq, dur, vol, type){
+  if (!audio) return;
+  const ac = audio.ac, now = ac.currentTime;
+  const o = ac.createOscillator();
+  o.type = type || 'sine';
+  o.frequency.value = freq;
+  const g = ac.createGain();
+  g.gain.setValueAtTime(0.0001, now);
+  g.gain.exponentialRampToValueAtTime(vol, now + 0.008);
+  g.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+  o.connect(g);
+  g.connect(audio.master);
+  g.connect(audio.delay);
+  o.start(now);
+  o.stop(now + dur + 0.08);
+}
+
+function sweep(f0, f1, dur, vol){
+  if (!audio) return;
+  const ac = audio.ac, now = ac.currentTime;
+  const o = ac.createOscillator();
+  o.type = 'sine';
+  o.frequency.setValueAtTime(f0, now);
+  o.frequency.exponentialRampToValueAtTime(f1, now + dur);
+  const g = ac.createGain();
+  g.gain.setValueAtTime(0.0001, now);
+  g.gain.exponentialRampToValueAtTime(vol, now + 0.02);
+  g.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+  o.connect(g); g.connect(audio.master);
+  o.start(now); o.stop(now + dur + 0.1);
+}
+
+/* 全音阶 + 五声音阶混合，空灵感 */
+const SCALE = [0, 2, 4, 7, 9, 12, 14, 16, 19, 21, 24];
+
+function startSeq(){
+  let step = 0;
+  seqTimer = setInterval(function(){
+    if (!audio) return;
+    const ac = audio.ac, now = ac.currentTime;
+
+    if (step % 8 === 0){
+      const o = ac.createOscillator();
+      o.type = 'sine';
+      o.frequency.setValueAtTime(124, now);
+      o.frequency.exponentialRampToValueAtTime(45, now + 0.7);
+      const g = ac.createGain();
+      g.gain.setValueAtTime(0.0001, now);
+      g.gain.exponentialRampToValueAtTime(0.24, now + 0.015);
+      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.9);
+      o.connect(g); g.connect(audio.master);
+      o.start(now); o.stop(now + 0.95);
+    }
+
+    if (step % 2 === 0 && Math.random() < 0.72){
+      const dg = SCALE[(Math.random() * SCALE.length) | 0];
+      const base = 260 + lvIdx * 40;
+      ping(base * Math.pow(2, dg / 12), 0.62, 0.030, 'sine');
+    }
+    if (Math.random() < 0.10){
+      ping(1600 + Math.random() * 1800, 0.18, 0.018, 'triangle');
+    }
+    step++;
+  }, 320);
+}
+
+/* ================= 时间轴 ================= */
+const LEVELS = [1, 2, 3, 4, 5, 6];
+
+let t = 0;
+let lastT = performance.now();
+let lt = 0;
+let lvIdx = 0;
+let rot = 0;
+let prevGrow = 0;
+let flash = 0;
+let lastHud = 0;
+let lastAud = 0;
+
+function levelDur(l){ return 2900 + l * 380; }
+
+/* ================= 主循环 ================= */
+function frame(now){
+  requestAnimationFrame(frame);
+
+  let dt = (now - lastT) / 1000;
+  lastT = now;
+  if (dt > 0.05) dt = 0.05;
+  if (dt < 0)    dt = 0;
+  t += dt;
+
+  rot += dt * 0.115;              /* 缓慢旋转 */
+
+  /* ---------- 级别推进 ---------- */
+  lt += dt * 1000;
+
+  let level = LEVELS[lvIdx];
+  let dur   = levelDur(level);
+
+  while (lt >= dur){
+    lt -= dur;
+    lvIdx = (lvIdx + 1) % LEVELS.length;
+    level = LEVELS[lvIdx];
+    dur   = levelDur(level);
+    flash = 1;
+    addBurst(cycleColor(t * 0.2 + lvIdx * 0.13));
+    sweep(420, 1500, 0.55, 0.055);
+    ping(1046.5, 0.7, 0.04, 'sine');
+  }
+
+  const p    = lt / dur;
+  const grow = Math.min(1, p / 0.80);
+
+  /* ---------- 背景 ---------- */
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = bgGrad;
+  ctx.fillRect(0, 0, W, H);
+
+  drawStars();
+
+  /* ---------- 中心氛围光晕 ---------- */
+  const aura = cycleColor(t * 0.05 + lvIdx * 0.13);
+  ctx.globalCompositeOperation = 'lighter';
+  const ag = ctx.createRadialGradient(cx, cy, 0, cx, cy, R * 1.75);
+  ag.addColorStop(0.00, rgba(aura, 0.10));
+  ag.addColorStop(0.35, rgba(aura, 0.045));
+  ag.addColorStop(1.00, rgba(aura, 0));
+  ctx.fillStyle = ag;
+  ctx.beginPath(); ctx.arc(cx, cy, R * 1.75, 0, TAU); ctx.fill();
+
+  /* ---------- 雪花 ---------- */
+  const koch = getKoch(level);
+  drawKoch(koch, rot, grow, lvIdx);
+
+  /* ---------- 爆裂圆环 ---------- */
+  drawBursts(dt);
+
+  /* ---------- 级别切换闪光 ---------- */
+  if (flash > 0){
+    flash -= dt * 2.2;
+    if (flash < 0) flash = 0;
+    ctx.fillStyle = 'rgba(190,225,255,' + (flash * 0.085) + ')';
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  ctx.globalCompositeOperation = 'source-over';
+
+  /* ---------- HUD ---------- */
+  if (now - lastHud > 90){
+    lastHud = now;
+    nOut.textContent = level;
+    vOut.textContent = (3 * Math.pow(4, level)).toLocaleString();
+  }
+
+  /* ---------- 音频联动 ---------- */
+  if (audio && now - lastAud > 130){
+    lastAud = now;
+    const at = audio.ac.currentTime;
+    const u  = lvIdx / 5;
+    audio.padF.frequency.setTargetAtTime(320 + u * 1500, at, 0.4);
+    audio.nf.frequency.setTargetAtTime(700 + u * 1700, at, 0.45);
+  }
+
+  prevGrow = grow;
+}
+
+/* ================= 启动 ================= */
+const gate = document.getElementById('gate');
+
+gate.addEventListener('click', function(){
+  if (!audio){
+    audio = initAudio();
+    if (audio) startSeq();
+  }
+  if (audio && audio.ac.state === 'suspended') audio.ac.resume();
+
+  /* 预生成全部层级，避免运行时卡顿 */
+  for (let l = 1; l <= 6; l++) getKoch(l);
+
+  gate.classList.add('hide');
+  sweep(220, 1100, 1.2, 0.05);
+});
+
+document.addEventListener('visibilitychange', function(){
+  if (!audio) return;
+  if (document.hidden){
+    if (audio.ac.state === 'running') audio.ac.suspend();
+  } else {
+    if (audio.ac.state === 'suspended') audio.ac.resume();
+  }
+});
+
+/* 首帧初始化 */
+resize();
+lastT = performance.now();
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

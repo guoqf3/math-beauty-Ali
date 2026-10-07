@@ -1,0 +1,706 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>大数定律 · 炫彩动画</title>
+<style>
+  *{box-sizing:border-box;}
+  html,body{
+    margin:0;padding:0;height:100%;width:100%;
+    overflow:hidden;background:#020008;
+  }
+  #scene{display:block;position:fixed;inset:0;}
+
+  /* ===== 边缘数字公式 ===== */
+  .fx{
+    position:fixed;
+    z-index:5;
+    pointer-events:none;
+    user-select:none;
+    white-space:nowrap;
+    font-family:Georgia,"Times New Roman",serif;
+    font-style:italic;
+    font-size:clamp(10px,1.02vw,17px);
+    letter-spacing:.06em;
+    animation:hueShift 13s linear infinite, breathe 7s ease-in-out infinite;
+  }
+  .fx sub,.fx sup{font-size:.62em;font-style:normal;}
+  .fx b{font-style:normal;font-weight:400;}
+
+  @keyframes hueShift{
+    0%  {color:#ff5ecb;text-shadow:0 0 16px rgba(255,94,203,.6);}
+    25% {color:#ffb15e;text-shadow:0 0 16px rgba(255,177,94,.6);}
+    50% {color:#7dffd8;text-shadow:0 0 16px rgba(125,255,216,.6);}
+    75% {color:#5ecbff;text-shadow:0 0 16px rgba(94,203,255,.6);}
+    100%{color:#ff5ecb;text-shadow:0 0 16px rgba(255,94,203,.6);}
+  }
+  @keyframes breathe{
+    0%,100%{opacity:.42;}
+    50%    {opacity:.92;}
+  }
+
+  .f-tl{top:20px;  left:24px;}
+  .f-tr{top:20px;  right:24px; text-align:right;}
+  .f-bl{bottom:20px;left:24px;}
+  .f-br{bottom:20px;right:24px;text-align:right;}
+
+  .f-tr{animation-delay:-3.1s,-1.6s;}
+  .f-bl{animation-delay:-6.2s,-3.1s;}
+  .f-br{animation-delay:-9.3s,-4.7s;}
+
+  .f-ml,.f-mr{
+    top:50%;
+    font-size:clamp(9px,.85vw,14px);
+    letter-spacing:.26em;
+  }
+  .f-ml{left:16px;  transform:translateY(-50%) rotate(-90deg); transform-origin:left center;
+        animation-delay:-1.5s,-0.9s;}
+  .f-mr{right:16px; transform:translateY(-50%) rotate( 90deg); transform-origin:right center;
+        animation-delay:-7.4s,-4.1s;}
+
+  @media (max-width:720px){
+    .fx{font-size:10px;letter-spacing:.02em;}
+    .f-ml,.f-mr{display:none;}
+    .f-tr{max-width:54vw;white-space:normal;text-align:right;line-height:1.5;}
+    .f-tl{max-width:64vw;white-space:normal;line-height:1.5;}
+  }
+</style>
+</head>
+<body>
+
+<canvas id="scene"></canvas>
+
+<!-- 边缘数字公式 -->
+<div class="fx f-tl">lim<sub>n→∞</sub> &thinsp;(n<sub>A</sub>/n)&nbsp;=&nbsp;P(A)</div>
+<div class="fx f-tr">n<sub>A</sub>&thinsp;/&thinsp;n&nbsp;&nbsp;⟶&nbsp;&nbsp;p&nbsp;&nbsp;(n→∞)</div>
+<div class="fx f-bl">P(|n<sub>A</sub>/n − p| &lt; ε)&nbsp;→&nbsp;1</div>
+<div class="fx f-br">伯努利大数定律&nbsp;·&nbsp;p&nbsp;=&nbsp;0.5</div>
+<div class="fx f-ml">正面频率&nbsp;→&nbsp;50%</div>
+<div class="fx f-mr">抛掷次数&nbsp;n</div>
+
+<script>
+(function(){
+'use strict';
+
+/* ============================================================
+   基础
+============================================================ */
+const cv  = document.getElementById('scene');
+const ctx = cv.getContext('2d', { alpha:false });
+const TAU = Math.PI * 2;
+
+let W = 0, H = 0, DPR = 1;
+
+/* ---------------- 参数 ---------------- */
+const MAX_N    = 1000;
+const GOLD_HUE = 42;
+const PURP_HUE = 278;
+
+/* ---------------- 布局 ---------------- */
+let coinL, coinR, coinBaseY, coinPeak;
+let chartL, chartR, chartT, chartB;
+
+/* ---------------- 状态 ---------------- */
+let spawnedCount = 0;
+let landedCount  = 0;
+let headsCount   = 0;
+let spawnTimer   = 0;
+let coins     = [];
+let particles = [];
+let freqData  = [];
+let holdT     = 0;
+let done      = false;
+
+/* ---------------- 灰尘粒子 ---------------- */
+const dust = [];
+
+/* ---------------- 精灵图 ---------------- */
+let goldCoin, purpCoin, goldGlow, purpGlow;
+
+/* ============================================================
+   精灵图预渲染
+============================================================ */
+function makeCoinSprite(hue){
+  const S = 128;
+  const c = document.createElement('canvas');
+  c.width = c.height = S;
+  const g = c.getContext('2d');
+  const cx = S / 2, cy = S / 2, r = S * 0.44;
+
+  const grd = g.createRadialGradient(cx - r*0.32, cy - r*0.36, r*0.06, cx, cy, r);
+  grd.addColorStop(0.00, 'hsl(' + hue + ',100%,96%)');
+  grd.addColorStop(0.30, 'hsl(' + hue + ',100%,82%)');
+  grd.addColorStop(0.66, 'hsl(' + hue + ',96%,66%)');
+  grd.addColorStop(1.00, 'hsl(' + hue + ',92%,46%)');
+  g.fillStyle = grd;
+  g.beginPath(); g.arc(cx, cy, r, 0, TAU); g.fill();
+
+  g.strokeStyle = 'hsla(' + hue + ',100%,97%,0.92)';
+  g.lineWidth = 3.2;
+  g.beginPath(); g.arc(cx, cy, r - 2.2, 0, TAU); g.stroke();
+
+  g.strokeStyle = 'hsla(' + hue + ',100%,70%,0.55)';
+  g.lineWidth = 1.4;
+  g.beginPath(); g.arc(cx, cy, r * 0.72, 0, TAU); g.stroke();
+
+  const hl = g.createRadialGradient(cx - r*0.34, cy - r*0.40, 0, cx - r*0.34, cy - r*0.40, r*0.78);
+  hl.addColorStop(0.00, 'rgba(255,255,255,0.72)');
+  hl.addColorStop(1.00, 'rgba(255,255,255,0)');
+  g.fillStyle = hl;
+  g.beginPath(); g.arc(cx, cy, r, 0, TAU); g.fill();
+
+  return c;
+}
+
+function makeGlowSprite(hue){
+  const S = 128;
+  const c = document.createElement('canvas');
+  c.width = c.height = S;
+  const g = c.getContext('2d');
+  const grd = g.createRadialGradient(S/2, S/2, 0, S/2, S/2, S/2);
+  grd.addColorStop(0.00, 'hsla(' + hue + ',100%,90%,0.85)');
+  grd.addColorStop(0.30, 'hsla(' + hue + ',100%,72%,0.34)');
+  grd.addColorStop(0.68, 'hsla(' + hue + ',100%,62%,0.08)');
+  grd.addColorStop(1.00, 'hsla(' + hue + ',100%,56%,0)');
+  g.fillStyle = grd;
+  g.fillRect(0, 0, S, S);
+  return c;
+}
+
+/* ============================================================
+   尺寸 / 重置
+============================================================ */
+function resize(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+
+  cv.width  = Math.round(W * DPR);
+  cv.height = Math.round(H * DPR);
+  cv.style.width  = W + 'px';
+  cv.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  coinL = W * 0.14;
+  coinR = W * 0.86;
+  coinBaseY = H * 0.515;
+  coinPeak  = H * 0.33;
+
+  chartL = W * 0.08;
+  chartR = W * 0.92;
+  chartT = H * 0.645;
+  chartB = H * 0.925;
+
+  initDust();
+  resetSim();
+}
+
+function initDust(){
+  dust.length = 0;
+  const n = Math.round(Math.min(95, Math.max(28, W * H / 21000)));
+  for (let i = 0; i < n; i++){
+    dust.push({
+      x : Math.random() * W,
+      y : Math.random() * H,
+      r : 0.5 + Math.random() * 1.9,
+      hue : 205 + Math.random() * 165,
+      vx : (Math.random() - 0.5) * 9,
+      vy : -5 - Math.random() * 14,
+      ph : Math.random() * TAU
+    });
+  }
+}
+
+function resetSim(){
+  spawnedCount = 0;
+  landedCount  = 0;
+  headsCount   = 0;
+  spawnTimer   = 0;
+  coins     = [];
+  particles = [];
+  freqData  = [];
+  holdT     = 0;
+  done      = false;
+}
+
+/* ============================================================
+   节奏：生成间隔指数衰减
+============================================================ */
+function currentInterval(){
+  const p = Math.min(1, spawnedCount / MAX_N);
+  return 0.075 * Math.pow(0.062, p);
+}
+
+/* ============================================================
+   生成硬币
+============================================================ */
+function spawnCoin(){
+  const result = Math.random() < 0.5 ? 1 : 0;
+  const x      = coinL + Math.random() * (coinR - coinL);
+  const peak   = coinPeak * (0.55 + Math.random() * 0.48);
+  const dur    = 0.40 + Math.random() * 0.20;
+  const spins  = 3 + Math.floor(Math.random() * 4);
+  const endRot = spins * TAU + (result ? 0 : Math.PI);
+
+  coins.push({
+    x      : x,
+    y0     : coinBaseY,
+    py     : coinBaseY,
+    peak   : peak,
+    t      : 0,
+    dur    : dur,
+    rot    : 0,
+    endRot : endRot,
+    result : result,
+    R      : Math.max(7, Math.min(W, H) * 0.023)
+  });
+}
+
+/* ============================================================
+   粒子爆发
+============================================================ */
+function spawnParticles(x, y, result){
+  const baseHue = result ? GOLD_HUE : PURP_HUE;
+  const n = 7 + Math.floor(Math.random() * 6);
+  for (let i = 0; i < n; i++){
+    const a  = Math.random() * TAU;
+    const sp = 45 + Math.random() * 155;
+    particles.push({
+      x  : x,
+      y  : y,
+      vx : Math.cos(a) * sp,
+      vy : Math.sin(a) * sp - 55,
+      life : 0,
+      maxLife : 0.48 + Math.random() * 0.52,
+      hue : baseHue + (Math.random() - 0.5) * 34,
+      size : 1.6 + Math.random() * 3.2
+    });
+  }
+}
+
+/* ============================================================
+   更新
+============================================================ */
+function update(dt){
+  /* ---- 生成硬币 ---- */
+  if (spawnedCount < MAX_N){
+    spawnTimer += dt;
+    let guard = 0;
+    while (spawnedCount < MAX_N && guard++ < 40){
+      const iv = currentInterval();
+      if (spawnTimer < iv) break;
+      spawnTimer -= iv;
+      spawnCoin();
+      spawnedCount++;
+    }
+  }
+
+  /* ---- 硬币飞行 ---- */
+  for (let i = coins.length - 1; i >= 0; i--){
+    const c = coins[i];
+    c.t += dt / c.dur;
+
+    if (c.t >= 1){
+      c.t  = 1;
+      c.py = c.y0;
+
+      landedCount++;
+      if (c.result) headsCount++;
+      freqData.push({ n : landedCount, f : headsCount / landedCount });
+
+      spawnParticles(c.x, c.y0, c.result);
+      coins.splice(i, 1);
+    } else {
+      c.py  = c.y0 - c.peak * 4 * c.t * (1 - c.t);
+      c.rot = c.t * c.endRot;
+    }
+  }
+
+  /* ---- 粒子 ---- */
+  for (let i = particles.length - 1; i >= 0; i--){
+    const p = particles[i];
+    p.life += dt;
+    if (p.life >= p.maxLife){ particles.splice(i, 1); continue; }
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.vy += 340 * dt;
+    p.vx *= (1 - 2.3 * dt);
+  }
+
+  /* ---- 灰尘 ---- */
+  for (let i = 0; i < dust.length; i++){
+    const d = dust[i];
+    d.x += d.vx * dt;
+    d.y += d.vy * dt;
+    if (d.y < -22){ d.y = H + 22; d.x = Math.random() * W; }
+    if (d.x < -22) d.x = W + 22;
+    if (d.x > W + 22) d.x = -22;
+  }
+
+  /* ---- 完成 / 重启 ---- */
+  if (!done && spawnedCount >= MAX_N && coins.length === 0){
+    done  = true;
+    holdT = 0;
+  }
+  if (done){
+    holdT += dt;
+    if (holdT > 3.6) resetSim();
+  }
+}
+
+/* ============================================================
+   绘制：背景
+============================================================ */
+function drawBg(t){
+  const g = ctx.createRadialGradient(
+    W * 0.5, H * 0.40, 0,
+    W * 0.5, H * 0.40, Math.max(W, H) * 0.86
+  );
+  g.addColorStop(0.00, '#160c2e');
+  g.addColorStop(0.45, '#08041a');
+  g.addColorStop(1.00, '#020008');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < dust.length; i++){
+    const d = dust[i];
+    const a = 0.10 + 0.26 * Math.abs(Math.sin(t * 1.1 + d.ph));
+    ctx.globalAlpha = a;
+    ctx.fillStyle = 'hsl(' + d.hue + ',88%,72%)';
+    ctx.beginPath();
+    ctx.arc(d.x, d.y, d.r, 0, TAU);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+/* ============================================================
+   绘制：硬币
+============================================================ */
+function drawCoins(){
+  if (coins.length === 0) return;
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+
+  for (let i = 0; i < coins.length; i++){
+    const c    = coins[i];
+    const cosv = Math.cos(c.rot);
+    const isHead = cosv >= 0;
+    const hue    = isHead ? GOLD_HUE : PURP_HUE;
+    const sq     = Math.max(0.10, Math.abs(cosv));
+    const R      = c.R;
+
+    /* 光晕 */
+    ctx.globalAlpha = 0.55 + 0.35 * Math.abs(cosv);
+    ctx.drawImage(
+      isHead ? goldGlow : purpGlow,
+      c.x - R * 3.0, c.py - R * 3.0, R * 6.0, R * 6.0
+    );
+
+    /* 币体（纵向压扁模拟翻转） */
+    ctx.globalAlpha = 0.96;
+    ctx.save();
+    ctx.translate(c.x, c.py);
+    ctx.scale(1, sq);
+    ctx.drawImage(isHead ? goldCoin : purpCoin, -R, -R, R * 2, R * 2);
+    ctx.restore();
+
+    /* 边缘横向闪光 */
+    if (sq < 0.32){
+      ctx.globalAlpha = (0.32 - sq) * 2.6;
+      ctx.strokeStyle = 'hsla(' + hue + ',100%,92%,1)';
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.moveTo(c.x - R, c.py);
+      ctx.lineTo(c.x + R, c.py);
+      ctx.stroke();
+    }
+  }
+
+  ctx.restore();
+}
+
+/* ============================================================
+   绘制：粒子
+============================================================ */
+function drawParticles(){
+  if (particles.length === 0) return;
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+
+  for (let i = 0; i < particles.length; i++){
+    const p = particles[i];
+    const k = p.life / p.maxLife;
+    const a = Math.pow(1 - k, 1.7);
+    if (a < 0.02) continue;
+
+    const s = p.size * 3.4 * (1 - 0.35 * k);
+    ctx.globalAlpha = a * 0.95;
+    ctx.drawImage(
+      p.hue > 160 ? purpGlow : goldGlow,
+      p.x - s, p.y - s, s * 2, s * 2
+    );
+  }
+
+  ctx.restore();
+}
+
+/* ============================================================
+   绘制：图表
+============================================================ */
+function drawChart(t){
+  const cw = chartR - chartL;
+  const ch = chartB - chartT;
+
+  /* ---- 边框与网格 ---- */
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+
+  ctx.strokeStyle = 'rgba(140,180,255,0.13)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(chartL, chartT, cw, ch);
+
+  for (let i = 1; i < 4; i++){
+    const y = chartT + ch * i / 4;
+    ctx.strokeStyle = 'rgba(140,180,255,0.055)';
+    ctx.beginPath();
+    ctx.moveTo(chartL, y);
+    ctx.lineTo(chartR, y);
+    ctx.stroke();
+  }
+
+  for (let i = 1; i < 5; i++){
+    const x = chartL + cw * i / 5;
+    ctx.strokeStyle = 'rgba(140,180,255,0.04)';
+    ctx.beginPath();
+    ctx.moveTo(x, chartT);
+    ctx.lineTo(x, chartB);
+    ctx.stroke();
+  }
+
+  ctx.restore();
+
+  /* ---- 50% 红色虚线 ---- */
+  const y50 = chartB - 0.5 * ch;
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.setLineDash([9, 7]);
+  ctx.lineDashOffset = -t * 24;
+  ctx.strokeStyle = 'rgba(255,60,78,0.88)';
+  ctx.lineWidth = 2;
+  ctx.shadowBlur = 18;
+  ctx.shadowColor = 'rgba(255,60,78,0.95)';
+  ctx.beginPath();
+  ctx.moveTo(chartL, y50);
+  ctx.lineTo(chartR, y50);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.shadowBlur = 0;
+
+  /* 50% 标签 */
+  const fs = Math.max(10, Math.min(14, W / 100));
+  ctx.font = '600 ' + fs + 'px "SF Mono", Consolas, monospace';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'bottom';
+  ctx.fillStyle = 'rgba(255,120,130,0.92)';
+  ctx.fillText('50%', chartR - 6, y50 - 5);
+
+  /* 坐标标签 */
+  ctx.textAlign = 'left';
+  ctx.fillStyle = 'rgba(150,190,255,0.45)';
+  ctx.fillText('0', chartL + 5, chartB - 5);
+  ctx.textAlign = 'right';
+  ctx.fillText('n = 1000', chartR - 6, chartB - 5);
+  ctx.textAlign = 'left';
+  ctx.fillText('100%', chartL + 5, chartT + fs + 2);
+  ctx.fillText('0%', chartL + 5, chartB - fs - 6);
+
+  ctx.restore();
+
+  /* ---- 频率折线 ---- */
+  if (freqData.length > 1){
+    const step = freqData.length > 620 ? 2 : 1;
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+
+    const lg = ctx.createLinearGradient(chartL, 0, chartR, 0);
+    lg.addColorStop(0.00, 'hsla(285,100%,72%,0.92)');
+    lg.addColorStop(0.42, 'hsla(195,100%,68%,0.95)');
+    lg.addColorStop(0.78, 'hsla(150,100%,66%,0.95)');
+    lg.addColorStop(1.00, 'hsla(48,100%,68%,0.95)');
+
+    ctx.beginPath();
+    for (let i = 0; i < freqData.length; i += step){
+      const d = freqData[i];
+      const x = chartL + (d.n / MAX_N) * cw;
+      const y = chartB - d.f * ch;
+      if (i === 0) ctx.moveTo(x, y);
+      else         ctx.lineTo(x, y);
+    }
+    /* 补上最后一个点，保证曲线到末端 */
+    const lastD = freqData[freqData.length - 1];
+    ctx.lineTo(chartL + (lastD.n / MAX_N) * cw, chartB - lastD.f * ch);
+
+    ctx.strokeStyle = lg;
+    ctx.lineWidth = 2.2;
+    ctx.lineJoin = 'round';
+    ctx.lineCap  = 'round';
+    ctx.shadowBlur = 16;
+    ctx.shadowColor = 'hsla(190,100%,68%,0.85)';
+    ctx.stroke();
+
+    /* 白色芯线 */
+    ctx.shadowBlur = 0;
+    ctx.globalAlpha = 0.42;
+    ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+    ctx.lineWidth = 0.9;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    /* ---- 末端脉冲光点 ---- */
+    const lx = chartL + (lastD.n / MAX_N) * cw;
+    const ly = chartB - lastD.f * ch;
+    const pulse = 0.5 + 0.5 * Math.sin(t * 6.2);
+
+    ctx.shadowBlur  = 20 + 10 * pulse;
+    ctx.shadowColor = 'hsla(190,100%,72%,0.95)';
+    ctx.fillStyle   = 'hsla(190,100%,' + (84 + 12 * pulse) + '%,' + (0.75 + 0.25 * pulse) + ')';
+    ctx.beginPath();
+    ctx.arc(lx, ly, 3.0 + 2.2 * pulse, 0, TAU);
+    ctx.fill();
+
+    ctx.restore();
+  }
+}
+
+/* ============================================================
+   绘制：实时百分比读数
+============================================================ */
+function drawReadout(t){
+  const pct = landedCount > 0 ? (headsCount / landedCount * 100) : 0;
+  const cx  = W * 0.5;
+  const cy  = H * 0.578;
+
+  const fs = Math.max(22, Math.min(50, W / 28));
+  const hue = (t * 62) % 360;
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.font = '700 ' + fs + 'px "SF Mono", Consolas, monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  ctx.shadowBlur  = 26;
+  ctx.shadowColor = 'hsla(' + hue + ',100%,66%,0.95)';
+  ctx.fillStyle   = 'hsla(' + hue + ',100%,87%,0.98)';
+  ctx.fillText(pct.toFixed(2) + '%', cx, cy);
+
+  /* 小字：正面 / 总次数 */
+  const fs2 = Math.max(10, Math.min(14, W / 105));
+  ctx.font = '500 ' + fs2 + 'px "SF Mono", Consolas, monospace';
+  ctx.shadowBlur = 12;
+  ctx.shadowColor = 'hsla(' + ((hue + 150) % 360) + ',100%,66%,0.85)';
+  ctx.fillStyle = 'hsla(' + ((hue + 150) % 360) + ',100%,80%,0.80)';
+  ctx.fillText('正面 ' + headsCount + ' / ' + landedCount, cx, cy + fs * 0.78);
+
+  ctx.restore();
+}
+
+/* ============================================================
+   绘制：底部光带
+============================================================ */
+function drawFloorGlow(t){
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+
+  const y  = coinBaseY;
+  const bh = (t * 30) % 360;
+
+  const g = ctx.createLinearGradient(0, y - 4, 0, y + 8);
+  g.addColorStop(0.00, 'hsla(' + bh + ',100%,65%,0)');
+  g.addColorStop(0.50, 'hsla(' + ((bh + 60) % 360) + ',100%,68%,0.10)');
+  g.addColorStop(1.00, 'hsla(' + ((bh + 120) % 360) + ',100%,65%,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(coinL - 40, y - 4, (coinR - coinL) + 80, 12);
+
+  ctx.restore();
+}
+
+/* ============================================================
+   绘制：暗角
+============================================================ */
+function drawVignette(){
+  const g = ctx.createRadialGradient(
+    W * 0.5, H * 0.5, Math.min(W, H) * 0.28,
+    W * 0.5, H * 0.5, Math.max(W, H) * 0.84
+  );
+  g.addColorStop(0, 'rgba(0,0,0,0)');
+  g.addColorStop(1, 'rgba(0,0,0,0.74)');
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+}
+
+/* ============================================================
+   渲染
+============================================================ */
+function render(t){
+  drawBg(t);
+  drawFloorGlow(t);
+  drawCoins();
+  drawParticles();
+  drawChart(t);
+  drawReadout(t);
+  drawVignette();
+}
+
+/* ============================================================
+   主循环
+============================================================ */
+let lastT = performance.now() / 1000;
+
+function frame(now){
+  const t = now / 1000;
+  let dt = t - lastT;
+  lastT = t;
+  if (!isFinite(dt) || dt < 0) dt = 0.016;
+  if (dt > 0.05) dt = 0.05;
+
+  update(dt);
+  render(t);
+
+  requestAnimationFrame(frame);
+}
+
+/* ============================================================
+   启动
+============================================================ */
+let lastW = 0, lastH = 0;
+function onResize(){
+  const w = window.innerWidth, h = window.innerHeight;
+  if (Math.abs(w - lastW) < 2 && Math.abs(h - lastH) < 2) return;
+  lastW = w; lastH = h;
+  resize();
+}
+
+window.addEventListener('resize', onResize);
+
+goldCoin = makeCoinSprite(GOLD_HUE);
+purpCoin = makeCoinSprite(PURP_HUE);
+goldGlow = makeGlowSprite(GOLD_HUE);
+purpGlow = makeGlowSprite(PURP_HUE);
+
+resize();
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

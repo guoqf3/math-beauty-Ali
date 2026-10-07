@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>中心极限定理 · 炫彩动画</title>
+<style>
+  *{box-sizing:border-box;}
+  html,body{
+    margin:0;padding:0;height:100%;width:100%;
+    overflow:hidden;background:#020006;
+  }
+  #scene{display:block;position:fixed;inset:0;}
+
+  /* ===== 边缘数字公式 ===== */
+  .fx{
+    position:fixed;
+    z-index:5;
+    pointer-events:none;
+    user-select:none;
+    white-space:nowrap;
+    font-family:Georgia,"Times New Roman",serif;
+    font-style:italic;
+    font-size:clamp(10px,1.02vw,17px);
+    letter-spacing:.06em;
+    animation:hueShift 13s linear infinite, breathe 7s ease-in-out infinite;
+  }
+  .fx sub,.fx sup{font-size:.62em;font-style:normal;}
+  .fx b{font-style:normal;font-weight:400;}
+
+  @keyframes hueShift{
+    0%  {color:#ff5ecb;text-shadow:0 0 16px rgba(255,94,203,.6);}
+    25% {color:#ffb15e;text-shadow:0 0 16px rgba(255,177,94,.6);}
+    50% {color:#7dffd8;text-shadow:0 0 16px rgba(125,255,216,.6);}
+    75% {color:#5ecbff;text-shadow:0 0 16px rgba(94,203,255,.6);}
+    100%{color:#ff5ecb;text-shadow:0 0 16px rgba(255,94,203,.6);}
+  }
+  @keyframes breathe{
+    0%,100%{opacity:.42;}
+    50%    {opacity:.92;}
+  }
+
+  .f-tl{top:20px;  left:24px;}
+  .f-tr{top:20px;  right:24px; text-align:right;}
+  .f-bl{bottom:20px;left:24px;}
+  .f-br{bottom:20px;right:24px;text-align:right;}
+
+  .f-tr{animation-delay:-3.1s,-1.6s;}
+  .f-bl{animation-delay:-6.2s,-3.1s;}
+  .f-br{animation-delay:-9.3s,-4.7s;}
+
+  .f-ml,.f-mr{
+    top:50%;
+    font-size:clamp(9px,.85vw,14px);
+    letter-spacing:.26em;
+  }
+  .f-ml{left:16px;  transform:translateY(-50%) rotate(-90deg); transform-origin:left center;
+        animation-delay:-1.5s,-0.9s;}
+  .f-mr{right:16px; transform:translateY(-50%) rotate( 90deg); transform-origin:right center;
+        animation-delay:-7.4s,-4.1s;}
+
+  @media (max-width:720px){
+    .fx{font-size:10px;letter-spacing:.02em;}
+    .f-ml,.f-mr{display:none;}
+    .f-tr{max-width:54vw;white-space:normal;text-align:right;line-height:1.5;}
+    .f-tl{max-width:64vw;white-space:normal;line-height:1.5;}
+  }
+</style>
+</head>
+<body>
+
+<canvas id="scene"></canvas>
+
+<!-- 边缘数字公式 -->
+<div class="fx f-tl">(X<sub>1</sub>+…+X<sub>n</sub> − nμ) / (σ√n) &nbsp;⟶&nbsp; N(0,1)</div>
+<div class="fx f-tr">√n (X̄ − μ) / σ &nbsp;⟶&nbsp; N(0,1)</div>
+<div class="fx f-bl">f(x) = 1/(σ√2π) · e<sup>−x²/2σ²</sup></div>
+<div class="fx f-br">n → ∞ 时，和分布趋近正态</div>
+<div class="fx f-ml">独立同分布</div>
+<div class="fx f-mr">N 从 10 到 10000</div>
+
+<script>
+(function(){
+'use strict';
+
+/* ============================================================
+   基础
+============================================================ */
+const cv  = document.getElementById('scene');
+const ctx = cv.getContext('2d', { alpha:false });
+const TAU = Math.PI * 2;
+
+let W = 0, H = 0, DPR = 1;
+
+/* ---------------- 参数 ---------------- */
+const BALL_R = 1.2;                 // 小球半径（CSS 像素）
+const BALL_D = BALL_R * 2;          // 小球直径
+
+const GROW_T = 26;                  // 生长阶段时长（秒）
+const HOLD_T = 5;                   // 保持阶段
+const FADE_T = 1.8;                 // 淡出阶段
+
+const GLOW_N = 24;                  // 预渲染光晕色相数量
+
+/* ---------------- 布局 ---------------- */
+let floorY, regionL, regionR, regionW;
+let nbins, binW, binPerLayer, sigmaPix, refH;
+
+/* ---------------- 状态 ---------------- */
+let N_TARGET = 10000;
+let binCounts = [];
+let balls = [];                     // 下落中的小球
+let spawned = 0;
+let phase = 'grow';
+let phaseT = 0;
+
+/* ---------------- 离屏堆积画布 ---------------- */
+let pileCv = null, pileCtx = null;
+
+/* ---------------- 背景星点 ---------------- */
+const stars = [];
+
+/* ---------------- 预渲染光晕精灵 ---------------- */
+const glowSprites = [];
+
+/* ============================================================
+   工具
+============================================================ */
+function clamp(v, a, b){ return v < a ? a : (v > b ? b : v); }
+
+function randn(){
+  let u = 0, v = 0;
+  while (u === 0) u = Math.random();
+  while (v === 0) v = Math.random();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(TAU * v);
+}
+
+/* ============================================================
+   预渲染光晕精灵
+============================================================ */
+function buildGlows(){
+  glowSprites.length = 0;
+  for (let i = 0; i < GLOW_N; i++){
+    const hue = 225 + 135 * (i / (GLOW_N - 1));
+    const c = document.createElement('canvas');
+    c.width = c.height = 32;
+    const g = c.getContext('2d');
+    const gr = g.createRadialGradient(16, 16, 0, 16, 16, 16);
+    gr.addColorStop(0.00, `hsla(${hue},100%,94%,0.95)`);
+    gr.addColorStop(0.22, `hsla(${hue},100%,76%,0.60)`);
+    gr.addColorStop(0.55, `hsla(${hue},100%,64%,0.18)`);
+    gr.addColorStop(1.00, `hsla(${hue},100%,58%,0)`);
+    g.fillStyle = gr;
+    g.beginPath(); g.arc(16, 16, 16, 0, TAU); g.fill();
+    glowSprites.push(c);
+  }
+}
+
+/* ============================================================
+   背景星点
+============================================================ */
+function initStars(){
+  stars.length = 0;
+  const n = Math.round(Math.min(220, Math.max(60, W * H / 15000)));
+  for (let i = 0; i < n; i++){
+    stars.push({
+      x : Math.random() * W,
+      y : Math.random() * H,
+      r : 0.35 + Math.random() * 1.15,
+      ph: Math.random() * TAU,
+      sp: 0.5 + Math.random() * 1.6
+    });
+  }
+}
+
+/* ============================================================
+   尺寸 / 初始化
+============================================================ */
+function resize(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+
+  cv.width  = Math.round(W * DPR);
+  cv.height = Math.round(H * DPR);
+  cv.style.width  = W + 'px';
+  cv.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  /* --- 布局 --- */
+  floorY  = H * 0.90;
+  regionL = W * 0.035;
+  regionR = W * 0.965;
+  regionW = regionR - regionL;
+
+  sigmaPix = regionW / 9;
+  nbins    = Math.max(48, Math.round(regionW / 12));
+  binW     = regionW / nbins;
+  binPerLayer = Math.max(1, Math.floor(binW / BALL_D));
+  refH     = Math.min(H * 0.18, 190);
+
+  /* --- 目标球数（自适应屏幕） --- */
+  N_TARGET = Math.round(clamp(W * H / 120, 2800, 10000));
+
+  /* --- 离屏堆积画布 --- */
+  if (!pileCv || pileCv.width !== Math.round(W * DPR) || pileCv.height !== Math.round(H * DPR)){
+    pileCv = document.createElement('canvas');
+    pileCv.width  = Math.round(W * DPR);
+    pileCv.height = Math.round(H * DPR);
+    pileCtx = pileCv.getContext('2d');
+    pileCtx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+
+  initStars();
+  resetSim();
+}
+
+/* ============================================================
+   重置
+============================================================ */
+function resetSim(){
+  binCounts = new Array(nbins).fill(0);
+  balls.length = 0;
+  spawned = 0;
+  phase   = 'grow';
+  phaseT  = 0;
+  if (pileCtx) pileCtx.clearRect(0, 0, W, H);
+}
+
+/* ============================================================
+   生成一个小球
+============================================================ */
+function spawnBall(){
+  /* 标准正态采样 */
+  let x = W * 0.5 + randn() * sigmaPix;
+  let tries = 0;
+  while ((x < regionL || x > regionR) && tries++ < 8){
+    x = W * 0.5 + randn() * sigmaPix;
+  }
+  x = clamp(x, regionL + 2, regionR - 2);
+
+  const bi  = clamp(Math.floor((x - regionL) / binW), 0, nbins - 1);
+  const lvl = binCounts[bi]++;
+
+  const layer   = Math.floor(lvl / binPerLayer);
+  const slot    = lvl % binPerLayer;
+  const slotW   = binW / binPerLayer;
+
+  const tx = regionL + bi * binW + slot * slotW
+           + slotW * (0.5 + (Math.random() - 0.5) * 0.42);
+  const ty = floorY - (layer + 0.5) * BALL_D;
+
+  /* 颜色：低处深蓝 → 高处亮红 */
+  const hh  = clamp((floorY - ty) / refH, 0, 1);
+  const hue = 225 + 135 * hh;
+  const lum = 42 + 24 * hh;
+
+  const gi = Math.round(clamp((hue - 225) / 135, 0, 1) * (GLOW_N - 1));
+
+  balls.push({
+    x0 : tx, y0 : -30,
+    x1 : tx, y1 : ty,
+    x  : tx, y  : -30,
+    t  : 0,
+    dur: 0.26 + Math.random() * 0.24,
+    hue: hue,
+    lum: lum,
+    gi : gi
+  });
+}
+
+/* ============================================================
+   小球落定 → 写入离屏堆积画布
+============================================================ */
+function settleBall(b){
+  pileCtx.fillStyle = `hsl(${b.hue},95%,${b.lum}%)`;
+  pileCtx.beginPath();
+  pileCtx.arc(b.x1, b.y1, BALL_R, 0, TAU);
+  pileCtx.fill();
+}
+
+/* ============================================================
+   更新
+============================================================ */
+function update(dt){
+
+  phaseT += dt;
+
+  /* ---------- 阶段推进 ---------- */
+  if (phase === 'grow'){
+    const p = Math.min(1, phaseT / GROW_T);
+    const target = Math.floor(N_TARGET * Math.pow(p, 1.75));
+
+    let guard = 0;
+    while (spawned < target && balls.length < 420 && guard++ < 60){
+      spawnBall();
+      spawned++;
+    }
+
+    if (phaseT >= GROW_T){ phase = 'hold'; phaseT = 0; }
+
+  } else if (phase === 'hold'){
+    if (phaseT >= HOLD_T){ phase = 'fade'; phaseT = 0; }
+
+  } else if (phase === 'fade'){
+    if (phaseT >= FADE_T){ resetSim(); }
+  }
+
+  /* ---------- 小球下落 ---------- */
+  for (let i = balls.length - 1; i >= 0; i--){
+    const b = balls[i];
+    b.t += dt / b.dur;
+
+    if (b.t >= 1){
+      b.t = 1;
+      b.x = b.x1;
+      b.y = b.y1;
+      settleBall(b);
+      balls.splice(i, 1);
+    } else {
+      const e = b.t * b.t;                       // 重力加速
+      b.y = b.y0 + (b.y1 - b.y0) * e;
+      b.x = b.x0 + (b.x1 - b.x0) * e;
+    }
+  }
+}
+
+/* ============================================================
+   绘制：背景
+============================================================ */
+function drawBg(){
+  const g = ctx.createRadialGradient(
+    W * 0.5, H * 0.42, 0,
+    W * 0.5, H * 0.42, Math.max(W, H) * 0.86
+  );
+  g.addColorStop(0.00, '#140a28');
+  g.addColorStop(0.45, '#070310');
+  g.addColorStop(1.00, '#020006');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+}
+
+function drawStars(t){
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < stars.length; i++){
+    const s = stars[i];
+    const a = 0.12 + 0.34 * Math.abs(Math.sin(t * s.sp + s.ph));
+    ctx.globalAlpha = a;
+    ctx.fillStyle = '#9fc4ff';
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.r, 0, TAU);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+/* ============================================================
+   绘制：流动彩虹光带
+============================================================ */
+function drawBands(t){
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+
+  /* --- 垂直漂浮的彩虹光带 --- */
+  for (let i = 0; i < 3; i++){
+    const ph = t * 0.45 + i * 2.15;
+    const cy = floorY - 55 - Math.sin(ph) * 95 - i * 34;
+    const h  = 78;
+
+    const g = ctx.createLinearGradient(0, cy - h, 0, cy + h);
+    const baseHue = (t * 52 + i * 122) % 360;
+    g.addColorStop(0.00, `hsla(${baseHue},100%,60%,0)`);
+    g.addColorStop(0.50, `hsla(${(baseHue + 62) % 360},100%,68%,0.13)`);
+    g.addColorStop(1.00, `hsla(${(baseHue + 124) % 360},100%,60%,0)`);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, cy - h, W, h * 2);
+  }
+
+  /* --- 水平流动的彩虹细带 --- */
+  const g2 = ctx.createLinearGradient(0, 0, W, 0);
+  const bh = (t * 26) % 360;
+  for (let s = 0; s <= 6; s++){
+    const hue = (bh + s * 60) % 360;
+    g2.addColorStop(s / 6, `hsla(${hue},100%,65%,0.10)`);
+  }
+  ctx.fillStyle = g2;
+  ctx.fillRect(0, floorY - 5, W, 7);
+
+  ctx.restore();
+}
+
+/* ============================================================
+   绘制：理论正态轮廓（随进度淡入）
+============================================================ */
+function drawTheoryCurve(){
+  if (spawned < 60) return;
+
+  const p = Math.min(1, spawned / N_TARGET);
+  const alpha = 0.30 * Math.pow(p, 0.65);
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.strokeStyle = `hsla(190,100%,74%,${alpha})`;
+  ctx.lineWidth = 1.6;
+  ctx.shadowBlur = 14;
+  ctx.shadowColor = `hsla(190,100%,70%,${alpha})`;
+
+  ctx.beginPath();
+
+  const A = N_TARGET * p;
+  const denom = sigmaPix * Math.sqrt(TAU);
+
+  for (let i = 0; i <= nbins; i++){
+    const x  = regionL + (i + 0.5) * binW;
+    const z  = (x - W * 0.5) / sigmaPix;
+    const dens = Math.exp(-0.5 * z * z) / denom;
+    const cnt  = A * dens * binW;
+    const h    = (cnt / binPerLayer) * BALL_D;
+    const y    = floorY - h;
+
+    if (i === 0) ctx.moveTo(x, y);
+    else         ctx.lineTo(x, y);
+  }
+
+  ctx.stroke();
+  ctx.restore();
+}
+
+/* ============================================================
+   绘制：下落中的小球 + 细流光线
+============================================================ */
+function drawFallingBalls(){
+  if (balls.length === 0) return;
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+
+  for (let i = 0; i < balls.length; i++){
+    const b = balls[i];
+
+    /* --- 细流光线（拖尾） --- */
+    const trail = 46 + 26 * b.t;
+    ctx.strokeStyle = `hsla(${b.hue},100%,76%,0.34)`;
+    ctx.lineWidth = 1.25;
+    ctx.beginPath();
+    ctx.moveTo(b.x, b.y - trail);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+
+    /* --- 光晕 --- */
+    const S = 15;
+    ctx.globalAlpha = 0.92;
+    ctx.drawImage(glowSprites[b.gi], b.x - S, b.y - S, S * 2, S * 2);
+    ctx.globalAlpha = 1;
+
+    /* --- 白色亮核 --- */
+    ctx.fillStyle = 'rgba(255,255,255,0.95)';
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, 1.25, 0, TAU);
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+/* ============================================================
+   绘制：地面基线
+============================================================ */
+function drawFloor(){
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+
+  const g = ctx.createLinearGradient(regionL, 0, regionR, 0);
+  g.addColorStop(0.00, 'hsla(280,100%,70%,0)');
+  g.addColorStop(0.50, 'hsla(322,100%,72%,0.36)');
+  g.addColorStop(1.00, 'hsla(20,100%,70%,0)');
+
+  ctx.strokeStyle = g;
+  ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  ctx.moveTo(regionL - 12, floorY);
+  ctx.lineTo(regionR + 12, floorY);
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+/* ============================================================
+   绘制：N 计数
+============================================================ */
+function drawCounter(t){
+  const fs = Math.max(15, Math.min(30, W / 46));
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.font = `700 ${fs}px "SF Mono", Consolas, monospace`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  const hue = (t * 58) % 360;
+  ctx.shadowBlur  = 22;
+  ctx.shadowColor = `hsla(${hue},100%,66%,0.95)`;
+  ctx.fillStyle   = `hsla(${hue},100%,84%,0.95)`;
+  ctx.fillText('N = ' + spawned.toLocaleString(), W * 0.5, H * 0.085);
+
+  ctx.restore();
+}
+
+/* ============================================================
+   绘制：暗角
+============================================================ */
+function drawVignette(){
+  const g = ctx.createRadialGradient(
+    W * 0.5, H * 0.5, Math.min(W, H) * 0.28,
+    W * 0.5, H * 0.5, Math.max(W, H) * 0.84
+  );
+  g.addColorStop(0, 'rgba(0,0,0,0)');
+  g.addColorStop(1, 'rgba(0,0,0,0.74)');
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+}
+
+/* ============================================================
+   渲染
+============================================================ */
+function render(t){
+  drawBg();
+  drawStars(t);
+
+  /* --- 堆积层（离屏缓存） --- */
+  let pileAlpha = 1;
+  if (phase === 'fade') pileAlpha = Math.max(0, 1 - phaseT / FADE_T);
+
+  if (pileAlpha > 0.01 && pileCv){
+    ctx.globalAlpha = pileAlpha;
+    ctx.drawImage(pileCv, 0, 0, W, H);
+    ctx.globalAlpha = 1;
+  }
+
+  /* --- 叠加效果 --- */
+  drawBands(t);
+  drawTheoryCurve();
+  drawFallingBalls();
+  drawFloor();
+  drawCounter(t);
+  drawVignette();
+}
+
+/* ============================================================
+   主循环
+============================================================ */
+let lastT = performance.now() / 1000;
+
+function frame(now){
+  const t = now / 1000;
+  let dt = t - lastT;
+  lastT = t;
+  if (!isFinite(dt) || dt < 0) dt = 0.016;
+  if (dt > 0.05) dt = 0.05;
+
+  update(dt);
+  render(t);
+
+  requestAnimationFrame(frame);
+}
+
+/* ============================================================
+   启动
+============================================================ */
+let lastW = 0, lastH = 0;
+function onResize(){
+  const w = window.innerWidth, h = window.innerHeight;
+  if (Math.abs(w - lastW) < 2 && Math.abs(h - lastH) < 2) return;
+  lastW = w; lastH = h;
+  resize();
+}
+
+window.addEventListener('resize', onResize);
+
+buildGlows();
+resize();
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

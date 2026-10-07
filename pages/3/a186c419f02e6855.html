@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NEON INTEGRAL · 牛顿-莱布尼茨公式</title>
+<style>
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;background:#01020a;overflow:hidden}
+  body{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace}
+  canvas{position:fixed;inset:0;display:block}
+
+  .hud{
+    position:fixed;z-index:6;pointer-events:none;
+    font-size:12.5px;line-height:1.95;letter-spacing:.07em;
+    color:#a8e8ff;opacity:.92;white-space:pre;
+    text-shadow:0 0 6px rgba(80,200,255,.85),0 0 18px rgba(60,140,255,.5);
+  }
+  #hudTL{top:16px;left:18px}
+  #hudTR{top:16px;right:18px;text-align:right}
+  #hudBL{bottom:16px;left:18px}
+  #hudBR{bottom:16px;right:18px;text-align:right}
+  .w {color:#ffffff;text-shadow:0 0 10px #fff,0 0 26px rgba(180,240,255,.9)}
+  .rd{color:#ff5a6a;text-shadow:0 0 8px rgba(255,90,106,1),0 0 24px rgba(255,20,60,.6)}
+  .or{color:#ffa63c;text-shadow:0 0 8px rgba(255,166,60,1),0 0 24px rgba(255,110,0,.6)}
+  .cy{color:#5fd0ff;text-shadow:0 0 8px rgba(95,208,255,1),0 0 24px rgba(0,160,255,.6)}
+  .pu{color:#c07aff;text-shadow:0 0 8px rgba(180,110,255,1),0 0 24px rgba(140,60,255,.6)}
+  .dim{opacity:.45}
+
+  .scan{
+    position:fixed;inset:0;z-index:7;pointer-events:none;
+    background:repeating-linear-gradient(0deg,rgba(255,255,255,.028) 0 1px,transparent 1px 3px);
+    mix-blend-mode:overlay;opacity:.6;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div class="hud" id="hudTL">∫ₐᵇ f(x) dx = F(b) − F(a)
+牛顿-莱布尼茨公式 · 微积分基本定理</div>
+
+<div class="hud" id="hudTR">F′(x) = f(x)
+原函数  <span class="rd">F(x) = −cos x − ¼cos 2x</span></div>
+
+<div class="hud" id="hudBL">a = <span class="cy" id="aOut">−0.00</span>   b = <span class="cy" id="bOut">+0.00</span>
+f(x) = <span class="pu">sin x + ½sin 2x</span></div>
+
+<div class="hud" id="hudBR">F(b) − F(a) = <span class="or" id="intOut">+0.000</span>
+Δx = <span class="w" id="dxOut">0.00</span></div>
+
+<div class="scan"></div>
+
+<script>
+(function(){
+"use strict";
+
+/* ================= 基础 ================= */
+const cvs = document.getElementById('c');
+const ctx = cvs.getContext('2d');
+
+const aOut = document.getElementById('aOut');
+const bOut = document.getElementById('bOut');
+const intOut = document.getElementById('intOut');
+const dxOut = document.getElementById('dxOut');
+
+const TAU = Math.PI * 2;
+const X_MIN = -6.5, X_MAX = 6.5;
+
+let W = 0, H = 0, DPR = 1;
+let bgGrad = null, marginX = 0;
+let baseF = 0, scaleF = 0, baseG = 0, scaleG = 0;
+
+/* ================= 函数 ================= */
+function f(x){ return Math.sin(x) + 0.5 * Math.sin(2 * x); }
+function F(x){ return -Math.cos(x) - 0.25 * Math.cos(2 * x); }
+
+/* ================= 映射 ================= */
+function xToPx(x){
+  return marginX + (x - X_MIN) / (X_MAX - X_MIN) * (W - 2 * marginX);
+}
+function yF(v){ return baseF - v * scaleF; }   /* f 曲线 → 屏幕 */
+function yG(v){ return baseG - v * scaleG; }   /* F 曲线 → 屏幕 */
+
+/* ================= 尺寸 ================= */
+function resize(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  cvs.width  = Math.floor(W * DPR);
+  cvs.height = Math.floor(H * DPR);
+  cvs.style.width  = W + 'px';
+  cvs.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  marginX = W * 0.052;
+
+  baseF = H * 0.780;
+  scaleF = H * 0.086;
+  baseG = H * 0.300;
+  scaleG = H * 0.086;
+
+  bgGrad = ctx.createRadialGradient(W * 0.5, H * 0.52, 0, W * 0.5, H * 0.5, Math.max(W, H) * 0.92);
+  bgGrad.addColorStop(0.00, '#0a1240');
+  bgGrad.addColorStop(0.44, '#050a26');
+  bgGrad.addColorStop(1.00, '#01020a');
+
+  buildDust();
+}
+window.addEventListener('resize', resize);
+
+/* ================= 浮尘 ================= */
+let dust = [];
+function buildDust(){
+  dust = [];
+  const cnt = Math.min(140, Math.round((W * H) / 12000));
+  for (let i = 0; i < cnt; i++){
+    dust.push({
+      x: Math.random() * W,
+      y: Math.random() * H,
+      r: 0.5 + Math.random() * 1.7,
+      ph: Math.random() * TAU,
+      sp: 0.4 + Math.random() * 1.5,
+      vy: -3 - Math.random() * 11,
+      hu: Math.random() * 360
+    });
+  }
+}
+function updateDust(dt){
+  for (let i = 0; i < dust.length; i++){
+    const d = dust[i];
+    d.y += d.vy * dt;
+    d.x += Math.sin(t * 0.6 + d.ph) * 5 * dt;
+    if (d.y < -12){ d.y = H + 12; d.x = Math.random() * W; }
+  }
+}
+function drawDust(){
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < dust.length; i++){
+    const d = dust[i];
+    const tw = 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(t * d.sp + d.ph));
+    const a = tw * 0.30;
+    if (a < 0.025) continue;
+    const r = d.r * (0.8 + 0.5 * tw);
+    const g = ctx.createRadialGradient(d.x, d.y, 0, d.x, d.y, r * 3.6);
+    g.addColorStop(0.00, 'hsla(' + d.hu + ',100%,90%,' + a + ')');
+    g.addColorStop(0.44, 'hsla(' + d.hu + ',100%,64%,' + (a * 0.28) + ')');
+    g.addColorStop(1.00, 'hsla(' + d.hu + ',100%,58%,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(d.x, d.y, r * 3.6, 0, TAU); ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ================= 网格 ================= */
+function drawGrid(){
+  ctx.strokeStyle = 'rgba(66,126,220,0.055)';
+  ctx.lineWidth = 1;
+
+  ctx.beginPath();
+  for (let x = -6; x <= 6; x++){
+    const px = Math.round(xToPx(x)) + 0.5;
+    ctx.moveTo(px, 0); ctx.lineTo(px, H);
+  }
+  ctx.stroke();
+
+  ctx.beginPath();
+  for (let i = 0; i <= 22; i++){
+    const py = Math.round(H * i / 22) + 0.5;
+    ctx.moveTo(0, py); ctx.lineTo(W, py);
+  }
+  ctx.stroke();
+
+  /* f 零线 */
+  ctx.setLineDash([6, 12]);
+  ctx.lineDashOffset = -t * 16;
+  ctx.strokeStyle = 'rgba(120,190,255,0.14)';
+  ctx.beginPath();
+  ctx.moveTo(0, baseF); ctx.lineTo(W, baseF);
+  ctx.stroke();
+
+  /* F 零线 */
+  ctx.strokeStyle = 'rgba(255,110,120,0.10)';
+  ctx.lineDashOffset = t * 16;
+  ctx.beginPath();
+  ctx.moveTo(0, baseG); ctx.lineTo(W, baseG);
+  ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+/* ================= 曲线路径 ================= */
+function buildPath(fn, mapFn){
+  const path = new Path2D();
+  const N = 260;
+  let first = true;
+  for (let i = 0; i <= N; i++){
+    const x  = X_MIN + (X_MAX - X_MIN) * i / N;
+    const px = xToPx(x);
+    const py = mapFn(fn(x));
+    if (py < -140 || py > H + 140){ first = true; continue; }
+    if (first){ path.moveTo(px, py); first = false; }
+    else path.lineTo(px, py);
+  }
+  return path;
+}
+
+/* ================= 下方函数 f 曲线（彩虹） ================= */
+function rainbowGrad(t){
+  const g = ctx.createLinearGradient(marginX, 0, W - marginX, 0);
+  const stops = [
+    [0.00, 196, 62],
+    [0.18, 232, 58],
+    [0.36, 268, 58],
+    [0.54, 312, 60],
+    [0.72, 350, 60],
+    [1.00,  36, 62]
+  ];
+  for (let i = 0; i < stops.length; i++){
+    const s = stops[i];
+    const h = (s[1] + t * 18) % 360;
+    g.addColorStop(s[0], 'hsl(' + h + ',100%,' + s[2] + '%)');
+  }
+  return g;
+}
+
+function drawLowerCurve(){
+  const path = buildPath(f, yF);
+
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap  = 'round';
+  ctx.lineJoin = 'round';
+
+  const g = rainbowGrad(t);
+
+  ctx.strokeStyle = g;
+  ctx.globalAlpha = 0.09;
+  ctx.lineWidth = 22;
+  ctx.stroke(path);
+
+  ctx.globalAlpha = 0.24;
+  ctx.lineWidth = 9;
+  ctx.stroke(path);
+
+  ctx.globalAlpha = 1;
+  ctx.lineWidth = 2.1;
+  ctx.stroke(path);
+
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ================= 上方原函数 F 曲线（红橙） ================= */
+function drawUpperCurve(){
+  const path = buildPath(F, yG);
+
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap  = 'round';
+  ctx.lineJoin = 'round';
+
+  const g = ctx.createLinearGradient(marginX, 0, W - marginX, 0);
+  g.addColorStop(0.00, 'hsl(' + (338 + t * 10) % 360 + ',100%,66%)');
+  g.addColorStop(0.45, 'hsl(' + (  6 + t * 10) % 360 + ',100%,64%)');
+  g.addColorStop(1.00, 'hsl(' + ( 34 + t * 10) % 360 + ',100%,64%)');
+
+  ctx.strokeStyle = g;
+  ctx.globalAlpha = 0.10;
+  ctx.lineWidth = 20;
+  ctx.stroke(path);
+
+  ctx.globalAlpha = 0.28;
+  ctx.lineWidth = 8;
+  ctx.stroke(path);
+
+  ctx.globalAlpha = 1;
+  ctx.lineWidth = 2.0;
+  ctx.stroke(path);
+
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ================= 积分填充区域（蓝色半透明） ================= */
+function drawFill(a, b){
+  if (b <= a) return;
+
+  const path = new Path2D();
+  const N = 180;
+  path.moveTo(xToPx(a), yF(f(a)));
+  for (let i = 1; i <= N; i++){
+    const x = a + (b - a) * i / N;
+    path.lineTo(xToPx(x), yF(f(x)));
+  }
+  path.lineTo(xToPx(b), baseF);
+  path.lineTo(xToPx(a), baseF);
+  path.closePath();
+
+  /* 脉动 */
+  const pulse = 0.86 + 0.14 * Math.sin(t * 1.4);
+
+  ctx.globalCompositeOperation = 'lighter';
+
+  const g = ctx.createLinearGradient(0, baseF - scaleF * 1.6, 0, baseF + scaleF * 0.5);
+  g.addColorStop(0.00, 'rgba(105,200,255,' + (0.34 * pulse) + ')');
+  g.addColorStop(0.42, 'rgba(72,150,255,' + (0.22 * pulse) + ')');
+  g.addColorStop(0.78, 'rgba(60,110,235,' + (0.13 * pulse) + ')');
+  g.addColorStop(1.00, 'rgba(50,80,210,0.05)');
+  ctx.fillStyle = g;
+  ctx.fill(path);
+
+  /* 扫描光带 */
+  const scanX = xToPx(a) + ((t * 0.32) % 1) * (xToPx(b) - xToPx(a));
+  const sg = ctx.createLinearGradient(scanX - 70, 0, scanX + 70, 0);
+  sg.addColorStop(0.00, 'rgba(120,210,255,0)');
+  sg.addColorStop(0.50, 'rgba(150,225,255,' + (0.09 * pulse) + ')');
+  sg.addColorStop(1.00, 'rgba(120,210,255,0)');
+
+  ctx.save();
+  ctx.clip(path);
+  ctx.fillStyle = sg;
+  ctx.fillRect(xToPx(a), 0, xToPx(b) - xToPx(a), H);
+  ctx.restore();
+
+  /* 边界竖线 */
+  ctx.setLineDash([4, 8]);
+  ctx.lineDashOffset = -t * 26;
+  ctx.strokeStyle = 'rgba(130,205,255,0.34)';
+  ctx.lineWidth = 1.1;
+  ctx.beginPath();
+  ctx.moveTo(xToPx(a), yG(F(a)));
+  ctx.lineTo(xToPx(a), baseF + scaleF * 0.35);
+  ctx.moveTo(xToPx(b), yG(F(b)));
+  ctx.lineTo(xToPx(b), baseF + scaleF * 0.35);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ================= 流动光流线 ================= */
+function drawFlowLines(a, b){
+  if (b <= a) return;
+
+  const N = 46;
+
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.setLineDash([7, 11]);
+  ctx.lineCap = 'round';
+
+  for (let i = 0; i <= N; i++){
+    const u  = i / N;
+    const x  = a + (b - a) * u;
+    const px = xToPx(x);
+
+    const y1 = yF(f(x));
+    const y2 = yG(F(x));
+
+    /* 两端更亮 */
+    const edge = Math.pow(Math.abs(2 * u - 1), 0.65);
+    const alpha = 0.055 + 0.34 * edge;
+
+    /* 色相：青 → 蓝 → 紫 → 粉 */
+    const hue = ((x + 6.5) / 13) * 220 + 175 + t * 24;
+
+    ctx.lineDashOffset = -(t * 90 + i * 15);
+
+    ctx.beginPath();
+    ctx.moveTo(px, y1);
+    ctx.lineTo(px, y2);
+    ctx.strokeStyle = 'hsla(' + ((hue % 360 + 360) % 360) + ',100%,66%,' + alpha + ')';
+    ctx.lineWidth = 1.25;
+    ctx.stroke();
+  }
+
+  ctx.setLineDash([]);
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ================= 脉冲标记 ================= */
+function drawMarker(px, py, hue, label, sub, side){
+  const pulse = 0.55 + 0.45 * Math.sin(t * 4.6);
+
+  ctx.globalCompositeOperation = 'lighter';
+
+  /* --- 外光晕 --- */
+  const R = 26 + 16 * pulse;
+  const g = ctx.createRadialGradient(px, py, 0, px, py, R);
+  g.addColorStop(0.00, 'hsla(' + hue + ',100%,92%,0.95)');
+  g.addColorStop(0.22, 'hsla(' + hue + ',100%,70%,0.55)');
+  g.addColorStop(0.55, 'hsla(' + hue + ',100%,60%,0.18)');
+  g.addColorStop(1.00, 'hsla(' + hue + ',100%,55%,0)');
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.arc(px, py, R, 0, TAU); ctx.fill();
+
+  /* --- 扩散环 --- */
+  for (let i = 0; i < 2; i++){
+    const rp = ((t * 0.7 + i * 0.5) % 1 + 1) % 1;
+    const rr = 8 + rp * 40;
+    ctx.strokeStyle = 'hsla(' + hue + ',100%,80%,' + (0.42 * (1 - rp)) + ')';
+    ctx.lineWidth = 1.9 * (1 - rp) + 0.3;
+    ctx.beginPath(); ctx.arc(px, py, rr, 0, TAU); ctx.stroke();
+  }
+
+  /* --- 实心核心 --- */
+  const cg = ctx.createRadialGradient(px - 2, py - 2, 0, px, py, 7 + 3 * pulse);
+  cg.addColorStop(0.00, '#ffffff');
+  cg.addColorStop(0.50, 'hsla(' + hue + ',100%,82%,1)');
+  cg.addColorStop(1.00, 'hsla(' + hue + ',100%,58%,1)');
+  ctx.fillStyle = cg;
+  ctx.beginPath(); ctx.arc(px, py, 7 + 3 * pulse, 0, TAU); ctx.fill();
+
+  ctx.globalCompositeOperation = 'source-over';
+
+  /* --- 文字标签 --- */
+  const fs = 14;
+  ctx.font = '700 ' + fs + 'px "SF Mono", ui-monospace, Menlo, monospace';
+  ctx.textAlign = side > 0 ? 'left' : 'right';
+  ctx.textBaseline = 'middle';
+
+  const lx = px + side * 18;
+  const ly = py - 26;
+
+  ctx.save();
+  ctx.shadowColor = 'hsla(' + hue + ',100%,70%,1)';
+  ctx.shadowBlur = 14;
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText(label, lx, ly);
+  ctx.restore();
+
+  if (sub){
+    ctx.font = '600 11px "SF Mono", ui-monospace, Menlo, monospace';
+    ctx.fillStyle = 'hsla(' + hue + ',100%,78%,0.92)';
+    ctx.fillText(sub, lx, ly + 16);
+  }
+}
+
+/* ================= 主循环 ================= */
+let t = 0, lastT = performance.now();
+let lastHud = 0;
+
+function frame(now){
+  requestAnimationFrame(frame);
+
+  let dt = (now - lastT) / 1000;
+  lastT = now;
+  if (dt > 0.05) dt = 0.05;
+  if (dt < 0)    dt = 0;
+  t += dt;
+
+  /* ---------- 积分区间演化 ---------- */
+  const a = -3.2 + 0.9 * Math.sin(t * 0.35);
+  const b =  0.3 + 0.9 * Math.sin(t * 0.29 + 1.0);
+
+  const Fa = F(a), Fb = F(b);
+  const val = Fb - Fa;
+
+  /* ---------- 背景 ---------- */
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = bgGrad;
+  ctx.fillRect(0, 0, W, H);
+
+  updateDust(dt);
+  drawDust();
+
+  drawGrid();
+
+  /* ---------- 填充区域 ---------- */
+  drawFill(a, b);
+
+  /* ---------- 两条曲线 ---------- */
+  drawUpperCurve();
+  drawLowerCurve();
+
+  /* ---------- 光流线 ---------- */
+  drawFlowLines(a, b);
+
+  /* ---------- 脉冲标记 ---------- */
+  const pa = xToPx(a), pb = xToPx(b);
+
+  /* F 曲线上的 F(a), F(b) —— 红色系 */
+  drawMarker(pa, yG(Fa), 348, 'F(a)',
+             '= ' + Fa.toFixed(3), -1);
+  drawMarker(pb, yG(Fb), 18,  'F(b)',
+             '= ' + Fb.toFixed(3), +1);
+
+  /* f 曲线上的 a, b —— 青色系 */
+  drawMarker(pa, yF(f(a)), 196, 'a',
+             '= ' + a.toFixed(2), -1);
+  drawMarker(pb, yF(f(b)), 220, 'b',
+             '= ' + b.toFixed(2), +1);
+
+  /* ---------- 积分值标签 ---------- */
+  const midX = (pa + pb) * 0.5;
+  const midY = (yG(0) + baseF) * 0.5 - 4;
+  const pulse = 0.72 + 0.28 * Math.sin(t * 3.2);
+
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.save();
+  ctx.font = '700 19px "SF Mono", ui-monospace, Menlo, monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.shadowColor = 'hsla(' + (200 + 60 * Math.sin(t * 0.6)) + ',100%,70%,1)';
+  ctx.shadowBlur = 20 * pulse;
+  ctx.fillStyle = 'rgba(255,255,255,' + (0.72 + 0.28 * pulse) + ')';
+  ctx.fillText('F(b) − F(a) = ' + val.toFixed(3), midX, midY);
+  ctx.restore();
+  ctx.globalCompositeOperation = 'source-over';
+
+  /* ---------- HUD ---------- */
+  if (now - lastHud > 80){
+    lastHud = now;
+    aOut.textContent = (a >= 0 ? '+' : '') + a.toFixed(2);
+    bOut.textContent = (b >= 0 ? '+' : '') + b.toFixed(2);
+    intOut.textContent = (val >= 0 ? '+' : '') + val.toFixed(3);
+    dxOut.textContent = (b - a).toFixed(2);
+  }
+}
+
+/* ================= 启动 ================= */
+resize();
+lastT = performance.now();
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

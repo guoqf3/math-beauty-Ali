@@ -1,0 +1,908 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>流体化床 · 临界流化速度起始态</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100%;height:100%;overflow:hidden;background:#03050b;
+    font-family:"SF Mono",Consolas,"Courier New",monospace;}
+  canvas{display:block;position:fixed;inset:0}
+
+  .hud{
+    position:fixed;z-index:10;pointer-events:none;
+    font-size:12px;letter-spacing:.6px;line-height:2.0;
+    color:#7fe8ff;
+    text-shadow:0 0 10px rgba(0,200,255,.75),0 0 26px rgba(120,60,255,.4);
+  }
+  .hud .pp{color:#c9a8ff;text-shadow:0 0 10px rgba(160,90,255,.8)}
+  .hud .wh{color:#eaf6ff;text-shadow:0 0 10px rgba(200,240,255,.9)}
+  .hud .dim{color:#5d7f96;font-size:11px;text-shadow:none}
+  .tl{top:16px;left:20px}
+  .tr{top:16px;right:20px;text-align:right}
+  .bl{bottom:16px;left:20px}
+  .br{bottom:16px;right:20px;text-align:right}
+
+  .ctrl{
+    position:fixed;z-index:10;top:16px;left:50%;transform:translateX(-50%);
+    display:flex;align-items:center;gap:12px;
+    font-size:11px;letter-spacing:1.5px;color:#7fe8ff;
+    text-shadow:0 0 10px rgba(0,200,255,.8);
+    background:rgba(6,14,26,.55);
+    border:1px solid rgba(90,200,255,.22);
+    border-radius:22px;padding:8px 20px;
+    backdrop-filter:blur(8px);
+  }
+  .ctrl input[type=range]{
+    -webkit-appearance:none;appearance:none;width:170px;height:4px;border-radius:4px;
+    background:linear-gradient(90deg,#0b2a3a,#00c8ff,#8a4dff);outline:none;cursor:pointer;
+    position:relative;
+  }
+  .ctrl input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none;width:14px;height:14px;border-radius:50%;
+    background:#eafaff;box-shadow:0 0 12px #00d5ff,0 0 26px #7b3cff;cursor:pointer;
+    border:1px solid rgba(255,255,255,.75);
+  }
+  .ctrl input[type=range]::-moz-range-thumb{
+    width:14px;height:14px;border:none;border-radius:50%;
+    background:#eafaff;box-shadow:0 0 12px #00d5ff;cursor:pointer;
+  }
+  #uv{color:#eaf6ff;min-width:62px;display:inline-block;text-align:right}
+  .umf{
+    position:relative;
+  }
+  .umf::after{
+    content:"u_mf";
+    position:absolute;left:calc((9.27 / 24) * 100%);
+    top:16px;transform:translateX(-50%);
+    font-size:9px;color:#ffcf5a;letter-spacing:0;
+    text-shadow:0 0 10px rgba(255,190,40,.9);
+    white-space:nowrap;
+  }
+  .warn{
+    position:fixed;inset:0;z-index:5;pointer-events:none;
+    box-shadow:inset 0 0 140px rgba(255,180,40,0);
+    transition:box-shadow .25s;
+  }
+  .hint{
+    position:fixed;z-index:10;bottom:46px;left:50%;transform:translateX(-50%);
+    font-size:10px;letter-spacing:2.5px;color:#4d6f88;
+    text-shadow:0 0 10px rgba(0,180,255,.4);
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="warn" id="warn"></div>
+
+<div class="hud tl">
+  <div>Δp/L = 150(1−ε)²μ·u / (ε³d<sub>p</sub>²)</div>
+  <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;+ 1.75ρ<sub>f</sub>(1−ε)u² / (ε³d<sub>p</sub>)</div>
+  <div class="dim">Ergun 方程</div>
+</div>
+
+<div class="hud tr">
+  <div>u<sub>mf</sub> = d<sub>p</sub>²(ρ<sub>p</sub>−ρ<sub>f</sub>)g·ε³</div>
+  <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;/ [150μ(1−ε)]</div>
+  <div class="pp">u<sub>mf</sub> = 9.27 cm/s</div>
+</div>
+
+<div class="hud bl">
+  <div>d<sub>p</sub> = <span class="wh">0.5</span> mm &nbsp; ε = <span class="wh">0.42</span></div>
+  <div>ε<sub>exp</sub> → <span class="wh">58 %</span> 膨胀起始</div>
+  <div class="dim">g = 9.81 m/s² &nbsp;·&nbsp; 玻璃珠</div>
+</div>
+
+<div class="ctrl">
+  <span>气速 u</span>
+  <span class="umf"><input type="range" id="rate" min="0" max="24" step="0.01" value="0"></span>
+  <span id="uv">0.00 cm/s</span>
+</div>
+
+<div class="hint">点击气泡 · 放大追踪上升与聚并</div>
+
+<script>
+(function(){
+"use strict";
+
+const cv  = document.getElementById('c');
+const ctx = cv.getContext('2d');
+const TAU = Math.PI * 2;
+
+const clamp = (v,a,b)=> v<a?a:(v>b?b:v);
+const rand  = (a,b)=> a + Math.random()*(b-a);
+
+/* ============ 物理常量 ============ */
+const U_MF   = 9.27;     // cm/s
+const U_MAX  = 24;       // cm/s
+const EPS0   = 0.42;
+const EPS_MX = 0.58;
+const CYCLE  = 30;
+
+/* ============ 布局 ============ */
+let W=0,H=0,DPR=1;
+let colX=0,colW=0,colTop=0,colBottom=0,bedBottomY=0,bedH0=0,pad=12;
+let vignette=null;
+
+/* ============ 动态场 ============ */
+let particles = [];
+let bubbles   = [];
+let splashes  = [];
+let jets      = [];
+let focusBub  = null;
+
+let t = 0, lastNow = 0, started = false;
+let u = 0, f = 0, eps = EPS0, hRatio = 1;
+let wheel = 0;                       // 压降曲线滚动相位
+
+/* ================================================================
+   初始化
+================================================================ */
+function resize(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = document.documentElement.clientWidth;
+  H = document.documentElement.clientHeight;
+  cv.width  = Math.floor(W*DPR);
+  cv.height = Math.floor(H*DPR);
+  cv.style.width  = W+'px';
+  cv.style.height = H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+
+  const g = ctx.createRadialGradient(W/2,H/2,Math.min(W,H)*0.28, W/2,H/2,Math.max(W,H)*0.82);
+  g.addColorStop(0,'rgba(0,0,0,0)');
+  g.addColorStop(1,'rgba(0,0,0,0.82)');
+  vignette = g;
+
+  colW = Math.min(W*0.24, 230);
+  colX = W/2 - colW/2;
+  colTop = H*0.115;
+  colBottom = H*0.925;
+  bedBottomY = colBottom - 16;
+  bedH0 = (colBottom - colTop) * 0.55;
+
+  buildParticles();
+  buildJets();
+}
+
+/* ================================================================
+   颗粒构建
+================================================================ */
+function buildParticles(){
+  particles = [];
+  const bedW = colW - pad*2;
+  const n = 400;
+  const cols = Math.max(10, Math.round(Math.sqrt(n * bedW / bedH0)));
+  const rows = Math.max(10, Math.round(n / cols));
+
+  for (let j=0; j<rows; j++){
+    for (let i=0; i<cols; i++){
+      if (particles.length >= n) break;
+      const px = (i + 0.5 + rand(-0.28,0.28)) / cols;
+      const py = (j + 0.5 + rand(-0.28,0.28)) / rows;
+      if (px < 0 || px > 1 || py < 0 || py > 1) continue;
+      const r = (bedW/cols) * rand(0.30, 0.42);
+      particles.push({
+        px, py, r,
+        phase: rand(0, TAU),
+        spd: rand(0.6, 1.6),
+        tint: rand(0,1),
+        x: 0, y: 0
+      });
+    }
+  }
+}
+
+/* ================================================================
+   气体喷嘴
+================================================================ */
+function buildJets(){
+  jets = [];
+  const n = 9;
+  for (let i=0;i<n;i++){
+    jets.push({
+      x: colX + colW*(i+0.5)/n,
+      phase: rand(0,TAU),
+      speed: rand(0.8,1.8),
+      amp: rand(3,9)
+    });
+  }
+}
+
+/* ================================================================
+   时间 → 气速
+================================================================ */
+function currentU(){
+  return U_MAX * (1 - Math.cos(Math.PI * t / CYCLE)) / 2;
+}
+function uToTime(uv){
+  const c = 1 - 2*uv/U_MAX;
+  return CYCLE/Math.PI * Math.acos(clamp(c,-1,1));
+}
+
+/* ================================================================
+   状态更新
+================================================================ */
+function updateState(){
+  u = currentU();
+  f = clamp((u - U_MF)/(U_MAX - U_MF), 0, 1);
+  eps = EPS0 + (EPS_MX - EPS0) * f;
+  hRatio = (1 - EPS0) / (1 - eps);
+  wheel += 0.016;
+}
+
+/* ================================================================
+   气泡逻辑
+================================================================ */
+function spawnBubble(){
+  const r0 = rand(8, 17);
+  bubbles.push({
+    x: colX + pad + rand(6, colW - pad*2 - 6),
+    y: bedBottomY - rand(2, 14),
+    r: r0,
+    vy: -(22 + r0*1.5),
+    wob: rand(0,TAU),
+    born: 0
+  });
+}
+
+function updateBubbles(dt){
+  const bedH = bedH0 * hRatio;
+  const bedTop = bedBottomY - bedH;
+
+  // 生成
+  if (f > 0.04){
+    const rate = f * f * 9.5;
+    if (Math.random() < rate * dt){
+      spawnBubble();
+    }
+  }
+
+  // 更新
+  for (let i = bubbles.length-1; i>=0; i--){
+    const b = bubbles[i];
+    b.born += dt;
+    b.r += 13 * dt;
+    if (b.r > 62) b.r = 62;
+
+    b.wob += dt * 2.4;
+    b.vy = -(22 + b.r * 1.55);
+
+    b.y += b.vy * dt;
+    b.x += Math.sin(b.wob) * 14 * dt;
+    b.x = clamp(b.x, colX + pad + b.r*0.4, colX + colW - pad - b.r*0.4);
+
+    // 到达床面 → 破裂
+    const surface = bedTop + Math.sin(b.x*0.05 + t*2.6) * 5 * f;
+    if (b.y - b.r < surface){
+      burst(b);
+      if (focusBub === b) focusBub = null;
+      bubbles.splice(i,1);
+    }
+  }
+
+  // 聚并
+  for (let i = bubbles.length-1; i>=0; i--){
+    for (let j = i-1; j>=0; j--){
+      const a = bubbles[i], b = bubbles[j];
+      const dx = a.x-b.x, dy = a.y-b.y;
+      const d = Math.hypot(dx,dy);
+      if (d < (a.r + b.r) * 0.62){
+        const big = a.r >= b.r ? a : b;
+        const sml = a.r >= b.r ? b : a;
+        const vA = big.r*big.r*big.r + sml.r*sml.r*sml.r;
+        const nr = Math.cbrt(vA);
+        const nx = (big.x*big.r + sml.x*sml.r)/(big.r+sml.r);
+        const ny = (big.y*big.r + sml.y*sml.r)/(big.r+sml.r);
+        big.r = Math.min(66, nr);
+        big.x = nx; big.y = ny;
+        if (focusBub === sml) focusBub = big;
+        bubbles.splice(j,1);
+        break;
+      }
+    }
+  }
+}
+
+function burst(b){
+  const n = Math.floor(b.r * 0.95);
+  for (let i=0;i<n;i++){
+    const a = rand(-Math.PI, 0);
+    const sp = rand(70, 260);
+    splashes.push({
+      x: b.x + rand(-b.r*0.6, b.r*0.6),
+      y: b.y - b.r*0.4,
+      vx: Math.cos(a)*sp*rand(0.5,1.3),
+      vy: Math.sin(a)*sp*rand(0.7,1.3),
+      r: rand(1.4, 3.4),
+      life: rand(0.7, 1.5),
+      max: 1.5
+    });
+  }
+}
+
+/* ================================================================
+   飞溅粒子
+================================================================ */
+function updateSplashes(dt){
+  for (let i = splashes.length-1; i>=0; i--){
+    const s = splashes[i];
+    s.life -= dt;
+    if (s.life <= 0){ splashes.splice(i,1); continue; }
+    s.vy += 780 * dt;
+    s.vx *= (1 - 0.9*dt);
+    s.x += s.vx * dt;
+    s.y += s.vy * dt;
+  }
+}
+
+/* ================================================================
+   颗粒位置计算
+================================================================ */
+function updateParticlePositions(){
+  const bedW = colW - pad*2;
+  const bedH = bedH0 * hRatio;
+  const bedBottom = bedBottomY;
+
+  const ampBase = f * 6.5;
+  const surfAmp = f * 7;
+
+  for (let k=0;k<particles.length;k++){
+    const p = particles[k];
+    let x = colX + pad + p.px * bedW;
+    let y = bedBottom - p.py * bedH;
+
+    // 湍动抖动
+    const amp = 0.6 + ampBase;
+    x += Math.sin(t * p.spd * 1.7 + p.phase) * amp * 0.55;
+    y += Math.cos(t * p.spd * 1.3 + p.phase * 1.7) * amp;
+
+    // 床面蜿蜒起伏（越靠近顶部越明显）
+    const depth = p.py * p.py;
+    y += Math.sin(x*0.055 + t*2.7) * surfAmp * depth;
+    y += Math.sin(x*0.13 - t*3.4) * surfAmp * 0.5 * depth;
+
+    // 气泡排开颗粒
+    for (let b=0;b<bubbles.length;b++){
+      const bb = bubbles[b];
+      const dx = x - bb.x, dy = y - bb.y;
+      const d = Math.hypot(dx,dy);
+      const lim = bb.r * 1.08 + p.r;
+      if (d < lim && d > 0.001){
+        const push = (lim - d);
+        x += dx/d * push * 0.85;
+        y += dy/d * push * 0.85;
+      }
+    }
+
+    // 边界约束
+    const minX = colX + pad*0.5 + p.r;
+    const maxX = colX + colW - pad*0.5 - p.r;
+    if (x < minX) x = minX;
+    if (x > maxX) x = maxX;
+    const maxY = bedBottomY - p.r;
+    if (y > maxY) y = maxY;
+
+    p.x = x; p.y = y;
+  }
+}
+
+/* ================================================================
+   绘制 — 背景
+================================================================ */
+function drawBackground(){
+  const g = ctx.createRadialGradient(W*0.5, H*0.5, 0, W*0.5, H*0.5, Math.max(W,H)*0.85);
+  g.addColorStop(0,   '#071020');
+  g.addColorStop(0.5, '#04080f');
+  g.addColorStop(1,   '#010206');
+  ctx.fillStyle = g;
+  ctx.fillRect(0,0,W,H);
+
+  // 星尘
+  ctx.globalCompositeOperation = 'lighter';
+  const n = Math.floor(W*H/34000);
+  for (let i=0;i<n;i++){
+    const sx = (i*137.5) % W;
+    const sy = (i*79.3 + t*5) % H;
+    const a = 0.05 + 0.10*Math.abs(Math.sin(i + t*0.4));
+    ctx.fillStyle = 'rgba(110,190,255,'+a.toFixed(3)+')';
+    ctx.fillRect(sx, sy, 1.2, 1.2);
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ================================================================
+   绘制 — 塔柱
+================================================================ */
+function drawColumn(){
+  // 柱内暗底
+  const g = ctx.createLinearGradient(colX, 0, colX+colW, 0);
+  g.addColorStop(0,   'rgba(8,18,34,0.85)');
+  g.addColorStop(0.5, 'rgba(10,24,44,0.55)');
+  g.addColorStop(1,   'rgba(8,18,34,0.85)');
+  ctx.fillStyle = g;
+  ctx.fillRect(colX, colTop, colW, colBottom-colTop);
+
+  // 柱壁发光
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.strokeStyle = 'rgba(60,170,255,0.22)';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(colX+1, colTop, colW-2, colBottom-colTop);
+  ctx.strokeStyle = 'rgba(140,220,255,0.10)';
+  ctx.lineWidth = 6;
+  ctx.strokeRect(colX+3, colTop+2, colW-6, colBottom-colTop-4);
+  ctx.globalCompositeOperation = 'source-over';
+
+  // 分布板
+  ctx.fillStyle = 'rgba(30,60,95,0.9)';
+  ctx.fillRect(colX+4, colBottom-16, colW-8, 14);
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.fillStyle = 'rgba(90,190,255,0.20)';
+  for (let i=0;i<jets.length;i++){
+    ctx.beginPath();
+    ctx.arc(jets[i].x, colBottom-9, 2.4, 0, TAU);
+    ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ================================================================
+   绘制 — 气体射流
+================================================================ */
+function drawJets(){
+  if (f <= 0.001 && u < 1) return;
+  const bedH = bedH0 * hRatio;
+  const bedTop = bedBottomY - bedH;
+  const intensity = clamp(u / U_MAX, 0, 1);
+
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap = 'round';
+
+  for (let i=0;i<jets.length;i++){
+    const j = jets[i];
+    const segs = 22;
+    const topY = bedTop - 6;
+
+    ctx.beginPath();
+    let first = true;
+    for (let s=0; s<=segs; s++){
+      const p = s/segs;
+      const yy = colBottom - 8 - p * (colBottom - 8 - topY);
+      const xx = j.x + Math.sin(p*4.5 + t*j.speed + j.phase) * j.amp * (0.25 + p*0.9);
+      if (first){ ctx.moveTo(xx, yy); first = false; }
+      else ctx.lineTo(xx, yy);
+    }
+    ctx.strokeStyle = 'rgba(0,210,255,'+ (0.05 + 0.22*intensity).toFixed(3) +')';
+    ctx.lineWidth = 5.5;
+    ctx.stroke();
+
+    ctx.strokeStyle = 'rgba(140,110,255,'+ (0.06 + 0.30*intensity).toFixed(3) +')';
+    ctx.lineWidth = 2.0;
+    ctx.stroke();
+
+    ctx.strokeStyle = 'rgba(215,245,255,'+ (0.03 + 0.18*intensity).toFixed(3) +')';
+    ctx.lineWidth = 0.8;
+    ctx.stroke();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ================================================================
+   绘制 — 颗粒
+================================================================ */
+function drawParticle(x, y, r, k){
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, TAU);
+  ctx.fillStyle = k.tint > 0.5
+    ? 'rgba(150,205,238,0.26)'
+    : 'rgba(120,180,225,0.22)';
+  ctx.fill();
+
+  // 玻璃高光
+  ctx.beginPath();
+  ctx.arc(x - r*0.32, y - r*0.32, r*0.34, 0, TAU);
+  ctx.fillStyle = 'rgba(210,245,255,0.30)';
+  ctx.fill();
+}
+
+function drawParticles(){
+  for (let i=0;i<particles.length;i++){
+    const p = particles[i];
+    drawParticle(p.x, p.y, p.r, p);
+  }
+}
+
+/* ================================================================
+   绘制 — 气泡
+================================================================ */
+function drawBubble(b){
+  const g = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, b.r);
+  g.addColorStop(0,    'rgba(4,10,22,0.92)');
+  g.addColorStop(0.62, 'rgba(10,26,52,0.80)');
+  g.addColorStop(0.88, 'rgba(40,110,190,0.42)');
+  g.addColorStop(1,    'rgba(120,210,255,0.20)');
+  ctx.beginPath();
+  ctx.arc(b.x, b.y, b.r, 0, TAU);
+  ctx.fillStyle = g;
+  ctx.fill();
+
+  // 霓虹环
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.beginPath();
+  ctx.arc(b.x, b.y, b.r, 0, TAU);
+  ctx.strokeStyle = 'rgba(120,225,255,0.62)';
+  ctx.lineWidth = 1.6;
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.arc(b.x, b.y, b.r*1.14, 0, TAU);
+  ctx.strokeStyle = 'rgba(140,90,255,0.20)';
+  ctx.lineWidth = 4;
+  ctx.stroke();
+  ctx.globalCompositeOperation = 'source-over';
+
+  // 高光弧
+  ctx.beginPath();
+  ctx.arc(b.x, b.y, b.r*0.72, Math.PI*1.15, Math.PI*1.62);
+  ctx.strokeStyle = 'rgba(220,250,255,0.42)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+}
+
+function drawBubbles(){
+  for (let i=0;i<bubbles.length;i++) drawBubble(bubbles[i]);
+}
+
+/* ================================================================
+   绘制 — 飞溅
+================================================================ */
+function drawSplashes(){
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i=0;i<splashes.length;i++){
+    const s = splashes[i];
+    const a = clamp(s.life/s.max, 0, 1);
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.r, 0, TAU);
+    ctx.fillStyle = 'rgba(170,235,255,'+ (a*0.80).toFixed(3) +')';
+    ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ================================================================
+   绘制 — 床层表面高光
+================================================================ */
+function drawSurfaceGlow(){
+  if (f <= 0.02) return;
+  const bedH = bedH0 * hRatio;
+  const bedTop = bedBottomY - bedH;
+
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.beginPath();
+  const steps = 46;
+  for (let i=0;i<=steps;i++){
+    const x = colX + pad + (colW - pad*2) * i/steps;
+    const y = bedTop + Math.sin(x*0.055 + t*2.7) * 7 * f
+                     + Math.sin(x*0.13 - t*3.4) * 4 * f;
+    if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+  }
+  ctx.strokeStyle = 'rgba(90,200,255,'+ (0.10 + 0.30*f).toFixed(3) +')';
+  ctx.lineWidth = 2.2;
+  ctx.stroke();
+  ctx.strokeStyle = 'rgba(180,130,255,'+ (0.05 + 0.18*f).toFixed(3) +')';
+  ctx.lineWidth = 6;
+  ctx.stroke();
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ================================================================
+   放大镜
+================================================================ */
+function drawMagnifier(){
+  if (!focusBub) return;
+  const b = focusBub;
+  if (bubbles.indexOf(b) < 0){ focusBub = null; return; }
+
+  const R = 92;
+  const Z = 2.35;
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(b.x, b.y, R, 0, TAU);
+  ctx.clip();
+
+  ctx.fillStyle = 'rgba(3,7,14,0.96)';
+  ctx.fillRect(b.x-R, b.y-R, R*2, R*2);
+
+  ctx.translate(b.x, b.y);
+  ctx.scale(Z, Z);
+  ctx.translate(-b.x, -b.y);
+
+  // 邻近颗粒
+  for (let i=0;i<particles.length;i++){
+    const p = particles[i];
+    const d = Math.hypot(p.x-b.x, p.y-b.y);
+    if (d < R/Z + 14) drawParticle(p.x, p.y, p.r, p);
+  }
+
+  // 放大气泡
+  drawBubble(b);
+
+  ctx.restore();
+
+  // 外环
+  ctx.beginPath();
+  ctx.arc(b.x, b.y, R, 0, TAU);
+  ctx.strokeStyle = 'rgba(130,235,255,0.9)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.arc(b.x, b.y, R+4, 0, TAU);
+  ctx.strokeStyle = 'rgba(140,80,255,0.28)';
+  ctx.lineWidth = 6;
+  ctx.stroke();
+
+  // 十字准线
+  ctx.strokeStyle = 'rgba(130,235,255,0.28)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(b.x-R-12, b.y); ctx.lineTo(b.x-R+6, b.y);
+  ctx.moveTo(b.x+R-6, b.y);  ctx.lineTo(b.x+R+12, b.y);
+  ctx.moveTo(b.x, b.y-R-12); ctx.lineTo(b.x, b.y-R+6);
+  ctx.moveTo(b.x, b.y+R-6);  ctx.lineTo(b.x, b.y+R+12);
+  ctx.stroke();
+
+  // 读数
+  const diam = (b.r * 2 / 10).toFixed(1);
+  const vup  = (Math.abs(b.vy) / 10).toFixed(1);
+  ctx.font = '10px "SF Mono",Consolas,monospace';
+  ctx.fillStyle = 'rgba(150,240,255,0.92)';
+  ctx.textAlign = 'left';
+  ctx.fillText('d = ' + diam + ' mm', b.x + R + 12, b.y - 6);
+  ctx.fillText('v = ' + vup + ' cm/s', b.x + R + 12, b.y + 9);
+  ctx.fillStyle = 'rgba(190,140,255,0.85)';
+  ctx.fillText('聚并 / 上升', b.x + R + 12, b.y + 24);
+  ctx.textAlign = 'start';
+}
+
+/* ================================================================
+   压降曲线
+================================================================ */
+function deltaP(uv){
+  const uSI = uv/100;
+  const dp  = 0.5e-3;
+  const mu  = 1.8e-5;
+  const rho = 1.2;
+  const e   = EPS0;
+  const A = 150*Math.pow(1-e,2)*mu / (Math.pow(e,3)*dp*dp);
+  const B = 1.75*rho*(1-e) / (Math.pow(e,3)*dp);
+  return (A*uSI + B*uSI*uSI) * 0.30;
+}
+
+function drawChart(){
+  const cw = 215, ch = 122;
+  const cx0 = W - cw - 26;
+  const cy0 = H - ch - 30;
+
+  // 背板
+  ctx.fillStyle = 'rgba(6,14,26,0.62)';
+  ctx.beginPath();
+  ctx.roundRect(cx0, cy0, cw, ch, 8);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(80,190,255,0.20)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  const pl = 30, pr = 12, pt = 16, pb = 20;
+  const gx = cx0 + pl, gy = cy0 + pt;
+  const gw = cw - pl - pr, gh = ch - pt - pb;
+
+  // 网格
+  ctx.strokeStyle = 'rgba(70,150,210,0.13)';
+  ctx.lineWidth = 1;
+  for (let i=0;i<=3;i++){
+    const yy = gy + gh*i/3;
+    ctx.beginPath(); ctx.moveTo(gx,yy); ctx.lineTo(gx+gw,yy); ctx.stroke();
+  }
+
+  // Ergun 曲线
+  const uMaxP = U_MAX;
+  ctx.beginPath();
+  let first = true;
+  for (let i=0;i<=100;i++){
+    const uu = uMaxP * i/100;
+    let dpv = deltaP(Math.min(uu, U_MF));
+    const maxDp = deltaP(U_MF);
+    const yy = gy + gh - (dpv/maxDp) * gh * 0.88;
+    const xx = gx + gw * i/100;
+    if (first){ ctx.moveTo(xx,yy); first = false; }
+    else ctx.lineTo(xx,yy);
+  }
+  ctx.strokeStyle = 'rgba(120,220,255,0.85)';
+  ctx.lineWidth = 1.8;
+  ctx.stroke();
+
+  // 平台高亮
+  const pxm = gx + gw * U_MF/uMaxP;
+  ctx.beginPath();
+  ctx.moveTo(pxm, gy + gh - gh*0.88);
+  ctx.lineTo(gx+gw, gy + gh - gh*0.88);
+  ctx.strokeStyle = 'rgba(190,120,255,0.85)';
+  ctx.lineWidth = 1.8;
+  ctx.stroke();
+
+  // u_mf 竖线
+  ctx.setLineDash([3,3]);
+  ctx.beginPath();
+  ctx.moveTo(pxm, gy);
+  ctx.lineTo(pxm, gy+gh);
+  ctx.strokeStyle = 'rgba(255,200,70,0.55)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // 当前点
+  const cu = u;
+  let cdp;
+  if (cu <= U_MF) cdp = deltaP(cu);
+  else cdp = deltaP(U_MF);
+  const maxDp = deltaP(U_MF);
+  const cxp = gx + gw * cu/uMaxP;
+  const cyp = gy + gh - (cdp/maxDp) * gh * 0.88;
+
+  ctx.beginPath();
+  ctx.arc(cxp, cyp, 4.2, 0, TAU);
+  ctx.fillStyle = 'rgba(255,240,190,0.98)';
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(cxp, cyp, 9, 0, TAU);
+  ctx.strokeStyle = 'rgba(255,190,60,0.55)';
+  ctx.lineWidth = 1.6;
+  ctx.stroke();
+
+  // 标签
+  ctx.font = '9px "SF Mono",Consolas,monospace';
+  ctx.fillStyle = 'rgba(120,200,240,0.72)';
+  ctx.fillText('Δp', cx0+7, gy+8);
+  ctx.fillText('u', gx+gw-8, cy0+ch-6);
+  ctx.fillStyle = 'rgba(255,200,70,0.80)';
+  ctx.fillText('u_mf', pxm-11, cy0+ch-6);
+}
+
+/* ================================================================
+   渲染主流程
+================================================================ */
+function render(dt){
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  ctx.clearRect(0,0,W,H);
+
+  drawBackground();
+  drawColumn();
+
+  updateParticlePositions();
+
+  drawJets();
+  drawParticles();
+  drawBubbles();
+  drawSplashes();
+  drawSurfaceGlow();
+  drawMagnifier();
+  drawChart();
+
+  if (vignette){
+    ctx.fillStyle = vignette;
+    ctx.fillRect(0,0,W,H);
+  }
+
+  // 循环淡出
+  if (t > CYCLE - 1.6){
+    const a = (t - (CYCLE-1.6)) / 1.6;
+    ctx.fillStyle = 'rgba(2,4,9,'+ (a*0.95).toFixed(3) +')';
+    ctx.fillRect(0,0,W,H);
+  }
+}
+
+/* ================================================================
+   HUD 更新
+================================================================ */
+const elUv  = document.getElementById('uv');
+const elRate= document.getElementById('rate');
+const elWarn= document.getElementById('warn');
+let hudAcc = 0;
+let dragging = false;
+
+function updateHUD(dt){
+  hudAcc += dt;
+  if (hudAcc < 0.05) return;
+  hudAcc = 0;
+
+  elUv.textContent = u.toFixed(2) + ' cm/s';
+  if (!dragging) elRate.value = u.toFixed(2);
+
+  const near = Math.abs(u - U_MF) < 1.6;
+  elWarn.style.boxShadow = near
+    ? 'inset 0 0 160px rgba(255,180,40,'+ (0.20 + 0.16*Math.sin(t*8)).toFixed(3) +')'
+    : 'inset 0 0 140px rgba(255,180,40,0)';
+}
+
+/* ================================================================
+   交互
+================================================================ */
+cv.addEventListener('pointerdown', function(e){
+  const mx = e.clientX, my = e.clientY;
+  let best = null, bestScore = Infinity;
+  for (let i=0;i<bubbles.length;i++){
+    const b = bubbles[i];
+    const d = Math.hypot(mx-b.x, my-b.y);
+    if (d < b.r + 26 && d < bestScore){ best = b; bestScore = d; }
+  }
+  if (best){
+    focusBub = best;
+  } else {
+    focusBub = null;
+  }
+});
+
+elRate.addEventListener('pointerdown', function(){ dragging = true; });
+elRate.addEventListener('pointerup',   function(){ dragging = false; });
+elRate.addEventListener('pointercancel', function(){ dragging = false; });
+elRate.addEventListener('input', function(){
+  const v = parseFloat(elRate.value);
+  t = uToTime(v);
+  u = v;
+  updateState();
+});
+
+window.addEventListener('resize', function(){
+  resize();
+  resetDynamic();
+});
+
+function resetDynamic(){
+  bubbles = [];
+  splashes = [];
+  focusBub = null;
+}
+
+/* ================================================================
+   主循环
+================================================================ */
+function loop(now){
+  requestAnimationFrame(loop);
+
+  if (!started){
+    started = true;
+    lastNow = now;
+    return;
+  }
+
+  let dt = (now - lastNow) / 1000;
+  lastNow = now;
+  if (dt > 0.05) dt = 0.05;
+  if (dt < 0) dt = 0;
+
+  t += dt;
+  if (t >= CYCLE){
+    t -= CYCLE;
+    resetDynamic();
+  }
+
+  updateState();
+  updateBubbles(dt);
+  updateSplashes(dt);
+  render(dt);
+  updateHUD(dt);
+}
+
+/* ================================================================
+   启动
+================================================================ */
+resize();
+updateState();
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>
