@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>流体力学 · Fluid Mechanics</title>
+<style>
+  html,body{
+    margin:0;padding:0;height:100%;overflow:hidden;
+    background:#02040c;
+    font-family:"Microsoft YaHei","PingFang SC","Helvetica Neue",sans-serif;
+    cursor:grab;
+  }
+  html:active{cursor:grabbing;}
+  canvas{display:block;position:fixed;inset:0;}
+
+  #caption{
+    position:fixed;top:26px;left:50%;transform:translateX(-50%);
+    color:#eafcff;font-size:clamp(14px,1.5vw,24px);
+    letter-spacing:3px;font-weight:500;
+    white-space:nowrap;pointer-events:none;
+    text-shadow:
+      0 0 12px rgba(45,212,191,.95),
+      0 0 34px rgba(56,189,248,.65),
+      0 0 72px rgba(168,85,247,.42);
+    transition:opacity .4s ease;
+    z-index:10;
+  }
+
+  .fx{
+    position:fixed;color:#5eead4;font-size:14px;letter-spacing:1px;
+    font-family:"Cambria Math","Times New Roman",Georgia,serif;
+    text-shadow:0 0 10px rgba(20,184,166,.9),0 0 26px rgba(20,184,166,.45);
+    pointer-events:none;opacity:.82;white-space:nowrap;z-index:10;
+  }
+  #fx1{top:110px;left:30px;}
+  #fx2{bottom:110px;left:30px;}
+  #fx3{top:110px;right:30px;text-align:right;}
+  #fx4{bottom:110px;right:30px;text-align:right;
+       color:#f0abfc;text-shadow:0 0 10px rgba(232,121,249,.95),0 0 26px rgba(192,38,211,.5);}
+
+  #hud{
+    position:fixed;bottom:40px;left:50%;transform:translateX(-50%);
+    color:#7dd3fc;font-size:13px;letter-spacing:2px;opacity:.72;
+    pointer-events:none;white-space:nowrap;
+    text-shadow:0 0 12px rgba(56,189,248,.85);
+    font-family:"Consolas","Courier New",monospace;z-index:10;
+  }
+  #hud b{color:#a5f3fc;font-weight:600;}
+  #hud i{font-style:normal;color:#f0abfc;}
+
+  .corner{
+    position:fixed;width:54px;height:54px;pointer-events:none;opacity:.45;z-index:9;
+    border-color:#22d3ee;
+  }
+  .c1{top:16px;left:16px;border-top:1px solid;border-left:1px solid;}
+  .c2{top:16px;right:16px;border-top:1px solid;border-right:1px solid;}
+  .c3{bottom:16px;left:16px;border-bottom:1px solid;border-left:1px solid;}
+  .c4{bottom:16px;right:16px;border-bottom:1px solid;border-right:1px solid;}
+
+  #vignette{
+    position:fixed;inset:0;pointer-events:none;z-index:5;
+    background:radial-gradient(ellipse at 50% 52%,rgba(0,0,0,0) 42%,rgba(0,0,0,.68) 100%);
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="vignette"></div>
+
+<div id="caption"></div>
+
+<div class="fx" id="fx1">ρ(∂v/∂t + v·∇v) = −∇p + μ∇²v + ρg</div>
+<div class="fx" id="fx2">∇ · v = 0</div>
+<div class="fx" id="fx3">Re = ρvL / μ &nbsp;&nbsp; Re<sub>c</sub> ≈ 2300</div>
+<div class="fx" id="fx4">δ ≈ 5x / √Re<sub>x</sub> &nbsp;&nbsp; p + ½ρv² + ρgh = C</div>
+
+<div class="corner c1"></div>
+<div class="corner c2"></div>
+<div class="corner c3"></div>
+<div class="corner c4"></div>
+
+<div id="hud"></div>
+
+<script>
+/* ==========================================================
+   流体力学 3D 粒子流场动画
+   ========================================================== */
+const canvas   = document.getElementById('c');
+const ctx      = canvas.getContext('2d');
+const captionEl= document.getElementById('caption');
+const hudEl    = document.getElementById('hud');
+
+let W=0, H=0, DPR=1;
+function resize(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width  = Math.floor(W*DPR);
+  canvas.height = Math.floor(H*DPR);
+  canvas.style.width = W+'px';
+  canvas.style.height= H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+}
+window.addEventListener('resize', resize);
+resize();
+
+const clamp=(v,a,b)=>v<a?a:(v>b?b:v);
+const lerp =(a,b,t)=>a+(b-a)*t;
+
+/* ---------------- 相机 ---------------- */
+let userYaw   = -0.62;
+let userPitch = 0.40;
+let camDist   = 118;
+const FOCAL   = 1400;
+
+let camYaw=userYaw, camPitch=userPitch;
+let SCX=0, SCY=0;
+let focusX=0, focusY=0, focusZ=0;
+
+function project(x,y,z){
+  const dx=x-focusX, dy=y-focusY, dz=z-focusZ;
+  const cy=Math.cos(camYaw), sy=Math.sin(camYaw);
+  const X1 =  dx*cy + dz*sy;
+  const Z1 = -dx*sy + dz*cy;
+  const cp=Math.cos(camPitch), sp=Math.sin(camPitch);
+  const Y2 = dy*cp - Z1*sp;
+  const Z2 = dy*sp + Z1*cp;
+  const zc = Z2 + camDist;
+  if (zc < 6) return null;
+  const f = FOCAL/zc;
+  return { x: SCX + X1*f, y: SCY - Y2*f, zc: zc, f: f };
+}
+
+/* ---------------- 场景尺寸 ---------------- */
+const TUN_X0=-42, TUN_X1=42;
+const TUN_Y0=-18, TUN_Y1= 18;
+const TUN_Z0=-18, TUN_Z1= 18;
+
+const CYL_R   = 5.0;
+const CYL_Z0  = -15;
+const CYL_Z1  =  15;
+
+const U0 = 22;               // 来流速度
+
+/* ---------------- 雷诺数档位 ---------------- */
+const RE_LEVELS = [
+  { re:'100',    name:'层流 Laminar',    gen:0.0, gamma:0,   noise:0.00, hueShift: 0 },
+  { re:'2300',   name:'临界 Re_c',       gen:0.9, gamma:170, noise:0.07, hueShift: 20 },
+  { re:'2×10⁴',  name:'湍流 Turbulent',  gen:1.7, gamma:310, noise:0.32, hueShift: 55 },
+  { re:'2×10⁵',  name:'强湍流',          gen:2.4, gamma:420, noise:0.85, hueShift: 95 }
+];
+let reIdx = 1;
+
+/* ==========================================================
+   粒子
+   ========================================================== */
+const N_PART = 760;
+const particles = [];
+
+function respawn(p){
+  p.x = TUN_X0 - 2 + Math.random()*3;
+  p.y = (Math.random()*2-1) * (TUN_Y1-1.5);
+  p.z = (Math.random()*2-1) * (TUN_Z1-1.5);
+  p.px=p.x; p.py=p.y; p.pz=p.z;
+  p.seed = Math.random();
+  p.spd  = U0;
+}
+
+for (let i=0;i<N_PART;i++){
+  const p = {};
+  respawn(p);
+  p.x = TUN_X0 + Math.random()*(TUN_X1-TUN_X0);
+  p.px=p.x;
+  particles.push(p);
+}
+
+/* ==========================================================
+   涡旋（卡门涡街）
+   ========================================================== */
+const vortices = [];
+let vortexTimer = 0;
+let vortexSide  = 1;
+
+function updateVortices(dt){
+  const lv = RE_LEVELS[reIdx];
+
+  if (lv.gen > 0){
+    vortexTimer -= dt * lv.gen;
+    if (vortexTimer <= 0){
+      vortexTimer = 0.40;
+      vortexSide = -vortexSide;
+      vortices.push({
+        x: CYL_R*1.6,
+        y: vortexSide * CYL_R * 0.85,
+        s: vortexSide,
+        gamma: lv.gamma,
+        life: 1.0,
+        age: 0
+      });
+    }
+  }
+
+  for (let i=vortices.length-1;i>=0;i--){
+    const v = vortices[i];
+    v.x += U0 * 0.76 * dt;
+    v.y += v.s * 1.1 * dt;
+    v.age += dt;
+    v.life -= dt * 0.26;
+    if (v.x > 54 || v.life <= 0) vortices.splice(i,1);
+  }
+}
+
+/* ==========================================================
+   速度场
+   ========================================================== */
+function fieldVelocity(x, y, t, lv){
+  const R = CYL_R;
+  const r2 = x*x + y*y;
+  let vx = U0, vy = 0, vz = 0;
+
+  if (r2 > R*R*0.97){
+    const r4 = r2*r2;
+    const R2 = R*R;
+    vx = U0 * (1 - R2*(x*x - y*y)/r4);
+    vy = U0 * (-2*R2*x*y/r4);
+  } else {
+    const r = Math.sqrt(r2) || 0.001;
+    const s = (R*1.06)/r;
+    x *= s; y *= s;
+    vx = U0*0.25; vy = 0;
+  }
+
+  // 涡旋诱导
+  for (let k=0;k<vortices.length;k++){
+    const v = vortices[k];
+    const dx = x - v.x, dy = y - v.y;
+    const d2 = dx*dx + dy*dy + 9;
+    const g  = v.s * v.gamma * v.life;
+    vx += -g * dy / d2 * 0.159;
+    vy +=  g * dx / d2 * 0.159;
+  }
+
+  // 湍流脉动
+  if (lv.noise > 0){
+    const ns = lv.noise;
+    vx += Math.sin(x*0.28 + t*2.1) * Math.cos(y*0.21 - t*1.6) * 15 * ns;
+    vy += Math.cos(y*0.26 - t*1.9) * Math.sin(x*0.31 + t*2.4) * 15 * ns;
+    vz += Math.sin(x*0.19 - t*1.4) * Math.cos(y*0.33 + t*2.0) * 10 * ns;
+  }
+  return { vx, vy, vz, nx:x, ny:y };
+}
+
+function updateParticles(dt, t){
+  const lv = RE_LEVELS[reIdx];
+
+  for (let i=0;i<particles.length;i++){
+    const p = particles[i];
+    p.px=p.x; p.py=p.y; p.pz=p.z;
+
+    let { vx, vy, vz } = fieldVelocity(p.x, p.y, t, lv);
+
+    // 防止卡在圆柱内部
+    const r = Math.sqrt(p.x*p.x + p.y*p.y);
+    if (r < CYL_R*1.02){
+      const s = (CYL_R*1.08)/Math.max(r,0.001);
+      p.x *= s; p.y *= s;
+    }
+
+    p.x += vx*dt;
+    p.y += vy*dt;
+    p.z += vz*dt;
+    p.spd = Math.sqrt(vx*vx + vy*vy + vz*vz);
+
+    if (p.x > TUN_X1+3 || Math.abs(p.y) > TUN_Y1+3 || Math.abs(p.z) > TUN_Z1+3){
+      respawn(p);
+    }
+  }
+}
+
+/* ==========================================================
+   绘制：风洞框
+   ========================================================== */
+function drawTunnel(){
+  const c = [
+    [[TUN_X0,TUN_Y0,TUN_Z0],[TUN_X1,TUN_Y0,TUN_Z0],[TUN_X1,TUN_Y0,TUN_Z1],[TUN_X0,TUN_Y0,TUN_Z1]],
+    [[TUN_X0,TUN_Y1,TUN_Z0],[TUN_X1,TUN_Y1,TUN_Z0],[TUN_X1,TUN_Y1,TUN_Z1],[TUN_X0,TUN_Y1,TUN_Z1]]
+  ];
+  // 下底、上底
+  for (let k=0;k<2;k++){
+    const q = c[k].map(p=>project(p[0],p[1],p[2]));
+    if (q.some(v=>!v)) continue;
+    ctx.beginPath();
+    ctx.moveTo(q[0].x,q[0].y);
+    for (let i=1;i<4;i++) ctx.lineTo(q[i].x,q[i].y);
+    ctx.closePath();
+    ctx.fillStyle = k===0 ? 'rgba(20,60,110,0.16)' : 'rgba(20,60,110,0.05)';
+    ctx.fill();
+  }
+
+  // 12 条边
+  const edges = [
+    [[TUN_X0,TUN_Y0,TUN_Z0],[TUN_X1,TUN_Y0,TUN_Z0]],
+    [[TUN_X1,TUN_Y0,TUN_Z0],[TUN_X1,TUN_Y1,TUN_Z0]],
+    [[TUN_X1,TUN_Y1,TUN_Z0],[TUN_X0,TUN_Y1,TUN_Z0]],
+    [[TUN_X0,TUN_Y1,TUN_Z0],[TUN_X0,TUN_Y0,TUN_Z0]],
+
+    [[TUN_X0,TUN_Y0,TUN_Z1],[TUN_X1,TUN_Y0,TUN_Z1]],
+    [[TUN_X1,TUN_Y0,TUN_Z1],[TUN_X1,TUN_Y1,TUN_Z1]],
+    [[TUN_X1,TUN_Y1,TUN_Z1],[TUN_X0,TUN_Y1,TUN_Z1]],
+    [[TUN_X0,TUN_Y1,TUN_Z1],[TUN_X0,TUN_Y0,TUN_Z1]],
+
+    [[TUN_X0,TUN_Y0,TUN_Z0],[TUN_X0,TUN_Y0,TUN_Z1]],
+    [[TUN_X1,TUN_Y0,TUN_Z0],[TUN_X1,TUN_Y0,TUN_Z1]],
+    [[TUN_X1,TUN_Y1,TUN_Z0],[TUN_X1,TUN_Y1,TUN_Z1]],
+    [[TUN_X0,TUN_Y1,TUN_Z0],[TUN_X0,TUN_Y1,TUN_Z1]]
+  ];
+
+  ctx.lineWidth = 1;
+  for (const e of edges){
+    const a = project(e[0][0],e[0][1],e[0][2]);
+    const b = project(e[1][0],e[1][1],e[1][2]);
+    if (!a||!b) continue;
+    ctx.beginPath();
+    ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y);
+    ctx.strokeStyle = 'rgba(45,180,220,0.16)';
+    ctx.stroke();
+  }
+
+  // 来流入口剖面网格
+  ctx.strokeStyle = 'rgba(80,200,255,0.09)';
+  for (let y=TUN_Y0; y<=TUN_Y1; y+=6){
+    const a = project(TUN_X0,y,TUN_Z0), b = project(TUN_X0,y,TUN_Z1);
+    if (a&&b){ ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke(); }
+  }
+  for (let z=TUN_Z0; z<=TUN_Z1; z+=6){
+    const a = project(TUN_X0,TUN_Y0,z), b = project(TUN_X0,TUN_Y1,z);
+    if (a&&b){ ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke(); }
+  }
+}
+
+/* ==========================================================
+   绘制：圆柱（玻璃质感）
+   ========================================================== */
+const CYL_SEG = 44;
+function cylCircle(z){
+  const arr = [];
+  for (let i=0;i<CYL_SEG;i++){
+    const a = i/CYL_SEG * Math.PI*2;
+    arr.push(project(CYL_R*Math.cos(a), CYL_R*Math.sin(a), z));
+  }
+  return arr;
+}
+
+function drawCylinderFill(){
+  const pf = cylCircle(CYL_Z1);
+  const pb = cylCircle(CYL_Z0);
+  for (let i=0;i<CYL_SEG;i++){
+    const j = (i+1)%CYL_SEG;
+    const A=pf[i],B=pf[j],C=pb[j],D=pb[i];
+    if (!A||!B||!C||!D) continue;
+    ctx.beginPath();
+    ctx.moveTo(A.x,A.y); ctx.lineTo(B.x,B.y);
+    ctx.lineTo(C.x,C.y); ctx.lineTo(D.x,D.y);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(120,200,255,0.045)';
+    ctx.fill();
+  }
+  // 端面
+  for (const circ of [pf,pb]){
+    if (circ.some(v=>!v)) continue;
+    ctx.beginPath();
+    ctx.moveTo(circ[0].x,circ[0].y);
+    for (let i=1;i<CYL_SEG;i++) ctx.lineTo(circ[i].x,circ[i].y);
+    ctx.closePath();
+    ctx.fillStyle='rgba(150,225,255,0.07)';
+    ctx.fill();
+  }
+}
+
+function drawCylinderStroke(){
+  const pf = cylCircle(CYL_Z1);
+  const pb = cylCircle(CYL_Z0);
+  ctx.lineWidth = 1.3;
+  for (const circ of [pf,pb]){
+    if (circ.some(v=>!v)) continue;
+    ctx.beginPath();
+    ctx.moveTo(circ[0].x,circ[0].y);
+    for (let i=1;i<CYL_SEG;i++) ctx.lineTo(circ[i].x,circ[i].y);
+    ctx.closePath();
+    ctx.strokeStyle = 'rgba(140,240,255,0.55)';
+    ctx.stroke();
+  }
+  // 纵向母线
+  ctx.strokeStyle = 'rgba(120,220,255,0.22)';
+  ctx.lineWidth = 1;
+  for (let i=0;i<CYL_SEG;i+=4){
+    const A=pf[i], B=pb[i];
+    if (!A||!B) continue;
+    ctx.beginPath(); ctx.moveTo(A.x,A.y); ctx.lineTo(B.x,B.y); ctx.stroke();
+  }
+}
+
+/* ==========================================================
+   绘制：粒子流线
+   ========================================================== */
+function drawParticles(){
+  const lv = RE_LEVELS[reIdx];
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap = 'round';
+
+  for (let i=0;i<particles.length;i++){
+    const p = particles[i];
+    const a = project(p.px, p.py, p.pz);
+    const b = project(p.x,  p.y,  p.z);
+    if (!a || !b) continue;
+
+    const dx = b.x-a.x, dy = b.y-a.y;
+    const d2 = dx*dx + dy*dy;
+    if (d2 < 0.05) continue;
+    if (d2 > 4000) continue;      // 跨屏跳变，跳过
+
+    // 速度归一化 → 颜色
+    const tn = clamp(p.spd / (U0*2.3), 0, 1);
+    const hue = 296 - 122*tn + lv.hueShift*0.35;
+    const lum = 52 + 26*tn;
+    const alpha = 0.16 + 0.42*tn;
+
+    const depthFade = clamp(1.6 - b.zc/ (camDist+70), 0.35, 1.0);
+
+    ctx.strokeStyle = 'hsla(' + hue.toFixed(0) + ',100%,' + lum.toFixed(0) + '%,' +
+                      (alpha*depthFade).toFixed(3) + ')';
+    ctx.lineWidth = clamp(0.8 + 1.6*b.f/12, 0.7, 2.6);
+
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ==========================================================
+   绘制：涡旋
+   ========================================================== */
+function drawVortices(){
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i=0;i<vortices.length;i++){
+    const v = vortices[i];
+    const p = project(v.x, v.y, 0);
+    if (!p) continue;
+
+    const rad = Math.max(6, 4.2 * p.f * (0.55 + v.life*0.55));
+    const pos = v.s > 0;
+    const col = pos ? '90,255,215' : '250,110,255';
+
+    const g = ctx.createRadialGradient(p.x,p.y,0,p.x,p.y,rad);
+    g.addColorStop(0.00, 'rgba('+col+',0)');
+    g.addColorStop(0.45, 'rgba('+col+','+(0.30*v.life).toFixed(3)+')');
+    g.addColorStop(0.78, 'rgba('+col+','+(0.42*v.life).toFixed(3)+')');
+    g.addColorStop(1.00, 'rgba('+col+',0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(p.x,p.y,rad,0,6.2832); ctx.fill();
+
+    // 旋转弧线
+    const spin = v.age * 4.2 * v.s;
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = 'rgba('+col+','+(0.75*v.life).toFixed(3)+')';
+    ctx.beginPath();
+    ctx.arc(p.x,p.y, rad*0.60, spin, spin+2.2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(p.x,p.y, rad*0.60, spin+Math.PI, spin+Math.PI+1.5);
+    ctx.stroke();
+
+    // 核心
+    ctx.fillStyle = 'rgba(255,255,255,'+(0.55*v.life).toFixed(3)+')';
+    ctx.beginPath(); ctx.arc(p.x,p.y, Math.max(1,rad*0.10),0,6.2832); ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ==========================================================
+   绘制：边界层
+   ========================================================== */
+function deltaBL(x){
+  const xl = Math.max(0, x - TUN_X0);
+  return Math.min(3.4, 0.30 * Math.sqrt(xl));
+}
+
+function drawBoundaryLayer(){
+  const lv = RE_LEVELS[reIdx];
+  const zPlane = TUN_Z1;      // 靠近观察者的下壁面
+
+  ctx.globalCompositeOperation = 'lighter';
+  for (let x = TUN_X0+1; x < TUN_X1-1; x += 1.8){
+    const d = deltaBL(x);
+    if (d < 0.05) continue;
+    const a = project(x, TUN_Y0, zPlane);
+    const b = project(x, TUN_Y0 + d, zPlane);
+    if (!a||!b) continue;
+
+    const tn = clamp(d/3.4, 0, 1);
+    const hue = 178 + 96*tn + lv.hueShift*0.3;
+    ctx.strokeStyle = 'hsla(' + hue.toFixed(0) + ',100%,62%,' + (0.10+0.28*tn).toFixed(3) + ')';
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.moveTo(a.x,a.y);
+    ctx.lineTo(b.x,b.y);
+    ctx.stroke();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ==========================================================
+   顶部文字
+   ========================================================== */
+const CAPTIONS = [
+  '流体力学揭示了看似简单的流动背后蕴藏极复杂的非线性规律',
+  '从飞机飞行到血液流动皆遵循统一规律，理解基本物理规律',
+  '方能驾驭复杂系统，看似无序中仍蕴含可循的秩序',
+  '层流与湍流之间，只隔着一道临界雷诺数的门槛'
+];
+const CYCLE = 30;
+let capIdx = -1;
+
+function updateCaption(t){
+  const segDur = CYCLE / CAPTIONS.length;
+  let i = Math.floor(t / segDur);
+  if (i >= CAPTIONS.length) i = CAPTIONS.length - 1;
+  const lt = t - i*segDur;
+
+  if (i !== capIdx){
+    capIdx = i;
+    captionEl.textContent = CAPTIONS[i];
+  }
+  const fade = 0.75;
+  let op = 1;
+  if (lt < fade) op = lt/fade;
+  else if (lt > segDur - fade) op = Math.max(0,(segDur-lt)/fade);
+  captionEl.style.opacity = clamp(op,0,1).toFixed(3);
+}
+
+/* ==========================================================
+   渲染
+   ========================================================== */
+let lastTime = 0;
+let tAcc = 0;
+
+function render(t){
+  SCX = W*0.5;
+  SCY = H*0.545;
+
+  camYaw   = userYaw   + 0.055*Math.sin(t*0.30);
+  camPitch = userPitch;
+
+  focusX = 0; focusY = 0; focusZ = 0;
+
+  /* ---- 背景 ---- */
+  ctx.globalCompositeOperation = 'source-over';
+  const bg = ctx.createLinearGradient(0,0,0,H);
+  bg.addColorStop(0,'#04061a');
+  bg.addColorStop(0.5,'#02040c');
+  bg.addColorStop(1,'#050312');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0,0,W,H);
+
+  const rg = ctx.createRadialGradient(SCX, SCY, 0, SCX, SCY, Math.max(W,H)*0.72);
+  rg.addColorStop(0,'rgba(20,70,130,0.42)');
+  rg.addColorStop(0.5,'rgba(50,20,90,0.16)');
+  rg.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle = rg;
+  ctx.fillRect(0,0,W,H);
+
+  /* ---- 几何 ---- */
+  drawTunnel();
+  drawCylinderFill();
+
+  /* ---- 粒子 ---- */
+  drawParticles();
+
+  /* ---- 涡旋 ---- */
+  drawVortices();
+
+  /* ---- 圆柱描边（玻璃层） ---- */
+  drawCylinderStroke();
+
+  /* ---- 边界层 ---- */
+  drawBoundaryLayer();
+
+  /* ---- 文字 ---- */
+  updateCaption(t);
+
+  /* ---- HUD ---- */
+  const lv = RE_LEVELS[reIdx];
+  hudEl.innerHTML =
+    'Re = <b>' + lv.re + '</b> &nbsp;|&nbsp; ' +
+    '流态：<i>' + lv.name + '</i> &nbsp;|&nbsp; ' +
+    '来流 v = <b>' + U0 + '</b> &nbsp;|&nbsp; ' +
+    '涡脱落：<b>' + (lv.gen>0 ? '卡门涡街' : '无') + '</b> &nbsp;|&nbsp; ' +
+    '拖动旋转 · 滚轮缩放 · 点击切换 Re';
+}
+
+/* ==========================================================
+   主循环
+   ========================================================== */
+function frame(now){
+  if (!lastTime) lastTime = now;
+  let dt = (now - lastTime)/1000;
+  lastTime = now;
+  if (dt > 0.05) dt = 0.05;
+  if (dt <= 0) dt = 1/60;
+
+  // 固定步长积分，最多 3 个子步
+  const steps = Math.min(3, Math.max(1, Math.round(dt/(1/60))));
+  const h = dt/steps;
+
+  tAcc += dt;
+  const tLoop = tAcc % CYCLE;
+
+  for (let s=0;s<steps;s++){
+    updateVortices(h);
+    updateParticles(h, tLoop);
+  }
+
+  render(tLoop);
+  requestAnimationFrame(frame);
+}
+
+/* ==========================================================
+   交互
+   ========================================================== */
+let dragging=false, lastMX=0, lastMY=0, dragDist=0;
+
+canvas.addEventListener('mousedown', e=>{
+  dragging=true; dragDist=0;
+  lastMX=e.clientX; lastMY=e.clientY;
+});
+window.addEventListener('mousemove', e=>{
+  if (!dragging) return;
+  const dx=e.clientX-lastMX, dy=e.clientY-lastMY;
+  lastMX=e.clientX; lastMY=e.clientY;
+  dragDist += Math.abs(dx)+Math.abs(dy);
+  userYaw   += dx*0.006;
+  userPitch  = clamp(userPitch + dy*0.005, -0.35, 1.25);
+});
+window.addEventListener('mouseup', ()=>{
+  if (dragging && dragDist < 6){
+    reIdx = (reIdx+1) % RE_LEVELS.length;
+    // 切换流态时清空涡旋，重新演化
+    vortices.length = 0;
+    vortexTimer = 0;
+  }
+  dragging=false;
+});
+
+canvas.addEventListener('wheel', e=>{
+  e.preventDefault();
+  camDist = clamp(camDist + e.deltaY*0.07, 42, 220);
+},{ passive:false });
+
+// 触摸
+canvas.addEventListener('touchstart', e=>{
+  if (e.touches.length===1){
+    dragging=true; dragDist=0;
+    lastMX=e.touches[0].clientX;
+    lastMY=e.touches[0].clientY;
+  }
+},{ passive:true });
+
+canvas.addEventListener('touchmove', e=>{
+  if (!dragging || e.touches.length!==1) return;
+  const t0=e.touches[0];
+  const dx=t0.clientX-lastMX, dy=t0.clientY-lastMY;
+  lastMX=t0.clientX; lastMY=t0.clientY;
+  dragDist += Math.abs(dx)+Math.abs(dy);
+  userYaw   += dx*0.008;
+  userPitch  = clamp(userPitch + dy*0.006, -0.35, 1.25);
+},{ passive:true });
+
+canvas.addEventListener('touchend', ()=>{
+  if (dragging && dragDist<7){
+    reIdx=(reIdx+1)%RE_LEVELS.length;
+    vortices.length=0;
+    vortexTimer=0;
+  }
+  dragging=false;
+},{ passive:true });
+
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

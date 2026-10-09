@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>卡尔曼滤波 · 状态估计</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; overflow:hidden; }
+  body {
+    font-family: "PingFang SC","Microsoft YaHei","Helvetica Neue",Arial,sans-serif;
+    background: #050a18;
+  }
+  canvas { display:block; }
+
+  /* 顶部文字 */
+  #topText {
+    position:fixed; top:18px; left:50%; transform:translateX(-50%);
+    width:min(82vw,1060px);
+    min-height:2.4em;
+    text-align:center;
+    color:#cfe4ff;
+    font-size:clamp(13px,1.5vw,19.5px);
+    letter-spacing:.07em;
+    line-height:1.75;
+    font-weight:400;
+    text-shadow:0 0 16px rgba(90,190,255,.65),
+                0 0 44px rgba(40,140,255,.32);
+    pointer-events:none;
+    z-index:10;
+  }
+  #topText::after {
+    content:'';
+    display:inline-block;
+    width:2px; height:.95em;
+    background:#54e6c0;
+    margin-left:5px;
+    vertical-align:-.12em;
+    box-shadow:0 0 9px #54e6c0;
+    animation:blink 1.1s steps(2) infinite;
+  }
+  @keyframes blink { 50%{opacity:0;} }
+
+  /* 边缘公式 */
+  .formula {
+    position:fixed;
+    font-family:"Cambria Math","Times New Roman",Georgia,serif;
+    color:rgba(140,200,255,.5);
+    font-size:clamp(11px,1.02vw,15.5px);
+    letter-spacing:.05em;
+    pointer-events:none;
+    z-index:10;
+    text-shadow:0 0 14px rgba(70,150,255,.55);
+    white-space:nowrap;
+  }
+  .f-tl { top:96px;  left:24px; }
+  .f-tr { top:96px;  right:24px; text-align:right; }
+  .f-bl { bottom:42px; left:24px; }
+
+  /* 控制面板 */
+  #panel {
+    position:fixed; right:24px; bottom:42px;
+    width:224px;
+    padding:13px 15px 10px;
+    background:rgba(10,20,42,.5);
+    border:1px solid rgba(80,160,255,.22);
+    border-radius:11px;
+    backdrop-filter:blur(7px);
+    -webkit-backdrop-filter:blur(7px);
+    color:#95b2dd;
+    font-size:12px;
+    z-index:20;
+    box-shadow:0 6px 30px rgba(0,0,0,.5),
+               inset 0 0 22px rgba(60,130,255,.07);
+  }
+  #panel .row {
+    display:grid;
+    grid-template-columns:1fr auto;
+    align-items:center;
+    gap:4px 8px;
+    margin-bottom:11px;
+  }
+  #panel .row label { grid-column:1/3; letter-spacing:.05em; }
+  #panel .row .val {
+    font-family:"Cambria Math",Georgia,serif;
+    color:#7dffcf;
+    font-size:12px;
+    min-width:38px;
+    text-align:right;
+  }
+  input[type=range] {
+    -webkit-appearance:none; appearance:none;
+    width:100%; height:3px; border-radius:3px;
+    background:linear-gradient(90deg,#2fd8b0,#4a7dff);
+    outline:none; cursor:pointer;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance:none;
+    width:13px; height:13px; border-radius:50%;
+    background:#c8fff0;
+    box-shadow:0 0 10px rgba(60,255,200,.85);
+    cursor:pointer;
+  }
+  input[type=range]::-moz-range-thumb {
+    width:13px; height:13px; border:none; border-radius:50%;
+    background:#c8fff0;
+    box-shadow:0 0 10px rgba(60,255,200,.85);
+    cursor:pointer;
+  }
+  #panel .hint {
+    text-align:center;
+    font-size:10.5px;
+    color:rgba(130,170,215,.5);
+    letter-spacing:.1em;
+    margin-top:2px;
+  }
+</style>
+</head>
+<body>
+
+<div id="topText"></div>
+
+<div class="formula f-tl">x̂ₖ = A · x̂ₖ₋₁ + B · uₖ</div>
+<div class="formula f-tr">Kₖ = Pₖ⁻Hᵀ ( H Pₖ⁻Hᵀ + R )⁻¹</div>
+<div class="formula f-bl">Pₖ = ( I − Kₖ H ) Pₖ⁻　　Pₖ⁻ = A Pₖ₋₁ Aᵀ + Q</div>
+
+<div id="panel">
+  <div class="row">
+    <label>过程噪声 Q</label>
+    <input id="sQ" type="range" min="0.006" max="0.16" step="0.002" value="0.030">
+    <span class="val" id="vQ">0.030</span>
+  </div>
+  <div class="row">
+    <label>测量噪声 R</label>
+    <input id="sR" type="range" min="0.03" max="2.00" step="0.01" value="0.50">
+    <span class="val" id="vR">0.50</span>
+  </div>
+  <div class="hint">拖拽旋转视角</div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================================================
+   渲染器 / 场景 / 相机
+   ============================================================ */
+const renderer = new THREE.WebGLRenderer({ antialias:true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.setClearColor(0x050a18, 1);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x050a18, 0.0075);
+
+const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 0.1, 900);
+camera.position.set(15, 12, 19);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 3.0, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.5;
+controls.enablePan = false;
+controls.minDistance = 8;
+controls.maxDistance = 65;
+controls.maxPolarAngle = Math.PI * 0.58;
+
+/* ============================================================
+   工具
+   ============================================================ */
+function createSpriteTexture(){
+  const s = 128;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = s;
+  const ctx = cv.getContext('2d');
+  const g = ctx.createRadialGradient(s/2, s/2, 0, s/2, s/2, s/2);
+  g.addColorStop(0.00,'rgba(255,255,255,1)');
+  g.addColorStop(0.20,'rgba(255,255,255,0.75)');
+  g.addColorStop(0.50,'rgba(255,255,255,0.20)');
+  g.addColorStop(1.00,'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0,0,s,s);
+  const t = new THREE.CanvasTexture(cv);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+const SPRITE = createSpriteTexture();
+
+function gauss(){
+  let u = 0, v = 0;
+  while (u === 0) u = Math.random();
+  while (v === 0) v = Math.random();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+}
+
+/* ============================================================
+   目标运动路径
+   ============================================================ */
+function pathPoint(s){
+  const a = s * Math.PI * 2;
+  return {
+    x: 9.0 * Math.sin(a),
+    y: 3.2 + 1.9 * Math.sin(2*a + 0.6),
+    z: 6.5 * Math.cos(a)
+  };
+}
+
+/* ============================================================
+   常量与预计算缓冲区
+   ============================================================ */
+const DURATION   = 30;              // 动画总时长（秒）
+const FPS        = 60;
+const N          = DURATION * FPS;  // 1800 帧
+const DT         = 1 / FPS;
+const MEAS_EVERY = 12;              // 每 12 帧一次观测
+const K_MEAS     = Math.floor(N / MEAS_EVERY) + 1;   // 151
+
+const AXIS       = ['x','y','z'];
+const AXIS_Q     = [1.00, 0.55, 1.45];   // 各轴过程噪声权重（产生椭球各向异性）
+const ELL_SCALE  = 2.85;
+const TRAIL      = 5;               // 拖尾椭球数量
+
+const truthArr   = new Float32Array(N * 3);
+const estArr     = new Float32Array(N * 3);
+const radArr     = new Float32Array(N * 3);
+const measArr    = new Float32Array(K_MEAS * 3);
+
+let qVal = 0.030;
+let rVal = 0.50;
+
+/* ============================================================
+   卡尔曼滤波预计算
+   ============================================================ */
+function precompute(){
+  const st = [];
+  const t0 = pathPoint(0);
+  for (let a = 0; a < 3; a++){
+    st.push({
+      p   : t0[AXIS[a]] + (a === 1 ? 2.8 : 2.1),  // 故意偏离真实初值
+      v   : 0,
+      P00 : 1.40,
+      P01 : 0,
+      P11 : 0.60
+    });
+  }
+
+  let mi = 0;
+
+  for (let i = 0; i < N; i++){
+    const tp = pathPoint(i / N);
+
+    /* ---------- 预测 ---------- */
+    for (let a = 0; a < 3; a++){
+      const S = st[a];
+      S.p += S.v * DT;
+
+      const qa = qVal * AXIS_Q[a];
+      const P00 = S.P00 + 2*S.P01*DT + S.P11*DT*DT + qa;
+      const P01 = S.P01 + S.P11*DT;
+      const P11 = S.P11 + qa * 0.35;
+      S.P00 = P00; S.P01 = P01; S.P11 = P11;
+    }
+
+    /* ---------- 观测 + 校正 ---------- */
+    if (i % MEAS_EVERY === 0){
+      for (let a = 0; a < 3; a++){
+        const S = st[a];
+        const z = tp[AXIS[a]] + gauss() * Math.sqrt(rVal);
+        measArr[mi*3 + a] = z;
+
+        const Sm = S.P00 + rVal;
+        const K0 = S.P00 / Sm;
+        const K1 = S.P01 / Sm;
+        const y  = z - S.p;
+
+        S.p += K0 * y;
+        S.v += K1 * y;
+
+        const nP00 = (1 - K0) * S.P00;
+        const nP01 = (1 - K0) * S.P01;
+        const nP11 = S.P11 - K1 * S.P01;
+        S.P00 = nP00; S.P01 = nP01; S.P11 = nP11;
+      }
+      mi++;
+    }
+
+    /* ---------- 记录 ---------- */
+    truthArr[i*3    ] = tp.x;
+    truthArr[i*3 + 1] = tp.y;
+    truthArr[i*3 + 2] = tp.z;
+
+    estArr[i*3    ] = st[0].p;
+    estArr[i*3 + 1] = st[1].p;
+    estArr[i*3 + 2] = st[2].p;
+
+    radArr[i*3    ] = Math.sqrt(Math.max(st[0].P00, 1e-4));
+    radArr[i*3 + 1] = Math.sqrt(Math.max(st[1].P00, 1e-4));
+    radArr[i*3 + 2] = Math.sqrt(Math.max(st[2].P00, 1e-4));
+  }
+}
+precompute();
+
+/* ============================================================
+   星空背景
+   ============================================================ */
+(function buildStars(){
+  const COUNT = 900;
+  const pos = new Float32Array(COUNT * 3);
+  for (let i = 0; i < COUNT; i++){
+    const r  = 70 + Math.random() * 140;
+    const th = Math.random() * Math.PI * 2;
+    const ph = Math.acos(Math.random() * 2 - 1);
+    pos[i*3    ] = r * Math.sin(ph) * Math.cos(th);
+    pos[i*3 + 1] = r * Math.cos(ph) * 0.6 + 25;
+    pos[i*3 + 2] = r * Math.sin(ph) * Math.sin(th);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const m = new THREE.PointsMaterial({
+    size: 0.9, map: SPRITE, color: 0x8fb6ff,
+    transparent: true, opacity: 0.55,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+    sizeAttenuation: true
+  });
+  scene.add(new THREE.Points(g, m));
+})();
+
+/* ============================================================
+   真实轨迹（金色）
+   ============================================================ */
+const truthGeo = new THREE.BufferGeometry();
+truthGeo.setAttribute('position', new THREE.BufferAttribute(truthArr, 3));
+truthGeo.setDrawRange(0, 0);
+
+const truthLine = new THREE.Line(truthGeo, new THREE.LineBasicMaterial({
+  color: 0xffc94d, transparent: true, opacity: 0.70,
+  blending: THREE.AdditiveBlending, depthWrite: false
+}));
+truthLine.frustumCulled = false;
+truthLine.renderOrder = 3;
+scene.add(truthLine);
+
+const truthPoints = new THREE.Points(truthGeo, new THREE.PointsMaterial({
+  size: 0.26, map: SPRITE, color: 0xffd86b,
+  transparent: true, opacity: 0.95,
+  blending: THREE.AdditiveBlending, depthWrite: false,
+  sizeAttenuation: true
+}));
+truthPoints.frustumCulled = false;
+truthPoints.renderOrder = 4;
+scene.add(truthPoints);
+
+/* ============================================================
+   估计轨迹（青色）
+   ============================================================ */
+const estGeo = new THREE.BufferGeometry();
+estGeo.setAttribute('position', new THREE.BufferAttribute(estArr, 3));
+estGeo.setDrawRange(0, 0);
+
+const estLine = new THREE.Line(estGeo, new THREE.LineBasicMaterial({
+  color: 0x35e8ff, transparent: true, opacity: 0.78,
+  blending: THREE.AdditiveBlending, depthWrite: false
+}));
+estLine.frustumCulled = false;
+estLine.renderOrder = 5;
+scene.add(estLine);
+
+const estPoints = new THREE.Points(estGeo, new THREE.PointsMaterial({
+  size: 0.24, map: SPRITE, color: 0x7ef0ff,
+  transparent: true, opacity: 0.92,
+  blending: THREE.AdditiveBlending, depthWrite: false,
+  sizeAttenuation: true
+}));
+estPoints.frustumCulled = false;
+estPoints.renderOrder = 6;
+scene.add(estPoints);
+
+/* ============================================================
+   测量点（绿色）
+   ============================================================ */
+const measGeo = new THREE.BufferGeometry();
+measGeo.setAttribute('position', new THREE.BufferAttribute(measArr, 3));
+measGeo.setDrawRange(0, 0);
+
+const measPoints = new THREE.Points(measGeo, new THREE.PointsMaterial({
+  size: 0.42, map: SPRITE, color: 0x4dff9e,
+  transparent: true, opacity: 0.95,
+  blending: THREE.AdditiveBlending, depthWrite: false,
+  sizeAttenuation: true
+}));
+measPoints.frustumCulled = false;
+measPoints.renderOrder = 7;
+scene.add(measPoints);
+
+/* ============================================================
+   不确定性椭球（含拖尾束）
+   ============================================================ */
+const sphereGeo = new THREE.SphereGeometry(1, 30, 20);
+
+const ellipsoids = [];
+for (let k = 0; k < TRAIL; k++){
+  const fade = 1 - k / TRAIL * 0.78;
+
+  const solidMat = new THREE.MeshBasicMaterial({
+    color: 0x2fe8b0,
+    transparent: true,
+    opacity: 0.115 * fade,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    blending: THREE.NormalBlending
+  });
+  const wireMat = new THREE.MeshBasicMaterial({
+    color: 0x55ffd0,
+    transparent: true,
+    opacity: 0.26 * fade,
+    depthWrite: false,
+    wireframe: true,
+    blending: THREE.AdditiveBlending
+  });
+
+  const g = new THREE.Group();
+  const solid = new THREE.Mesh(sphereGeo, solidMat);
+  const wire  = new THREE.Mesh(sphereGeo, wireMat);
+  g.add(solid, wire);
+  g.renderOrder = 2;
+  scene.add(g);
+
+  ellipsoids.push({ group: g, solidMat, wireMat });
+}
+
+/* ============================================================
+   移动光点
+   ============================================================ */
+const truthGlow = new THREE.Sprite(new THREE.SpriteMaterial({
+  map: SPRITE, color: 0xffd76a,
+  transparent: true, opacity: 0.95,
+  blending: THREE.AdditiveBlending, depthWrite: false
+}));
+truthGlow.scale.set(3.4, 3.4, 1);
+truthGlow.renderOrder = 8;
+scene.add(truthGlow);
+
+const estGlow = new THREE.Sprite(new THREE.SpriteMaterial({
+  map: SPRITE, color: 0x66f2ff,
+  transparent: true, opacity: 0.85,
+  blending: THREE.AdditiveBlending, depthWrite: false
+}));
+estGlow.scale.set(2.6, 2.6, 1);
+estGlow.renderOrder = 8;
+scene.add(estGlow);
+
+/* ============================================================
+   顶部启示文字
+   ============================================================ */
+const FULL_TEXT = '卡尔曼滤波在含噪声观测中递归估计隐藏状态——最优融合预测与测量，启示我们在不确定数据中通过不断修正逼近真相的方法论。';
+const topTextEl = document.getElementById('topText');
+let lastShown = '';
+
+function smoothstep(a, b, x){
+  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+}
+
+function updateTopText(animT){
+  const prog = smoothstep(0.6, 27.5, animT);
+  const n = Math.floor(prog * FULL_TEXT.length);
+  const shown = FULL_TEXT.slice(0, n);
+  if (shown !== lastShown){
+    topTextEl.textContent = shown;
+    lastShown = shown;
+  }
+}
+
+/* ============================================================
+   滑块交互
+   ============================================================ */
+const sQEl = document.getElementById('sQ');
+const sREl = document.getElementById('sR');
+const vQEl = document.getElementById('vQ');
+const vREl = document.getElementById('vR');
+
+function rebuild(){
+  precompute();
+  truthGeo.attributes.position.needsUpdate = true;
+  estGeo.attributes.position.needsUpdate = true;
+  measGeo.attributes.position.needsUpdate = true;
+}
+
+sQEl.addEventListener('input', e => {
+  qVal = parseFloat(e.target.value);
+  vQEl.textContent = qVal.toFixed(3);
+  rebuild();
+});
+sREl.addEventListener('input', e => {
+  rVal = parseFloat(e.target.value);
+  vREl.textContent = rVal.toFixed(2);
+  rebuild();
+});
+
+/* ============================================================
+   椭球更新
+   ============================================================ */
+function updateEllipsoids(i, time){
+  const pulse = 1 + 0.045 * Math.sin(time * 3.1);
+
+  for (let k = 0; k < TRAIL; k++){
+    const idx = i - k * 15;
+    const obj = ellipsoids[k];
+
+    if (idx < 0){
+      obj.group.visible = false;
+      continue;
+    }
+    obj.group.visible = true;
+
+    const rx = Math.max(radArr[idx*3    ] * ELL_SCALE, 0.38) * pulse;
+    const ry = Math.max(radArr[idx*3 + 1] * ELL_SCALE, 0.38) * pulse;
+    const rz = Math.max(radArr[idx*3 + 2] * ELL_SCALE, 0.38) * pulse;
+
+    obj.group.position.set(estArr[idx*3], estArr[idx*3 + 1], estArr[idx*3 + 2]);
+    obj.group.scale.set(rx, ry, rz);
+  }
+}
+
+/* ============================================================
+   主循环
+   ============================================================ */
+const clock = new THREE.Clock();
+let animT = 0;
+
+function animate(){
+  requestAnimationFrame(animate);
+
+  const dt = Math.min(clock.getDelta(), 0.08);
+  animT += dt;
+  if (animT >= DURATION) animT -= DURATION;
+
+  const i = Math.min(N - 1, Math.floor(animT / DURATION * N));
+
+  /* ---------- 轨迹逐步显现 ---------- */
+  const visible = i + 1;
+  truthGeo.setDrawRange(0, visible);
+  estGeo.setDrawRange(0, visible);
+
+  const measCount = Math.min(K_MEAS, Math.floor(i / MEAS_EVERY) + 1);
+  measGeo.setDrawRange(0, measCount);
+
+  /* ---------- 移动光点 ---------- */
+  truthGlow.position.set(truthArr[i*3], truthArr[i*3 + 1], truthArr[i*3 + 2]);
+  estGlow.position.set(estArr[i*3], estArr[i*3 + 1], estArr[i*3 + 2]);
+
+  const flicker = 0.88 + 0.12 * Math.sin(animT * 9.0);
+  truthGlow.material.opacity = flicker;
+  estGlow.material.opacity = 0.78 + 0.1 * Math.sin(animT * 7.0 + 1.3);
+
+  /* ---------- 不确定性椭球 ---------- */
+  updateEllipsoids(i, animT);
+
+  /* ---------- 顶部文字 ---------- */
+  updateTopText(animT);
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+
+/* ============================================================
+   自适应
+   ============================================================ */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+animate();
+</script>
+</body>
+</html>

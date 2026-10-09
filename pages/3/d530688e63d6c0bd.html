@@ -1,0 +1,821 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>群体智能 · Swarm Intelligence</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%;
+    overflow: hidden;
+    background: #03040c;
+    font-family: "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  }
+  canvas { display: block; }
+
+  /* ---------- 顶部启迪意义文字 ---------- */
+  #swarm-text {
+    position: fixed;
+    top: 14px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 62vw;
+    max-width: 980px;
+    text-align: center;
+    z-index: 30;
+    pointer-events: none;
+    font-size: clamp(13px, 1.15vw, 19px);
+    line-height: 1.72;
+    letter-spacing: 1.2px;
+    color: #bfe6ff;
+    text-shadow:
+      0 0 10px rgba(90, 200, 255, 0.85),
+      0 0 26px rgba(130, 90, 255, 0.55),
+      0 0 46px rgba(60, 140, 255, 0.35);
+  }
+  #swarm-text span { transition: none; }
+
+  /* ---------- 边缘公式 ---------- */
+  .hud {
+    position: fixed;
+    z-index: 30;
+    pointer-events: none;
+    font-family: "Consolas", "SF Mono", "Courier New", monospace;
+    font-size: clamp(9px, 0.82vw, 13px);
+    letter-spacing: 0.6px;
+    color: rgba(150, 220, 255, 0.72);
+    text-shadow:
+      0 0 8px rgba(60, 170, 255, 0.75),
+      0 0 20px rgba(120, 60, 255, 0.4);
+    white-space: nowrap;
+  }
+  .hud .k { color: rgba(255, 200, 110, 0.9); }
+  .hud .v { color: rgba(255, 130, 210, 0.9); }
+  .f-tl { top: 16px; left: 20px; }
+  .f-tr { top: 16px; right: 20px; text-align: right; }
+  .f-bl { bottom: 20px; left: 20px; }
+  .f-br { bottom: 20px; right: 20px; text-align: right; }
+
+  /* ---------- 模式指示 ---------- */
+  #mode-box {
+    position: fixed;
+    bottom: 56px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 30;
+    pointer-events: none;
+    text-align: center;
+  }
+  #mode-name {
+    font-family: "Consolas", "Courier New", monospace;
+    font-size: clamp(12px, 1.15vw, 17px);
+    letter-spacing: 3px;
+    color: #9ff0ff;
+    text-shadow: 0 0 12px rgba(80, 230, 255, 0.9), 0 0 30px rgba(120, 80, 255, 0.6);
+    transition: color .35s;
+  }
+  #mode-tip {
+    margin-top: 7px;
+    font-family: "Consolas", "Courier New", monospace;
+    font-size: clamp(9px, 0.78vw, 12px);
+    letter-spacing: 2px;
+    color: rgba(160, 200, 255, 0.42);
+  }
+
+  /* ---------- 暗角 ---------- */
+  #vignette {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    pointer-events: none;
+    background: radial-gradient(
+      ellipse at 50% 50%,
+      rgba(0, 0, 0, 0) 42%,
+      rgba(0, 0, 0, 0.45) 78%,
+      rgba(0, 0, 0, 0.78) 100%
+    );
+  }
+
+  /* ---------- 进度条 ---------- */
+  #progress {
+    position: fixed;
+    bottom: 0; left: 0;
+    height: 2px;
+    width: 0%;
+    z-index: 40;
+    background: linear-gradient(90deg, #22e6ff, #7a5cff, #ff58c8, #ffc65a);
+    box-shadow: 0 0 14px rgba(120, 190, 255, 0.9);
+    pointer-events: none;
+  }
+
+  @media (max-width: 820px) {
+    .f-tr, .f-br { display: none; }
+    #swarm-text { width: 86vw; }
+  }
+</style>
+</head>
+<body>
+
+<canvas id="scene"></canvas>
+<div id="vignette"></div>
+<div id="progress"></div>
+
+<div id="swarm-text"></div>
+
+<div class="hud f-tl">
+  τ<sub>ij</sub> ← (1−ρ)·τ<sub>ij</sub> + Σ<sub>k</sub> Δτ<sub>ij</sub><sup>k</sup>
+</div>
+<div class="hud f-tr">
+  v<sub>i</sub> ← v<sub>i</sub> + c<sub>1</sub>r<sub>1</sub>(p<sub>i</sub>−x<sub>i</sub>) + c<sub>2</sub>r<sub>2</sub>(g−x<sub>i</sub>)
+</div>
+<div class="hud f-bl">
+  <span class="k">n</span> ∈ [20, 100] &nbsp;&nbsp;
+  <span class="k">w</span> ∈ [0.4, 0.9] &nbsp;&nbsp;
+  <span class="k">ρ</span> ∈ [0.1, 0.5]
+</div>
+<div class="hud f-br">
+  SWARM&nbsp;INTELLIGENCE&nbsp;/&nbsp;EMERGENCE
+</div>
+
+<div id="mode-box">
+  <div id="mode-name">觅食 · FORAGING</div>
+  <div id="mode-tip">拖拽旋转 · 滚轮缩放 · 点击切换行为模式</div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+/* =========================================================
+   群体智能 · Swarm Intelligence
+   ========================================================= */
+
+/* ---------------- 基础常量 ---------------- */
+const N          = 1200;      // 个体数量
+const BOUND      = 96;        // 空间边界
+const CELL       = 16;        // 网格尺寸 = 感知半径
+const DIM        = 12;        // 每轴网格数  (96*2/16 = 12)
+const NUM_CELLS  = DIM * DIM * DIM;
+
+const PERC       = 16;        // 感知半径
+const PERC2      = PERC * PERC;
+const SEP        = 7;         // 分离半径
+const SEP2       = SEP * SEP;
+
+const MAX_SPEED  = 0.95;
+const SOFT_BOUND = 112;
+
+const LOOP_TIME  = 30;        // 动画循环 30 秒
+const TEXT_FULL_AT = 26;      // 文字在 26 秒内显示完整
+
+/* ---------------- 渲染器 / 场景 ---------------- */
+const canvas = document.getElementById('scene');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setClearColor(0x03040c, 1);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x03040c, 0.0016);
+
+const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.5, 4000);
+
+/* ---------------- 圆形光点贴图 ---------------- */
+function makeGlowTexture() {
+  const s = 64;
+  const c = document.createElement('canvas');
+  c.width = c.height = s;
+  const ctx = c.getContext('2d');
+  const g = ctx.createRadialGradient(s/2, s/2, 0, s/2, s/2, s/2);
+  g.addColorStop(0.00, 'rgba(255,255,255,1)');
+  g.addColorStop(0.22, 'rgba(255,255,255,0.88)');
+  g.addColorStop(0.48, 'rgba(255,255,255,0.30)');
+  g.addColorStop(0.75, 'rgba(255,255,255,0.07)');
+  g.addColorStop(1.00, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, s, s);
+  const tex = new THREE.CanvasTexture(c);
+  tex.needsUpdate = true;
+  return tex;
+}
+const GLOW_TEX = makeGlowTexture();
+
+/* ---------------- 星空背景 ---------------- */
+(function buildStars() {
+  const COUNT = 1400;
+  const pos = new Float32Array(COUNT * 3);
+  for (let i = 0; i < COUNT; i++) {
+    const u = Math.random() * 2 - 1;
+    const th = Math.random() * Math.PI * 2;
+    const r = 700 + Math.random() * 1200;
+    const s = Math.sqrt(1 - u * u);
+    pos[i*3]   = r * s * Math.cos(th);
+    pos[i*3+1] = r * u;
+    pos[i*3+2] = r * s * Math.sin(th);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const mat = new THREE.PointsMaterial({
+    color: 0x8fb8ff,
+    size: 1.7,
+    map: GLOW_TEX,
+    transparent: true,
+    opacity: 0.55,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    sizeAttenuation: true
+  });
+  scene.add(new THREE.Points(geo, mat));
+})();
+
+/* ---------------- 粒子数据 ---------------- */
+const POS  = new Float32Array(N * 3);
+const VEL  = new Float32Array(N * 3);
+const COL  = new Float32Array(N * 3);
+const BASE = new Float32Array(N * 3);
+const PHASE= new Float32Array(N);
+const CIDX = new Int32Array(N);
+
+/* 霓虹渐变调色板：青 → 蓝 → 紫 → 粉 */
+const PAL = [
+  [0.18, 0.94, 1.00],
+  [0.30, 0.56, 1.00],
+  [0.66, 0.38, 1.00],
+  [1.00, 0.42, 0.86]
+];
+function palAt(u) {
+  u = u < 0 ? 0 : (u > 0.9999 ? 0.9999 : u);
+  const f = u * (PAL.length - 1);
+  const i = Math.floor(f);
+  const t = f - i;
+  const a = PAL[i], b = PAL[i + 1];
+  return [
+    a[0] + (b[0] - a[0]) * t,
+    a[1] + (b[1] - a[1]) * t,
+    a[2] + (b[2] - a[2]) * t
+  ];
+}
+
+function initParticles() {
+  for (let i = 0; i < N; i++) {
+    const u  = Math.random() * 2 - 1;
+    const th = Math.random() * Math.PI * 2;
+    const r  = Math.cbrt(Math.random()) * 68;
+    const s  = Math.sqrt(1 - u * u);
+
+    POS[i*3]   = r * s * Math.cos(th);
+    POS[i*3+1] = r * u * 0.72;
+    POS[i*3+2] = r * s * Math.sin(th);
+
+    VEL[i*3]   = (Math.random() - 0.5) * 0.5;
+    VEL[i*3+1] = (Math.random() - 0.5) * 0.5;
+    VEL[i*3+2] = (Math.random() - 0.5) * 0.5;
+
+    const c = palAt(i / N + (Math.random() - 0.5) * 0.12);
+    BASE[i*3]   = c[0];
+    BASE[i*3+1] = c[1];
+    BASE[i*3+2] = c[2];
+    COL[i*3]    = c[0];
+    COL[i*3+1]  = c[1];
+    COL[i*3+2]  = c[2];
+
+    PHASE[i] = Math.random() * Math.PI * 2;
+  }
+}
+
+/* ---------------- 群体粒子系统 ---------------- */
+const pGeo = new THREE.BufferGeometry();
+pGeo.setAttribute('position', new THREE.BufferAttribute(POS, 3));
+pGeo.setAttribute('color',    new THREE.BufferAttribute(COL, 3));
+
+const pMat = new THREE.PointsMaterial({
+  size: 2.9,
+  map: GLOW_TEX,
+  vertexColors: true,
+  transparent: true,
+  opacity: 0.95,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false,
+  sizeAttenuation: true
+});
+const points = new THREE.Points(pGeo, pMat);
+points.frustumCulled = false;
+scene.add(points);
+
+/* ---------------- 信息素轨迹 ---------------- */
+const PH_MAX = 4200;
+const PH_POS = new Float32Array(PH_MAX * 3);
+const PH_COL = new Float32Array(PH_MAX * 3);
+let   phPtr  = 0;
+
+const phGeo = new THREE.BufferGeometry();
+phGeo.setAttribute('position', new THREE.BufferAttribute(PH_POS, 3));
+phGeo.setAttribute('color',    new THREE.BufferAttribute(PH_COL, 3));
+const phMat = new THREE.PointsMaterial({
+  size: 3.4,
+  map: GLOW_TEX,
+  vertexColors: true,
+  transparent: true,
+  opacity: 0.9,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false,
+  sizeAttenuation: true
+});
+const pheromone = new THREE.Points(phGeo, phMat);
+pheromone.frustumCulled = false;
+scene.add(pheromone);
+
+function addPheromone(x, y, z) {
+  const i = phPtr;
+  PH_POS[i*3]   = x;
+  PH_POS[i*3+1] = y;
+  PH_POS[i*3+2] = z;
+  // 金色发光
+  PH_COL[i*3]   = 1.00;
+  PH_COL[i*3+1] = 0.74;
+  PH_COL[i*3+2] = 0.22;
+  phPtr = (phPtr + 1) % PH_MAX;
+}
+
+/* ---------------- 局部交互连线 ---------------- */
+const LINK_MAX = 90;
+const linkPos = new Float32Array(LINK_MAX * 2 * 3);
+const linkGeo = new THREE.BufferGeometry();
+linkGeo.setAttribute('position', new THREE.BufferAttribute(linkPos, 3));
+const linkMat = new THREE.LineBasicMaterial({
+  color: 0x66ddff,
+  transparent: true,
+  opacity: 0.14,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false
+});
+const links = new THREE.LineSegments(linkGeo, linkMat);
+links.frustumCulled = false;
+scene.add(links);
+
+/* ---------------- 捕食者 ---------------- */
+const predator = { x: 0, y: 0, z: 0 };
+const predMesh = new THREE.Mesh(
+  new THREE.SphereGeometry(3.6, 20, 20),
+  new THREE.MeshBasicMaterial({
+    color: 0xff2f62,
+    transparent: true,
+    opacity: 0.9,
+    blending: THREE.AdditiveBlending
+  })
+);
+predMesh.visible = false;
+scene.add(predMesh);
+
+/* ---------------- 空间网格 ---------------- */
+const buckets = new Array(NUM_CELLS);
+for (let i = 0; i < NUM_CELLS; i++) buckets[i] = [];
+
+function cellOf(v) {
+  let c = ((v + BOUND) / CELL) | 0;
+  if (c < 0) c = 0; else if (c > DIM - 1) c = DIM - 1;
+  return c;
+}
+
+/* ---------------- 模式 / 吸引子 ---------------- */
+let mode = 0;                       // 0 觅食  1 迁徙  2 避敌
+const MODE_NAMES = ['觅食 · FORAGING', '迁徙 · MIGRATION', '避敌 · PREDATOR EVASION'];
+const MODE_COLOR = ['#ffd166', '#7fe9ff', '#ff6b9d'];
+
+const attractor = { x: 0, y: 0, z: 0 };
+
+const modeNameEl = document.getElementById('mode-name');
+
+function switchMode() {
+  mode = (mode + 1) % 3;
+  modeNameEl.textContent = MODE_NAMES[mode];
+  modeNameEl.style.color = MODE_COLOR[mode];
+  predMesh.visible = (mode === 2);
+  if (mode !== 0) {
+    // 非觅食模式清空信息素，让画面干净
+    PH_COL.fill(0);
+    phGeo.attributes.color.needsUpdate = true;
+  }
+}
+
+function updateAttractor(T) {
+  if (mode === 0) {
+    attractor.x = Math.cos(T * 0.42) * 56;
+    attractor.y = Math.sin(T * 0.63) * 20;
+    attractor.z = Math.sin(T * 0.42) * 56;
+  } else if (mode === 1) {
+    attractor.x = Math.cos(T * 0.22) * 125;
+    attractor.y = Math.sin(T * 0.36) * 42;
+    attractor.z = Math.sin(T * 0.22) * 125;
+  } else {
+    predator.x = Math.sin(T * 0.85) * 44;
+    predator.y = Math.cos(T * 0.58) * 30;
+    predator.z = Math.cos(T * 0.95) * 44;
+  }
+}
+
+/* ---------------- 物理步进 ---------------- */
+function physicsStep(T) {
+  /* 1. 重建空间网格 */
+  for (let c = 0; c < NUM_CELLS; c++) buckets[c].length = 0;
+  for (let i = 0; i < N; i++) {
+    const ix = cellOf(POS[i*3]);
+    const iy = cellOf(POS[i*3+1]);
+    const iz = cellOf(POS[i*3+2]);
+    const idx = ix + iy * DIM + iz * DIM * DIM;
+    CIDX[i] = idx;
+    buckets[idx].push(i);
+  }
+
+  /* 2. 群体行为 */
+  for (let i = 0; i < N; i++) {
+    const i3 = i * 3;
+    const px = POS[i3], py = POS[i3+1], pz = POS[i3+2];
+    const vx = VEL[i3], vy = VEL[i3+1], vz = VEL[i3+2];
+
+    const ix = cellOf(px), iy = cellOf(py), iz = cellOf(pz);
+
+    let cx = 0, cy = 0, cz = 0;      // 聚合（相对位置累加）
+    let avx = 0, avy = 0, avz = 0;   // 对齐（速度累加）
+    let sx = 0, sy = 0, sz = 0;      // 分离
+    let cnt = 0;
+
+    for (let ox = -1; ox <= 1; ox++) {
+      const gx = ix + ox; if (gx < 0 || gx >= DIM) continue;
+      for (let oy = -1; oy <= 1; oy++) {
+        const gy = iy + oy; if (gy < 0 || gy >= DIM) continue;
+        for (let oz = -1; oz <= 1; oz++) {
+          const gz = iz + oz; if (gz < 0 || gz >= DIM) continue;
+          const b = buckets[gx + gy * DIM + gz * DIM * DIM];
+          const bl = b.length;
+          for (let k = 0; k < bl; k++) {
+            const j = b[k];
+            if (j === i) continue;
+            const j3 = j * 3;
+            const dx = POS[j3] - px;
+            const dy = POS[j3+1] - py;
+            const dz = POS[j3+2] - pz;
+            const d2 = dx*dx + dy*dy + dz*dz;
+            if (d2 > PERC2 || d2 < 0.0001) continue;
+
+            cnt++;
+            cx += dx; cy += dy; cz += dz;
+            avx += VEL[j3]; avy += VEL[j3+1]; avz += VEL[j3+2];
+
+            if (d2 < SEP2) {
+              const d = Math.sqrt(d2);
+              const f = (1 - d / SEP) / d;
+              sx -= dx * f;
+              sy -= dy * f;
+              sz -= dz * f;
+            }
+          }
+        }
+      }
+    }
+
+    let ax = 0, ay = 0, az = 0;
+
+    if (cnt > 0) {
+      const inv = 1 / cnt;
+      // 聚合
+      ax += cx * inv * 0.0030;
+      ay += cy * inv * 0.0030;
+      az += cz * inv * 0.0030;
+      // 对齐
+      ax += (avx * inv - vx) * 0.045;
+      ay += (avy * inv - vy) * 0.045;
+      az += (avz * inv - vz) * 0.045;
+      // 分离
+      ax += sx * 0.13;
+      ay += sy * 0.13;
+      az += sz * 0.13;
+    }
+
+    /* ---- 模式特有力 ---- */
+    if (mode === 0) {
+      /* 觅食：朝食物源转向 */
+      const dx = attractor.x - px;
+      const dy = attractor.y - py;
+      const dz = attractor.z - pz;
+      const d  = Math.sqrt(dx*dx + dy*dy + dz*dz) + 1e-4;
+      const s  = Math.min(1, d / 46);
+      ax += (dx / d * MAX_SPEED - vx) * 0.016 * s;
+      ay += (dy / d * MAX_SPEED - vy) * 0.016 * s;
+      az += (dz / d * MAX_SPEED - vz) * 0.016 * s;
+    } else if (mode === 1) {
+      /* 迁徙：沿引导点流动，产生拉长的流体形态 */
+      const dx = attractor.x - px;
+      const dy = attractor.y - py;
+      const dz = attractor.z - pz;
+      const d  = Math.sqrt(dx*dx + dy*dy + dz*dz) + 1e-4;
+      ax += (dx / d * MAX_SPEED - vx) * 0.012;
+      ay += (dy / d * MAX_SPEED - vy) * 0.012;
+      az += (dz / d * MAX_SPEED - vz) * 0.012;
+      // 轻微湍流
+      ax += Math.sin(T * 1.1 + py * 0.06) * 0.004;
+      az += Math.cos(T * 1.3 + py * 0.05) * 0.004;
+    } else {
+      /* 避敌：远离捕食者 */
+      const dx = px - predator.x;
+      const dy = py - predator.y;
+      const dz = pz - predator.z;
+      const d2 = dx*dx + dy*dy + dz*dz;
+      if (d2 < 4900) {                       // 70 半径内
+        const d = Math.sqrt(d2) + 1e-4;
+        const f = (1 - d / 70) * (1 - d / 70) * 1.15;
+        ax += dx / d * f;
+        ay += dy / d * f;
+        az += dz / d * f;
+      }
+      // 弱向心力，避免整体飘散
+      ax -= px * 0.00042;
+      ay -= py * 0.00042;
+      az -= pz * 0.00042;
+    }
+
+    /* ---- 软边界 ---- */
+    const r2 = px*px + py*py + pz*pz;
+    if (r2 > SOFT_BOUND * SOFT_BOUND) {
+      const r = Math.sqrt(r2);
+      const f = (r - SOFT_BOUND) * 0.0075;
+      ax -= px / r * f;
+      ay -= py / r * f;
+      az -= pz / r * f;
+    }
+
+    /* ---- 加速度限幅 ---- */
+    const AMAX = 0.55;
+    if (ax >  AMAX) ax =  AMAX; else if (ax < -AMAX) ax = -AMAX;
+    if (ay >  AMAX) ay =  AMAX; else if (ay < -AMAX) ay = -AMAX;
+    if (az >  AMAX) az =  AMAX; else if (az < -AMAX) az = -AMAX;
+
+    /* ---- 积分 ---- */
+    let nvx = (vx + ax) * 0.972;
+    let nvy = (vy + ay) * 0.972;
+    let nvz = (vz + az) * 0.972;
+
+    const sp = Math.sqrt(nvx*nvx + nvy*nvy + nvz*nvz);
+    if (sp > MAX_SPEED) {
+      const k = MAX_SPEED / sp;
+      nvx *= k; nvy *= k; nvz *= k;
+    }
+
+    VEL[i3] = nvx; VEL[i3+1] = nvy; VEL[i3+2] = nvz;
+    POS[i3]   = px + nvx;
+    POS[i3+1] = py + nvy;
+    POS[i3+2] = pz + nvz;
+
+    /* ---- 信息素沉积（仅觅食模式） ---- */
+    if (mode === 0 && Math.random() < 0.018) {
+      addPheromone(px, py, pz);
+    }
+  }
+}
+
+/* ---------------- 局部交互连线更新 ---------------- */
+function updateLinks() {
+  let count = 0;
+  const step = 17;                       // 采样间隔
+
+  for (let i = 0; i < N && count < LINK_MAX; i += step) {
+    const i3 = i * 3;
+    const px = POS[i3], py = POS[i3+1], pz = POS[i3+2];
+    const ix = cellOf(px), iy = cellOf(py), iz = cellOf(pz);
+
+    let best = -1;
+    let bestD2 = PERC2;
+
+    for (let ox = -1; ox <= 1; ox++) {
+      const gx = ix + ox; if (gx < 0 || gx >= DIM) continue;
+      for (let oy = -1; oy <= 1; oy++) {
+        const gy = iy + oy; if (gy < 0 || gy >= DIM) continue;
+        for (let oz = -1; oz <= 1; oz++) {
+          const gz = iz + oz; if (gz < 0 || gz >= DIM) continue;
+          const b = buckets[gx + gy * DIM + gz * DIM * DIM];
+          for (let k = 0; k < b.length; k++) {
+            const j = b[k];
+            if (j === i) continue;
+            const j3 = j * 3;
+            const dx = POS[j3] - px;
+            const dy = POS[j3+1] - py;
+            const dz = POS[j3+2] - pz;
+            const d2 = dx*dx + dy*dy + dz*dz;
+            if (d2 < bestD2) { bestD2 = d2; best = j; }
+          }
+        }
+      }
+    }
+
+    if (best >= 0) {
+      const b3 = best * 3;
+      const o = count * 6;
+      linkPos[o]   = px;      linkPos[o+1] = py;      linkPos[o+2] = pz;
+      linkPos[o+3] = POS[b3]; linkPos[o+4] = POS[b3+1]; linkPos[o+5] = POS[b3+2];
+      count++;
+    }
+  }
+
+  linkGeo.setDrawRange(0, count * 2);
+  linkGeo.attributes.position.needsUpdate = true;
+
+  // 缩放越近，连线越清晰
+  const near = THREE.MathUtils.clamp((300 - cam.dist) / 260, 0, 1);
+  linkMat.opacity = 0.05 + near * 0.35;
+}
+
+/* ---------------- 相机控制 ---------------- */
+const cam = {
+  theta: 0.85,
+  phi: 1.12,
+  dist: 300,
+  targetDist: 300
+};
+
+let dragging = false;
+let lastX = 0, lastY = 0;
+let downX = 0, downY = 0;
+
+canvas.addEventListener('pointerdown', (e) => {
+  dragging = true;
+  lastX = downX = e.clientX;
+  lastY = downY = e.clientY;
+  canvas.setPointerCapture && canvas.setPointerCapture(e.pointerId);
+});
+
+window.addEventListener('pointermove', (e) => {
+  if (!dragging) return;
+  const dx = e.clientX - lastX;
+  const dy = e.clientY - lastY;
+  lastX = e.clientX;
+  lastY = e.clientY;
+
+  cam.theta -= dx * 0.0055;
+  cam.phi   -= dy * 0.0055;
+  cam.phi = Math.max(0.18, Math.min(Math.PI - 0.18, cam.phi));
+});
+
+window.addEventListener('pointerup', (e) => {
+  if (dragging) {
+    const moved = Math.hypot(e.clientX - downX, e.clientY - downY);
+    if (moved < 5) switchMode();
+  }
+  dragging = false;
+});
+
+canvas.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const k = e.deltaY > 0 ? 1.12 : 0.89;
+  cam.targetDist = Math.max(38, Math.min(620, cam.targetDist * k));
+}, { passive: false });
+
+/* 触摸双指缩放 */
+let pinchDist = 0;
+canvas.addEventListener('touchmove', (e) => {
+  if (e.touches.length === 2) {
+    const dx = e.touches[0].clientX - e.touches[1].clientX;
+    const dy = e.touches[0].clientY - e.touches[1].clientY;
+    const d = Math.hypot(dx, dy);
+    if (pinchDist > 0) {
+      cam.targetDist = Math.max(38, Math.min(620, cam.targetDist * (pinchDist / d)));
+    }
+    pinchDist = d;
+  }
+}, { passive: true });
+canvas.addEventListener('touchend', () => { pinchDist = 0; });
+
+/* ---------------- 顶部文字 ---------------- */
+const FULL_TEXT =
+  '启示：群体智能揭示“简单个体+简单规则+局部交互=涌现全局智能”的深刻原理——蚁群、鸟群无需中央指挥即可完成复杂任务——启示我们集体智慧源于个体协作与信息共享，众多个体的简单协同可涌现出远超个体的强大能力。';
+
+const textEl = document.getElementById('swarm-text');
+const CHAR_ARR = Array.from(FULL_TEXT);
+const SPANS = [];
+CHAR_ARR.forEach((ch) => {
+  const s = document.createElement('span');
+  s.textContent = ch;
+  s.style.opacity = '0';
+  s._o = -1;
+  textEl.appendChild(s);
+  SPANS.push(s);
+});
+
+function updateText(t) {
+  const total = CHAR_ARR.length;
+  const reveal = Math.min(total, (t / TEXT_FULL_AT) * total);
+
+  for (let i = 0; i < total; i++) {
+    let o = reveal - i;
+    if (o < 0) o = 0; else if (o > 1) o = 1;
+    o = Math.round(o * 10) / 10;
+    if (SPANS[i]._o !== o) {
+      SPANS[i].style.opacity = o;
+      SPANS[i]._o = o;
+    }
+  }
+}
+
+/* ---------------- 重置 / 循环 ---------------- */
+function resetScene() {
+  initParticles();
+  PH_COL.fill(0);
+  phPtr = 0;
+  phGeo.attributes.color.needsUpdate = true;
+  pGeo.attributes.position.needsUpdate = true;
+  pGeo.attributes.color.needsUpdate = true;
+}
+
+/* ---------------- 主循环 ---------------- */
+let lastTime = performance.now();
+let acc = 0;
+const FIXED = 1 / 60;
+let sceneTime = 0;
+
+const progressEl = document.getElementById('progress');
+
+function animate() {
+  requestAnimationFrame(animate);
+
+  const now = performance.now();
+  let dt = (now - lastTime) / 1000;
+  lastTime = now;
+  if (dt > 0.1) dt = 0.1;
+
+  /* 时间推进 & 循环 */
+  sceneTime += dt;
+  if (sceneTime >= LOOP_TIME) {
+    sceneTime -= LOOP_TIME;
+    resetScene();
+  }
+
+  /* 物理步进（固定步长） */
+  acc += dt;
+  let steps = 0;
+  while (acc >= FIXED && steps < 4) {
+    physicsStep(sceneTime);
+    acc -= FIXED;
+    steps++;
+  }
+  if (acc > FIXED * 4) acc = 0;
+
+  /* 吸引子 / 捕食者 */
+  updateAttractor(sceneTime);
+  if (mode === 2) {
+    predMesh.position.set(predator.x, predator.y, predator.z);
+    predMesh.material.opacity = 0.65 + 0.35 * Math.sin(sceneTime * 6);
+  }
+
+  /* 颜色脉动 */
+  for (let i = 0; i < N; i++) {
+    const i3 = i * 3;
+    const flick = 0.72 + 0.42 * Math.sin(sceneTime * 2.6 + PHASE[i]);
+    COL[i3]   = BASE[i3]   * flick;
+    COL[i3+1] = BASE[i3+1] * flick;
+    COL[i3+2] = BASE[i3+2] * flick;
+  }
+  pGeo.attributes.position.needsUpdate = true;
+  pGeo.attributes.color.needsUpdate = true;
+
+  /* 信息素衰减 */
+  const phc = phGeo.attributes.color.array;
+  for (let i = 0; i < PH_MAX * 3; i++) phc[i] *= 0.972;
+  phGeo.attributes.color.needsUpdate = true;
+  phGeo.attributes.position.needsUpdate = true;
+
+  /* 局部交互连线 */
+  updateLinks();
+
+  /* 相机 */
+  if (!dragging) cam.theta += dt * 0.055;
+  cam.dist += (cam.targetDist - cam.dist) * 0.085;
+
+  camera.position.set(
+    cam.dist * Math.sin(cam.phi) * Math.cos(cam.theta),
+    cam.dist * Math.cos(cam.phi),
+    cam.dist * Math.sin(cam.phi) * Math.sin(cam.theta)
+  );
+  camera.lookAt(0, 0, 0);
+
+  /* 文字 */
+  updateText(sceneTime);
+
+  /* 进度条 */
+  progressEl.style.width = ((sceneTime / LOOP_TIME) * 100).toFixed(2) + '%';
+
+  renderer.render(scene, camera);
+}
+
+/* ---------------- 启动 ---------------- */
+initParticles();
+pGeo.attributes.position.needsUpdate = true;
+pGeo.attributes.color.needsUpdate = true;
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+animate();
+</script>
+</body>
+</html>

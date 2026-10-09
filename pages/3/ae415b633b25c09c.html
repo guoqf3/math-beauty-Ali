@@ -1,0 +1,795 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>生物趋化性 · 趋化泳微生物随机游走</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{height:100%;background:#010006;overflow:hidden;
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+    -webkit-tap-highlight-color:transparent;}
+  canvas{position:fixed;inset:0;display:block;}
+  .hud{position:fixed;inset:0;pointer-events:none;}
+
+  .epigraph{
+    position:absolute;top:14px;left:50%;transform:translateX(-50%);
+    font-family:"Songti SC","STSong",serif;
+    font-size:clamp(12px,1.35vw,19px);
+    letter-spacing:.16em;white-space:nowrap;
+    color:#f0fff8;
+    text-shadow:0 0 12px rgba(90,255,200,.9),0 0 34px rgba(120,110,255,.5);
+    animation:breathe 4.3s ease-in-out infinite;
+  }
+  @keyframes breathe{0%,100%{opacity:.72}50%{opacity:1}}
+
+  .formula{
+    position:absolute;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"PingFang SC",monospace;
+    font-size:clamp(9px,.76vw,12px);
+    line-height:1.75;letter-spacing:.02em;
+    color:rgba(140,220,215,.42);
+    text-shadow:0 0 9px rgba(80,200,190,.25);
+    white-space:nowrap;
+  }
+  .formula b{color:rgba(190,240,235,.68);font-weight:500;}
+  .tl{top:56px;left:22px;}
+  .tr{top:56px;right:22px;text-align:right;}
+  .bl{bottom:16px;left:22px;}
+  .br{bottom:16px;right:22px;text-align:right;}
+
+  .controls{
+    position:absolute;bottom:12px;left:50%;transform:translateX(-50%);
+    display:flex;align-items:center;gap:14px;
+    pointer-events:auto;
+    font-family:ui-monospace,Menlo,Consolas,monospace;
+    font-size:11px;color:rgba(160,225,215,.85);
+    background:rgba(6,16,20,.74);
+    border:1px solid rgba(60,210,180,.24);
+    border-radius:30px;padding:8px 22px;
+    backdrop-filter:blur(10px);
+    -webkit-backdrop-filter:blur(10px);
+    box-shadow:0 0 28px rgba(50,190,160,.18);
+    white-space:nowrap;
+  }
+  .controls label{display:flex;align-items:center;gap:7px;cursor:pointer;}
+  .controls input[type=range]{
+    -webkit-appearance:none;appearance:none;
+    width:110px;height:3px;border-radius:3px;
+    background:linear-gradient(90deg,#1a6a8a,#2ec8ff,#4affb0,#ffd24a);
+    outline:none;cursor:pointer;
+  }
+  .controls input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none;width:12px;height:12px;border-radius:50%;
+    background:#eafff8;
+    box-shadow:0 0 10px rgba(80,255,200,.95),0 0 20px rgba(80,180,255,.75);
+    cursor:pointer;
+  }
+  .controls input[type=range]::-moz-range-thumb{
+    width:12px;height:12px;border:none;border-radius:50%;
+    background:#eafff8;
+    box-shadow:0 0 10px rgba(80,255,200,.95);
+    cursor:pointer;
+  }
+  .val{color:#7dffd8;font-weight:600;min-width:56px;text-align:center;
+    text-shadow:0 0 10px rgba(80,240,200,.7);}
+  .controls input[type=checkbox]{
+    -webkit-appearance:none;appearance:none;
+    width:32px;height:16px;border-radius:9px;
+    background:rgba(80,120,140,.28);
+    position:relative;cursor:pointer;transition:background .25s;
+  }
+  .controls input[type=checkbox]::after{
+    content:"";position:absolute;top:2px;left:2px;
+    width:12px;height:12px;border-radius:50%;
+    background:#a8c8d0;transition:transform .25s,background .25s;
+  }
+  .controls input[type=checkbox]:checked{background:rgba(50,210,170,.72);}
+  .controls input[type=checkbox]:checked::after{transform:translateX(16px);background:#eaffff;}
+
+  @media (max-width:1000px){
+    .bl,.br{display:none;}
+    .controls{gap:8px;padding:7px 14px;font-size:10px;}
+    .controls input[type=range]{width:74px;}
+    .val{min-width:46px;}
+  }
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<div class="hud">
+  <div class="epigraph">循着微弱的光，混沌的游走终会凝聚成方向</div>
+
+  <div class="formula tl">
+    <b>菲克趋化驱动方程</b><br>
+    ∂c/∂t = D·∇²c − χ·∇·(c·∇f)
+  </div>
+  <div class="formula tr">
+    <b>凯勒-塞格尔趋化模型</b><br>
+    ∂ρ/∂t = ∇·(D∇ρ − χρ∇f)
+  </div>
+  <div class="formula bl">
+    <b>大肠杆菌 · 天冬氨酸</b><br>
+    χ = 2.6×10⁻¹¹ cm²/s　D = 4.68×10⁻⁶ cm²/s
+  </div>
+  <div class="formula br">
+    <b>信号阶跃响应</b><br>
+    Δf = 5.8% → 聚集密度增至 3.7 倍
+  </div>
+
+  <div class="controls">
+    <label>趋化敏感度 χ
+      <input type="range" id="chiRange" min="0" max="3" value="1.2" step="0.05">
+    </label>
+    <span class="val" id="chiLabel">1.20</span>
+    <label>
+      <input type="checkbox" id="ctrlToggle" checked>
+      对照组
+    </label>
+  </div>
+</div>
+
+<script>
+(() => {
+'use strict';
+
+const cv  = document.getElementById('cv');
+const ctx = cv.getContext('2d', { alpha: false });
+const TAU = Math.PI * 2;
+
+/* ============================================================
+   常量
+============================================================ */
+const N_BACT     = 520;
+const N_CONTROL  = 180;     // 对照组细菌数
+const BACT_SPEED = 46;      // px/s
+const FIELD_MARGIN = 26;
+
+/* ============================================================
+   状态
+============================================================ */
+let W = 0, H = 0, DPR = 1;
+let bgGrad = null;
+
+let simTime = 0, lastTime = 0;
+
+let chi = 1.20, targetChi = 1.20;
+let autoPlay = true;
+let showControl = true;
+
+const bacteria = [];
+const control = [];
+const sources  = [];
+
+let probe = null;
+let clickPulse = null;
+
+/* ============================================================
+   精灵缓存
+============================================================ */
+const SPRITES = [];
+(function buildSprites(){
+  const palette = [
+    [ 70, 215, 255],
+    [110, 190, 255],
+    [150, 150, 255],
+    [190, 120, 255],
+    [235, 110, 230],
+    [255, 130, 190],
+    [255, 170, 130],
+    [255, 215, 120]
+  ];
+  const SIZE = 26;
+  for (const [r, g, b] of palette){
+    const c = document.createElement('canvas');
+    c.width = c.height = SIZE;
+    const x = c.getContext('2d');
+    const grd = x.createRadialGradient(SIZE/2, SIZE/2, 0, SIZE/2, SIZE/2, SIZE/2);
+    grd.addColorStop(0,    'rgba(255,255,255,1)');
+    grd.addColorStop(0.18, `rgba(${r},${g},${b},1)`);
+    grd.addColorStop(0.48, `rgba(${r},${g},${b},0.42)`);
+    grd.addColorStop(1,    `rgba(${r},${g},${b},0)`);
+    x.fillStyle = grd;
+    x.fillRect(0, 0, SIZE, SIZE);
+    SPRITES.push(c);
+  }
+  /* 对照组精灵（灰蓝） */
+  const c2 = document.createElement('canvas');
+  c2.width = c2.height = SIZE;
+  const x2 = c2.getContext('2d');
+  const g2 = x2.createRadialGradient(SIZE/2, SIZE/2, 0, SIZE/2, SIZE/2, SIZE/2);
+  g2.addColorStop(0,    'rgba(220,235,255,0.95)');
+  g2.addColorStop(0.25, 'rgba(120,150,210,0.85)');
+  g2.addColorStop(0.6,  'rgba(70,95,160,0.30)');
+  g2.addColorStop(1,    'rgba(40,60,120,0)');
+  x2.fillStyle = g2;
+  x2.fillRect(0, 0, SIZE, SIZE);
+  SPRITES.push(c2);
+})();
+
+/* ============================================================
+   工具
+============================================================ */
+function clamp(v, a, b){ return v < a ? a : v > b ? b : v; }
+function rand(a, b){ return a + Math.random() * (b - a); }
+function gaussRand(){
+  let u = 0, v = 0;
+  while (u === 0) u = Math.random();
+  while (v === 0) v = Math.random();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(TAU * v);
+}
+function rr(c2, x, y, w, h, r){
+  c2.beginPath();
+  c2.moveTo(x + r, y);
+  c2.lineTo(x + w - r, y); c2.arcTo(x + w, y, x + w, y + r, r);
+  c2.lineTo(x + w, y + h - r); c2.arcTo(x + w, y + h, x + w - r, y + h, r);
+  c2.lineTo(x + r, y + h); c2.arcTo(x, y + h, x, y + h - r, r);
+  c2.lineTo(x, y + r); c2.arcTo(x, y, x + r, y, r);
+  c2.closePath();
+}
+
+/* ============================================================
+   浓度场（多个信号源解析叠加）
+============================================================ */
+function fieldAt(x, y){
+  let c = 0, gx = 0, gy = 0;
+  for (let i = 0; i < sources.length; i++){
+    const s = sources[i];
+    if (s.amp < 0.001) continue;
+    const dx = x - s.x, dy = y - s.y;
+    const r2 = dx*dx + dy*dy;
+    const inv = 1 / (2 * s.sigma * s.sigma);
+    const e = Math.exp(-r2 * inv);
+    const a = s.amp * e;
+    c += a;
+    const k = a * 2 * inv;
+    gx -= k * dx;
+    gy -= k * dy;
+  }
+  return { c, gx, gy };
+}
+
+/* ============================================================
+   尺寸
+============================================================ */
+function resize(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  cv.width  = Math.round(W * DPR);
+  cv.height = Math.round(H * DPR);
+  cv.style.width  = W + 'px';
+  cv.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  bgGrad = ctx.createRadialGradient(
+    W * 0.5, H * 0.5, 0,
+    W * 0.5, H * 0.5, Math.max(W, H) * 0.85
+  );
+  bgGrad.addColorStop(0,    '#05101c');
+  bgGrad.addColorStop(0.45, '#030812');
+  bgGrad.addColorStop(1,    '#010005');
+}
+
+/* ============================================================
+   细菌初始化
+============================================================ */
+function makeBacterium(isControl){
+  return {
+    x: rand(FIELD_MARGIN, W - FIELD_MARGIN),
+    y: rand(H * 0.13, H * 0.87),
+    ang: rand(0, TAU),
+    spd: BACT_SPEED * rand(0.82, 1.20),
+    ph: rand(0, TAU),
+    tumble: rand(0, 1),
+    isControl: !!isControl,
+    conc: 0
+  };
+}
+
+function initBacteria(){
+  bacteria.length = 0;
+  control.length  = 0;
+  for (let i = 0; i < N_BACT; i++)    bacteria.push(makeBacterium(false));
+  for (let i = 0; i < N_CONTROL; i++) control.push(makeBacterium(true));
+}
+
+/* ============================================================
+   信号源
+============================================================ */
+function addSource(x, y, amp, sigma){
+  sources.push({
+    x, y,
+    amp: 0,
+    targetAmp: amp,
+    sigma: sigma || rand(105, 135),
+    fadeIn: 1.4,
+    life: 1
+  });
+}
+
+/* ============================================================
+   30 秒剧本
+============================================================ */
+let scriptStage = -1;
+
+function runScript(t){
+  const stage =
+    t < 3   ? 0 :
+    t < 11  ? 1 :
+    t < 19  ? 2 :
+    t < 26  ? 3 : 4;
+
+  if (stage !== scriptStage){
+    scriptStage = stage;
+
+    if (stage === 1){
+      addSource(W * 0.68, H * 0.33, 1.0, 118);
+    } else if (stage === 2){
+      addSource(W * 0.28, H * 0.67, 0.85, 125);
+    } else if (stage === 4){
+      /* 淡出 */
+      for (const s of sources) s.life = 0;
+    }
+  }
+
+  if (stage === 0 && sources.length > 0 && t < 1){
+    /* 循环开始清空 */
+  }
+}
+
+/* ============================================================
+   更新
+============================================================ */
+function update(dt){
+  simTime += dt;
+  if (simTime >= 30){
+    simTime -= 30;
+    sources.length = 0;
+    scriptStage = -1;
+    initBacteria();
+  }
+
+  runScript(simTime);
+
+  if (autoPlay){
+    targetChi = 1.20;
+    chiRange.value = '1.2';
+  }
+  chi += (targetChi - chi) * Math.min(1, dt * 4);
+  chiLabel.textContent = chi.toFixed(2);
+
+  /* --- 信号源演化 --- */
+  for (let i = sources.length - 1; i >= 0; i--){
+    const s = sources[i];
+    const target = s.life > 0.5 ? s.targetAmp : 0;
+    s.amp += (target - s.amp) * Math.min(1, dt / s.fadeIn * 2.2);
+    if (s.amp < 0.002 && s.life < 0.5) sources.splice(i, 1);
+    /* 微脉动 */
+    s.sigma += Math.sin(simTime * 0.8 + i) * 0.25;
+  }
+
+  updateGroup(bacteria, dt, false);
+  if (showControl) updateGroup(control, dt, true);
+
+  if (probe){ probe.t += dt; if (probe.t > 3.5) probe = null; }
+  if (clickPulse){ clickPulse.t += dt; if (clickPulse.t > 1.6) clickPulse = null; }
+}
+
+function updateGroup(arr, dt, isControl){
+  const turnScale = isControl ? 0 : chi * 230;
+  const noiseAmp  = 1.05;
+
+  for (let i = 0; i < arr.length; i++){
+    const b = arr[i];
+
+    /* --- 感知浓度场 --- */
+    const f = fieldAt(b.x, b.y);
+    b.conc = f.c;
+
+    const gmag = Math.sqrt(f.gx * f.gx + f.gy * f.gy);
+
+    if (!isControl && gmag > 1e-7 && chi > 0.01){
+      /* 朝向梯度方向平滑转向 */
+      const targetAng = Math.atan2(f.gy, f.gx);
+      let diff = targetAng - b.ang;
+      while (diff >  Math.PI) diff -= TAU;
+      while (diff < -Math.PI) diff += TAU;
+
+      const turn = Math.min(1, gmag * turnScale * dt);
+      b.ang += diff * turn;
+    }
+
+    /* --- 随机游走（run & tumble 噪声） --- */
+    b.ang += gaussRand() * noiseAmp * Math.sqrt(dt) * 2.4;
+
+    /* --- 周期性翻滚 --- */
+    b.tumble -= dt;
+    if (b.tumble <= 0){
+      b.tumble = rand(0.35, 1.15);
+      b.ang += gaussRand() * 1.1;
+    }
+
+    /* --- 移动 --- */
+    const speed = b.spd * (1 + 0.18 * Math.sin(simTime * 3.4 + b.ph));
+    b.x += Math.cos(b.ang) * speed * dt;
+    b.y += Math.sin(b.ang) * speed * dt;
+
+    /* --- 边界反弹 --- */
+    const m = FIELD_MARGIN;
+    if (b.x < m){ b.x = m; b.ang = Math.PI - b.ang; }
+    if (b.x > W - m){ b.x = W - m; b.ang = Math.PI - b.ang; }
+    if (b.y < H * 0.11){ b.y = H * 0.11; b.ang = -b.ang; }
+    if (b.y > H * 0.89){ b.y = H * 0.89; b.ang = -b.ang; }
+  }
+}
+
+/* ============================================================
+   渲染 · 背景
+============================================================ */
+function drawBackground(){
+  ctx.fillStyle = bgGrad;
+  ctx.fillRect(0, 0, W, H);
+
+  /* 微网格 */
+  ctx.strokeStyle = 'rgba(60, 130, 170, 0.045)';
+  ctx.lineWidth = 1;
+  const step = 68;
+  for (let x = step; x < W; x += step){
+    ctx.beginPath(); ctx.moveTo(x, H * 0.10); ctx.lineTo(x, H * 0.90); ctx.stroke();
+  }
+  for (let y = H * 0.10 + step; y < H * 0.90; y += step){
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  }
+}
+
+/* ============================================================
+   渲染 · 化学信号场
+============================================================ */
+function drawChemicalField(){
+  ctx.globalCompositeOperation = 'lighter';
+
+  for (let i = 0; i < sources.length; i++){
+    const s = sources[i];
+    if (s.amp < 0.01) continue;
+
+    const R = s.sigma * 3.2;
+    const pulse = 1 + 0.07 * Math.sin(simTime * 2.2 + i * 1.7);
+    const a = s.amp * pulse;
+
+    const g = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, R);
+    g.addColorStop(0,     `rgba(120, 255, 200, ${0.28 * a})`);
+    g.addColorStop(0.18,  `rgba(60, 230, 220, ${0.17 * a})`);
+    g.addColorStop(0.42,  `rgba(50, 160, 255, ${0.085 * a})`);
+    g.addColorStop(0.72,  `rgba(110, 90, 255, ${0.035 * a})`);
+    g.addColorStop(1,     'rgba(0,0,0,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, R, 0, TAU);
+    ctx.fill();
+
+    /* 核心亮斑 */
+    const coreR = 11 * pulse;
+    const g2 = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, coreR);
+    g2.addColorStop(0,   `rgba(255,255,240,${0.85 * a})`);
+    g2.addColorStop(0.4, `rgba(120,255,210,${0.55 * a})`);
+    g2.addColorStop(1,   'rgba(60,220,200,0)');
+    ctx.fillStyle = g2;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, coreR, 0, TAU);
+    ctx.fill();
+
+    /* 呼吸环 */
+    const ringR = s.sigma * (0.9 + 0.5 * ((simTime * 0.35 + i * 0.4) % 1));
+    const ringA = Math.max(0, 1 - ((simTime * 0.35 + i * 0.4) % 1)) * 0.20 * a;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, ringR, 0, TAU);
+    ctx.strokeStyle = `rgba(140, 255, 220, ${ringA})`;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ============================================================
+   渲染 · 细菌
+============================================================ */
+function drawBacteria(arr, isControl){
+  if (arr.length === 0) return;
+
+  ctx.globalCompositeOperation = 'lighter';
+
+  const sprite = isControl ? SPRITES[SPRITES.length - 1] : null;
+  const half = 13;
+
+  for (let i = 0; i < arr.length; i++){
+    const b = arr[i];
+
+    let img;
+    if (isControl){
+      img = sprite;
+    } else {
+      /* 按局部浓度选色 0..1 */
+      let u = b.conc;
+      if (u > 1) u = 1;
+      const idx = Math.min(SPRITES.length - 2, (u * (SPRITES.length - 2)) | 0);
+      img = SPRITES[idx];
+    }
+
+    /* 拖尾方向 */
+    const tailLen = isControl ? 5 : 8;
+    const dx = Math.cos(b.ang) * tailLen;
+    const dy = Math.sin(b.ang) * tailLen;
+
+    ctx.globalAlpha = isControl ? 0.28 : 0.55;
+    ctx.beginPath();
+    ctx.moveTo(b.x - dx, b.y - dy);
+    ctx.lineTo(b.x, b.y);
+    ctx.strokeStyle = isControl
+      ? 'rgba(120,150,210,0.45)'
+      : `rgba(${120 + 120 * Math.min(1, b.conc)},220,255,0.55)`;
+    ctx.lineWidth = isControl ? 1.0 : 1.5;
+    ctx.stroke();
+
+    ctx.globalAlpha = isControl ? 0.55 : 0.92;
+    ctx.drawImage(img, b.x - half, b.y - half);
+  }
+
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ============================================================
+   渲染 · 聚集度读数
+============================================================ */
+function drawAggregation(){
+  if (sources.length === 0) return;
+
+  const s = sources[0];
+  const R = s.sigma * 1.6;
+  const area = Math.PI * R * R;
+  const fieldArea = W * H * 0.76;
+
+  let count = 0;
+  for (const b of bacteria){
+    const dx = b.x - s.x, dy = b.y - s.y;
+    if (dx*dx + dy*dy < R*R) count++;
+  }
+
+  const expected = bacteria.length * area / fieldArea;
+  const ratio = expected > 0.5 ? count / expected : 0;
+
+  /* 信息卡 */
+  const bx = s.x + s.sigma * 1.9;
+  const by = s.y + s.sigma * 1.9;
+  const lines = [
+    `聚集区细菌  ${count}`,
+    `均匀期望  ${expected.toFixed(1)}`,
+    `聚集倍数  ${ratio.toFixed(2)} ×`
+  ];
+
+  ctx.font = '600 10.5px ui-monospace,Menlo,Consolas,monospace';
+  let mw = 0;
+  for (const l of lines) mw = Math.max(mw, ctx.measureText(l).width);
+
+  const bw = mw + 22, bh = lines.length * 16 + 14;
+  let px = bx, py = by;
+  if (px + bw > W - 20) px = s.x - s.sigma * 1.9 - bw;
+  if (py + bh > H - 90) py = H - 90 - bh;
+
+  ctx.fillStyle = 'rgba(10, 22, 26, 0.90)';
+  ctx.strokeStyle = 'rgba(100, 255, 210, 0.55)';
+  ctx.lineWidth = 1;
+  rr(ctx, px, py, bw, bh, 9);
+  ctx.fill(); ctx.stroke();
+
+  ctx.textAlign = 'left';
+  for (let i = 0; i < lines.length; i++){
+    ctx.fillStyle = i === 2
+      ? 'rgba(255, 220, 140, 0.95)'
+      : 'rgba(180, 245, 235, 0.88)';
+    ctx.fillText(lines[i], px + 11, py + 19 + i * 16);
+  }
+
+  /* 聚集区虚线圈 */
+  ctx.setLineDash([5, 6]);
+  ctx.strokeStyle = 'rgba(140, 255, 220, 0.28)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.arc(s.x, s.y, R, 0, TAU);
+  ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+/* ============================================================
+   渲染 · 点击脉冲
+============================================================ */
+function drawClickPulse(){
+  if (!clickPulse) return;
+  const a = Math.max(0, 1 - clickPulse.t / 1.6);
+  if (a <= 0){ clickPulse = null; return; }
+
+  const R = 20 + (1 - a) * 140;
+  ctx.beginPath();
+  ctx.arc(clickPulse.x, clickPulse.y, R, 0, TAU);
+  ctx.strokeStyle = `rgba(140, 255, 220, ${a * 0.70})`;
+  ctx.lineWidth = 2 + 3 * a;
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.arc(clickPulse.x, clickPulse.y, R * 0.55, 0, TAU);
+  ctx.strokeStyle = `rgba(255, 220, 140, ${a * 0.45})`;
+  ctx.lineWidth = 1.4;
+  ctx.stroke();
+}
+
+/* ============================================================
+   渲染 · 点击探测
+============================================================ */
+function drawProbe(){
+  if (!probe) return;
+  const a = Math.max(0, 1 - probe.t / 3.5);
+  if (a <= 0){ probe = null; return; }
+
+  const x = probe.x, y = probe.y;
+  const f = fieldAt(x, y);
+  const gmag = Math.sqrt(f.gx * f.gx + f.gy * f.gy);
+
+  ctx.beginPath();
+  ctx.arc(x, y, 7 + (1 - a) * 18, 0, TAU);
+  ctx.strokeStyle = `rgba(255, 230, 160, ${a * 0.70})`;
+  ctx.lineWidth = 1.6;
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.arc(x, y, 4.5, 0, TAU);
+  ctx.fillStyle = `rgba(255, 245, 190, ${a})`;
+  ctx.shadowColor = 'rgba(255, 220, 130, 0.95)';
+  ctx.shadowBlur = 16;
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  const lines = [
+    `局部浓度 c = ${f.c.toFixed(3)}`,
+    `梯度 |∇c| = ${gmag.toExponential(2)}`,
+    `梯度方向 ${(Math.atan2(f.gy, f.gx) * 180 / Math.PI).toFixed(0)}°`,
+    `趋化敏感度 χ = ${chi.toFixed(2)}`
+  ];
+
+  ctx.font = '600 10.5px ui-monospace,Menlo,Consolas,monospace';
+  let mw = 0;
+  for (const l of lines) mw = Math.max(mw, ctx.measureText(l).width);
+
+  const bw = mw + 22, bh = lines.length * 16 + 14;
+  let bx = x + 16, by = y - bh / 2;
+  if (bx + bw > W - 12) bx = x - bw - 16;
+  if (by < 10) by = 10;
+  if (by + bh > H - 88) by = H - 88 - bh;
+
+  ctx.fillStyle = `rgba(12, 22, 26, ${a * 0.94})`;
+  ctx.strokeStyle = `rgba(255, 220, 150, ${a * 0.58})`;
+  ctx.lineWidth = 1;
+  rr(ctx, bx, by, bw, bh, 9);
+  ctx.fill(); ctx.stroke();
+
+  ctx.textAlign = 'left';
+  for (let i = 0; i < lines.length; i++){
+    ctx.fillStyle = i === 0
+      ? `rgba(255, 240, 180, ${a})`
+      : `rgba(200, 240, 235, ${a * 0.88})`;
+    ctx.fillText(lines[i], bx + 11, by + 19 + i * 16);
+  }
+}
+
+/* ============================================================
+   渲染 · 顶部读数
+============================================================ */
+function drawReadout(){
+  let totalConc = 0;
+  for (const b of bacteria) totalConc += b.conc;
+  const avg = bacteria.length ? totalConc / bacteria.length : 0;
+
+  const txt =
+    `细菌 ${bacteria.length + (showControl ? control.length : 0)} 个    ` +
+    `χ = ${chi.toFixed(2)}    ` +
+    `D = 4.68×10⁻⁶ cm²/s    ` +
+    `信号源 ${sources.length}    ` +
+    `平均浓度 ${avg.toFixed(3)}`;
+
+  ctx.font = '600 12px ui-monospace,Menlo,Consolas,monospace';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(205, 245, 240, 0.86)';
+  ctx.shadowColor = 'rgba(80, 230, 200, 0.85)';
+  ctx.shadowBlur = 14;
+  ctx.fillText(txt, W / 2, H - 66);
+  ctx.shadowBlur = 0;
+}
+
+/* ============================================================
+   主渲染
+============================================================ */
+function render(){
+  drawBackground();
+  drawChemicalField();
+
+  if (showControl) drawBacteria(control, true);
+  drawBacteria(bacteria, false);
+
+  drawAggregation();
+  drawClickPulse();
+  drawProbe();
+  drawReadout();
+}
+
+/* ============================================================
+   主循环
+============================================================ */
+function loop(now){
+  requestAnimationFrame(loop);
+
+  if (!lastTime) lastTime = now;
+  let dt = (now - lastTime) / 1000;
+  lastTime = now;
+  if (dt > 0.05) dt = 0.05;
+  if (dt < 0) dt = 0;
+
+  update(dt);
+  render();
+}
+
+/* ============================================================
+   交互
+============================================================ */
+const chiRange  = document.getElementById('chiRange');
+const chiLabel  = document.getElementById('chiLabel');
+const ctrlToggle = document.getElementById('ctrlToggle');
+
+chiRange.addEventListener('input', () => {
+  autoPlay = false;
+  targetChi = parseFloat(chiRange.value);
+});
+
+ctrlToggle.addEventListener('change', () => {
+  showControl = ctrlToggle.checked;
+});
+
+cv.addEventListener('pointerdown', (e) => {
+  const rect = cv.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+
+  if (my < H * 0.10 || my > H * 0.90) return;
+
+  /* 放置信号源 */
+  if (sources.length < 4){
+    addSource(mx, my, 1.0, rand(105, 130));
+  } else {
+    sources[sources.length - 1].x = mx;
+    sources[sources.length - 1].y = my;
+    sources[sources.length - 1].amp = 1;
+    sources[sources.length - 1].targetAmp = 1;
+  }
+
+  clickPulse = { x: mx, y: my, t: 0 };
+  probe = null;
+});
+
+/* 右键或长按移除最近信号源（简单起见用双击） */
+cv.addEventListener('dblclick', (e) => {
+  if (sources.length > 0) sources.shift();
+});
+
+window.addEventListener('resize', resize);
+
+/* ============================================================
+   启动
+============================================================ */
+resize();
+initBacteria();
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>

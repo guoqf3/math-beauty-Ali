@@ -1,0 +1,693 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>精密铸造 · 熔模铸造全流程 3D 演示</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100%;height:100%;overflow:hidden;background:#05070d;
+    font-family:"PingFang SC","Microsoft YaHei","Helvetica Neue",Arial,sans-serif}
+  #c{display:block;position:fixed;inset:0;cursor:grab}
+  #c:active{cursor:grabbing}
+
+  .corner{position:fixed;color:#ffb070;font-family:Consolas,Menlo,monospace;
+    pointer-events:none;z-index:5;
+    text-shadow:0 0 10px rgba(255,150,60,.85),0 0 26px rgba(255,90,20,.45)}
+  .corner .eq{font-size:clamp(12px,1.45vw,20px);font-weight:700;letter-spacing:1.2px;color:#ffd9a8}
+  .corner .sub{font-size:clamp(8px,.9vw,11px);color:#a06a3a;margin-top:4px;letter-spacing:.5px}
+  .tl{top:14px;left:18px;text-align:left}
+  .tr{top:14px;right:18px;text-align:right}
+  .bl{bottom:14px;left:18px;text-align:left}
+  .br{bottom:14px;right:18px;text-align:right}
+
+  #topText{position:fixed;top:8px;left:50%;transform:translateX(-50%);
+    width:min(95vw,1160px);text-align:center;
+    font-size:clamp(13px,1.55vw,22px);line-height:1.5;letter-spacing:.06em;
+    color:#fff0dc;font-weight:600;pointer-events:none;z-index:10;opacity:0;
+    text-shadow:0 0 12px rgba(255,150,60,.95),0 0 32px rgba(255,90,20,.6),0 0 64px rgba(200,60,0,.35)}
+  #topText::before{content:'';position:absolute;inset:-18px -50px -12px;
+    background:radial-gradient(ellipse at center,rgba(90,35,0,.8),rgba(50,15,0,.35) 55%,transparent 75%);
+    z-index:-1;filter:blur(7px);border-radius:50%}
+
+  #btn{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);
+    padding:10px 32px;border-radius:28px;border:1px solid rgba(255,150,60,.55);
+    background:linear-gradient(180deg,rgba(120,55,10,.7),rgba(40,15,5,.9));
+    color:#ffcf9a;font-size:13px;letter-spacing:3px;cursor:pointer;
+    box-shadow:0 0 24px rgba(255,120,30,.45),inset 0 0 20px rgba(255,120,40,.2);
+    font-family:inherit;transition:.25s;z-index:20}
+  #btn:hover{background:linear-gradient(180deg,rgba(190,90,20,.85),rgba(70,28,8,.95));
+    box-shadow:0 0 38px rgba(255,180,80,.85),inset 0 0 26px rgba(255,160,60,.4);
+    color:#fff;transform:translateX(-50%) translateY(-2px)}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div class="corner tl">
+  <div class="eq">v = √(2gh)</div>
+  <div class="sub">浇注速度 · 重力充型</div>
+</div>
+<div class="corner tr">
+  <div class="eq">t = V / Q</div>
+  <div class="sub">充型时间 · 体积流量</div>
+</div>
+<div class="corner bl">
+  <div class="eq">δ = α·ΔT·L</div>
+  <div class="sub">凝固收缩 · 线收缩量</div>
+</div>
+<div class="corner br">
+  <div class="eq">G = Σ(∇²T·dt)</div>
+  <div class="sub">缩松判据 · 温度梯度累积</div>
+</div>
+
+<div id="topText"></div>
+<button id="btn">▶ 播放精密铸造全流程</button>
+
+<script>
+(function(){
+'use strict';
+
+/* ==================== 画布 ==================== */
+const cvs = document.getElementById('c');
+const ctx = cvs.getContext('2d');
+let W = 0, H = 0, DPR = 1;
+
+function resize(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  cvs.width  = Math.round(W * DPR);
+  cvs.height = Math.round(H * DPR);
+  cvs.style.width  = W + 'px';
+  cvs.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+window.addEventListener('resize', resize);
+resize();
+
+/* ==================== 相机 / 投影 ==================== */
+let yaw = -0.55, pitch = 0.24, userZoom = 1, autoYaw = 0;
+const CAM_DIST = 1500, FOCAL = 1500;
+
+function viewScale(){
+  return Math.min(W / 1250, H / 830, 1.55) * userZoom;
+}
+
+function project(x, y, z){
+  y -= 30;                                  // 画面纵向居中
+  const cy = Math.cos(yaw + autoYaw), sy = Math.sin(yaw + autoYaw);
+  const X1 = x * cy - z * sy;
+  const Z1 = x * sy + z * cy;
+  const cp = Math.cos(pitch), sp = Math.sin(pitch);
+  const Y1 = y * cp - Z1 * sp;
+  const Z2 = y * sp + Z1 * cp;
+  const s = FOCAL / (CAM_DIST + Z2) * viewScale();
+  return { x: W * 0.5 + X1 * s, y: H * 0.5 - Y1 * s, z: Z2, s: s };
+}
+
+/* ==================== 光照 ==================== */
+const LIGHT = (function(){
+  const v = [-0.38, 0.78, -0.50];
+  const m = Math.hypot(v[0], v[1], v[2]);
+  return [v[0]/m, v[1]/m, v[2]/m];
+})();
+function shade(n){
+  return Math.max(0, n[0]*LIGHT[0] + n[1]*LIGHT[1] + n[2]*LIGHT[2]);
+}
+function col(h, s, l, a){
+  return 'hsla(' + h + ',' + s + '%,' + Math.max(0, Math.min(100, l)) + '%,' + a + ')';
+}
+
+/* ==================== 几何图元 ==================== */
+function drawTube(ax, ay, az, bx, by, bz, r, hue, sat, lum, alpha, caps){
+  const dx = bx - ax, dy = by - ay, dz = bz - az;
+  const len = Math.hypot(dx, dy, dz);
+  if (len < 1e-4 || r < 0.02) return;
+
+  const ux = dx/len, uy = dy/len, uz = dz/len;
+  let nx, ny, nz;
+  if (Math.abs(uy) < 0.9){ nx = -uz; ny = 0; nz = ux; }
+  else { nx = 1; ny = 0; nz = 0; }
+  let nl = Math.hypot(nx, ny, nz);
+  nx /= nl; ny /= nl; nz /= nl;
+  const vx = uy*nz - uz*ny;
+  const vy = uz*nx - ux*nz;
+  const vz = ux*ny - uy*nx;
+
+  const N = 14;
+  const PA = [], PB = [];
+  for (let i = 0; i < N; i++){
+    const a = i / N * Math.PI * 2;
+    const ca = Math.cos(a), sa = Math.sin(a);
+    const ox = nx*ca + vx*sa, oy = ny*ca + vy*sa, oz = nz*ca + vz*sa;
+    PA.push(project(ax + ox*r, ay + oy*r, az + oz*r));
+    PB.push(project(bx + ox*r, by + oy*r, bz + oz*r));
+  }
+
+  const strips = [];
+  for (let i = 0; i < N; i++){
+    const j = (i + 1) % N;
+    const a = (i + 0.5) / N * Math.PI * 2;
+    const ca = Math.cos(a), sa = Math.sin(a);
+    strips.push({
+      i: i, j: j,
+      z: (PA[i].z + PA[j].z + PB[i].z + PB[j].z) * 0.25,
+      n: [nx*ca + vx*sa, ny*ca + vy*sa, nz*ca + vz*sa]
+    });
+  }
+  strips.sort(function(a, b){ return b.z - a.z; });
+
+  for (let k = 0; k < strips.length; k++){
+    const st = strips[k];
+    const sh = 0.30 + 1.05 * shade(st.n);
+    ctx.beginPath();
+    ctx.moveTo(PA[st.i].x, PA[st.i].y);
+    ctx.lineTo(PA[st.j].x, PA[st.j].y);
+    ctx.lineTo(PB[st.j].x, PB[st.j].y);
+    ctx.lineTo(PB[st.i].x, PB[st.i].y);
+    ctx.closePath();
+    ctx.fillStyle = col(hue, sat, lum * sh, alpha);
+    ctx.fill();
+  }
+
+  if (caps){
+    ctx.beginPath();
+    ctx.moveTo(PA[0].x, PA[0].y);
+    for (let i = 1; i < N; i++) ctx.lineTo(PA[i].x, PA[i].y);
+    ctx.closePath();
+    ctx.fillStyle = col(hue, sat, lum * 0.62, alpha * 0.95);
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.moveTo(PB[0].x, PB[0].y);
+    for (let i = 1; i < N; i++) ctx.lineTo(PB[i].x, PB[i].y);
+    ctx.closePath();
+    ctx.fillStyle = col(hue, sat, Math.min(96, lum * 1.28), alpha * 0.95);
+    ctx.fill();
+  }
+}
+
+function drawBox(cx, cy, cz, sx, sy, sz, hue, sat, lum, alpha){
+  const hx = sx/2, hy = sy/2, hz = sz/2;
+  const V = [
+    [-1,-1,-1],[1,-1,-1],[1,1,-1],[-1,1,-1],
+    [-1,-1, 1],[1,-1, 1],[1,1, 1],[-1,1, 1]
+  ].map(function(v){
+    return project(cx + v[0]*hx, cy + v[1]*hy, cz + v[2]*hz);
+  });
+
+  const F = [
+    { i:[0,1,2,3], n:[0,0,-1] },
+    { i:[4,5,6,7], n:[0,0, 1] },
+    { i:[0,1,5,4], n:[0,-1,0] },
+    { i:[2,3,7,6], n:[0, 1,0] },
+    { i:[0,3,7,4], n:[-1,0,0] },
+    { i:[1,2,6,5], n:[ 1,0,0] }
+  ];
+  for (let i = 0; i < F.length; i++){
+    const f = F[i];
+    f.z = (V[f.i[0]].z + V[f.i[1]].z + V[f.i[2]].z + V[f.i[3]].z) * 0.25;
+  }
+  F.sort(function(a, b){ return b.z - a.z; });
+
+  for (let k = 0; k < F.length; k++){
+    const f = F[k];
+    const sh = 0.32 + 1.02 * shade(f.n);
+    ctx.beginPath();
+    ctx.moveTo(V[f.i[0]].x, V[f.i[0]].y);
+    for (let m = 1; m < 4; m++) ctx.lineTo(V[f.i[m]].x, V[f.i[m]].y);
+    ctx.closePath();
+    ctx.fillStyle = col(hue, sat, lum * sh, alpha);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,225,190,' + (0.20 * alpha) + ')';
+    ctx.lineWidth = 0.9;
+    ctx.stroke();
+  }
+}
+
+/* ==================== 蜡树几何定义 ==================== */
+const TREE = {
+  cupY: 252, cupR: 66, cupH: 72,
+  sprueR: 20, sprueTop: 220, sprueBot: -182,
+  levels: [
+    { y:  82, len: 132, brR: 12 },
+    { y: -30, len: 142, brR: 12 },
+    { y: -132, len: 122, brR: 11 }
+  ],
+  partSize: 58,
+  dirs: [[1,0],[-1,0],[0,1],[0,-1]]
+};
+
+const PARTS = [];
+TREE.levels.forEach(function(lv){
+  TREE.dirs.forEach(function(d){
+    PARTS.push({
+      x: d[0] * (lv.len + TREE.partSize * 0.55),
+      y: lv.y,
+      z: d[1] * (lv.len + TREE.partSize * 0.55),
+      level: lv,
+      dir: d
+    });
+  });
+});
+
+/* ==================== 树形结构绘制 ==================== */
+function segClip(yBot, yTop, fillY){
+  if (fillY === null || fillY === undefined) return [yBot, yTop];
+  const t = Math.min(yTop, fillY);
+  if (t <= yBot) return null;
+  return [yBot, t];
+}
+
+function drawTreeStructure(radiusAdd, partAdd, hue, sat, lum, alpha, fillY, glow){
+  const sprueR = TREE.sprueR + radiusAdd;
+  const brAdd   = radiusAdd * 0.85;
+  const pAdd    = partAdd;
+
+  /* --- 浇口杯 --- */
+  const cupBot = TREE.cupY - TREE.cupH/2;
+  const cupTop = TREE.cupY + TREE.cupH/2;
+  const cs = segClip(cupBot, cupTop, fillY);
+  if (cs){
+    drawTube(0, cs[0], 0, 0, cs[1], 0, TREE.cupR + radiusAdd,
+             hue, sat, lum, alpha, true);
+  }
+
+  /* --- 直浇道 --- */
+  const ss = segClip(TREE.sprueBot, TREE.sprueTop, fillY);
+  if (ss){
+    drawTube(0, ss[0], 0, 0, ss[1], 0, sprueR, hue, sat, lum, alpha, true);
+  }
+
+  /* --- 横浇道 + 铸件 --- */
+  for (let li = 0; li < TREE.levels.length; li++){
+    const lv = TREE.levels[li];
+
+    /* 横浇道分支 */
+    const brFilled = (fillY === null || fillY === undefined) ? true : (fillY > lv.y - lv.brR - brAdd);
+    if (brFilled){
+      for (let di = 0; di < TREE.dirs.length; di++){
+        const d = TREE.dirs[di];
+        drawTube(0, lv.y, 0,
+                 d[0] * lv.len, lv.y, d[1] * lv.len,
+                 lv.brR + brAdd, hue, sat, lum, alpha, true);
+      }
+    }
+
+    /* 铸件（盒体） */
+    const sz = TREE.partSize + pAdd;
+    for (let di = 0; di < PARTS.length; di++){
+      const p = PARTS[di];
+      if (p.level !== lv) continue;
+      const pBot = p.y - sz/2;
+      const pTop = p.y + sz/2;
+      let dTop = pTop;
+      if (fillY !== null && fillY !== undefined){
+        if (fillY <= pBot) continue;
+        dTop = Math.min(pTop, fillY);
+      }
+      const hh = dTop - pBot;
+      if (hh > 0.6){
+        drawBox(p.x, pBot + hh/2, p.z, sz, hh, sz,
+                hue, sat, lum, alpha);
+      }
+    }
+  }
+}
+
+/* ==================== 碎片 ==================== */
+let shards = [];
+let shardActive = false;
+
+function spawnShards(){
+  shards = [];
+  for (let i = 0; i < 90; i++){
+    const a = Math.random() * Math.PI * 2;
+    const rad = 28 + Math.random() * 150;
+    shards.push({
+      x: Math.cos(a) * rad,
+      y: -170 + Math.random() * 440,
+      z: Math.sin(a) * rad,
+      vx: Math.cos(a) * (55 + Math.random() * 150),
+      vy: 25 + Math.random() * 120,
+      vz: Math.sin(a) * (55 + Math.random() * 150),
+      rot: Math.random() * 6.283,
+      rv: (Math.random() - 0.5) * 11,
+      sz: 5 + Math.random() * 14,
+      hue: 28 + Math.random() * 24,
+      lum: 40 + Math.random() * 24,
+      life: 0
+    });
+  }
+}
+
+function updateShards(dt){
+  for (let i = 0; i < shards.length; i++){
+    const s = shards[i];
+    s.x += s.vx * dt;
+    s.y += s.vy * dt;
+    s.z += s.vz * dt;
+    s.vy -= 230 * dt;
+    s.rot += s.rv * dt;
+    s.vx *= 0.985;
+    s.vz *= 0.985;
+    s.life += dt;
+  }
+}
+
+function drawShards(){
+  for (let i = 0; i < shards.length; i++){
+    const s = shards[i];
+    const a = Math.max(0, 1 - s.life / 3.2);
+    if (a <= 0.01) continue;
+    const p = project(s.x, s.y, s.z);
+    const sz = s.sz * p.s;
+    if (sz < 0.6) continue;
+
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(s.rot);
+    ctx.beginPath();
+    ctx.moveTo(-sz, -sz * 0.6);
+    ctx.lineTo(sz * 0.85, -sz * 0.95);
+    ctx.lineTo(sz * 0.6, sz * 0.85);
+    ctx.lineTo(-sz * 0.7, sz * 0.7);
+    ctx.closePath();
+    ctx.fillStyle = col(s.hue, 16, s.lum, 0.9 * a);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(220,200,180,' + (0.32 * a) + ')';
+    ctx.lineWidth = 0.8;
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+/* ==================== 背景 ==================== */
+function drawBG(){
+  const g = ctx.createRadialGradient(W * 0.5, H * 0.44, 0,
+                                     W * 0.5, H * 0.44, Math.max(W, H) * 0.85);
+  g.addColorStop(0,    '#16202e');
+  g.addColorStop(0.45, '#0b1119');
+  g.addColorStop(1,    '#03050a');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+
+  const g2 = ctx.createLinearGradient(0, 0, 0, H * 0.42);
+  g2.addColorStop(0, 'rgba(255,120,30,0.075)');
+  g2.addColorStop(1, 'rgba(255,120,30,0)');
+  ctx.fillStyle = g2;
+  ctx.fillRect(0, 0, W, H * 0.42);
+}
+
+function drawFloor(){
+  ctx.lineWidth = 1;
+  for (let x = -650; x <= 650; x += 100){
+    const a = project(x, -270, -420);
+    const b = project(x, -270,  420);
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.strokeStyle = 'rgba(90,130,180,0.10)';
+    ctx.stroke();
+  }
+  for (let z = -420; z <= 420; z += 84){
+    const a = project(-650, -270, z);
+    const b = project( 650, -270, z);
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.strokeStyle = 'rgba(90,130,180,0.10)';
+    ctx.stroke();
+  }
+}
+
+/* ==================== 工艺阶段进度条 ==================== */
+const STAGES = ['蜡模', '制壳', '脱蜡', '浇注', '凝固', '落砂'];
+const BOUNDS = [0, 5, 11, 15, 22, 26, 30];
+
+function roundRect(x, y, w, h, r){
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+function drawProgress(t){
+  const bw = Math.min(W * 0.52, 620);
+  const bx = (W - bw) / 2;
+  const by = H - 76;
+  const bh = 9;
+
+  ctx.fillStyle = 'rgba(8,16,26,0.85)';
+  roundRect(bx - 4, by - 4, bw + 8, bh + 8, 7);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(120,170,220,0.22)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  for (let i = 0; i < STAGES.length; i++){
+    const x0 = bx + bw * BOUNDS[i] / 30;
+    const x1 = bx + bw * BOUNDS[i + 1] / 30;
+    const active = (t >= BOUNDS[i] && t < BOUNDS[i + 1]);
+    const done   = (t >= BOUNDS[i + 1]);
+
+    ctx.fillStyle = active
+      ? 'rgba(255,150,50,0.95)'
+      : (done ? 'rgba(210,95,25,0.45)' : 'rgba(55,85,115,0.42)');
+    ctx.fillRect(x0 + 1, by, x1 - x0 - 2, bh);
+
+    if (active){
+      ctx.save();
+      ctx.shadowColor = 'rgba(255,170,70,0.95)';
+      ctx.shadowBlur = 16;
+      ctx.fillStyle = 'rgba(255,180,80,0.55)';
+      ctx.fillRect(x0 + 1, by, x1 - x0 - 2, bh);
+      ctx.restore();
+    }
+
+    ctx.font = (active ? '700 ' : '600 ') +
+      Math.max(9, Math.min(12, bw / 62)) +
+      'px "PingFang SC","Microsoft YaHei",sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = active ? '#ffd49a' : 'rgba(140,178,210,0.7)';
+    ctx.fillText(STAGES[i], (x0 + x1) / 2, by - 9);
+  }
+}
+
+/* ==================== 阶段参数 ==================== */
+function clamp(v, a, b){ return v < a ? a : (v > b ? b : v); }
+function smooth(u){ u = clamp(u, 0, 1); return u * u * (3 - 2 * u); }
+
+function computePhase(t){
+  let waxA = 0, shellA = 0, shellAdd = 0;
+  let fillY = null, glow = 0, breakAmt = 0;
+
+  if (t < 5){
+    /* 蜡模成型 */
+    waxA = smooth(t / 1.1);
+    glow = 0;
+  } else if (t < 11){
+    /* 制壳 */
+    const u = (t - 5) / 6;
+    waxA = 1 - 0.75 * smooth(u);
+    shellA = smooth(Math.min(1, u * 1.7)) * 0.80;
+    shellAdd = smooth(u) * 15;
+    glow = 0;
+  } else if (t < 15){
+    /* 脱蜡 */
+    const u = (t - 11) / 4;
+    waxA = 0.25 * (1 - smooth(Math.min(1, u * 1.3)));
+    shellA = 0.80;
+    shellAdd = 15;
+    glow = 0;
+  } else if (t < 22){
+    /* 浇注 */
+    const u = (t - 15) / 7;
+    shellA = 0.80;
+    shellAdd = 15;
+    const uu = clamp((u - 0.05) / 0.9, 0, 1);
+    fillY = -205 + smooth(uu) * 480;
+    glow = 1;
+  } else if (t < 26){
+    /* 凝固 */
+    const u = (t - 22) / 4;
+    shellA = 0.80;
+    shellAdd = 15;
+    fillY = 300;
+    glow = 1 - smooth(u);
+  } else {
+    /* 落砂 */
+    const u = (t - 26) / 4;
+    shellA = 0.80 * (1 - smooth(clamp(u * 1.7, 0, 1)));
+    shellAdd = 15;
+    fillY = 300;
+    glow = 0;
+    breakAmt = smooth(clamp(u * 1.4, 0, 1));
+  }
+
+  return { waxA: waxA, shellA: shellA, shellAdd: shellAdd,
+           fillY: fillY, glow: glow, breakAmt: breakAmt };
+}
+
+/* ==================== 主渲染 ==================== */
+const DUR = 30;
+let simT = 0;
+let prevT = performance.now();
+
+function render(dt){
+  const t = simT;
+  const P = computePhase(t);
+
+  ctx.clearRect(0, 0, W, H);
+  drawBG();
+  drawFloor();
+
+  /* --- 蜡模 --- */
+  if (P.waxA > 0.02){
+    drawTreeStructure(0, 0, 42, 22, 88, P.waxA * 0.62, null, 0);
+  }
+
+  /* --- 陶瓷壳 --- */
+  if (P.shellA > 0.02){
+    drawTreeStructure(P.shellAdd, P.shellAdd * 1.1,
+                      32, 14, 52, P.shellA * 0.62, null, 0);
+  }
+
+  /* --- 金属液 / 铸件 --- */
+  if (P.fillY !== null){
+    const g = P.glow;
+    const mHue = 26;
+    const mSat = 10 + 90 * g;
+    const mLum = 78 - 22 * g;
+    drawTreeStructure(P.shellAdd * 0.9, P.shellAdd * 0.85,
+                      mHue, mSat, mLum, 0.94, P.fillY, g);
+
+    /* 高温辉光叠加 */
+    if (g > 0.05){
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = 0.28 * g;
+      drawTreeStructure(P.shellAdd * 0.9, P.shellAdd * 0.85,
+                        22, 100, 62, 0.45, P.fillY, g);
+      ctx.restore();
+    }
+  }
+
+  /* --- 碎片 --- */
+  if (shardActive){
+    updateShards(dt);
+    drawShards();
+  }
+
+  /* --- 进度条 --- */
+  drawProgress(t);
+
+  /* --- 提示 --- */
+  ctx.save();
+  ctx.font = '600 11.5px Consolas, monospace';
+  ctx.fillStyle = 'rgba(180,200,225,0.35)';
+  ctx.textAlign = 'center';
+  ctx.fillText('拖拽旋转 · 滚轮缩放', W / 2, H - 46);
+  ctx.restore();
+}
+
+/* ==================== 顶部文字 ==================== */
+const CHUNKS = [
+  '启示：精密铸造实现“以蜡代形、以型铸形”的复杂零件近净成形制造工艺，',
+  '体现了“以柔克刚、借形传形”的巧妙迂回智慧——',
+  '通过中间媒介/模板间接实现高难度制造目标——',
+  '启示我们面对复杂目标时可采用迂回策略借用中间载体间接达成目的。'
+];
+const topEl = document.getElementById('topText');
+let curChunk = -1;
+
+function updateTopText(t){
+  const per = DUR / CHUNKS.length;
+  const idx = Math.min(CHUNKS.length - 1, Math.floor(t / per));
+  if (idx !== curChunk){
+    curChunk = idx;
+    topEl.textContent = CHUNKS[idx];
+  }
+  const local = t - idx * per;
+  let a = 1;
+  if (local < 0.55) a = local / 0.55;
+  else if (local > per - 0.55) a = (per - local) / 0.55;
+  topEl.style.opacity = clamp(a, 0, 1).toFixed(3);
+}
+
+/* ==================== 主循环 ==================== */
+function loop(now){
+  const dt = Math.min((now - prevT) / 1000, 0.06);
+  prevT = now;
+
+  simT += dt;
+  if (simT >= DUR) simT -= DUR;
+
+  /* 自动旋转（凝固后开始缓慢旋转展示） */
+  autoYaw = simT > 22 ? (simT - 22) * 0.34 : 0;
+
+  /* 落砂碎片触发 */
+  if (simT >= 26 && simT < 27 && !shardActive){
+    shardActive = true;
+    spawnShards();
+  }
+  if (simT < 26 || simT >= 29.6){
+    if (simT < 26) shardActive = false;
+  }
+
+  render(dt);
+  updateTopText(simT);
+
+  requestAnimationFrame(loop);
+}
+
+/* ==================== 交互 ==================== */
+let dragging = false, lastX = 0, lastY = 0;
+
+cvs.addEventListener('pointerdown', function(e){
+  dragging = true;
+  lastX = e.clientX; lastY = e.clientY;
+  cvs.setPointerCapture(e.pointerId);
+});
+window.addEventListener('pointerup', function(){ dragging = false; });
+window.addEventListener('pointermove', function(e){
+  if (!dragging) return;
+  const dx = e.clientX - lastX;
+  const dy = e.clientY - lastY;
+  lastX = e.clientX; lastY = e.clientY;
+  yaw += dx * 0.0062;
+  pitch -= dy * 0.005;
+  pitch = clamp(pitch, -0.35, 1.05);
+});
+cvs.addEventListener('wheel', function(e){
+  e.preventDefault();
+  userZoom *= Math.exp(-e.deltaY * 0.0011);
+  userZoom = clamp(userZoom, 0.45, 3.4);
+}, { passive: false });
+
+document.getElementById('btn').addEventListener('click', function(){
+  simT = 0;
+  curChunk = -1;
+  shardActive = false;
+  autoYaw = 0;
+  prevT = performance.now();
+});
+
+/* ==================== 启动 ==================== */
+requestAnimationFrame(function(t){
+  prevT = t;
+  requestAnimationFrame(loop);
+});
+
+})();
+</script>
+</body>
+</html>

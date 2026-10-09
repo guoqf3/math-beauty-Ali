@@ -1,0 +1,780 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>蒙特卡洛 · 用随机性逼近确定性</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{width:100%;height:100%;overflow:hidden;background:#05060f;}
+  body{font-family:"PingFang SC","Microsoft YaHei",system-ui,-apple-system,sans-serif;}
+
+  #gl{
+    position:fixed;top:0;left:0;
+    width:100vw;height:100vh;
+    display:block;z-index:0;
+  }
+
+  #vignette{
+    position:fixed;top:0;left:0;width:100%;height:100%;
+    pointer-events:none;z-index:5;
+    background:radial-gradient(ellipse at 50% 42%, rgba(0,0,0,0) 28%, rgba(2,3,14,.78) 100%);
+  }
+
+  /* 顶部启迪文字 */
+  #topText{
+    position:fixed;top:14px;left:50%;transform:translateX(-50%);
+    width:min(960px,90vw);
+    text-align:center;
+    font-size:20px;line-height:1.82;letter-spacing:.5px;
+    font-weight:500;
+    color:#eef6ff;
+    text-shadow:0 0 12px rgba(255,210,120,.75),0 0 32px rgba(120,180,255,.5);
+    pointer-events:none;z-index:10;
+    user-select:none;
+  }
+  #topText span{opacity:0;}
+
+  /* 边缘公式 */
+  .fml{
+    position:fixed;z-index:10;pointer-events:none;user-select:none;
+    font-family:"Cambria Math",Georgia,"Times New Roman",serif;
+    font-size:13px;letter-spacing:.5px;white-space:nowrap;
+    color:rgba(180,215,255,.44);
+    text-shadow:0 0 12px rgba(140,180,255,.42);
+    animation:fmlPulse 7s ease-in-out infinite;
+  }
+  @keyframes fmlPulse{0%,100%{opacity:.5;}50%{opacity:1;}}
+  .tl{top:16px;left:18px;}
+  .tr{top:16px;right:18px;text-align:right;}
+  .bl{bottom:16px;left:18px;}
+  .br{bottom:16px;right:18px;text-align:right;}
+
+  /* 控制面板 */
+  #panel{
+    position:fixed;bottom:40px;left:50%;transform:translateX(-50%);
+    display:flex;gap:26px;align-items:center;
+    padding:12px 26px 10px;
+    border-radius:16px;
+    background:rgba(10,14,32,.55);
+    border:1px solid rgba(150,200,255,.18);
+    box-shadow:0 0 30px rgba(80,140,255,.14) inset,0 0 26px rgba(0,0,0,.55);
+    z-index:20;user-select:none;
+    backdrop-filter:blur(10px);
+    -webkit-backdrop-filter:blur(10px);
+  }
+
+  #statsBox{
+    display:flex;gap:20px;align-items:center;
+    padding-right:22px;
+    border-right:1px solid rgba(140,180,255,.16);
+  }
+  .stat{display:flex;flex-direction:column;align-items:center;gap:2px;min-width:74px;}
+  .stat .lbl{
+    font-size:10.5px;letter-spacing:1.2px;font-weight:600;
+    color:rgba(170,205,255,.75);text-transform:uppercase;
+  }
+  .stat .val{
+    font-family:ui-monospace,Menlo,Consolas,monospace;
+    font-size:17px;font-weight:700;letter-spacing:.5px;
+  }
+  #statN   .val{color:#7fe4ff; text-shadow:0 0 14px rgba(120,220,255,.8);}
+  #statEst .val{color:#ffd166; text-shadow:0 0 14px rgba(255,200,90,.85);}
+  #statErr .val{color:#8dffcc; text-shadow:0 0 14px rgba(100,255,200,.8);}
+
+  #sliderBox{display:flex;flex-direction:column;align-items:center;gap:5px;width:210px;}
+  #sliderBox .lbl{
+    font-size:11px;letter-spacing:1.4px;font-weight:600;
+    color:#ffd98a;text-shadow:0 0 10px rgba(255,200,90,.6);
+  }
+  #sliderBox input[type=range]{
+    -webkit-appearance:none;appearance:none;
+    width:200px;height:4px;border-radius:3px;
+    background:linear-gradient(90deg,rgba(120,200,255,.65),rgba(255,210,120,.55));
+    outline:none;cursor:pointer;
+    color:#ffd166;
+  }
+  #sliderBox input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none;appearance:none;
+    width:15px;height:15px;border-radius:50%;
+    background:#fff;border:none;
+    box-shadow:0 0 10px currentColor,0 0 22px currentColor;
+    cursor:grab;
+  }
+  #sliderBox input[type=range]::-moz-range-thumb{
+    width:15px;height:15px;border-radius:50%;border:none;
+    background:#fff;
+    box-shadow:0 0 10px currentColor,0 0 22px currentColor;
+    cursor:grab;
+  }
+
+  #overlay{
+    position:fixed;top:0;left:0;width:100%;height:100%;
+    background:#05060f;z-index:50;pointer-events:none;opacity:1;
+  }
+
+  #err{
+    position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
+    z-index:100;color:#ffb0b0;font-size:16px;text-align:center;
+    padding:24px 32px;border-radius:12px;
+    background:rgba(40,10,20,.78);border:1px solid rgba(255,120,120,.35);
+    display:none;max-width:80vw;line-height:1.7;
+  }
+
+  @media (max-width:820px){
+    #topText{font-size:14px;line-height:1.7;top:8px;}
+    .fml{font-size:10px;}
+    #panel{gap:12px;padding:8px 12px 6px;bottom:28px;flex-direction:column;}
+    #statsBox{border-right:none;border-bottom:1px solid rgba(140,180,255,.16);padding:0 0 8px;gap:12px;}
+    .stat{min-width:58px;}
+    .stat .val{font-size:13px;}
+    #sliderBox{width:170px;}
+    #sliderBox input[type=range]{width:160px;}
+  }
+</style>
+</head>
+<body>
+
+<canvas id="gl"></canvas>
+<div id="vignette"></div>
+
+<div id="topText"></div>
+
+<div class="fml tl">I ≈ (b−a)/N · Σ f(xᵢ)&nbsp;&nbsp;xᵢ ~ U(a,b)</div>
+<div class="fml tr">误差 ∝ 1 / √N&nbsp;&nbsp;·&nbsp;&nbsp;面积比 = 落入率</div>
+<div class="fml bl">∫₀<sup>π</sup> sin(x) dx = 2&nbsp;&nbsp;·&nbsp;&nbsp;区域面积 = π</div>
+<div class="fml br">P( |θ̂ − θ| &gt; ε ) → 0&nbsp;&nbsp;(N → ∞)</div>
+
+<div id="panel">
+  <div id="statsBox">
+    <div class="stat" id="statN">
+      <div class="lbl">样本 N</div>
+      <div class="val">100</div>
+    </div>
+    <div class="stat" id="statEst">
+      <div class="lbl">估计 I</div>
+      <div class="val">0.6366</div>
+    </div>
+    <div class="stat" id="statErr">
+      <div class="lbl">误差</div>
+      <div class="val">0.0000</div>
+    </div>
+  </div>
+  <div id="sliderBox">
+    <div class="lbl">调节样本数 N</div>
+    <input type="range" id="nSlider" min="0" max="1000" value="0">
+  </div>
+</div>
+
+<div id="overlay"></div>
+<div id="err"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+if (typeof THREE === 'undefined') {
+  document.write('<script src="https://unpkg.com/three@0.128.0/build/three.min.js"><\/script>');
+}
+</script>
+
+<script>
+window.addEventListener('load', function () {
+'use strict';
+
+var errBox = document.getElementById('err');
+var overlayEl = document.getElementById('overlay');
+function fail(msg){
+  errBox.style.display = 'block';
+  errBox.textContent = msg;
+  if (overlayEl) overlayEl.style.opacity = '0';
+}
+
+if (typeof THREE === 'undefined') {
+  fail('Three.js 加载失败，请检查网络后刷新页面。');
+  return;
+}
+
+try {
+
+/* ============================================================
+   0. 常量与坐标映射
+   ============================================================ */
+var PI = Math.PI;
+var TRUE_RATIO = 2 / PI;          // ≈ 0.63662
+
+var X_HALF = PI / 2;              // 区域 X 半宽 ≈ 1.5708
+var Z_HALF = 1.2;                 // 区域 Z 半深
+
+function wX(x){ return x - PI / 2; }            // x∈[0,π] → [-1.57,1.57]
+function wZ(y){ return (y - 0.5) * 2.4; }       // y∈[0,1] → [-1.2,1.2]
+
+var LOOP_TIME = 30;
+var MAX_PARTICLES = 10000;
+
+/* ============================================================
+   1. 渲染环境
+   ============================================================ */
+var canvas = document.getElementById('gl');
+var renderer;
+try {
+  renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+} catch (e) {
+  fail('WebGL 初始化失败，请使用支持 WebGL 的浏览器。');
+  return;
+}
+
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+renderer.setSize(Math.max(1, window.innerWidth), Math.max(1, window.innerHeight));
+renderer.setClearColor(0x05060f, 1);
+
+var scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x05060f, 0.030);
+
+var camera = new THREE.PerspectiveCamera(
+  48,
+  Math.max(1, window.innerWidth) / Math.max(1, window.innerHeight),
+  0.1, 300
+);
+
+var camTheta = 0.55, camPhi = 0.92, camDist = 6.2;
+
+function updateCamera(){
+  var sp = Math.sin(camPhi), cp = Math.cos(camPhi);
+  camera.position.set(
+    sp * Math.sin(camTheta) * camDist,
+    cp * camDist + 0.4,
+    sp * Math.cos(camTheta) * camDist
+  );
+  camera.lookAt(0, 0, 0);
+}
+updateCamera();
+
+/* ============================================================
+   2. 灯光
+   ============================================================ */
+scene.add(new THREE.AmbientLight(0x5566aa, 0.9));
+
+var dL1 = new THREE.DirectionalLight(0xffffff, 0.75);
+dL1.position.set(6, 10, 5);
+scene.add(dL1);
+
+var dL2 = new THREE.DirectionalLight(0x88aaff, 0.45);
+dL2.position.set(-6, -8, -6);
+scene.add(dL2);
+
+var pL = new THREE.PointLight(0xffcc66, 0.85, 30);
+pL.position.set(0, 4.5, 0);
+scene.add(pL);
+
+/* ============================================================
+   3. 纹理工具
+   ============================================================ */
+function makeGlowTex(){
+  var S = 128;
+  var c = document.createElement('canvas'); c.width = c.height = S;
+  var g = c.getContext('2d');
+  var grd = g.createRadialGradient(S/2,S/2,0, S/2,S/2,S/2);
+  grd.addColorStop(0.00,'rgba(255,255,255,1.00)');
+  grd.addColorStop(0.22,'rgba(255,255,255,0.70)');
+  grd.addColorStop(0.50,'rgba(255,255,255,0.20)');
+  grd.addColorStop(1.00,'rgba(255,255,255,0.00)');
+  g.fillStyle = grd;
+  g.fillRect(0,0,S,S);
+  return new THREE.CanvasTexture(c);
+}
+var GLOW_TEX = makeGlowTex();
+
+/* ============================================================
+   4. 星空背景
+   ============================================================ */
+(function buildStars(){
+  var N = 1500;
+  var pos = new Float32Array(N * 3);
+  var col = new Float32Array(N * 3);
+  var cc = new THREE.Color();
+  for (var i = 0; i < N; i++) {
+    var r = 60 + Math.random() * 140;
+    var th = Math.random() * Math.PI * 2;
+    var ph = Math.acos(Math.random() * 2 - 1);
+    pos[i*3]   = r * Math.sin(ph) * Math.cos(th);
+    pos[i*3+1] = r * Math.cos(ph) * 0.8;
+    pos[i*3+2] = r * Math.sin(ph) * Math.sin(th);
+    cc.setHSL(0.56 + Math.random() * 0.14, 0.55, 0.58 + Math.random() * 0.35);
+    col[i*3] = cc.r; col[i*3+1] = cc.g; col[i*3+2] = cc.b;
+  }
+  var geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('color',    new THREE.BufferAttribute(col, 3));
+  var mat = new THREE.PointsMaterial({
+    size: 0.9, vertexColors: true, transparent: true, opacity: 0.85,
+    depthWrite: false, blending: THREE.AdditiveBlending,
+    map: GLOW_TEX, sizeAttenuation: true
+  });
+  scene.add(new THREE.Points(geo, mat));
+})();
+
+/* ============================================================
+   5. 采样区域（矩形 + 边框）
+   ============================================================ */
+var planeGeo = new THREE.PlaneGeometry(X_HALF * 2, Z_HALF * 2);
+var planeMat = new THREE.MeshBasicMaterial({
+  color: 0x2c3f66,
+  transparent: true,
+  opacity: 0.14,
+  side: THREE.DoubleSide,
+  depthWrite: false
+});
+var planeMesh = new THREE.Mesh(planeGeo, planeMat);
+planeMesh.rotation.x = -PI / 2;
+planeMesh.position.y = -0.005;
+scene.add(planeMesh);
+
+/* 边框 */
+var borderPts = [
+  new THREE.Vector3(-X_HALF, 0, -Z_HALF),
+  new THREE.Vector3( X_HALF, 0, -Z_HALF),
+  new THREE.Vector3( X_HALF, 0,  Z_HALF),
+  new THREE.Vector3(-X_HALF, 0,  Z_HALF),
+  new THREE.Vector3(-X_HALF, 0, -Z_HALF)
+];
+var borderGeo = new THREE.BufferGeometry().setFromPoints(borderPts);
+var borderLine = new THREE.Line(borderGeo, new THREE.LineBasicMaterial({
+  color: 0x4a90d8, transparent: true, opacity: 0.65,
+  blending: THREE.AdditiveBlending, depthWrite: false
+}));
+scene.add(borderLine);
+
+/* 角落装饰 */
+(function(){
+  var corners = [
+    [-X_HALF,-Z_HALF],[X_HALF,-Z_HALF],[X_HALF,Z_HALF],[-X_HALF,Z_HALF]
+  ];
+  for (var i = 0; i < corners.length; i++) {
+    var s = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: GLOW_TEX, color: 0x6fc4ff, transparent: true, opacity: 0.6,
+      blending: THREE.AdditiveBlending, depthWrite: false
+    }));
+    s.position.set(corners[i][0], 0.02, corners[i][1]);
+    s.scale.set(0.42, 0.42, 1);
+    scene.add(s);
+  }
+})();
+
+/* ============================================================
+   6. 目标曲线 y = sin(x)
+   ============================================================ */
+var N_CURVE = 140;
+var curvePts = [];
+for (var ci = 0; ci <= N_CURVE; ci++) {
+  var cx = (ci / N_CURVE) * PI;
+  var cy = Math.sin(cx);
+  curvePts.push(new THREE.Vector3(wX(cx), 0.025, wZ(cy)));
+}
+var curveObj = new THREE.CatmullRomCurve3(curvePts);
+
+/* 主曲线管 */
+var curveGeo = new THREE.TubeGeometry(curveObj, 200, 0.038, 8, false);
+var curveMesh = new THREE.Mesh(curveGeo, new THREE.MeshBasicMaterial({
+  color: 0xffcc55,
+  transparent: true,
+  opacity: 0.98,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false
+}));
+scene.add(curveMesh);
+
+/* 外发光管 */
+var curveGlowGeo = new THREE.TubeGeometry(curveObj, 140, 0.13, 8, false);
+var curveGlowMesh = new THREE.Mesh(curveGlowGeo, new THREE.MeshBasicMaterial({
+  color: 0xffaa22,
+  transparent: true,
+  opacity: 0.16,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false
+}));
+scene.add(curveGlowMesh);
+
+/* 曲线下方填充 */
+(function buildFill(){
+  var verts = [];
+  for (var i = 0; i < N_CURVE; i++) {
+    var x0 = (i / N_CURVE) * PI;
+    var x1 = ((i + 1) / N_CURVE) * PI;
+    var y0 = Math.sin(x0);
+    var y1 = Math.sin(x1);
+
+    var ax = wX(x0), az0 = wZ(0), az1 = wZ(y0);
+    var bx = wX(x1), bz0 = wZ(0), bz1 = wZ(y1);
+
+    // 三角形1
+    verts.push(ax, 0.012, az0);
+    verts.push(bx, 0.012, bz0);
+    verts.push(bx, 0.012, bz1);
+    // 三角形2
+    verts.push(ax, 0.012, az0);
+    verts.push(bx, 0.012, bz1);
+    verts.push(ax, 0.012, az1);
+  }
+  var g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+  var m = new THREE.MeshBasicMaterial({
+    color: 0xffaa22,
+    transparent: true,
+    opacity: 0.055,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  });
+  scene.add(new THREE.Mesh(g, m));
+})();
+
+/* ============================================================
+   7. 粒子（随机采样点）
+   ============================================================ */
+var particles = [];
+
+var pPositions = new Float32Array(MAX_PARTICLES * 3);
+var pColors    = new Float32Array(MAX_PARTICLES * 3);
+
+var goldCount = 0, blueCount = 0;
+
+for (var pi = 0; pi < MAX_PARTICLES; pi++) {
+  var px = Math.random() * PI;
+  var py = Math.random();
+  var inside = py < Math.sin(px);
+  particles.push({ x: px, y: py, inside: inside });
+
+  pPositions[pi*3]     = wX(px) + (Math.random() - 0.5) * 0.01;
+  pPositions[pi*3 + 1] = 0.035 + Math.random() * 0.025;
+  pPositions[pi*3 + 2] = wZ(py) + (Math.random() - 0.5) * 0.01;
+
+  if (inside) {
+    pColors[pi*3]     = 1.00;
+    pColors[pi*3 + 1] = 0.82;
+    pColors[pi*3 + 2] = 0.26;
+    goldCount++;
+  } else {
+    pColors[pi*3]     = 0.38;
+    pColors[pi*3 + 1] = 0.68;
+    pColors[pi*3 + 2] = 1.00;
+    blueCount++;
+  }
+}
+
+var pGeo = new THREE.BufferGeometry();
+pGeo.setAttribute('position', new THREE.BufferAttribute(pPositions, 3));
+pGeo.setAttribute('color',    new THREE.BufferAttribute(pColors, 3));
+pGeo.setDrawRange(0, 0);
+
+var pMat = new THREE.PointsMaterial({
+  size: 0.062,
+  vertexColors: true,
+  transparent: true,
+  opacity: 0.95,
+  map: GLOW_TEX,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false,
+  sizeAttenuation: true
+});
+
+var pPoints = new THREE.Points(pGeo, pMat);
+scene.add(pPoints);
+
+/* ============================================================
+   8. 统计计数光环
+   ============================================================ */
+var haloGroup = new THREE.Group();
+scene.add(haloGroup);
+
+var halos = [];
+for (var hi = 0; hi < 3; hi++) {
+  var hRad = 2.4 + hi * 0.55;
+  var hMat = new THREE.MeshBasicMaterial({
+    color: 0x7fd8ff, transparent: true, opacity: 0.16,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  });
+  var hMesh = new THREE.Mesh(new THREE.TorusGeometry(hRad, 0.018, 6, 96), hMat);
+  hMesh.rotation.x = PI / 2;
+  hMesh.position.y = 0.9 + hi * 0.55;
+  haloGroup.add(hMesh);
+  halos.push({ mesh: hMesh, mat: hMat, baseY: hMesh.position.y, spd: 0.3 + hi * 0.22, ph: hi * 1.3 });
+}
+
+/* 沿光环流动的粒子 */
+var HALO_DOT_N = 60;
+var hdGeo = new THREE.BufferGeometry();
+var hdPos = new Float32Array(HALO_DOT_N * 3);
+var hdDat = [];
+for (var hd = 0; hd < HALO_DOT_N; hd++) {
+  hdDat.push({
+    ang: Math.random() * PI * 2,
+    ring: hd % 3,
+    sp: 0.35 + Math.random() * 0.5
+  });
+  hdPos[hd*3] = 0; hdPos[hd*3+1] = 0; hdPos[hd*3+2] = 0;
+}
+hdGeo.setAttribute('position', new THREE.BufferAttribute(hdPos, 3));
+var hdPoints = new THREE.Points(hdGeo, new THREE.PointsMaterial({
+  color: 0xaef0ff, size: 0.09, transparent: true, opacity: 0.85,
+  depthWrite: false, blending: THREE.AdditiveBlending,
+  map: GLOW_TEX, sizeAttenuation: true
+}));
+haloGroup.add(hdPoints);
+
+/* ============================================================
+   9. 状态与统计
+   ============================================================ */
+var loopT = 0;
+var autoMode = true;
+var manualN = 10000;
+var displayN = 100;
+var estimateRatio = TRUE_RATIO;
+var sigma = 0.05;
+var lastEstTime = 0;
+var estimateDisplay = TRUE_RATIO;
+
+var SLIDER_LOG = Math.log(10000);   // N 从 100 → 1e6
+
+function nToSlider(n){
+  var v = Math.log(n / 100) / SLIDER_LOG * 1000;
+  return Math.max(0, Math.min(1000, Math.round(v)));
+}
+function sliderToN(v){
+  return Math.round(100 * Math.exp(v / 1000 * SLIDER_LOG));
+}
+
+/* 蒙特卡洛估计：真实比例 ± 1/√N 尺度的波动 */
+function computeEstimate(N){
+  var s = Math.sqrt(TRUE_RATIO * (1 - TRUE_RATIO) / Math.max(1, N));
+  // 近似正态（3 个均匀分布之和）
+  var z = (Math.random() + Math.random() + Math.random() - 1.5) * 1.63;
+  return { est: TRUE_RATIO + z * s, sig: s };
+}
+
+/* ============================================================
+   10. 面板 & 滑块
+   ============================================================ */
+var sliderEl  = document.getElementById('nSlider');
+var statNEl   = document.querySelector('#statN .val');
+var statEstEl = document.querySelector('#statEst .val');
+var statErrEl = document.querySelector('#statErr .val');
+
+sliderEl.addEventListener('input', function(){
+  autoMode = false;
+  manualN = sliderToN(+this.value);
+  displayN = manualN;
+  var r = computeEstimate(displayN);
+  estimateRatio = r.est;
+  sigma = r.sig;
+  estimateDisplay = estimateRatio;
+  updateStats(true);
+});
+
+function updateStats(force){
+  var nTxt = displayN >= 1000000 ? (displayN / 1000000).toFixed(2) + 'M'
+           : displayN >= 1000    ? (displayN / 1000).toFixed(displayN >= 10000 ? 0 : 1) + 'k'
+           : String(displayN);
+  statNEl.textContent = nTxt;
+  statEstEl.textContent = estimateDisplay.toFixed(4);
+  var err = Math.abs(estimateDisplay - TRUE_RATIO);
+  statErrEl.textContent = err < 0.00005 ? '≈0' : err.toFixed(4);
+}
+
+/* ============================================================
+   11. 顶部文字
+   ============================================================ */
+var TEXT = "蒙特卡洛用大量随机采样逼近确定性问题——用随机性解决确定性难题，启示复杂问题可通过海量简单重复实验逼近精确解。";
+var topTextEl = document.getElementById('topText');
+var charSpans = [];
+(function buildText(){
+  var frag = document.createDocumentFragment();
+  for (var i = 0; i < TEXT.length; i++) {
+    var s = document.createElement('span');
+    s.textContent = TEXT[i];
+    s._o = -1;
+    frag.appendChild(s);
+    charSpans.push(s);
+  }
+  topTextEl.appendChild(frag);
+})();
+
+var TEXT_START = 0.8;
+var TEXT_END   = 6.2;
+var TEXT_GAP   = (TEXT_END - TEXT_START) / Math.max(1, charSpans.length);
+
+function updateText(){
+  for (var i = 0; i < charSpans.length; i++) {
+    var t0 = TEXT_START + i * TEXT_GAP;
+    var o = (loopT - t0) / 0.30;
+    if (o < 0) o = 0; else if (o > 1) o = 1;
+    o = Math.round(o * 16) / 16;
+    if (charSpans[i]._o !== o) {
+      charSpans[i]._o = o;
+      charSpans[i].style.opacity = o;
+    }
+  }
+}
+
+/* ============================================================
+   12. 遮罩
+   ============================================================ */
+function updateOverlay(){
+  var ov;
+  if (loopT > 28.4) ov = Math.min(1, (loopT - 28.4) / 1.6);
+  else              ov = Math.max(0, 1 - loopT / 1.2);
+  overlayEl.style.opacity = ov.toFixed(3);
+}
+
+/* ============================================================
+   13. 交互
+   ============================================================ */
+var dragging = false, lastX = 0, lastY = 0, idleT = 0;
+
+canvas.addEventListener('pointerdown', function(e){
+  dragging = true; lastX = e.clientX; lastY = e.clientY;
+  canvas.style.cursor = 'grabbing';
+});
+window.addEventListener('pointerup', function(){
+  dragging = false;
+  canvas.style.cursor = 'grab';
+});
+window.addEventListener('pointermove', function(e){
+  if (!dragging) return;
+  camTheta -= (e.clientX - lastX) * 0.006;
+  camPhi   -= (e.clientY - lastY) * 0.0045;
+  camPhi = Math.max(0.30, Math.min(1.42, camPhi));
+  lastX = e.clientX; lastY = e.clientY;
+  idleT = 0;
+});
+canvas.style.cursor = 'grab';
+
+window.addEventListener('resize', function(){
+  var W = Math.max(1, window.innerWidth);
+  var H = Math.max(1, window.innerHeight);
+  camera.aspect = W / H;
+  camera.updateProjectionMatrix();
+  renderer.setSize(W, H);
+});
+
+/* ============================================================
+   14. 主循环
+   ============================================================ */
+var lastT = performance.now();
+var errCount = 0;
+
+function animate(){
+  requestAnimationFrame(animate);
+  var now;
+  try { now = performance.now(); } catch (e) { now = Date.now(); }
+
+  var dt = (now - lastT) / 1000;
+  lastT = now;
+  if (!isFinite(dt) || dt < 0) dt = 0;
+  if (dt > 0.05) dt = 0.05;
+
+  try {
+    tick(dt, now / 1000);
+  } catch (e) {
+    errCount++;
+    if (errCount <= 3) console.error(e);
+  }
+}
+
+function tick(dt, nowT){
+  /* 循环计时 */
+  loopT += dt;
+  if (loopT >= LOOP_TIME) {
+    loopT -= LOOP_TIME;
+    autoMode = true;
+  }
+  if (!isFinite(loopT)) loopT = 0;
+
+  /* ---- N 的计算 ---- */
+  if (autoMode) {
+    var f = loopT / LOOP_TIME;
+    displayN = Math.round(100 * Math.pow(10000, f));
+    var sv = nToSlider(displayN);
+    if (+sliderEl.value !== sv) sliderEl.value = sv;
+  }
+
+  /* ---- 统计估计（每 ~0.22s 刷新一次） ---- */
+  if (nowT - lastEstTime > 0.22) {
+    lastEstTime = nowT;
+    var r = computeEstimate(displayN);
+    estimateRatio = r.est;
+    sigma = r.sig;
+  }
+  // 显示值平滑
+  estimateDisplay += (estimateRatio - estimateDisplay) * Math.min(1, dt * 8);
+  updateStats();
+
+  /* ---- 粒子显示数量 ---- */
+  var visibleCount = Math.min(MAX_PARTICLES, displayN);
+  if (pGeo.drawRange.count !== visibleCount) {
+    pGeo.setDrawRange(0, visibleCount);
+  }
+
+  /* ---- 粒子闪烁 ---- */
+  var hRatio = Math.min(1, displayN / MAX_PARTICLES);
+  pMat.size = 0.058 + 0.010 * (0.5 + 0.5 * Math.sin(nowT * 1.8));
+  pMat.opacity = 0.85 + 0.13 * (0.5 + 0.5 * Math.sin(nowT * 2.3));
+
+  /* ---- 曲线脉动 ---- */
+  var cPulse = 0.85 + 0.15 * Math.sin(nowT * 2.2);
+  curveMesh.material.opacity = cPulse;
+  curveGlowMesh.material.opacity = 0.10 + 0.10 * cPulse;
+
+  /* ---- 采样区域呼吸 ---- */
+  planeMat.opacity = 0.11 + 0.05 * (0.5 + 0.5 * Math.sin(nowT * 0.9));
+  borderLine.material.opacity = 0.50 + 0.25 * (0.5 + 0.5 * Math.sin(nowT * 1.4));
+
+  /* ---- 统计光环 ---- */
+  haloGroup.rotation.y += dt * 0.10;
+  for (var i = 0; i < halos.length; i++) {
+    var h = halos[i];
+    h.mesh.rotation.z += dt * h.spd * (0.35 + 1.6 * hRatio);
+    h.mesh.position.y = h.baseY + Math.sin(nowT * 0.9 + h.ph) * (0.08 + 0.28 * hRatio);
+    h.mat.opacity = 0.07 + 0.24 * hRatio;
+    h.mat.color.setHSL(0.55 - 0.06 * hRatio, 0.9, 0.65);
+  }
+
+  /* ---- 光环流动粒子 ---- */
+  var hdArr = hdGeo.attributes.position.array;
+  for (var j = 0; j < HALO_DOT_N; j++) {
+    var d = hdDat[j];
+    d.ang += dt * d.sp * (0.6 + 1.4 * hRatio);
+    var ringIdx = d.ring;
+    var rr = 2.4 + ringIdx * 0.55;
+    var yy = halos[ringIdx].mesh.position.y;
+    hdArr[j*3]     = Math.cos(d.ang) * rr;
+    hdArr[j*3 + 1] = yy + (Math.random() - 0.5) * 0.01;
+    hdArr[j*3 + 2] = Math.sin(d.ang) * rr;
+  }
+  hdGeo.attributes.position.needsUpdate = true;
+  hdPoints.material.opacity = 0.35 + 0.50 * hRatio;
+  hdPoints.material.color.setHSL(0.55 - 0.05 * hRatio, 0.9, 0.72);
+
+  /* ---- 相机 ---- */
+  if (!dragging) {
+    idleT += dt;
+    camTheta += dt * 0.055;
+  }
+  updateCamera();
+
+  /* ---- 文字 & 遮罩 ---- */
+  updateText();
+  updateOverlay();
+
+  renderer.render(scene, camera);
+}
+
+requestAnimationFrame(animate);
+
+} catch (e) {
+  console.error(e);
+  fail('初始化失败：' + (e && e.message ? e.message : e));
+}
+
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,797 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>拉普拉斯变换 · 时域到复频域</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100%;height:100%;overflow:hidden;background:#02060e;
+    font-family:"PingFang SC","Microsoft YaHei","Segoe UI",system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased}
+  #app{position:fixed;inset:0}
+  canvas{display:block}
+
+  /* 顶部启迪文字 */
+  #topText{
+    position:fixed;top:18px;left:50%;transform:translateX(-50%);
+    width:min(1080px,80vw);
+    text-align:center;
+    font-size:clamp(13px,1.75vw,22px);
+    line-height:1.8;
+    letter-spacing:.06em;
+    font-weight:500;
+    color:#cdeaff;
+    text-shadow:0 0 14px rgba(80,200,255,.95),0 0 38px rgba(40,130,255,.6),0 0 76px rgba(0,190,220,.3);
+    pointer-events:none;z-index:12;
+  }
+  #topText span{display:inline-block;will-change:opacity}
+
+  /* 边缘公式 */
+  .formula{
+    position:fixed;z-index:12;pointer-events:none;
+    font-family:"Cambria Math","Times New Roman",Georgia,serif;
+    font-size:clamp(10px,1.0vw,15px);
+    color:#6fd0f8;opacity:.75;letter-spacing:.04em;line-height:2.0;
+    text-shadow:0 0 10px rgba(60,190,255,.9),0 0 26px rgba(30,110,255,.55);
+  }
+  .tl{top:16px;left:20px}
+  .bl{bottom:80px;left:20px}
+  .tr{top:16px;right:20px;text-align:right}
+  .br{bottom:80px;right:20px;text-align:right}
+  .formula .dim{opacity:.55;font-size:.9em}
+  .formula .gold{color:#ffcf7a;text-shadow:0 0 12px rgba(255,180,60,.9)}
+  .formula .red{color:#ff8aa8;text-shadow:0 0 12px rgba(255,90,130,.9)}
+
+  /* 控制面板 */
+  #ui{
+    position:fixed;left:50%;bottom:18px;transform:translateX(-50%);
+    z-index:20;display:flex;flex-direction:column;gap:9px;align-items:center;
+    padding:12px 22px;border-radius:16px;
+    background:rgba(6,16,34,.6);
+    border:1px solid rgba(70,170,255,.25);
+    backdrop-filter:blur(10px);
+    box-shadow:0 0 36px rgba(20,80,180,.3),inset 0 0 24px rgba(50,140,255,.07);
+  }
+  #ui .row{display:flex;gap:10px;align-items:center}
+  #ui label{font-size:12.5px;color:#8fc6f0;letter-spacing:.06em;white-space:nowrap}
+  #ui .val{color:#6fe6ff;font-weight:700;min-width:36px;text-align:center;
+    text-shadow:0 0 10px rgba(90,220,255,.9);font-variant-numeric:tabular-nums}
+  input[type=range]{
+    -webkit-appearance:none;appearance:none;width:170px;height:4px;border-radius:4px;
+    background:linear-gradient(90deg,#1a5cff,#00e0ff,#7de3ff);outline:none;cursor:pointer;
+  }
+  input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none;width:14px;height:14px;border-radius:50%;
+    background:#eafaff;border:1px solid #8fe4ff;
+    box-shadow:0 0 14px rgba(120,220,255,.95);cursor:pointer;
+  }
+  input[type=range]::-moz-range-thumb{
+    width:14px;height:14px;border:none;border-radius:50%;
+    background:#eafaff;box-shadow:0 0 14px rgba(120,220,255,.95);cursor:pointer;
+  }
+
+  #vignette{
+    position:fixed;inset:0;pointer-events:none;z-index:8;
+    background:radial-gradient(ellipse at 50% 42%,transparent 36%,rgba(0,0,0,.72) 100%);
+  }
+  @media (max-width:680px){
+    #ui{padding:9px 12px;gap:6px}
+    input[type=range]{width:104px}
+    .formula{font-size:9px}
+    .bl,.br{bottom:104px}
+  }
+</style>
+</head>
+<body>
+
+<div id="app"></div>
+<div id="vignette"></div>
+<div id="topText"></div>
+
+<!-- 边缘公式 -->
+<div class="formula tl">
+  𝓛{f(t)} = ∫<sub>0</sub><sup>∞</sup> f(t)·e<sup>−st</sup> dt<br>
+  <span class="dim">s = σ + iω &nbsp;·&nbsp; 复频率</span>
+</div>
+<div class="formula tr">
+  F(s) = (s+a) / [ (s+a)² + ω₀² ]<br>
+  <span class="gold">极点 s = −a ± iω₀</span> &nbsp; <span class="red">零点 s = −a</span>
+</div>
+<div class="formula bl">
+  收敛条件 &nbsp; Re(s) &gt; −a<br>
+  <span class="dim">f(t) = e<sup>−at</sup>·cos(ω₀t)</span>
+</div>
+<div class="formula br">
+  𝓛{df/dt} = sF(s) − f(0)<br>
+  <span class="dim">微分方程 ⟶ 代数方程</span>
+</div>
+
+<!-- 控制面板 -->
+<div id="ui">
+  <div class="row">
+    <label>σ 收敛因子</label>
+    <input id="sRange" type="range" min="0.30" max="2.80" value="1.00" step="0.01">
+    <span class="val" id="sVal">1.00</span>
+  </div>
+  <div class="row">
+    <label>ω 角频率</label>
+    <input id="wRange" type="range" min="0.40" max="3.20" value="1.50" step="0.01">
+    <span class="val" id="wVal">1.50</span>
+  </div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { EffectComposer }  from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass }      from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass }      from 'three/addons/postprocessing/OutputPass.js';
+
+/* ============================================================
+   常量
+============================================================ */
+const CYCLE   = 30;                 // 循环时长（秒）
+const NX = 90, NZ = 90;             // 曲面网格分辨率
+const SIG_MIN = -4.5, SIG_MAX = 2.5;   // σ 范围
+const OM_MIN  = -4.5, OM_MAX  = 4.5;   // ω 范围
+const H_SURF  = 5.5;                   // 曲面最大高度
+
+/* ============================================================
+   渲染器 / 场景 / 相机
+============================================================ */
+const host = document.getElementById('app');
+const renderer = new THREE.WebGLRenderer({ antialias:true, powerPreference:'high-performance' });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+host.appendChild(renderer.domElement);
+
+const scene  = new THREE.Scene();
+scene.background = new THREE.Color(0x02060e);
+scene.fog = new THREE.FogExp2(0x02060e, 0.0085);
+
+const camera = new THREE.PerspectiveCamera(48, innerWidth/innerHeight, 0.1, 4000);
+
+const camTarget = new THREE.Vector3(0, 1.6, 0);
+let camPhi  = 1.12;
+let camDist = 23;
+let dragTheta = 0;
+
+/* 环境反射（金属质感） */
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+/* ============================================================
+   光斑贴图
+============================================================ */
+function makeGlow(){
+  const s = 128, c = document.createElement('canvas');
+  c.width = c.height = s;
+  const ctx = c.getContext('2d');
+  const g = ctx.createRadialGradient(s/2, s/2, 0, s/2, s/2, s/2);
+  g.addColorStop(0,    'rgba(255,255,255,1)');
+  g.addColorStop(0.20, 'rgba(255,255,255,0.66)');
+  g.addColorStop(0.52, 'rgba(255,255,255,0.17)');
+  g.addColorStop(1,    'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, s, s);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+const GLOW = makeGlow();
+
+/* ============================================================
+   灯光
+============================================================ */
+scene.add(new THREE.AmbientLight(0x224466, 0.6));
+const keyLight = new THREE.DirectionalLight(0x9fd8ff, 1.6);
+keyLight.position.set(-8, 18, 12);
+scene.add(keyLight);
+
+const rimA = new THREE.PointLight(0x2ec8ff, 260, 90); rimA.position.set(-14, 10, 16); scene.add(rimA);
+const rimB = new THREE.PointLight(0x0066ff, 220, 90); rimB.position.set( 16,  8,-14); scene.add(rimB);
+const rimC = new THREE.PointLight(0x00ffe0, 120, 70); rimC.position.set(  0, 14,  0); scene.add(rimC);
+
+/* ============================================================
+   底部参考网格
+============================================================ */
+const baseGrid = new THREE.GridHelper(26, 52, 0x1e5a96, 0x0b2242);
+baseGrid.position.y = -0.02;
+baseGrid.material.transparent = true;
+baseGrid.material.opacity = 0.36;
+baseGrid.material.depthWrite = false;
+scene.add(baseGrid);
+
+/* 复平面坐标轴 */
+const axisMat = new THREE.LineBasicMaterial({ color:0x2f7fc0, transparent:true, opacity:0.45 });
+const axisPts = [
+  -6.5,0,0,   6.5,0,0,
+   0,0,-6.5,  0,0,6.5
+];
+const axisGeo = new THREE.BufferGeometry();
+axisGeo.setAttribute('position', new THREE.Float32BufferAttribute(axisPts, 3));
+scene.add(new THREE.LineSegments(axisGeo, axisMat));
+
+/* ============================================================
+   复频域曲面 |F(s)|
+============================================================ */
+const surfGeo = new THREE.BufferGeometry();
+const VCOUNT  = NX * NZ;
+const surfPos = new Float32Array(VCOUNT * 3);
+const surfCol = new Float32Array(VCOUNT * 3);
+const surfIdx = [];
+for (let j = 0; j < NZ - 1; j++){
+  for (let i = 0; i < NX - 1; i++){
+    const a0 = j * NX + i;
+    const b0 = a0 + 1;
+    const c0 = a0 + NX;
+    const d0 = c0 + 1;
+    surfIdx.push(a0, c0, b0,  b0, c0, d0);
+  }
+}
+surfGeo.setIndex(surfIdx);
+surfGeo.setAttribute('position', new THREE.BufferAttribute(surfPos, 3));
+surfGeo.setAttribute('color',    new THREE.BufferAttribute(surfCol, 3));
+surfGeo.computeVertexNormals();
+
+const surfMat = new THREE.MeshStandardMaterial({
+  vertexColors: true,
+  transparent: true,
+  opacity: 0.86,
+  metalness: 0.72,
+  roughness: 0.28,
+  side: THREE.DoubleSide,
+  envMapIntensity: 0.85,
+  emissive: new THREE.Color(0x0a3358),
+  emissiveIntensity: 0.85,
+});
+const surface = new THREE.Mesh(surfGeo, surfMat);
+scene.add(surface);
+
+/* 曲面线框（稀疏） */
+const wireIdx = [];
+const STRIDE = 6;
+for (let j = 0; j < NZ; j += STRIDE){
+  for (let i = 0; i < NX - 1; i++){
+    wireIdx.push(j*NX + i, j*NX + i + 1);
+  }
+}
+for (let i = 0; i < NX; i += STRIDE){
+  for (let j = 0; j < NZ - 1; j++){
+    wireIdx.push(j*NX + i, (j+1)*NX + i);
+  }
+}
+const wireGeo = new THREE.BufferGeometry();
+const wirePos = new Float32Array(wireIdx.length * 3);
+wireGeo.setIndex(wireIdx);
+wireGeo.setAttribute('position', new THREE.BufferAttribute(wirePos, 3));
+const wireMat = new THREE.LineBasicMaterial({
+  color: 0x7fe4ff, transparent: true, opacity: 0.14,
+  blending: THREE.AdditiveBlending, depthWrite: false
+});
+const wireframe = new THREE.LineSegments(wireGeo, wireMat);
+scene.add(wireframe);
+
+/* 颜色临时对象 */
+const GOLD = new THREE.Color(1.0, 0.78, 0.26);
+const tmpC = new THREE.Color();
+
+/* ============================================================
+   极点喷泉
+============================================================ */
+function makeFountain(hexColor){
+  const g = new THREE.Group();
+
+  // 光柱
+  const beamGeo = new THREE.CylinderGeometry(0.04, 0.34, 5.0, 14, 1, true);
+  beamGeo.translate(0, 2.5, 0);
+  const beamMat = new THREE.MeshBasicMaterial({
+    color: hexColor, transparent: true, opacity: 0.35,
+    blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide
+  });
+  g.add(new THREE.Mesh(beamGeo, beamMat));
+
+  // 光晕
+  const spr = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: GLOW, color: hexColor, transparent: true, opacity: 0.9,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  }));
+  spr.scale.set(2.6, 2.6, 1);
+  spr.position.y = 0.15;
+  g.add(spr);
+
+  // 粒子
+  const FN = 44;
+  const fp = new Float32Array(FN * 3);
+  const fdata = [];
+  for (let i = 0; i < FN; i++){
+    fdata.push({
+      life: Math.random(),
+      speed: 0.4 + Math.random() * 0.9,
+      ang: Math.random() * Math.PI * 2,
+      rad: 0.10 + Math.random() * 0.5
+    });
+  }
+  const fg = new THREE.BufferGeometry();
+  fg.setAttribute('position', new THREE.BufferAttribute(fp, 3));
+  const fm = new THREE.PointsMaterial({
+    size: 0.30, map: GLOW, color: hexColor, transparent: true, opacity: 0.95,
+    blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true
+  });
+  const fpts = new THREE.Points(fg, fm);
+  g.add(fpts);
+
+  return { group: g, data: fdata, pos: fp, geo: fg, beam: g.children[0], spr };
+}
+
+const poleA = makeFountain(0xffb347);   // 上半平面极点
+const poleB = makeFountain(0xff7a5c);   // 下半平面极点
+scene.add(poleA.group);
+scene.add(poleB.group);
+
+/* ============================================================
+   零点漩涡
+============================================================ */
+const zeroGroup = new THREE.Group();
+scene.add(zeroGroup);
+
+const ringGeo = new THREE.TorusGeometry(0.62, 0.035, 8, 48);
+const ringMat = new THREE.MeshBasicMaterial({
+  color: 0xff4d7e, transparent: true, opacity: 0.9,
+  blending: THREE.AdditiveBlending, depthWrite: false
+});
+const zeroRing = new THREE.Mesh(ringGeo, ringMat);
+zeroGroup.add(zeroRing);
+
+const ring2 = new THREE.Mesh(new THREE.TorusGeometry(0.95, 0.02, 8, 48),
+  new THREE.MeshBasicMaterial({
+    color: 0xff8fb0, transparent: true, opacity: 0.55,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  }));
+zeroGroup.add(ring2);
+
+const zeroGlow = new THREE.Sprite(new THREE.SpriteMaterial({
+  map: GLOW, color: 0xff5a88, transparent: true, opacity: 0.85,
+  blending: THREE.AdditiveBlending, depthWrite: false
+}));
+zeroGlow.scale.set(2.0, 2.0, 1);
+zeroGroup.add(zeroGlow);
+
+/* ============================================================
+   收敛边界 (σ = -a)
+============================================================ */
+const convGeo = new THREE.CylinderGeometry(0.022, 0.022, 9.0, 6);
+convGeo.rotateX(Math.PI / 2);
+const convLine = new THREE.Mesh(convGeo, new THREE.MeshBasicMaterial({
+  color: 0x35f0ff, transparent: true, opacity: 0.65,
+  blending: THREE.AdditiveBlending, depthWrite: false
+}));
+convLine.position.y = 0.06;
+scene.add(convLine);
+
+/* ============================================================
+   时域信号丝带
+============================================================ */
+const T_MAX = 5.0;
+const RIB_N = 180;
+const ribGeo = new THREE.BufferGeometry();
+const ribPosArr = new Float32Array(RIB_N * 2 * 3);
+const ribIdx = [];
+for (let i = 0; i < RIB_N - 1; i++){
+  const a0 = i * 2, b0 = i * 2 + 1;
+  const c0 = (i + 1) * 2, d0 = (i + 1) * 2 + 1;
+  ribIdx.push(a0, c0, b0,  b0, c0, d0);
+}
+ribGeo.setIndex(ribIdx);
+ribGeo.setAttribute('position', new THREE.BufferAttribute(ribPosArr, 3));
+
+const ribMat = new THREE.MeshBasicMaterial({
+  color: 0x5ff0ff, transparent: true, opacity: 0.72,
+  blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide
+});
+const ribbon = new THREE.Mesh(ribGeo, ribMat);
+ribbon.position.z = 8.2;
+scene.add(ribbon);
+
+/* 丝带边缘亮线（沿曲线） */
+const ribLineGeo = new THREE.BufferGeometry();
+const ribLinePos = new Float32Array(RIB_N * 3);
+ribLineGeo.setAttribute('position', new THREE.BufferAttribute(ribLinePos, 3));
+const ribLine = new THREE.Line(ribLineGeo, new THREE.LineBasicMaterial({
+  color: 0xbdf6ff, transparent: true, opacity: 0.95,
+  blending: THREE.AdditiveBlending, depthWrite: false
+}));
+ribLine.position.z = 8.2;
+scene.add(ribLine);
+
+/* 时域流动光点 */
+const FLOW_N = 40;
+const flowPos = new Float32Array(FLOW_N * 3);
+const flowData = [];
+for (let i = 0; i < FLOW_N; i++) flowData.push({ u: Math.random() });
+const flowGeo = new THREE.BufferGeometry();
+flowGeo.setAttribute('position', new THREE.BufferAttribute(flowPos, 3));
+const flowPts = new THREE.Points(flowGeo, new THREE.PointsMaterial({
+  size: 0.34, map: GLOW, color: 0x9ff4ff, transparent: true, opacity: 0.95,
+  blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true
+}));
+flowPts.position.z = 8.2;
+scene.add(flowPts);
+
+/* ============================================================
+   背景粒子
+============================================================ */
+const PCOUNT = 520;
+const pPos = new Float32Array(PCOUNT * 3);
+const pCol = new Float32Array(PCOUNT * 3);
+for (let i = 0; i < PCOUNT; i++){
+  pPos[i*3+0] = (Math.random() - 0.5) * 90;
+  pPos[i*3+1] = Math.random() * 46 - 10;
+  pPos[i*3+2] = (Math.random() - 0.5) * 90;
+  tmpC.setHSL(0.50 + Math.random() * 0.12, 0.9, 0.62);
+  pCol[i*3+0] = tmpC.r; pCol[i*3+1] = tmpC.g; pCol[i*3+2] = tmpC.b;
+}
+const pGeo = new THREE.BufferGeometry();
+pGeo.setAttribute('position', new THREE.BufferAttribute(pPos, 3));
+pGeo.setAttribute('color',    new THREE.BufferAttribute(pCol, 3));
+const particles = new THREE.Points(pGeo, new THREE.PointsMaterial({
+  size: 0.42, map: GLOW, vertexColors: true, transparent: true, opacity: 0.7,
+  blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true
+}));
+scene.add(particles);
+
+/* ============================================================
+   后处理
+============================================================ */
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(
+  new THREE.Vector2(innerWidth, innerHeight), 0.68, 0.72, 0.08
+);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+
+/* ============================================================
+   顶部文字
+============================================================ */
+const TEXT = '拉普拉斯变换将微分方程化为代数问题，说明恰当坐标系与变换能化繁为简——解决问题在于找到问题的合法图谱。';
+const topEl = document.getElementById('topText');
+const spans = [...TEXT].map(ch => {
+  const s = document.createElement('span');
+  s.textContent = ch;
+  s.style.opacity = '0';
+  topEl.appendChild(s);
+  return s;
+});
+const CHARS_PER_SEC = 6.2;          // 逐字浮现速度
+
+/* ============================================================
+   交互
+============================================================ */
+let dragging = false, lastX = 0, lastY = 0;
+const el = renderer.domElement;
+
+el.addEventListener('pointerdown', e => {
+  dragging = true; lastX = e.clientX; lastY = e.clientY;
+  el.setPointerCapture(e.pointerId);
+});
+el.addEventListener('pointermove', e => {
+  if (!dragging) return;
+  const dx = e.clientX - lastX;
+  const dy = e.clientY - lastY;
+  lastX = e.clientX; lastY = e.clientY;
+  dragTheta -= dx * 0.005;
+  camPhi = Math.min(1.52, Math.max(0.22, camPhi - dy * 0.0042));
+});
+const endDrag = e => {
+  dragging = false;
+  try { el.releasePointerCapture(e.pointerId); } catch(_){}
+};
+el.addEventListener('pointerup', endDrag);
+el.addEventListener('pointercancel', endDrag);
+el.addEventListener('wheel', e => {
+  e.preventDefault();
+  camDist = Math.min(70, Math.max(11, camDist * (1 + Math.sign(e.deltaY) * 0.085)));
+}, { passive: false });
+
+/* 滑块 */
+const sRange = document.getElementById('sRange');
+const wRange = document.getElementById('wRange');
+const sVal   = document.getElementById('sVal');
+const wVal   = document.getElementById('wVal');
+
+let aVal  = parseFloat(sRange.value);   // 衰减因子 a
+let w0Val = parseFloat(wRange.value);   // 角频率 ω₀
+
+sRange.addEventListener('input', () => {
+  aVal = parseFloat(sRange.value);
+  sVal.textContent = aVal.toFixed(2);
+});
+wRange.addEventListener('input', () => {
+  w0Val = parseFloat(wRange.value);
+  wVal.textContent = w0Val.toFixed(2);
+});
+
+/* ============================================================
+   曲面更新
+============================================================ */
+function updateSurface(t, appear){
+  const pos = surfGeo.attributes.position.array;
+  const col = surfGeo.attributes.color.array;
+
+  const damp  = Math.exp(-t * 0.32);          // 稳定衰减
+  const maxR  = 6.2;
+  const a = aVal, w0 = w0Val;
+
+  let p = 0;
+  for (let j = 0; j < NZ; j++){
+    const z = OM_MIN + (OM_MAX - OM_MIN) * j / (NZ - 1);
+
+    for (let i = 0; i < NX; i++){
+      const x = SIG_MIN + (SIG_MAX - SIG_MIN) * i / (NX - 1);
+
+      const u = x + a;
+      const w = z;
+
+      // |F(s)| = |s+a| / |(s+a)² + ω₀²|
+      const num  = Math.sqrt(u * u + w * w);
+      const dre  = u * u - w * w + w0 * w0;
+      const dim  = 2 * u * w;
+      const den  = Math.sqrt(dre * dre + dim * dim) + 1e-5;
+
+      let m = num / den;
+      if (!isFinite(m) || m > 1e6) m = 1e6;
+
+      // 对数软饱和
+      let h = H_SURF * (1 - Math.exp(-Math.log(1 + m) * 0.55));
+
+      // 径向生长
+      const r = Math.sqrt(x * x + z * z);
+      const grow = Math.min(1, Math.max(0, (appear * maxR + 1.4 - r) / 1.4));
+      h *= grow;
+
+      // 稳定过程中的轻微起伏
+      h += 0.30 * damp * Math.sin(t * 3.4 - r * 1.15) * grow;
+      if (h < 0) h = 0;
+
+      const o = p * 3;
+      pos[o]     = x;
+      pos[o + 1] = h;
+      pos[o + 2] = z;
+
+      // 颜色：深蓝 → 青 → 亮白 → 金
+      const hn = Math.min(1, h / H_SURF);
+      tmpC.setHSL(0.60 - 0.13 * hn, 0.88 - 0.35 * hn, 0.09 + 0.62 * hn);
+      if (hn > 0.70){
+        const q = (hn - 0.70) / 0.30;
+        tmpC.lerp(GOLD, q * 0.9);
+      }
+      col[o]     = tmpC.r;
+      col[o + 1] = tmpC.g;
+      col[o + 2] = tmpC.b;
+
+      p++;
+    }
+  }
+
+  surfGeo.attributes.position.needsUpdate = true;
+  surfGeo.attributes.color.needsUpdate = true;
+  surfGeo.computeVertexNormals();
+
+  // 稀疏线框同步
+  const wp = wireGeo.attributes.position.array;
+  for (let k = 0; k < wireIdx.length; k++){
+    const vi = wireIdx[k] * 3;
+    wp[k*3]     = pos[vi];
+    wp[k*3 + 1] = pos[vi + 1];
+    wp[k*3 + 2] = pos[vi + 2];
+  }
+  wireGeo.attributes.position.needsUpdate = true;
+}
+
+/* ============================================================
+   时域丝带更新
+============================================================ */
+function updateRibbon(t, appear){
+  const pos  = ribGeo.attributes.position.array;
+  const line = ribLineGeo.attributes.position.array;
+  const a = aVal, w0 = w0Val;
+
+  const flow = t * 0.9;
+  const thick = 0.085;
+
+  for (let i = 0; i < RIB_N; i++){
+    const f  = i / (RIB_N - 1);
+    const tt = f * T_MAX;
+    const x  = SIG_MIN + (SIG_MAX - SIG_MIN) * f;
+
+    const pulse = 0.72 + 0.28 * Math.sin(flow * 2.6 - tt * 3.2);
+    const env   = Math.exp(-a * tt) * appear;
+    const y     = env * Math.cos(w0 * tt) * 2.4 * pulse;
+
+    const o = i * 6;
+    pos[o]     = x; pos[o + 1] = y + thick; pos[o + 2] = 0;
+    pos[o + 3] = x; pos[o + 4] = y - thick; pos[o + 5] = 0;
+
+    line[i*3]     = x;
+    line[i*3 + 1] = y;
+    line[i*3 + 2] = 0;
+  }
+
+  ribGeo.attributes.position.needsUpdate = true;
+  ribLineGeo.attributes.position.needsUpdate = true;
+
+  ribMat.opacity   = 0.40 + 0.30 * appear;
+  ribLine.material.opacity = 0.55 + 0.40 * appear;
+}
+
+/* ============================================================
+   极点 / 零点更新
+============================================================ */
+function updateSingularities(t, dt){
+  const a = aVal, w0 = w0Val;
+  const px = -a;
+
+  // ---- 极点喷泉 ----
+  const poles = [
+    { obj: poleA, omega:  w0, color: 0xffb347 },
+    { obj: poleB, omega: -w0, color: 0xff7a5c }
+  ];
+
+  for (const { obj, omega } of poles){
+    obj.group.position.set(px, 3.1, omega);
+
+    const pulse = 0.85 + 0.15 * Math.sin(t * 3.0 + omega * 1.5);
+    obj.beam.scale.set(pulse, pulse * (0.9 + 0.2 * Math.sin(t * 2.2)), pulse);
+
+    const sc = 2.2 + 0.7 * Math.sin(t * 2.6 + omega);
+    obj.spr.scale.set(sc, sc, 1);
+
+    // 粒子
+    const p = obj.pos;
+    for (let i = 0; i < obj.data.length; i++){
+      const d = obj.data[i];
+      d.life += dt * d.speed * 0.55;
+      if (d.life > 1){
+        d.life = 0;
+        d.ang  = Math.random() * Math.PI * 2;
+        d.rad  = 0.10 + Math.random() * 0.5;
+      }
+      const y = d.life * 4.6;
+      const r = d.rad * (1 + d.life * 1.1);
+      p[i*3]     = Math.cos(d.ang) * r;
+      p[i*3 + 1] = y;
+      p[i*3 + 2] = Math.sin(d.ang) * r;
+    }
+    obj.geo.attributes.position.needsUpdate = true;
+  }
+
+  // ---- 零点漩涡 ----
+  zeroGroup.position.set(px, 0.22, 0);
+  zeroRing.rotation.z = t * 1.6;
+  zeroRing.rotation.x = Math.PI / 2;
+  ring2.rotation.z = -t * 1.0;
+  ring2.rotation.x = Math.PI / 2.6;
+  const zs = 1 + 0.12 * Math.sin(t * 3.4);
+  zeroGlow.scale.set(2.0 * zs, 2.0 * zs, 1);
+
+  // ---- 收敛边界 ----
+  convLine.position.x = px;
+  convLine.material.opacity = 0.45 + 0.25 * Math.sin(t * 2.4);
+}
+
+/* ============================================================
+   主循环
+============================================================ */
+const clock = new THREE.Clock();
+let prevCycleT = 0;
+
+function smoothstep(e0, e1, x){
+  const k = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)));
+  return k * k * (3 - 2 * k);
+}
+
+function tick(){
+  requestAnimationFrame(tick);
+
+  const dt = Math.min(clock.getDelta(), 0.05);
+  const elapsed = clock.elapsedTime;
+  const t = elapsed % CYCLE;
+
+  /* 循环重置检测 */
+  if (t < prevCycleT){
+    for (const s of spans) s.style.opacity = '0';
+  }
+  prevCycleT = t;
+
+  /* 出现/收缩因子（首尾各 2.5s 过渡，保证无缝循环） */
+  const appear = smoothstep(0, 2.5, t) * (1 - smoothstep(CYCLE - 2.5, CYCLE, t));
+
+  /* ---- 更新几何体 ---- */
+  updateSurface(t, appear);
+  updateRibbon(t, appear);
+  updateSingularities(t, dt);
+
+  /* ---- 曲面材质整体呼吸 ---- */
+  surfMat.emissiveIntensity = 0.65 + 0.35 * Math.sin(elapsed * 1.3);
+  surfMat.opacity = 0.72 + 0.16 * appear;
+
+  /* ---- 时域流动光点 ---- */
+  const fp = flowGeo.attributes.position.array;
+  const fa = aVal, fw = w0Val;
+  for (let i = 0; i < FLOW_N; i++){
+    const d = flowData[i];
+    d.u += dt * 0.22;
+    if (d.u > 1) d.u -= 1;
+    const f  = d.u;
+    const tt = f * T_MAX;
+    const x  = SIG_MIN + (SIG_MAX - SIG_MIN) * f;
+    const y  = Math.exp(-fa * tt) * Math.cos(fw * tt) * 2.4 * appear;
+    fp[i*3]     = x;
+    fp[i*3 + 1] = y;
+    fp[i*3 + 2] = 0;
+  }
+  flowGeo.attributes.position.needsUpdate = true;
+  flowPts.material.opacity = 0.65 * appear;
+
+  /* ---- 背景粒子缓慢旋转 ---- */
+  particles.rotation.y += 0.00028;
+  particles.rotation.x = Math.sin(elapsed * 0.05) * 0.04;
+
+  /* ---- 相机 ---- */
+  const autoTheta = Math.sin(elapsed * 0.11) * 0.55;
+  const th = autoTheta + dragTheta;
+  const sp = Math.sin(camPhi), cp = Math.cos(camPhi);
+  camera.position.set(
+    camTarget.x + camDist * sp * Math.sin(th),
+    camTarget.y + camDist * cp,
+    camTarget.z + camDist * sp * Math.cos(th)
+  );
+  camera.lookAt(camTarget);
+
+  /* ---- 顶部文字逐字浮现 ---- */
+  const shown = t * CHARS_PER_SEC;
+  for (let i = 0; i < spans.length; i++){
+    const op = Math.min(1, Math.max(0, shown - i));
+    const s = spans[i];
+    if (s._last !== op){
+      s._last = op;
+      s.style.opacity = op.toFixed(3);
+    }
+  }
+
+  /* ---- 渲染 ---- */
+  composer.render();
+}
+
+/* ============================================================
+   自适应
+============================================================ */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  composer.setSize(innerWidth, innerHeight);
+  bloom.setSize(innerWidth, innerHeight);
+});
+
+/* 启动 */
+sVal.textContent = aVal.toFixed(2);
+wVal.textContent = w0Val.toFixed(2);
+tick();
+</script>
+</body>
+</html>

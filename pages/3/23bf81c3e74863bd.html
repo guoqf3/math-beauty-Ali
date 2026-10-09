@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>混沌系统 · Chaos Theory</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{width:100%;height:100%;overflow:hidden;background:#01010a;
+    font-family:"Microsoft YaHei","PingFang SC",sans-serif;cursor:grab;}
+  html:active{cursor:grabbing;}
+  canvas{display:block;position:fixed;inset:0;}
+
+  #caption{
+    position:fixed;top:26px;left:50%;transform:translateX(-50%);
+    color:#eaf6ff;font-size:clamp(14px,1.5vw,24px);
+    letter-spacing:3px;font-weight:500;white-space:nowrap;
+    pointer-events:none;z-index:10;
+    text-shadow:0 0 12px rgba(56,189,248,.95),0 0 34px rgba(168,85,247,.65),
+                0 0 72px rgba(236,72,153,.42);
+    transition:opacity .4s ease;
+  }
+
+  .fx{
+    position:fixed;color:#38bdf8;font-size:14px;letter-spacing:1px;
+    font-family:"Cambria Math","Times New Roman",Georgia,serif;
+    text-shadow:0 0 10px rgba(56,189,248,.9),0 0 26px rgba(56,189,248,.5);
+    pointer-events:none;opacity:.85;white-space:nowrap;z-index:10;
+  }
+  #fx1{top:108px;left:30px;}
+  #fx2{bottom:112px;left:30px;}
+  #fx3{top:108px;right:30px;text-align:right;}
+  #fx4{bottom:112px;right:30px;text-align:right;
+       color:#f0abfc;text-shadow:0 0 10px rgba(240,171,252,.95),0 0 26px rgba(217,70,239,.5);}
+
+  #hud{
+    position:fixed;bottom:104px;left:50%;transform:translateX(-50%);
+    color:#7dd3fc;font-size:13px;letter-spacing:2px;opacity:.8;
+    pointer-events:none;white-space:nowrap;
+    text-shadow:0 0 12px rgba(56,189,248,.8);
+    font-family:"Consolas","Courier New",monospace;z-index:10;
+  }
+  #hud b{color:#e9d5ff;font-weight:600;}
+  #hud i{font-style:normal;color:#f0abfc;}
+
+  #panel{
+    position:fixed;bottom:36px;left:50%;transform:translateX(-50%);
+    display:flex;align-items:center;gap:18px;
+    background:rgba(20,10,45,.6);border:1px solid rgba(139,92,246,.4);
+    border-radius:30px;padding:10px 28px;
+    backdrop-filter:blur(10px);z-index:20;
+    box-shadow:0 0 34px rgba(139,92,246,.3),inset 0 0 22px rgba(100,50,200,.15);
+  }
+  #panel span{
+    color:#c4b5fd;font-size:13px;letter-spacing:2px;
+    font-family:"Consolas",monospace;white-space:nowrap;
+  }
+  #btn{
+    background:linear-gradient(135deg,#7c3aed,#db2777);
+    border:none;border-radius:20px;color:#fff;
+    padding:9px 24px;font-size:13px;letter-spacing:2px;
+    cursor:pointer;font-family:inherit;
+    box-shadow:0 0 20px rgba(219,39,119,.55);
+    transition:all .25s;
+  }
+  #btn:hover{
+    transform:scale(1.06);
+    box-shadow:0 0 32px rgba(219,39,119,.9);
+  }
+  #btn:active{transform:scale(.96);}
+
+  .corner{
+    position:fixed;width:54px;height:54px;pointer-events:none;opacity:.4;z-index:9;
+    border-color:#38bdf8;
+  }
+  .c1{top:16px;left:16px;border-top:1px solid;border-left:1px solid;}
+  .c2{top:16px;right:16px;border-top:1px solid;border-right:1px solid;}
+  .c3{bottom:16px;left:16px;border-bottom:1px solid;border-left:1px solid;}
+  .c4{bottom:16px;right:16px;border-bottom:1px solid;border-right:1px solid;}
+
+  #vignette{
+    position:fixed;inset:0;pointer-events:none;z-index:5;
+    background:radial-gradient(ellipse at 50% 50%,rgba(0,0,0,0) 42%,rgba(0,0,0,.72) 100%);
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="vignette"></div>
+
+<div id="caption"></div>
+
+<div class="fx" id="fx1">dx/dt = σ(y − x)</div>
+<div class="fx" id="fx2">dy/dt = x(ρ − z) − y</div>
+<div class="fx" id="fx3">dz/dt = xy − βz &nbsp; σ=10, ρ=28, β=8/3</div>
+<div class="fx" id="fx4">λ ≈ 0.9 &gt; 0 → 混沌</div>
+
+<div class="corner c1"></div>
+<div class="corner c2"></div>
+<div class="corner c3"></div>
+<div class="corner c4"></div>
+
+<div id="hud"></div>
+
+<div id="panel">
+  <span id="infoLabel">初始扰动 δ = 1.0×10⁻⁶</span>
+  <button id="btn">扰 动</button>
+</div>
+
+<script>
+/* ==========================================================
+   混沌系统 · 洛伦兹吸引子 3D 动画
+   ========================================================== */
+const canvas    = document.getElementById('c');
+const ctx       = canvas.getContext('2d');
+const captionEl = document.getElementById('caption');
+const hudEl     = document.getElementById('hud');
+const infoLabel = document.getElementById('infoLabel');
+const btn       = document.getElementById('btn');
+
+let W=0, H=0, DPR=1;
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = window.innerWidth;  H = window.innerHeight;
+  canvas.width  = Math.floor(W*DPR);
+  canvas.height = Math.floor(H*DPR);
+  canvas.style.width  = W+'px';
+  canvas.style.height = H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+}
+window.addEventListener('resize', resize);
+resize();
+
+const clamp = (v,a,b)=> v<a?a:(v>b?b:v);
+
+/* ---------------- 相机 ---------------- */
+let userYaw   = 0.62;
+let userPitch = 0.30;
+let camDist   = 58;
+let autoYaw   = 0;
+let camYaw = 0, camPitch = 0;
+let SCX = 0, SCY = 0;
+
+const FOCAL = 1500;
+const SCALE = 0.30;
+
+function project(x, y, z){
+  // 屏幕向上映射到洛伦兹 z 轴，深度映射到 y 轴
+  const px = x * SCALE;
+  const py = (z - 25) * SCALE;
+  const pz = y * SCALE;
+
+  const cy = Math.cos(camYaw), sy = Math.sin(camYaw);
+  const X1 =  px*cy + pz*sy;
+  const Z1 = -px*sy + pz*cy;
+
+  const cp = Math.cos(camPitch), sp = Math.sin(camPitch);
+  const Y2 = py*cp - Z1*sp;
+  const Z2 = py*sp + Z1*cp;
+
+  const zc = Z2 + camDist;
+  if (zc < 4) return null;
+  const f = FOCAL / zc;
+  return { x: SCX + X1*f, y: SCY - Y2*f, zc: zc, f: f };
+}
+
+/* ==========================================================
+   洛伦兹方程 RK4 积分
+   ========================================================== */
+const SIGMA = 10, RHO = 28, BETA = 8/3;
+
+function lorenz(x,y,z){
+  return [ SIGMA*(y-x), x*(RHO-z)-y, x*y-BETA*z ];
+}
+
+function rk4(s, dt){
+  const [x,y,z] = s;
+  const k1 = lorenz(x,y,z);
+  const k2 = lorenz(x+dt*0.5*k1[0], y+dt*0.5*k1[1], z+dt*0.5*k1[2]);
+  const k3 = lorenz(x+dt*0.5*k2[0], y+dt*0.5*k2[1], z+dt*0.5*k2[2]);
+  const k4 = lorenz(x+dt*k3[0],     y+dt*k3[1],     z+dt*k3[2]);
+  const c = dt/6;
+  return [
+    x + c*(k1[0]+2*k2[0]+2*k3[0]+k4[0]),
+    y + c*(k1[1]+2*k2[1]+2*k3[1]+k4[1]),
+    z + c*(k1[2]+2*k2[2]+2*k3[2]+k4[2])
+  ];
+}
+
+/* ==========================================================
+   状态
+   ========================================================== */
+const CYCLE   = 30;       // 循环周期（秒）
+const PHYS_DT = 0.005;    // 积分步长
+const MAX_PTS = 1900;     // 轨迹最大点数
+const EPS     = 1.0e-6;   // 初始扰动
+
+let stateA = [0.1, 0, 0];
+let stateB = [0.1 + EPS, 0, 0];
+let trajA = [];
+let trajB = [];
+let simTime = 0;
+let physAcc = 0;
+let tAcc = 0;
+let lastNow = 0;
+let pauseUntil = 0;        // 点击扰动后的短暂停顿（秒）
+
+function resetSim(keepTime){
+  stateA = [0.1, 0, 0];
+  stateB = [0.1 + EPS, 0, 0];
+  trajA = [];
+  trajB = [];
+  simTime = 0;
+  physAcc = 0;
+  if (!keepTime) tAcc = 0;
+}
+
+/* ==========================================================
+   颜色查找表（性能优化）
+   ========================================================== */
+const CN = 72;
+const COL_A = [];   // 暖色：红 → 橙 → 黄
+const COL_B = [];   // 冷色：紫 → 蓝 → 青
+
+for (let i=0;i<CN;i++){
+  const t = i/(CN-1);
+  const hA = 4 + 52*t;
+  COL_A.push('hsl(' + hA.toFixed(1) + ',100%,' + (56 + 8*t).toFixed(0) + '%)');
+  const hB = 288 - 88*t;
+  COL_B.push('hsl(' + hB.toFixed(1) + ',100%,' + (60 + 8*t).toFixed(0) + '%)');
+}
+
+/* ==========================================================
+   物理推进
+   ========================================================== */
+function advancePhysics(dt){
+  if (trajA.length >= MAX_PTS) return;
+  physAcc += dt;
+  let guard = 0;
+  while (physAcc >= PHYS_DT && guard < 12){
+    stateA = rk4(stateA, PHYS_DT);
+    stateB = rk4(stateB, PHYS_DT);
+    physAcc -= PHYS_DT;
+    simTime += PHYS_DT;
+    guard++;
+  }
+  // 每帧记录一次
+  trajA.push({ x: stateA[0], y: stateA[1], z: stateA[2] });
+  trajB.push({ x: stateB[0], y: stateB[1], z: stateB[2] });
+}
+
+/* ==========================================================
+   绘制：静态参考（坐标网格 + 双叶轮廓提示）
+   ========================================================== */
+function drawReference(){
+  // 地平面网格（z = 0 平面）
+  ctx.strokeStyle = 'rgba(80,140,220,0.055)';
+  ctx.lineWidth = 1;
+  for (let gx=-30; gx<=30; gx+=10){
+    const a = project(gx, -30, 0);
+    const b = project(gx,  30, 0);
+    if (a&&b){ ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke(); }
+  }
+  for (let gy=-30; gy<=30; gy+=10){
+    const a = project(-30, gy, 0);
+    const b = project( 30, gy, 0);
+    if (a&&b){ ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke(); }
+  }
+
+  // 两个不稳定平衡点附近的光晕（双叶中心）
+  const fixedPts = [
+    [ Math.sqrt(BETA*(RHO-1)),  Math.sqrt(BETA*(RHO-1)), RHO-1],
+    [-Math.sqrt(BETA*(RHO-1)), -Math.sqrt(BETA*(RHO-1)), RHO-1]
+  ];
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i=0;i<2;i++){
+    const p = project(fixedPts[i][0], fixedPts[i][1], fixedPts[i][2]);
+    if (!p) continue;
+    const rad = 34 * p.f * 0.30;
+    const hue = i===0 ? 330 : 200;
+    const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, Math.max(4,rad));
+    g.addColorStop(0,   'hsla(' + hue + ',100%,70%,0.10)');
+    g.addColorStop(0.5, 'hsla(' + hue + ',100%,60%,0.05)');
+    g.addColorStop(1,   'hsla(' + hue + ',100%,50%,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(p.x, p.y, Math.max(4,rad), 0, 6.2832); ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ==========================================================
+   绘制：单条轨迹
+   ========================================================== */
+function drawTraj(traj, cols, sample, glowScale){
+  const n = traj.length;
+  if (n < 2) return;
+
+  // 投影
+  const P = new Array(n);
+  for (let i=0;i<n;i++){
+    const p = traj[i];
+    P[i] = project(p.x, p.y, p.z);
+  }
+
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  // 主光带
+  for (let i=0;i<n-1;i+=sample){
+    const a = P[i], b = P[i+sample < n ? i+sample : n-1];
+    if (!a || !b) continue;
+    const dx = b.x-a.x, dy = b.y-a.y;
+    const d2 = dx*dx + dy*dy;
+    if (d2 < 0.09 || d2 > 6000) continue;
+
+    const ci = Math.min(CN-1, Math.floor(i/(n-1) * (CN-1)));
+    ctx.strokeStyle = cols[ci];
+    ctx.lineWidth = clamp(1.15 * glowScale * (a.f/26), 0.7, 2.9);
+
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
+
+  // 尾部宽光晕（最近 160 个点）
+  const tailStart = Math.max(0, n-160);
+  ctx.lineWidth = 2.2;
+  for (let i=tailStart;i<n-1;i+=2){
+    const a = P[i], b = P[i+2 < n ? i+2 : n-1];
+    if (!a || !b) continue;
+    const dx = b.x-a.x, dy = b.y-a.y;
+    if (dx*dx+dy*dy > 6000) continue;
+    const ci = Math.min(CN-1, Math.floor(i/(n-1) * (CN-1)));
+    ctx.strokeStyle = cols[ci];
+    ctx.globalAlpha = 0.42;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+
+  // 星光粒子
+  const tNow = performance.now()*0.001;
+  for (let i=0;i<n;i+=14){
+    const p = P[i];
+    if (!p) continue;
+    const tw = 0.5 + 0.5*Math.sin(tNow*3.1 + i*0.47);
+    const r = Math.max(0.6, 0.42 * p.f * (0.55 + tw*0.9));
+    const ci = Math.min(CN-1, Math.floor(i/(n-1) * (CN-1)));
+    ctx.fillStyle = cols[ci];
+    ctx.globalAlpha = 0.22 + 0.55*tw;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, r, 0, 6.2832);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // 头部亮核
+  const head = P[n-1];
+  if (head){
+    const r = Math.max(2.5, 2.6 * head.f * 0.30);
+    const g = ctx.createRadialGradient(head.x, head.y, 0, head.x, head.y, r*4);
+    const ci = CN-1;
+    g.addColorStop(0, 'rgba(255,255,255,0.95)');
+    g.addColorStop(0.28, cols[ci].replace('hsl','hsla').replace('%)', '%,0.75)'));
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(head.x, head.y, r*4, 0, 6.2832); ctx.fill();
+  }
+
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ==========================================================
+   顶部文字
+   ========================================================== */
+const CAPTIONS = [
+  '混沌系统揭示确定性系统中可产生看似完全随机的复杂行为',
+  '“蝴蝶效应”表明微小初始差异在非线性系统中会被急剧放大',
+  '长期天气不可预言，也启示我们复杂系统中对初始条件的',
+  '极度敏感性与谦卑态度——在确定中看见随机，在随机中把握秩序'
+];
+let capIdx = -1;
+
+function updateCaption(t){
+  const segDur = CYCLE / CAPTIONS.length;
+  let i = Math.floor(t / segDur);
+  if (i >= CAPTIONS.length) i = CAPTIONS.length - 1;
+  const lt = t - i*segDur;
+
+  if (i !== capIdx){
+    capIdx = i;
+    captionEl.textContent = CAPTIONS[i];
+  }
+  const fade = 0.85;
+  let op = 1;
+  if (lt < fade) op = lt/fade;
+  else if (lt > segDur - fade) op = Math.max(0, (segDur-lt)/fade);
+  captionEl.style.opacity = clamp(op,0,1).toFixed(3);
+}
+
+/* ==========================================================
+   渲染
+   ========================================================== */
+function render(tLoop){
+  SCX = W*0.5;
+  SCY = H*0.50;
+
+  camYaw   = userYaw + autoYaw;
+  camPitch = userPitch;
+
+  /* ---- 背景 ---- */
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  ctx.globalCompositeOperation = 'source-over';
+
+  const bg = ctx.createRadialGradient(SCX, SCY, 0, SCX, SCY, Math.max(W,H)*0.75);
+  bg.addColorStop(0.00, '#0d0724');
+  bg.addColorStop(0.42, '#05030f');
+  bg.addColorStop(1.00, '#01010a');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0,0,W,H);
+
+  /* ---- 参考 ---- */
+  drawReference();
+
+  /* ---- 轨迹 ---- */
+  drawTraj(trajA, COL_A, 2, 1.15);
+  drawTraj(trajB, COL_B, 2, 1.00);
+
+  /* ---- 状态文字 ---- */
+  updateCaption(tLoop);
+
+  /* ---- HUD ---- */
+  const dx = stateA[0]-stateB[0];
+  const dy = stateA[1]-stateB[1];
+  const dz = stateA[2]-stateB[2];
+  const sep = Math.sqrt(dx*dx + dy*dy + dz*dz);
+
+  let sepStr;
+  if (sep < 1e-3)      sepStr = sep.toExponential(2);
+  else if (sep < 1)    sepStr = sep.toFixed(5);
+  else                 sepStr = sep.toFixed(3);
+
+  const logT = Math.log(sep/EPS);
+  const lyap = simTime > 4 ? (logT/simTime) : 0;
+
+  hudEl.innerHTML =
+    't = <b>' + simTime.toFixed(2) + '</b> &nbsp;|&nbsp; ' +
+    '分离度 ‖δ‖ = <b>' + sepStr + '</b> &nbsp;|&nbsp; ' +
+    'λ<sub>实测</sub> ≈ <i>' + (lyap>0 ? lyap.toFixed(2) : '—') + '</i> &nbsp;|&nbsp; ' +
+    '拖动旋转 · 滚轮缩放 · 点击扰动';
+
+  const ratio = clamp(sep/EPS, 1, 1e12);
+  infoLabel.textContent = 'δ₀ = 1.0×10⁻⁶  →  ‖δ‖ 放大 ' +
+    (ratio > 1e6 ? ratio.toExponential(1) : ratio.toFixed(0)) + ' 倍';
+}
+
+/* ==========================================================
+   主循环
+   ========================================================== */
+function frame(now){
+  if (!lastNow) lastNow = now;
+  let dt = (now - lastNow)/1000;
+  lastNow = now;
+  if (dt > 0.06) dt = 0.06;
+  if (dt <= 0)   dt = 1/60;
+
+  tAcc += dt;
+  if (tAcc >= CYCLE){
+    tAcc -= CYCLE;
+    resetSim(true);
+  }
+
+  autoYaw += dt * 0.055;
+
+  if (simTime < CYCLE + 1){
+    advancePhysics(dt);
+  }
+
+  render(tAcc);
+  requestAnimationFrame(frame);
+}
+
+/* ==========================================================
+   交互
+   ========================================================== */
+let dragging = false, lastMX = 0, lastMY = 0, dragDist = 0;
+
+canvas.addEventListener('mousedown', e=>{
+  dragging = true; dragDist = 0;
+  lastMX = e.clientX; lastMY = e.clientY;
+});
+
+window.addEventListener('mousemove', e=>{
+  if (!dragging) return;
+  const dx = e.clientX - lastMX;
+  const dy = e.clientY - lastMY;
+  lastMX = e.clientX; lastMY = e.clientY;
+  dragDist += Math.abs(dx) + Math.abs(dy);
+  userYaw   += dx * 0.0065;
+  userPitch  = clamp(userPitch + dy * 0.0055, -1.25, 1.25);
+});
+
+window.addEventListener('mouseup', ()=>{
+  if (dragging && dragDist < 6){
+    resetSim(false);
+    autoYaw = 0;
+  }
+  dragging = false;
+});
+
+canvas.addEventListener('wheel', e=>{
+  e.preventDefault();
+  camDist = clamp(camDist + e.deltaY*0.055, 22, 145);
+}, { passive:false });
+
+/* ---- 触摸 ---- */
+canvas.addEventListener('touchstart', e=>{
+  if (e.touches.length === 1){
+    dragging = true; dragDist = 0;
+    lastMX = e.touches[0].clientX;
+    lastMY = e.touches[0].clientY;
+  }
+}, { passive:true });
+
+canvas.addEventListener('touchmove', e=>{
+  if (!dragging || e.touches.length !== 1) return;
+  const t0 = e.touches[0];
+  const dx = t0.clientX - lastMX;
+  const dy = t0.clientY - lastMY;
+  lastMX = t0.clientX; lastMY = t0.clientY;
+  dragDist += Math.abs(dx) + Math.abs(dy);
+  userYaw   += dx * 0.009;
+  userPitch  = clamp(userPitch + dy * 0.007, -1.25, 1.25);
+}, { passive:true });
+
+canvas.addEventListener('touchend', ()=>{
+  if (dragging && dragDist < 8){
+    resetSim(false);
+    autoYaw = 0;
+  }
+  dragging = false;
+}, { passive:true });
+
+/* ---- 扰动按钮 ---- */
+btn.addEventListener('click', ()=>{
+  resetSim(false);
+  autoYaw = 0;
+});
+
+/* ==========================================================
+   启动
+   ========================================================== */
+resetSim(false);
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>强化学习 · Reinforcement Learning</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{width:100%;height:100%;overflow:hidden;background:#01040a;
+    font-family:"Microsoft YaHei","PingFang SC",sans-serif;cursor:grab;}
+  html:active{cursor:grabbing;}
+  canvas{display:block;position:fixed;inset:0;}
+
+  #caption{
+    position:fixed;top:26px;left:50%;transform:translateX(-50%);
+    color:#eafcff;font-size:clamp(14px,1.5vw,24px);
+    letter-spacing:3px;font-weight:500;white-space:nowrap;
+    pointer-events:none;z-index:10;
+    text-shadow:0 0 12px rgba(251,146,60,.95),0 0 34px rgba(56,189,248,.6),
+                0 0 72px rgba(168,85,247,.4);
+    transition:opacity .4s ease;
+  }
+
+  .fx{
+    position:fixed;color:#fdba74;font-size:14px;letter-spacing:1px;
+    font-family:"Cambria Math","Times New Roman",Georgia,serif;
+    text-shadow:0 0 10px rgba(251,146,60,.9),0 0 26px rgba(249,115,22,.5);
+    pointer-events:none;opacity:.86;white-space:nowrap;z-index:10;
+  }
+  #fx1{top:108px;left:30px;}
+  #fx2{bottom:112px;left:30px;}
+  #fx3{top:108px;right:30px;text-align:right;}
+  #fx4{bottom:112px;right:30px;text-align:right;
+       color:#67e8f9;text-shadow:0 0 10px rgba(103,232,249,.95),0 0 26px rgba(6,182,212,.55);}
+
+  #hud{
+    position:fixed;bottom:104px;left:50%;transform:translateX(-50%);
+    color:#7dd3fc;font-size:13px;letter-spacing:2px;opacity:.85;
+    pointer-events:none;white-space:nowrap;
+    text-shadow:0 0 12px rgba(56,189,248,.8);
+    font-family:"Consolas","Courier New",monospace;z-index:10;
+  }
+  #hud b{color:#fed7aa;font-weight:600;}
+  #hud i{font-style:normal;color:#a5f3fc;}
+
+  #panel{
+    position:fixed;bottom:36px;left:50%;transform:translateX(-50%);
+    display:flex;align-items:center;gap:20px;
+    background:rgba(18,24,48,.62);border:1px solid rgba(251,146,60,.35);
+    border-radius:30px;padding:10px 26px;
+    backdrop-filter:blur(10px);z-index:20;
+    box-shadow:0 0 34px rgba(251,146,60,.22),inset 0 0 22px rgba(120,80,220,.14);
+  }
+  #panel span{
+    color:#fdba74;font-size:13px;letter-spacing:2px;
+    font-family:"Consolas",monospace;white-space:nowrap;
+  }
+  #btn{
+    background:linear-gradient(135deg,#f97316,#db2777);
+    border:none;border-radius:20px;color:#fff;
+    padding:9px 28px;font-size:13px;letter-spacing:3px;
+    cursor:pointer;font-family:inherit;
+    box-shadow:0 0 20px rgba(249,115,22,.6),0 0 40px rgba(219,39,119,.3);
+    transition:all .25s;
+  }
+  #btn:hover{transform:scale(1.06);
+    box-shadow:0 0 32px rgba(249,115,22,.95),0 0 56px rgba(219,39,119,.55);}
+  #btn:active{transform:scale(.95);}
+
+  .corner{
+    position:fixed;width:54px;height:54px;pointer-events:none;opacity:.42;z-index:9;
+    border-color:#fb923c;
+  }
+  .c1{top:16px;left:16px;border-top:1px solid;border-left:1px solid;}
+  .c2{top:16px;right:16px;border-top:1px solid;border-right:1px solid;}
+  .c3{bottom:16px;left:16px;border-bottom:1px solid;border-left:1px solid;}
+  .c4{bottom:16px;right:16px;border-bottom:1px solid;border-right:1px solid;}
+
+  #vignette{
+    position:fixed;inset:0;pointer-events:none;z-index:5;
+    background:radial-gradient(ellipse at 50% 50%,rgba(0,0,0,0) 45%,rgba(0,0,0,.72) 100%);
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="vignette"></div>
+
+<div id="caption"></div>
+
+<div class="fx" id="fx1">Q(s,a) ← Q(s,a) + α[r + γ·max Q(s′,a′) − Q(s,a)]</div>
+<div class="fx" id="fx2">J(π) = E[ Σ γ<sup>t</sup> · r<sub>t</sub> ]</div>
+<div class="fx" id="fx3">γ ∈ [0.9, 0.99] &nbsp; ε ∈ [0.01, 0.1]</div>
+<div class="fx" id="fx4">ε-greedy &nbsp;|&nbsp; 试错 → 反馈 → 改进</div>
+
+<div class="corner c1"></div>
+<div class="corner c2"></div>
+<div class="corner c3"></div>
+<div class="corner c4"></div>
+
+<div id="hud"></div>
+
+<div id="panel">
+  <span id="infoLabel">ε = 1.000 · 纯探索阶段</span>
+  <button id="btn">重 置</button>
+</div>
+
+<script>
+/* ==========================================================
+   强化学习 · Q-Learning 3D 动画
+   ========================================================== */
+const canvas    = document.getElementById('c');
+const ctx       = canvas.getContext('2d');
+const captionEl = document.getElementById('caption');
+const hudEl     = document.getElementById('hud');
+const infoLabel = document.getElementById('infoLabel');
+const btn       = document.getElementById('btn');
+
+let W=0, H=0, DPR=1;
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width  = Math.floor(W*DPR);
+  canvas.height = Math.floor(H*DPR);
+  canvas.style.width  = W+'px';
+  canvas.style.height = H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+}
+window.addEventListener('resize', resize);
+resize();
+
+const clamp = (v,a,b)=> v<a?a:(v>b?b:v);
+const lerp  = (a,b,t)=> a+(b-a)*t;
+
+/* ==========================================================
+   迷宫定义 6×6
+   ========================================================== */
+const GRID_W = 6, GRID_H = 6;
+const CELL   = 1.2;
+const MAZE = [
+  [0,0,0,0,0,0],
+  [0,1,1,1,0,0],
+  [0,0,0,0,0,0],
+  [0,1,1,1,1,0],
+  [0,0,0,0,0,0],
+  [1,1,1,1,1,0]
+];
+const START_X = 0, START_Y = 0;
+const GOAL_X  = 5, GOAL_Y  = 5;
+
+const WX = cx => (cx - (GRID_W-1)/2) * CELL;
+const WZ = cy => (cy - (GRID_H-1)/2) * CELL;
+
+/* ==========================================================
+   Q-Learning 参数
+   ========================================================== */
+const ALPHA = 0.35;
+const GAMMA = 0.94;
+
+const DX = [0, 1, 0, -1];
+const DY = [-1, 0, 1, 0];
+
+const Q = [];
+for (let i=0;i<GRID_W*GRID_H;i++) Q.push([0,0,0,0]);
+
+let agentX = START_X, agentY = START_Y;
+let agentVisX = WX(START_X), agentVisZ = WZ(START_Y);
+
+let episodes = 0;
+let totalSteps = 0;
+let episodeReward = 0;
+let episodeStepCount = 0;
+let totalRewardAccum = 0;
+let simAcc = 0;
+let trail = [];
+const SIM_DT = 1/20;
+const MAX_EP_STEPS = 120;
+
+const bursts = [];
+
+/* ==========================================================
+   一次 Q-Learning 步进
+   ========================================================== */
+function simStep(tLoop){
+  const stateIdx = agentY * GRID_W + agentX;
+
+  // 按时间衰减的 ε
+  const eps = Math.max(0.05, 1.0 - tLoop/25.0);
+
+  let action;
+  if (Math.random() < eps){
+    action = (Math.random()*4) | 0;
+  } else {
+    let best = -Infinity;
+    for (let a=0;a<4;a++){
+      if (Q[stateIdx][a] > best){ best = Q[stateIdx][a]; action = a; }
+    }
+  }
+
+  const nx = agentX + DX[action];
+  const ny = agentY + DY[action];
+
+  const inBounds = nx>=0 && nx<GRID_W && ny>=0 && ny<GRID_H;
+  const walkable = inBounds && MAZE[ny][nx] === 0;
+
+  let reward, actualX = agentX, actualY = agentY;
+  let done = false;
+
+  if (walkable){
+    actualX = nx; actualY = ny;
+    if (nx === GOAL_X && ny === GOAL_Y){
+      reward = 1.0;
+      done = true;
+    } else {
+      reward = -0.01;
+    }
+  } else {
+    reward = -0.15;   // 撞墙惩罚
+  }
+
+  const nextIdx = actualY * GRID_W + actualX;
+  let maxNextQ = -Infinity;
+  for (let a=0;a<4;a++) maxNextQ = Math.max(maxNextQ, Q[nextIdx][a]);
+
+  // 贝尔曼更新
+  Q[stateIdx][action] += ALPHA * (reward + GAMMA * maxNextQ - Q[stateIdx][action]);
+
+  agentX = actualX; agentY = actualY;
+  episodeReward += reward;
+  episodeStepCount++;
+  totalSteps++;
+
+  trail.push({x: agentX, y: agentY});
+  if (trail.length > 260) trail.shift();
+
+  if (done){
+    spawnBurst(WX(agentX), WZ(agentY));
+    totalRewardAccum += episodeReward;
+    episodes++;
+    episodeReward = 0;
+    episodeStepCount = 0;
+    agentX = START_X; agentY = START_Y;
+    trail.length = 0;
+  } else if (episodeStepCount > MAX_EP_STEPS){
+    totalRewardAccum += episodeReward;
+    episodes++;
+    episodeReward = 0;
+    episodeStepCount = 0;
+    agentX = START_X; agentY = START_Y;
+    trail.length = 0;
+  }
+}
+
+/* ==========================================================
+   奖励爆发粒子
+   ========================================================== */
+function spawnBurst(wx, wz){
+  for (let i=0;i<34;i++){
+    const a = Math.random()*Math.PI*2;
+    const s = 1.6 + Math.random()*4.2;
+    bursts.push({
+      x: wx, y: 0.5, z: wz,
+      vx: Math.cos(a)*s,
+      vy: 2.5 + Math.random()*5,
+      vz: Math.sin(a)*s,
+      life: 1
+    });
+  }
+}
+
+function updateBursts(dt){
+  for (let i=bursts.length-1;i>=0;i--){
+    const b = bursts[i];
+    b.x += b.vx*dt; b.y += b.vy*dt; b.z += b.vz*dt;
+    b.vy -= 6*dt;
+    b.vx *= 0.96; b.vz *= 0.96;
+    b.life -= dt*1.15;
+    if (b.life <= 0) bursts.splice(i,1);
+  }
+}
+
+/* ==========================================================
+   相机
+   ========================================================== */
+let userYaw   = 0.55;
+let userPitch = 0.72;
+let camDist   = 15.5;
+let camYaw = 0, camPitch = 0;
+let SCX=0, SCY=0;
+const FOCAL = 1400;
+
+function project(x, y, z){
+  const dx = x, dy = y - 0.4, dz = z;
+  const cy = Math.cos(camYaw), sy = Math.sin(camYaw);
+  const X1 =  dx*cy + dz*sy;
+  const Z1 = -dx*sy + dz*cy;
+  const cp = Math.cos(camPitch), sp = Math.sin(camPitch);
+  const Y2 = dy*cp - Z1*sp;
+  const Z2 = dy*sp + Z1*cp;
+  const zc = Z2 + camDist;
+  if (zc < 2) return null;
+  const f = FOCAL/zc;
+  return { x: SCX + X1*f, y: SCY - Y2*f, zc: zc, f: f };
+}
+
+/* ==========================================================
+   背景
+   ========================================================== */
+const bgStars = [];
+for (let i=0;i<130;i++){
+  bgStars.push({
+    x: (Math.random()-0.5)*60,
+    y: (Math.random()-0.5)*40,
+    z: (Math.random()-0.5)*60,
+    r: 0.5 + Math.random()*1.6,
+    ph: Math.random()*6.2832
+  });
+}
+
+function drawBackground(t){
+  const bg = ctx.createRadialGradient(SCX, SCY*0.92, 0, SCX, SCY*0.92, Math.max(W,H)*0.78);
+  bg.addColorStop(0.00, '#0b1626');
+  bg.addColorStop(0.42, '#050a16');
+  bg.addColorStop(1.00, '#01040a');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0,0,W,H);
+
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i=0;i<bgStars.length;i++){
+    const s = bgStars[i];
+    const p = project(s.x, s.y, s.z);
+    if (!p) continue;
+    const tw = 0.5 + 0.5*Math.sin(t*1.6 + s.ph);
+    const r = Math.max(0.3, s.r*p.f*0.03);
+    ctx.fillStyle = 'hsla(' + (195 + 40*Math.sin(s.ph)) + ',100%,78%,' +
+                    (0.10 + 0.32*tw).toFixed(3) + ')';
+    ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, 6.2832); ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ==========================================================
+   地面 + Q 值热力图
+   ========================================================== */
+function qHSLA(q, alpha){
+  const t = clamp((q + 0.35) / 1.4, 0, 1);
+  const hue = 225 - 225*t;
+  return 'hsla(' + hue.toFixed(0) + ',92%,' + (48 + 12*t).toFixed(0) + '%,' +
+         alpha.toFixed(3) + ')';
+}
+
+function drawGround(t){
+  // 地板底盘
+  const corners = [
+    project(-GRID_W*CELL/2 - 0.3, 0, -GRID_H*CELL/2 - 0.3),
+    project( GRID_W*CELL/2 + 0.3, 0, -GRID_H*CELL/2 - 0.3),
+    project( GRID_W*CELL/2 + 0.3, 0,  GRID_H*CELL/2 + 0.3),
+    project(-GRID_W*CELL/2 - 0.3, 0,  GRID_H*CELL/2 + 0.3)
+  ];
+  if (corners.every(p=>p)){
+    ctx.beginPath();
+    ctx.moveTo(corners[0].x, corners[0].y);
+    for (let i=1;i<4;i++) ctx.lineTo(corners[i].x, corners[i].y);
+    ctx.closePath();
+    ctx.fillStyle = '#060d1a';
+    ctx.fill();
+  }
+
+  // 热力图（每个格子）
+  ctx.globalCompositeOperation = 'lighter';
+  for (let cy=0; cy<GRID_H; cy++){
+    for (let cx=0; cx<GRID_W; cx++){
+      if (MAZE[cy][cx] === 1) continue;
+
+      const idx = cy*GRID_W + cx;
+      let maxQ = -Infinity;
+      for (let a=0;a<4;a++) maxQ = Math.max(maxQ, Q[idx][a]);
+
+      const cxo = WX(cx), czo = WZ(cy);
+      const h = CELL*0.5;
+
+      const P0 = project(cxo-h, 0.01, czo-h);
+      const P1 = project(cxo+h, 0.01, czo-h);
+      const P2 = project(cxo+h, 0.01, czo+h);
+      const P3 = project(cxo-h, 0.01, czo+h);
+      if (!P0||!P1||!P2||!P3) continue;
+
+      ctx.beginPath();
+      ctx.moveTo(P0.x,P0.y); ctx.lineTo(P1.x,P1.y);
+      ctx.lineTo(P2.x,P2.y); ctx.lineTo(P3.x,P3.y);
+      ctx.closePath();
+      ctx.fillStyle = qHSLA(maxQ, 0.30);
+      ctx.fill();
+    }
+  }
+  ctx.globalCompositeOperation = 'source-over';
+
+  // 网格线
+  ctx.strokeStyle = 'rgba(56,189,248,0.10)';
+  ctx.lineWidth = 1;
+  for (let cy=0; cy<=GRID_H; cy++){
+    const z = -GRID_H*CELL/2 + cy*CELL;
+    const a = project(-GRID_W*CELL/2, 0.02, z);
+    const b = project( GRID_W*CELL/2, 0.02, z);
+    if (a&&b){ ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke(); }
+  }
+  for (let cx=0; cx<=GRID_W; cx++){
+    const x = -GRID_W*CELL/2 + cx*CELL;
+    const a = project(x, 0.02, -GRID_H*CELL/2);
+    const b = project(x, 0.02,  GRID_H*CELL/2);
+    if (a&&b){ ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke(); }
+  }
+}
+
+/* ==========================================================
+   墙体（3D 盒子，面级深度排序）
+   ========================================================== */
+function drawWalls(){
+  const faces = [];
+
+  for (let cy=0; cy<GRID_H; cy++){
+    for (let cx=0; cx<GRID_W; cx++){
+      if (MAZE[cy][cx] !== 1) continue;
+
+      const x0 = WX(cx)-CELL*0.5, x1 = WX(cx)+CELL*0.5;
+      const z0 = WZ(cy)-CELL*0.5, z1 = WZ(cy)+CELL*0.5;
+      const y0 = 0, y1 = 0.78;
+
+      const raw = [
+        { pts:[[x0,y1,z0],[x1,y1,z0],[x1,y1,z1],[x0,y1,z1]], type:'top'  },
+        { pts:[[x0,y0,z1],[x1,y0,z1],[x1,y1,z1],[x0,y1,z1]], type:'side' },
+        { pts:[[x0,y0,z0],[x1,y0,z0],[x1,y1,z0],[x0,y1,z0]], type:'side' },
+        { pts:[[x1,y0,z0],[x1,y0,z1],[x1,y1,z1],[x1,y1,z0]], type:'side' },
+        { pts:[[x0,y0,z0],[x0,y0,z1],[x0,y1,z1],[x0,y1,z0]], type:'side' }
+      ];
+
+      for (const f of raw){
+        const proj = f.pts.map(p => project(p[0],p[1],p[2]));
+        if (proj.some(p => !p)) continue;
+        let d = 0;
+        for (const p of proj) d += p.zc;
+        d /= proj.length;
+        faces.push({ pts: proj, depth: d, type: f.type });
+      }
+    }
+  }
+
+  faces.sort((a,b)=> b.depth - a.depth);
+
+  for (const f of faces){
+    ctx.beginPath();
+    ctx.moveTo(f.pts[0].x, f.pts[0].y);
+    for (let i=1;i<f.pts.length;i++) ctx.lineTo(f.pts[i].x, f.pts[i].y);
+    ctx.closePath();
+
+    if (f.type === 'top'){
+      ctx.fillStyle = 'rgba(64,166,255,0.34)';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(125,232,255,0.55)';
+      ctx.lineWidth = 1.2;
+      ctx.stroke();
+    } else {
+      ctx.fillStyle = 'rgba(30,92,180,0.26)';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(90,180,255,0.28)';
+      ctx.lineWidth = 0.8;
+      ctx.stroke();
+    }
+  }
+}
+
+/* ==========================================================
+   终点金色光柱
+   ========================================================== */
+function drawGoal(t){
+  const gx = WX(GOAL_X), gz = WZ(GOAL_Y);
+
+  // 地面光环
+  const base = project(gx, 0.03, gz);
+  if (base){
+    const r = 0.75 * base.f * CELL * 0.5;
+    const pulse = 1 + 0.16*Math.sin(t*3.4);
+    ctx.globalCompositeOperation = 'lighter';
+    const g = ctx.createRadialGradient(base.x, base.y, 0, base.x, base.y, r*pulse*1.9);
+    g.addColorStop(0.00, 'rgba(255,232,150,0.65)');
+    g.addColorStop(0.35, 'rgba(255,186,60,0.30)');
+    g.addColorStop(1.00, 'rgba(255,140,20,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.ellipse(base.x, base.y, r*pulse*1.9, r*pulse*1.1, 0, 0, 6.2832);
+    ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  // 光柱
+  const b0 = project(gx, 0,    gz);
+  const b1 = project(gx, 3.4,  gz);
+  const b2 = project(gx, 3.4,  gz);
+  const b3 = project(gx, 0,    gz);
+  if (b0 && b1){
+    const w = Math.max(2, b0.f * CELL * 0.16);
+    ctx.globalCompositeOperation = 'lighter';
+    const lg = ctx.createLinearGradient(b0.x, b0.y, b1.x, b1.y);
+    lg.addColorStop(0.00, 'rgba(255,200,80,0.55)');
+    lg.addColorStop(0.45, 'rgba(255,170,40,0.22)');
+    lg.addColorStop(1.00, 'rgba(255,140,20,0)');
+    ctx.fillStyle = lg;
+    ctx.beginPath();
+    ctx.moveTo(b0.x - w, b0.y);
+    ctx.lineTo(b1.x - w*0.42, b1.y);
+    ctx.lineTo(b1.x + w*0.42, b1.y);
+    ctx.lineTo(b0.x + w, b0.y);
+    ctx.closePath();
+    ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+  }
+}
+
+/* ==========================================================
+   智能体轨迹
+   ========================================================== */
+function drawTrail(){
+  if (trail.length < 2) return;
+
+  const P = trail.map(tp => project(WX(tp.x), 0.20, WZ(tp.y)));
+
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  for (let i=0;i<P.length-1;i++){
+    const a = P[i], b = P[i+1];
+    if (!a||!b) continue;
+    const dx = b.x-a.x, dy = b.y-a.y;
+    if (dx*dx+dy*dy > 4000) continue;
+
+    const age = i / P.length;
+    const alpha = 0.08 + 0.55*age;
+    ctx.strokeStyle = 'rgba(255,180,90,' + alpha.toFixed(3) + ')';
+    ctx.lineWidth = 1.0 + 2.2*age;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ==========================================================
+   智能体
+   ========================================================== */
+function drawAgent(t, dt){
+  const tx = WX(agentX), tz = WZ(agentY);
+  const k = 1 - Math.exp(-18*dt);
+  agentVisX += (tx - agentVisX) * k;
+  agentVisZ += (tz - agentVisZ) * k;
+
+  const p = project(agentVisX, 0.34, agentVisZ);
+  if (!p) return;
+
+  const baseR = Math.max(3.5, 0.30 * p.f);
+  const pulse = 1 + 0.12*Math.sin(t*6.2);
+
+  ctx.globalCompositeOperation = 'lighter';
+
+  // 外光晕
+  const haloR = baseR * 6.5 * pulse;
+  const g1 = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, haloR);
+  g1.addColorStop(0.00, 'rgba(255,225,150,0.68)');
+  g1.addColorStop(0.20, 'rgba(255,160,50,0.34)');
+  g1.addColorStop(0.55, 'rgba(240,90,30,0.12)');
+  g1.addColorStop(1.00, 'rgba(200,50,10,0)');
+  ctx.fillStyle = g1;
+  ctx.beginPath(); ctx.arc(p.x, p.y, haloR, 0, 6.2832); ctx.fill();
+
+  // 核心
+  const g2 = ctx.createRadialGradient(
+    p.x - baseR*0.30, p.y - baseR*0.35, 0, p.x, p.y, baseR*pulse);
+  g2.addColorStop(0.00, 'rgba(255,255,255,1)');
+  g2.addColorStop(0.35, 'rgba(255,225,160,0.96)');
+  g2.addColorStop(0.75, 'rgba(255,150,50,0.80)');
+  g2.addColorStop(1.00, 'rgba(255,90,20,0.16)');
+  ctx.fillStyle = g2;
+  ctx.beginPath(); ctx.arc(p.x, p.y, baseR*pulse, 0, 6.2832); ctx.fill();
+
+  // 旋转环
+  const ringR = baseR * 2.4;
+  ctx.strokeStyle = 'rgba(255,190,90,0.62)';
+  ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  ctx.ellipse(p.x, p.y, ringR, ringR*0.40, t*1.8, 0, Math.PI*1.6);
+  ctx.stroke();
+
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ==========================================================
+   奖励爆发
+   ========================================================== */
+function drawBursts(){
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i=0;i<bursts.length;i++){
+    const b = bursts[i];
+    const p = project(b.x, b.y, b.z);
+    if (!p) continue;
+    const r = Math.max(1, 0.12 * p.f) * b.life;
+    const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r*2.6);
+    g.addColorStop(0,   'rgba(255,244,190,' + (0.9*b.life).toFixed(3) + ')');
+    g.addColorStop(0.4, 'rgba(255,180,60,' + (0.42*b.life).toFixed(3) + ')');
+    g.addColorStop(1,   'rgba(255,120,20,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(p.x, p.y, r*2.6, 0, 6.2832); ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ==========================================================
+   顶部文字
+   ========================================================== */
+const CAPTIONS = [
+  '强化学习揭示“试错-反馈-改进”的自适应学习原理——',
+  '个体通过与环境的持续交互（奖励驱动）自主习得最优策略',
+  '这启示我们成功源于不断尝试探索、从反馈中学习',
+  '在试错中优化，勇于探索方能找到最优解'
+];
+let capIdx = -1;
+
+function updateCaption(t){
+  const segDur = 30 / CAPTIONS.length;
+  let i = Math.floor(t / segDur);
+  if (i >= CAPTIONS.length) i = CAPTIONS.length - 1;
+  const lt = t - i*segDur;
+
+  if (i !== capIdx){
+    capIdx = i;
+    captionEl.textContent = CAPTIONS[i];
+  }
+  const fade = 0.85;
+  let op = 1;
+  if (lt < fade) op = lt/fade;
+  else if (lt > segDur - fade) op = Math.max(0, (segDur-lt)/fade);
+  captionEl.style.opacity = clamp(op,0,1).toFixed(3);
+}
+
+/* ==========================================================
+   重置学习
+   ========================================================== */
+function resetLearning(){
+  for (let i=0;i<GRID_W*GRID_H;i++){
+    Q[i][0]=0; Q[i][1]=0; Q[i][2]=0; Q[i][3]=0;
+  }
+  agentX = START_X; agentY = START_Y;
+  agentVisX = WX(START_X); agentVisZ = WZ(START_Y);
+  episodes = 0;
+  totalSteps = 0;
+  episodeReward = 0;
+  episodeStepCount = 0;
+  totalRewardAccum = 0;
+  simAcc = 0;
+  trail = [];
+  bursts.length = 0;
+}
+
+/* ==========================================================
+   渲染
+   ========================================================== */
+function render(tLoop, dt){
+  SCX = W*0.5;
+  SCY = H*0.50;
+
+  camYaw   = userYaw;
+  camPitch = userPitch;
+
+  /* 背景 */
+  drawBackground(tLoop);
+
+  /* 地面 + 热力图 */
+  drawGround(tLoop);
+
+  /* 墙体 */
+  drawWalls();
+
+  /* 终点 */
+  drawGoal(tLoop);
+
+  /* 轨迹 */
+  drawTrail();
+
+  /* 智能体 */
+  drawAgent(tLoop, dt);
+
+  /* 爆发 */
+  drawBursts();
+
+  /* 文字 */
+  updateCaption(tLoop);
+
+  /* HUD */
+  const eps = Math.max(0.05, 1.0 - tLoop/25.0);
+  let phaseName;
+  if (eps > 0.7)       phaseName = '随机探索阶段';
+  else if (eps > 0.3)  phaseName = '试探学习阶段';
+  else                 phaseName = '利用最优策略';
+
+  hudEl.innerHTML =
+    'Episode <b>' + episodes + '</b> &nbsp;|&nbsp; ' +
+    'Steps <b>' + totalSteps + '</b> &nbsp;|&nbsp; ' +
+    'ε = <b>' + eps.toFixed(3) + '</b> &nbsp;|&nbsp; ' +
+    '本回合奖励 <i>' + episodeReward.toFixed(2) + '</i>';
+
+  infoLabel.textContent = 'ε = ' + eps.toFixed(3) + ' · ' + phaseName;
+}
+
+/* ==========================================================
+   主循环
+   ========================================================== */
+const CYCLE = 30;
+let tAcc = 0;
+let lastNow = 0;
+
+function frame(now){
+  if (!lastNow) lastNow = now;
+  let dt = (now - lastNow)/1000;
+  lastNow = now;
+  if (dt > 0.06) dt = 0.06;
+  if (dt <= 0)   dt = 1/60;
+
+  tAcc += dt;
+  if (tAcc >= CYCLE){
+    tAcc -= CYCLE;
+    resetLearning();
+  }
+
+  /* 模拟步进 */
+  simAcc += dt;
+  let guard = 0;
+  while (simAcc >= SIM_DT && guard < 6){
+    simAcc -= SIM_DT;
+    simStep(tAcc);
+    guard++;
+  }
+  if (guard >= 6) simAcc = 0;
+
+  updateBursts(dt);
+
+  render(tAcc, dt);
+  requestAnimationFrame(frame);
+}
+
+/* ==========================================================
+   交互
+   ========================================================== */
+let dragging=false, lastMX=0, lastMY=0, dragDist=0;
+
+canvas.addEventListener('mousedown', e=>{
+  dragging=true; dragDist=0;
+  lastMX=e.clientX; lastMY=e.clientY;
+});
+window.addEventListener('mousemove', e=>{
+  if (!dragging) return;
+  const dx=e.clientX-lastMX, dy=e.clientY-lastMY;
+  lastMX=e.clientX; lastMY=e.clientY;
+  dragDist += Math.abs(dx)+Math.abs(dy);
+  userYaw   += dx*0.0065;
+  userPitch  = clamp(userPitch + dy*0.0055, 0.12, 1.45);
+});
+window.addEventListener('mouseup', ()=>{
+  dragging=false;
+});
+
+canvas.addEventListener('wheel', e=>{
+  e.preventDefault();
+  camDist = clamp(camDist + e.deltaY*0.012, 5.5, 42);
+}, { passive:false });
+
+/* 触摸 */
+canvas.addEventListener('touchstart', e=>{
+  if (e.touches.length===1){
+    dragging=true; dragDist=0;
+    lastMX=e.touches[0].clientX;
+    lastMY=e.touches[0].clientY;
+  }
+}, { passive:true });
+
+canvas.addEventListener('touchmove', e=>{
+  if (!dragging || e.touches.length!==1) return;
+  const t0=e.touches[0];
+  const dx=t0.clientX-lastMX, dy=t0.clientY-lastMY;
+  lastMX=t0.clientX; lastMY=t0.clientY;
+  dragDist += Math.abs(dx)+Math.abs(dy);
+  userYaw   += dx*0.009;
+  userPitch  = clamp(userPitch + dy*0.007, 0.12, 1.45);
+}, { passive:true });
+
+canvas.addEventListener('touchend', ()=>{
+  dragging=false;
+}, { passive:true });
+
+/* 重置按钮 */
+btn.addEventListener('click', ()=>{
+  resetLearning();
+  tAcc = 0;
+});
+
+/* ==========================================================
+   启动
+   ========================================================== */
+resetLearning();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

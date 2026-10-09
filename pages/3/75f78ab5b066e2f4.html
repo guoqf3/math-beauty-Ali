@@ -1,0 +1,933 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>顿悟机制 · Aha Moment</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{width:100%;height:100%;overflow:hidden;background:#060418;
+    font-family:"PingFang SC","Microsoft YaHei","Helvetica Neue",sans-serif;color:#e8ecff;}
+  canvas#scene,canvas#fx{display:block;position:fixed;inset:0;}
+  canvas#fx{pointer-events:none;z-index:6;}
+
+  /* ---------- 顶部文字（无标题） ---------- */
+  #topHud{
+    position:fixed;top:0;left:50%;transform:translateX(-50%);
+    width:min(1100px,95vw);padding:22px 30px 30px;text-align:center;
+    z-index:12;pointer-events:none;
+    background:linear-gradient(180deg,rgba(6,4,24,.94) 0%,rgba(6,4,24,.55) 62%,rgba(6,4,24,0) 100%);
+  }
+  #hudText{
+    font-size:17px;line-height:1.85;color:rgba(226,234,255,.95);
+    text-shadow:0 0 16px rgba(120,150,255,.6);min-height:64px;
+    letter-spacing:.7px;
+  }
+  #hudText::after{content:"▌";color:#7cf0ff;animation:blink .85s steps(1) infinite;
+    margin-left:2px;font-size:14px;opacity:.9;}
+  @keyframes blink{50%{opacity:0;}}
+
+  /* ---------- 左侧公式 ---------- */
+  #formulaPanel{
+    position:fixed;left:24px;top:50%;transform:translateY(-50%);
+    z-index:11;pointer-events:none;padding:18px 20px;
+    border-left:2px solid rgba(120,160,255,.35);
+    background:linear-gradient(90deg,rgba(12,8,36,.6),rgba(12,8,36,0));
+    border-radius:0 12px 12px 0;
+  }
+  .fLine{font-family:"Courier New",monospace;font-size:15px;letter-spacing:.4px;
+    color:#9fd4ff;text-shadow:0 0 12px rgba(80,170,255,.7);margin:6px 0;white-space:nowrap;}
+  .fLine.sub{font-size:12.5px;color:#b39bff;text-shadow:0 0 12px rgba(150,110,255,.7);}
+  .fLine.hot{font-size:13px;color:#ffd166;text-shadow:0 0 14px rgba(255,200,80,.9);}
+  .fLine.val{font-size:13px;color:#7cf0ff;text-shadow:0 0 12px rgba(80,240,255,.85);}
+
+  /* ---------- 右下曲线 ---------- */
+  #chartWrap{
+    position:fixed;right:22px;bottom:20px;z-index:11;pointer-events:none;
+    width:330px;padding:10px 10px 2px;border-radius:14px;
+    background:linear-gradient(180deg,rgba(12,8,36,.65),rgba(12,8,36,.2));
+    border:1px solid rgba(120,150,255,.18);
+    box-shadow:0 0 40px rgba(80,60,200,.25) inset;
+  }
+  #chartCanvas{width:100%;height:auto;display:block;}
+  .chartCap{font-size:11px;color:rgba(160,190,255,.65);text-align:center;
+    letter-spacing:2px;padding:2px 0 4px;}
+
+  /* ---------- 底部提示 ---------- */
+  #hint{
+    position:fixed;bottom:22px;left:50%;transform:translateX(-50%);
+    z-index:11;font-size:12px;letter-spacing:2px;color:rgba(160,190,255,.55);
+    pointer-events:none;white-space:nowrap;
+  }
+
+  /* ---------- 卡片 ---------- */
+  #card{
+    position:fixed;top:50%;left:50%;transform:translate(-50%,-50%) scale(.92);
+    width:min(440px,88vw);z-index:30;padding:22px 26px 24px;
+    border-radius:18px;pointer-events:none;opacity:0;
+    background:linear-gradient(150deg,rgba(22,14,52,.96),rgba(8,6,26,.96));
+    border:1px solid rgba(140,120,255,.45);
+    box-shadow:0 0 60px rgba(120,80,255,.45),0 0 120px rgba(80,200,255,.18);
+    transition:opacity .35s ease,transform .35s cubic-bezier(.2,1.4,.4,1);
+  }
+  #card.show{opacity:1;transform:translate(-50%,-50%) scale(1);}
+  #cardTitle{font-size:20px;font-weight:700;letter-spacing:6px;margin-bottom:14px;}
+  #cardBody{font-size:14px;line-height:1.85;color:rgba(214,224,255,.9);}
+
+  @media (max-width:820px){
+    #chartWrap{width:220px;right:10px;bottom:10px;}
+    #formulaPanel{left:8px;padding:12px;transform:translateY(-50%) scale(.86);}
+    #hudText{font-size:14px;}
+    #hint{font-size:10px;letter-spacing:1px;}
+  }
+</style>
+</head>
+<body>
+
+<canvas id="scene"></canvas>
+<canvas id="fx"></canvas>
+
+<div id="topHud">
+  <div id="hudText"></div>
+</div>
+
+<div id="formulaPanel">
+  <div class="fLine">A(t) = A₀ + (1−A₀)·σ(t−t₀)</div>
+  <div class="fLine sub">Incubation → Insight</div>
+  <div class="fLine hot">t_inc ≈ 0.60 · T_total</div>
+  <div class="fLine hot">P: 20% → 85%↑</div>
+  <div class="fLine val" id="actVal">A = 0.20</div>
+</div>
+
+<div id="chartWrap">
+  <canvas id="chartCanvas" width="700" height="300"></canvas>
+  <div class="chartCap">解题成功率 ← 时间 →</div>
+</div>
+
+<div id="hint">拖拽 · 旋转大脑 ｜ 滚轮 · 深入微观 ｜ 点击 · 触发顿悟</div>
+
+<div id="card">
+  <div id="cardTitle"></div>
+  <div id="cardBody"></div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.137.0/build/three.min.js"></script>
+<script>
+(function () {
+'use strict';
+
+/* ============================================================
+   工具
+   ============================================================ */
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const smoothstep = (a, b, x) => {
+  const t = clamp((x - a) / (b - a), 0, 1);
+  return t * t * (3 - 2 * t);
+};
+const mix = (a, b, t) => a + (b - a) * t;
+
+/* ============================================================
+   渲染器 / 场景 / 相机
+   ============================================================ */
+const canvas = document.getElementById('scene');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setClearColor(0x060418, 1);
+
+const scene = new THREE.Scene();
+
+const camera = new THREE.PerspectiveCamera(
+  48, window.innerWidth / window.innerHeight, 0.1, 400
+);
+
+/* ============================================================
+   背景星空
+   ============================================================ */
+(function stars() {
+  const N = 1100;
+  const g = new THREE.BufferGeometry();
+  const p = new Float32Array(N * 3);
+  const c = new Float32Array(N * 3);
+  const col = new THREE.Color();
+  for (let i = 0; i < N; i++) {
+    const r = 18 + Math.random() * 90;
+    const th = Math.random() * Math.PI * 2;
+    const ph = Math.acos(Math.random() * 2 - 1);
+    p[i * 3]     = r * Math.sin(ph) * Math.cos(th);
+    p[i * 3 + 1] = r * Math.cos(ph);
+    p[i * 3 + 2] = r * Math.sin(ph) * Math.sin(th);
+    col.setHSL(0.60 + Math.random() * 0.32, 0.8, 0.45 + Math.random() * 0.35);
+    c[i * 3] = col.r; c[i * 3 + 1] = col.g; c[i * 3 + 2] = col.b;
+  }
+  g.setAttribute('position', new THREE.BufferAttribute(p, 3));
+  g.setAttribute('color', new THREE.BufferAttribute(c, 3));
+  scene.add(new THREE.Points(g, new THREE.PointsMaterial({
+    size: 0.28, vertexColors: true, transparent: true, opacity: 0.85,
+    blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true
+  })));
+})();
+
+/* ============================================================
+   大脑形状函数
+   ============================================================ */
+function brainSurface(th, ph, scale) {
+  const sx = Math.sin(ph) * Math.cos(th);
+  const sy = Math.cos(ph);
+  const sz = Math.sin(ph) * Math.sin(th);
+
+  const n = Math.sin(sx * 7.5 + sy * 4.2) * Math.cos(sz * 6.3 + sy * 3.1) * 0.055
+          + Math.sin(sz * 11.0 + sx * 5.5) * 0.032
+          + Math.sin(sy * 13.0 + sz * 8.0) * 0.026;
+
+  let r = 1 + n;
+  r -= Math.exp(-(sx * sx) * 26) * 0.11;   // 中央纵裂
+
+  return [sx * 0.95 * r * scale, sy * 0.80 * r * scale, sz * 1.15 * r * scale];
+}
+
+const brainGroup = new THREE.Group();
+scene.add(brainGroup);
+
+/* ============================================================
+   半透明外壳（点云）
+   ============================================================ */
+(function shell() {
+  const N = 7000;
+  const pos = new Float32Array(N * 3);
+  const col = new Float32Array(N * 3);
+  const c = new THREE.Color();
+  for (let i = 0; i < N; i++) {
+    const th = Math.random() * Math.PI * 2;
+    const ph = Math.acos(Math.random() * 2 - 1);
+    const v = brainSurface(th, ph, 1.0);
+    pos[i * 3] = v[0]; pos[i * 3 + 1] = v[1]; pos[i * 3 + 2] = v[2];
+    const h = (0.44 + (v[0] * 0.5 + 0.5) * 0.36 + Math.random() * 0.05) % 1;
+    c.setHSL(h, 0.88, 0.52 + Math.random() * 0.18);
+    col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b;
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  brainGroup.add(new THREE.Points(g, new THREE.PointsMaterial({
+    size: 0.017, vertexColors: true, transparent: true, opacity: 0.42,
+    blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true
+  })));
+})();
+
+/* ============================================================
+   内部神经元
+   ============================================================ */
+const NEURON_N = 1600;
+const neuronPos = new Float32Array(NEURON_N * 3);
+const neuronHue = new Float32Array(NEURON_N);
+const neuronPhase = new Float32Array(NEURON_N);
+const neuronColors = [];
+
+for (let i = 0; i < NEURON_N; i++) {
+  const th = Math.random() * Math.PI * 2;
+  const ph = Math.acos(Math.random() * 2 - 1);
+  const sx = Math.sin(ph) * Math.cos(th);
+  const sy = Math.cos(ph);
+  const sz = Math.sin(ph) * Math.sin(th);
+  const r = Math.cbrt(Math.random()) * 0.86;
+
+  neuronPos[i * 3]     = sx * 0.95 * r;
+  neuronPos[i * 3 + 1] = sy * 0.80 * r;
+  neuronPos[i * 3 + 2] = sz * 1.15 * r;
+
+  const isCyan = Math.random() < 0.55;
+  neuronHue[i] = isCyan ? 0.44 + Math.random() * 0.10 : 0.78 + Math.random() * 0.10;
+  neuronPhase[i] = Math.random() * Math.PI * 2;
+  neuronColors.push(new THREE.Color().setHSL(neuronHue[i], 0.92, 0.6));
+}
+
+const nColorArr = new Float32Array(NEURON_N * 3);
+const nGlowArr  = new Float32Array(NEURON_N);
+const nSizeArr  = new Float32Array(NEURON_N);
+for (let i = 0; i < NEURON_N; i++) {
+  nSizeArr[i] = 0.09 + Math.random() * 0.14;
+}
+
+const neuronGeo = new THREE.BufferGeometry();
+neuronGeo.setAttribute('position', new THREE.BufferAttribute(neuronPos, 3));
+neuronGeo.setAttribute('aColor', new THREE.BufferAttribute(nColorArr, 3));
+neuronGeo.setAttribute('aGlow',  new THREE.BufferAttribute(nGlowArr, 1));
+neuronGeo.setAttribute('aSize',  new THREE.BufferAttribute(nSizeArr, 1));
+
+const neuronMat = new THREE.ShaderMaterial({
+  uniforms: { uPR: { value: renderer.getPixelRatio() } },
+  vertexShader: `
+    attribute vec3  aColor;
+    attribute float aGlow;
+    attribute float aSize;
+    uniform float uPR;
+    varying vec3  vColor;
+    varying float vGlow;
+    void main() {
+      vColor = aColor;
+      vGlow  = aGlow;
+      vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      gl_PointSize = aSize * uPR * (300.0 / max(-mv.z, 0.4)) * (0.55 + 0.95 * aGlow);
+      gl_Position = projectionMatrix * mv;
+    }
+  `,
+  fragmentShader: `
+    varying vec3  vColor;
+    varying float vGlow;
+    void main() {
+      vec2 uv = gl_PointCoord - vec2(0.5);
+      float d = length(uv);
+      if (d > 0.5) discard;
+      float a = pow(1.0 - d * 2.0, 2.0);
+      vec3 c = vColor * (0.45 + 1.9 * a) + vec3(0.16, 0.18, 0.26) * pow(a, 3.0);
+      gl_FragColor = vec4(c, a * (0.30 + 0.70 * vGlow));
+    }
+  `,
+  transparent: true,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false
+});
+brainGroup.add(new THREE.Points(neuronGeo, neuronMat));
+
+/* ============================================================
+   突触连接
+   ============================================================ */
+const synPairs = [];
+(function buildSynapses() {
+  const maxDistSq = 0.20 * 0.20;
+  const maxPerNode = 3;
+  const connCount = new Int8Array(NEURON_N);
+
+  for (let i = 0; i < NEURON_N; i++) {
+    for (let j = i + 1; j < NEURON_N; j++) {
+      if (connCount[i] >= maxPerNode) break;
+      if (connCount[j] >= maxPerNode) continue;
+      const dx = neuronPos[i * 3]     - neuronPos[j * 3];
+      const dy = neuronPos[i * 3 + 1] - neuronPos[j * 3 + 1];
+      const dz = neuronPos[i * 3 + 2] - neuronPos[j * 3 + 2];
+      if (dx * dx + dy * dy + dz * dz < maxDistSq) {
+        synPairs.push(i, j);
+        connCount[i]++; connCount[j]++;
+      }
+    }
+  }
+})();
+
+const synCount = synPairs.length / 2;
+const synPosArr = new Float32Array(synCount * 6);
+const synColArr = new Float32Array(synCount * 6);
+
+for (let k = 0; k < synCount; k++) {
+  const a = synPairs[k * 2], b = synPairs[k * 2 + 1];
+  synPosArr[k * 6]     = neuronPos[a * 3];
+  synPosArr[k * 6 + 1] = neuronPos[a * 3 + 1];
+  synPosArr[k * 6 + 2] = neuronPos[a * 3 + 2];
+  synPosArr[k * 6 + 3] = neuronPos[b * 3];
+  synPosArr[k * 6 + 4] = neuronPos[b * 3 + 1];
+  synPosArr[k * 6 + 5] = neuronPos[b * 3 + 2];
+}
+
+const synGeo = new THREE.BufferGeometry();
+synGeo.setAttribute('position', new THREE.BufferAttribute(synPosArr, 3));
+synGeo.setAttribute('color', new THREE.BufferAttribute(synColArr, 3));
+
+const synapses = new THREE.LineSegments(synGeo, new THREE.LineBasicMaterial({
+  vertexColors: true, transparent: true, opacity: 0.6,
+  blending: THREE.AdditiveBlending, depthWrite: false
+}));
+brainGroup.add(synapses);
+
+/* ============================================================
+   热噪声粒子
+   ============================================================ */
+const NOISE_N = 480;
+const noisePos = new Float32Array(NOISE_N * 3);
+const noiseVel = new Float32Array(NOISE_N * 3);
+
+function randomInsideBrain(out, idx) {
+  const th = Math.random() * Math.PI * 2;
+  const ph = Math.acos(Math.random() * 2 - 1);
+  const sx = Math.sin(ph) * Math.cos(th);
+  const sy = Math.cos(ph);
+  const sz = Math.sin(ph) * Math.sin(th);
+  const r = 0.35 + Math.random() * 0.62;
+  out[idx * 3]     = sx * 0.95 * r;
+  out[idx * 3 + 1] = sy * 0.80 * r;
+  out[idx * 3 + 2] = sz * 1.15 * r;
+}
+for (let i = 0; i < NOISE_N; i++) {
+  randomInsideBrain(noisePos, i);
+  noiseVel[i * 3]     = (Math.random() - 0.5) * 0.25;
+  noiseVel[i * 3 + 1] = (Math.random() - 0.5) * 0.25;
+  noiseVel[i * 3 + 2] = (Math.random() - 0.5) * 0.25;
+}
+
+const noiseGeo = new THREE.BufferGeometry();
+noiseGeo.setAttribute('position', new THREE.BufferAttribute(noisePos, 3));
+const noisePoints = new THREE.Points(noiseGeo, new THREE.PointsMaterial({
+  size: 0.026, color: 0x8a6bff, transparent: true, opacity: 0.55,
+  blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true
+}));
+brainGroup.add(noisePoints);
+
+/* ============================================================
+   顿悟光柱
+   ============================================================ */
+const beamGeo = new THREE.CylinderGeometry(0.30, 0.055, 1, 24, 1, true);
+beamGeo.translate(0, 0.5, 0);
+
+const beamMat = new THREE.ShaderMaterial({
+  uniforms: {
+    uOpacity: { value: 0 },
+    uTime:    { value: 0 }
+  },
+  vertexShader: `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: `
+    uniform float uOpacity;
+    uniform float uTime;
+    varying vec2 vUv;
+    void main() {
+      float ay = 1.0 - vUv.y;
+      float a = pow(ay, 1.55) * uOpacity;
+      float ripple = 0.88 + 0.12 * sin(vUv.y * 42.0 - uTime * 9.0);
+      vec3 col = mix(vec3(1.0, 0.99, 0.94), vec3(1.0, 0.74, 0.26), vUv.y);
+      gl_FragColor = vec4(col * ripple, a);
+    }
+  `,
+  transparent: true,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false,
+  side: THREE.DoubleSide
+});
+
+const beam = new THREE.Mesh(beamGeo, beamMat);
+beam.scale.set(1, 0.001, 1);
+scene.add(beam);
+
+/* ============================================================
+   脑波扩散环
+   ============================================================ */
+const rings = [];
+for (let i = 0; i < 6; i++) {
+  const g = new THREE.RingGeometry(0.94, 1.0, 72);
+  const m = new THREE.MeshBasicMaterial({
+    color: new THREE.Color().setHSL(0.53 + i * 0.035, 0.92, 0.66),
+    transparent: true, opacity: 0, side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  });
+  const ring = new THREE.Mesh(g, m);
+  ring.rotation.x = Math.PI / 2;
+  ring.visible = false;
+  scene.add(ring);
+  rings.push(ring);
+}
+
+/* ============================================================
+   爆发粒子
+   ============================================================ */
+const BURST_N = 260;
+const burstDir = new Float32Array(BURST_N * 3);
+const burstSpd = new Float32Array(BURST_N);
+for (let i = 0; i < BURST_N; i++) {
+  const th = Math.random() * Math.PI * 2;
+  const ph = Math.acos(Math.random() * 2 - 1);
+  burstDir[i * 3]     = Math.sin(ph) * Math.cos(th);
+  burstDir[i * 3 + 1] = Math.cos(ph);
+  burstDir[i * 3 + 2] = Math.sin(ph) * Math.sin(th);
+  burstSpd[i] = 1.6 + Math.random() * 3.4;
+}
+const burstPos = new Float32Array(BURST_N * 3);
+const burstGeo = new THREE.BufferGeometry();
+burstGeo.setAttribute('position', new THREE.BufferAttribute(burstPos, 3));
+const burstPts = new THREE.Points(burstGeo, new THREE.PointsMaterial({
+  size: 0.055, color: 0xffe9b0, transparent: true, opacity: 0,
+  blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true
+}));
+scene.add(burstPts);
+
+/* ============================================================
+   不可见点击体
+   ============================================================ */
+const hitSphere = new THREE.Mesh(
+  new THREE.SphereGeometry(1.15, 16, 12),
+  new THREE.MeshBasicMaterial({ visible: false })
+);
+hitSphere.scale.set(1.0, 0.86, 1.18);
+brainGroup.add(hitSphere);
+
+/* ============================================================
+   相机控制
+   ============================================================ */
+let camTheta = 0.6;
+let camPhi = 1.32;
+let camDist = 4.6;
+let dragging = false;
+let lastX = 0, lastY = 0, downX = 0, downY = 0, moved = 0;
+
+canvas.addEventListener('pointerdown', e => {
+  dragging = true; moved = 0;
+  lastX = downX = e.clientX;
+  lastY = downY = e.clientY;
+  try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
+});
+canvas.addEventListener('pointermove', e => {
+  if (!dragging) return;
+  const dx = e.clientX - lastX;
+  const dy = e.clientY - lastY;
+  lastX = e.clientX; lastY = e.clientY;
+  moved += Math.abs(dx) + Math.abs(dy);
+  camTheta -= dx * 0.0055;
+  camPhi = clamp(camPhi - dy * 0.0045, 0.35, 1.65);
+});
+canvas.addEventListener('pointerup', e => {
+  dragging = false;
+  try { canvas.releasePointerCapture(e.pointerId); } catch (err) {}
+  const d = Math.hypot(e.clientX - downX, e.clientY - downY);
+  if (moved < 8 && d < 8) handleClick(e.clientX, e.clientY);
+});
+canvas.addEventListener('pointercancel', () => { dragging = false; });
+
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  camDist = clamp(camDist * (1 + e.deltaY * 0.0012), 1.6, 12);
+}, { passive: false });
+
+/* ============================================================
+   点击 → 顿悟模拟
+   ============================================================ */
+const cardEl = document.getElementById('card');
+const cardTitleEl = document.getElementById('cardTitle');
+const cardBodyEl = document.getElementById('cardBody');
+let cardTimer = null;
+
+function handleClick(mx, my) {
+  const ndc = new THREE.Vector2(
+    (mx / window.innerWidth) * 2 - 1,
+    -(my / window.innerHeight) * 2 + 1
+  );
+  const ray = new THREE.Raycaster();
+  ray.setFromCamera(ndc, camera);
+  const hits = ray.intersectObject(hitSphere, false);
+
+  if (hits.length) {
+    triggerAha();
+    showCard();
+  } else {
+    cardEl.classList.remove('show');
+  }
+}
+
+function showCard() {
+  cardTitleEl.innerHTML = '顿 悟 模 拟' +
+    '<span class="cardTag" style="color:#ffd166">AHA!</span>';
+  cardTitleEl.style.color = '#ffd166';
+  cardTitleEl.style.textShadow = '0 0 24px #ffd166';
+  cardBodyEl.textContent =
+    '额叶区域被触发，累积激活强度瞬间跨越阈值。内部神经元从随机闪烁转为同步共振，' +
+    '形成有序的电流脉冲波向四周扩散——这正是顿悟降临的瞬间：潜意识整合完成，答案豁然贯通。';
+  cardEl.classList.add('show');
+  clearTimeout(cardTimer);
+  cardTimer = setTimeout(() => cardEl.classList.remove('show'), 6000);
+}
+
+/* ============================================================
+   屏幕特效层
+   ============================================================ */
+const fxCanvas = document.getElementById('fx');
+const fxc = fxCanvas.getContext('2d');
+let flash = 0;
+let speedLines = 0;
+
+function resizeFx() {
+  fxCanvas.width = window.innerWidth;
+  fxCanvas.height = window.innerHeight;
+}
+resizeFx();
+
+function drawFx() {
+  const w = fxCanvas.width, h = fxCanvas.height;
+  fxc.clearRect(0, 0, w, h);
+
+  if (flash > 0.002) {
+    const g = fxc.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, Math.max(w, h) * 0.72);
+    g.addColorStop(0, 'rgba(255,255,255,' + (0.85 * flash).toFixed(3) + ')');
+    g.addColorStop(0.22, 'rgba(210,225,255,' + (0.34 * flash).toFixed(3) + ')');
+    g.addColorStop(0.55, 'rgba(150,110,255,' + (0.12 * flash).toFixed(3) + ')');
+    g.addColorStop(1, 'rgba(120,80,255,0)');
+    fxc.fillStyle = g;
+    fxc.fillRect(0, 0, w, h);
+  }
+
+  if (speedLines > 0.002) {
+    fxc.save();
+    fxc.translate(w / 2, h / 2);
+    const R = Math.max(w, h) * 0.75;
+    fxc.lineCap = 'round';
+    for (let i = 0; i < 96; i++) {
+      const a = (i / 96) * Math.PI * 2 + Math.sin(i * 13.7) * 0.32;
+      const r0 = R * (0.14 + 0.10 * (0.5 + 0.5 * Math.sin(i * 7.3)));
+      const r1 = r0 + R * (0.20 + 0.24 * (0.5 + 0.5 * Math.sin(i * 3.1 + 1.3)));
+      const alpha = 0.55 * speedLines * (0.45 + 0.55 * Math.abs(Math.sin(i * 5.1)));
+      fxc.strokeStyle = 'rgba(255,244,214,' + alpha.toFixed(3) + ')';
+      fxc.lineWidth = 1.2 + 1.4 * Math.abs(Math.sin(i * 2.7));
+      fxc.beginPath();
+      fxc.moveTo(Math.cos(a) * r0, Math.sin(a) * r0);
+      fxc.lineTo(Math.cos(a) * r1, Math.sin(a) * r1);
+      fxc.stroke();
+    }
+    fxc.restore();
+  }
+}
+
+/* ============================================================
+   参数曲线（2D）
+   ============================================================ */
+const chartCanvas = document.getElementById('chartCanvas');
+const cctx = chartCanvas.getContext('2d');
+const CW = chartCanvas.width;
+const CH = chartCanvas.height;
+
+// 阶跃式成功率曲线：低平台 20% → 骤升 85%+
+function successRate(x) {
+  const s = 1 / (1 + Math.exp(-(x - 0.60) * 34));
+  return 0.20 + 0.72 * s;      // 0.20 → 0.92
+}
+
+function drawChart(p, time) {
+  cctx.clearRect(0, 0, CW, CH);
+  const padL = 66, padR = 34, padT = 26, padB = 50;
+  const gx = padL, gy = padT;
+  const gw = CW - padL - padR;
+  const gh = CH - padT - padB;
+
+  // 网格
+  cctx.strokeStyle = 'rgba(120,160,255,0.11)';
+  cctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = gy + gh * i / 4;
+    cctx.beginPath(); cctx.moveTo(gx, y); cctx.lineTo(gx + gw, y); cctx.stroke();
+  }
+
+  // 孵化期背景
+  cctx.fillStyle = 'rgba(90,120,255,0.055)';
+  cctx.fillRect(gx, gy, 0.60 * gw, gh);
+
+  // 阈值竖线
+  const thrX = gx + 0.60 * gw;
+  cctx.save();
+  cctx.setLineDash([6, 7]);
+  cctx.strokeStyle = 'rgba(255,209,102,0.48)';
+  cctx.lineWidth = 1.6;
+  cctx.beginPath(); cctx.moveTo(thrX, gy); cctx.lineTo(thrX, gy + gh); cctx.stroke();
+  cctx.restore();
+
+  // 完整曲线（暗）
+  cctx.beginPath();
+  for (let i = 0; i <= 240; i++) {
+    const x = i / 240;
+    const px = gx + x * gw;
+    const py = gy + gh - successRate(x) * gh;
+    i ? cctx.lineTo(px, py) : cctx.moveTo(px, py);
+  }
+  cctx.strokeStyle = 'rgba(140,170,255,0.20)';
+  cctx.lineWidth = 2;
+  cctx.stroke();
+
+  // 已推进曲线
+  const N = Math.max(1, Math.floor(p * 240));
+  const grad = cctx.createLinearGradient(gx, 0, gx + gw, 0);
+  grad.addColorStop(0.00, '#4cc9f0');
+  grad.addColorStop(0.45, '#9b5de5');
+  grad.addColorStop(0.62, '#ffd166');
+  grad.addColorStop(1.00, '#ff6ec7');
+
+  cctx.beginPath();
+  for (let i = 0; i <= N; i++) {
+    const x = i / 240;
+    const px = gx + x * gw;
+    const py = gy + gh - successRate(x) * gh;
+    i ? cctx.lineTo(px, py) : cctx.moveTo(px, py);
+  }
+  cctx.strokeStyle = grad;
+  cctx.lineWidth = 4.5;
+  cctx.lineJoin = 'round';
+  cctx.shadowColor = '#9b5de5';
+  cctx.shadowBlur = 16;
+  cctx.stroke();
+  cctx.shadowBlur = 0;
+
+  // 当前点
+  const cxp = gx + p * gw;
+  const cyp = gy + gh - successRate(p) * gh;
+  const pulse = 6 + Math.sin(time * 6) * 2.2;
+  cctx.beginPath();
+  cctx.arc(cxp, cyp, pulse + 6, 0, Math.PI * 2);
+  cctx.fillStyle = 'rgba(255,255,255,0.12)';
+  cctx.fill();
+  cctx.beginPath();
+  cctx.arc(cxp, cyp, 6, 0, Math.PI * 2);
+  cctx.fillStyle = '#ffffff';
+  cctx.shadowColor = '#ffd166';
+  cctx.shadowBlur = 22;
+  cctx.fill();
+  cctx.shadowBlur = 0;
+
+  // 标注
+  cctx.fillStyle = 'rgba(170,196,255,0.68)';
+  cctx.font = '21px "Courier New", monospace';
+  cctx.textAlign = 'center';
+  cctx.textBaseline = 'top';
+  cctx.fillText('0', gx, gy + gh + 12);
+  cctx.fillText('0.3T', gx + gw * 0.3, gy + gh + 12);
+  cctx.fillText('0.6T', gx + gw * 0.6, gy + gh + 12);
+  cctx.fillText('T', gx + gw, gy + gh + 12);
+
+  cctx.fillStyle = 'rgba(255,209,102,0.92)';
+  cctx.font = 'bold 20px "Courier New", monospace';
+  cctx.textAlign = 'left';
+  cctx.fillText('顿悟拐点', thrX + 8, gy + 6);
+}
+
+/* ============================================================
+   顶部打字机
+   ============================================================ */
+const hudTextEl = document.getElementById('hudText');
+const FULL_TEXT = '创造性思维的突破并非匀速线性推进，而往往源于长期的酝酿积累后在一瞬间豁然贯通——提示我们面对难题时合理的“放下”与酝酿期有助于潜意识整合信息，激发灵感迸发。';
+let lastLen = -1;
+
+const actValEl = document.getElementById('actVal');
+
+/* ============================================================
+   时间线与顿悟触发
+   ============================================================ */
+const DURATION = 30;
+const T_AHA = 0.62;
+
+let elapsed = 0;
+let prevU = 0;
+let clickPulse = 0;
+
+function triggerAha() {
+  flash = 1;
+  speedLines = 1;
+  clickPulse = 1;
+}
+
+/* ============================================================
+   主循环
+   ============================================================ */
+const clock = new THREE.Clock();
+
+function animate() {
+  requestAnimationFrame(animate);
+
+  const dt = Math.min(clock.getDelta(), 0.06);
+  elapsed += dt;
+  if (elapsed >= DURATION) elapsed -= DURATION;
+
+  const u = elapsed / DURATION;
+
+  /* ---------- 自动顿悟触发 ---------- */
+  if (prevU < T_AHA && u >= T_AHA) triggerAha();
+  prevU = u;
+
+  /* ---------- 特效衰减 ---------- */
+  flash = Math.max(0, flash - dt * 1.7);
+  speedLines = Math.max(0, speedLines - dt * 1.15);
+  clickPulse = Math.max(0, clickPulse - dt * 0.85);
+
+  /* ---------- 激活强度 A ---------- */
+  const baseLow = 0.20 + 0.045 * Math.sin(elapsed * 1.9) + 0.03 * Math.sin(elapsed * 5.3);
+  const step = smoothstep(T_AHA, T_AHA + 0.035, u);
+  const spike = Math.exp(-Math.pow((u - T_AHA) * 46, 2));
+  let A = mix(baseLow, 0.92, step) + spike * 0.6 + clickPulse * 0.5;
+  A = clamp(A, 0, 1.6);
+
+  actValEl.innerHTML = 'A = ' + A.toFixed(2);
+
+  /* ---------- 神经元同步 ---------- */
+  const sync = smoothstep(T_AHA, T_AHA + 0.05, u);
+
+  const nColorAttr = neuronGeo.getAttribute('aColor');
+  const nGlowAttr = neuronGeo.getAttribute('aGlow');
+  const cArr = nColorAttr.array;
+  const gArr = nGlowAttr.array;
+
+  for (let i = 0; i < NEURON_N; i++) {
+    const ph = neuronPhase[i];
+    // 孵化期：各自随机闪烁
+    const flicker = 0.20 + 0.62 * (0.5 + 0.5 * Math.sin(elapsed * 3.6 + ph * 6.9));
+    // 顿悟后：同步共振
+    const pulse = 0.62 + 0.38 * Math.sin(elapsed * 3.1);
+    let g = mix(flicker, pulse, sync);
+    g += spike * 0.75 + clickPulse * 0.5;
+    g = clamp(g, 0, 1.8);
+
+    const col = neuronColors[i];
+    const lum = 0.42 + 0.95 * g;
+    cArr[i * 3]     = col.r * lum;
+    cArr[i * 3 + 1] = col.g * lum;
+    cArr[i * 3 + 2] = col.b * lum;
+    gArr[i] = clamp(g, 0, 1.4);
+  }
+  nColorAttr.needsUpdate = true;
+  nGlowAttr.needsUpdate = true;
+
+  /* ---------- 突触颜色 ---------- */
+  const sArr = synGeo.getAttribute('color').array;
+  for (let k = 0; k < synCount; k++) {
+    const a = synPairs[k * 2], b = synPairs[k * 2 + 1];
+    const ga = gArr[a], gb = gArr[b];
+    const g = (ga + gb) * 0.5;
+    const ca = neuronColors[a], cb = neuronColors[b];
+    const lum = 0.12 + 0.75 * g * (0.35 + 0.65 * sync + spike * 0.9);
+    sArr[k * 6]     = (ca.r + cb.r) * 0.5 * lum;
+    sArr[k * 6 + 1] = (ca.g + cb.g) * 0.5 * lum;
+    sArr[k * 6 + 2] = (ca.b + cb.b) * 0.5 * lum;
+    sArr[k * 6 + 3] = sArr[k * 6];
+    sArr[k * 6 + 4] = sArr[k * 6 + 1];
+    sArr[k * 6 + 5] = sArr[k * 6 + 2];
+  }
+  synGeo.getAttribute('color').needsUpdate = true;
+  synapses.material.opacity = 0.42 + 0.45 * sync + spike * 0.4;
+
+  /* ---------- 热噪声粒子 ---------- */
+  const nPos = noiseGeo.getAttribute('position').array;
+  for (let i = 0; i < NOISE_N; i++) {
+    const i3 = i * 3;
+    noiseVel[i3]     += (Math.random() - 0.5) * 0.9 * dt;
+    noiseVel[i3 + 1] += (Math.random() - 0.5) * 0.9 * dt;
+    noiseVel[i3 + 2] += (Math.random() - 0.5) * 0.9 * dt;
+
+    noiseVel[i3]     *= 0.985;
+    noiseVel[i3 + 1] *= 0.985;
+    noiseVel[i3 + 2] *= 0.985;
+
+    nPos[i3]     += noiseVel[i3]     * dt;
+    nPos[i3 + 1] += noiseVel[i3 + 1] * dt;
+    nPos[i3 + 2] += noiseVel[i3 + 2] * dt;
+
+    // 椭球边界反弹
+    const nx = nPos[i3] / 0.95, ny = nPos[i3 + 1] / 0.80, nz = nPos[i3 + 2] / 1.15;
+    const rr = nx * nx + ny * ny + nz * nz;
+    if (rr > 1) {
+      const inv = 1 / Math.sqrt(rr);
+      nPos[i3]     *= inv;
+      nPos[i3 + 1] *= inv;
+      nPos[i3 + 2] *= inv;
+      noiseVel[i3]     *= -0.6;
+      noiseVel[i3 + 1] *= -0.6;
+      noiseVel[i3 + 2] *= -0.6;
+    }
+  }
+  noiseGeo.getAttribute('position').needsUpdate = true;
+  noisePoints.material.opacity = 0.35 + 0.35 * (1 - sync) + spike * 0.5;
+
+  /* ---------- 光柱 ---------- */
+  const beamAge = u - T_AHA;
+  let beamOp = 0;
+  let beamH = 0.001;
+  if (beamAge > 0) {
+    beamOp = Math.exp(-beamAge * 6.2) * 0.95 + Math.exp(-beamAge * 22) * 0.5;
+    beamH = clamp(beamAge * 90, 0, 15);
+  }
+  if (clickPulse > 0.01) {
+    beamOp = Math.max(beamOp, clickPulse * 0.65);
+    beamH = Math.max(beamH, (1 - clickPulse) * 12);
+  }
+  beamMat.uniforms.uOpacity.value = beamOp;
+  beamMat.uniforms.uTime.value = elapsed;
+  beam.scale.set(1, beamH, 1);
+  beam.visible = beamOp > 0.005;
+
+  /* ---------- 脑波扩散环 ---------- */
+  for (let i = 0; i < rings.length; i++) {
+    const age = beamAge - i * 0.028;
+    if (age > 0 && age < 0.30) {
+      const k = age / 0.30;
+      rings[i].visible = true;
+      rings[i].scale.setScalar(0.55 + k * 4.2);
+      rings[i].material.opacity = Math.pow(1 - k, 2.1) * 0.78;
+      rings[i].rotation.z = elapsed * 0.6 * (i % 2 ? 1 : -1);
+    } else {
+      rings[i].visible = false;
+    }
+  }
+
+  /* ---------- 爆发粒子 ---------- */
+  if (beamAge > 0 && beamAge < 0.55) {
+    const bArr = burstGeo.getAttribute('position').array;
+    for (let i = 0; i < BURST_N; i++) {
+      const r = beamAge * burstSpd[i] * 5.5;
+      bArr[i * 3]     = burstDir[i * 3]     * r;
+      bArr[i * 3 + 1] = burstDir[i * 3 + 1] * r;
+      bArr[i * 3 + 2] = burstDir[i * 3 + 2] * r;
+    }
+    burstGeo.getAttribute('position').needsUpdate = true;
+    burstPts.material.opacity = Math.pow(1 - beamAge / 0.55, 1.7) * 0.95;
+    burstPts.visible = true;
+  } else {
+    burstPts.visible = false;
+  }
+
+  /* ---------- 大脑自转 ---------- */
+  brainGroup.rotation.y += dt * 0.16;
+  brainGroup.rotation.x = Math.sin(elapsed * 0.35) * 0.06;
+
+  /* ---------- 相机 ---------- */
+  if (!dragging) camTheta += dt * 0.055;
+
+  const sp = Math.sin(camPhi) * camDist;
+  camera.position.set(
+    Math.sin(camTheta) * sp,
+    Math.cos(camPhi) * camDist,
+    Math.cos(camTheta) * sp
+  );
+  camera.lookAt(0, 0, 0);
+
+  /* ---------- 屏幕特效 ---------- */
+  drawFx();
+
+  /* ---------- 曲线 ---------- */
+  drawChart(u, elapsed);
+
+  /* ---------- 顶部文字 ---------- */
+  const shown = Math.floor(clamp((elapsed - 0.8) * 5.6, 0, FULL_TEXT.length));
+  if (shown !== lastLen) {
+    hudTextEl.textContent = FULL_TEXT.slice(0, shown);
+    lastLen = shown;
+  }
+
+  renderer.render(scene, camera);
+}
+
+/* ============================================================
+   自适应
+   ============================================================ */
+window.addEventListener('resize', () => {
+  const w = window.innerWidth, h = window.innerHeight;
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  renderer.setSize(w, h);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  neuronMat.uniforms.uPR.value = renderer.getPixelRatio();
+  resizeFx();
+});
+
+/* ============================================================
+   启动
+   ============================================================ */
+drawChart(0, 0);
+animate();
+
+})();
+</script>
+</body>
+</html>

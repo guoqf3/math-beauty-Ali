@@ -1,0 +1,1013 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>超精密加工 · Ultra-Precision Machining</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{width:100%;height:100%;overflow:hidden;background:#03060e;
+    font-family:"PingFang SC","Microsoft YaHei","Helvetica Neue",sans-serif;color:#dce8ff;}
+  canvas#scene{display:block;position:fixed;inset:0;}
+
+  /* ---------- 顶部文字（无标题） ---------- */
+  #topHud{
+    position:fixed;top:0;left:50%;transform:translateX(-50%);
+    width:min(1120px,95vw);padding:22px 30px 30px;text-align:center;
+    z-index:12;pointer-events:none;
+    background:linear-gradient(180deg,rgba(3,6,14,.94) 0%,rgba(3,6,14,.55) 62%,rgba(3,6,14,0) 100%);
+  }
+  #hudText{
+    font-size:17px;line-height:1.85;color:rgba(215,232,255,.95);
+    text-shadow:0 0 16px rgba(90,180,255,.55);min-height:64px;
+    letter-spacing:.7px;
+  }
+  #hudText::after{content:"▌";color:#6fd8ff;animation:blink .85s steps(1) infinite;
+    margin-left:2px;font-size:14px;opacity:.9;}
+  @keyframes blink{50%{opacity:0;}}
+
+  /* ---------- 左侧公式 ---------- */
+  #formulaPanel{
+    position:fixed;left:24px;top:50%;transform:translateY(-50%);
+    z-index:11;pointer-events:none;padding:18px 20px;
+    border-left:2px solid rgba(100,180,255,.35);
+    background:linear-gradient(90deg,rgba(6,16,32,.6),rgba(6,16,32,0));
+    border-radius:0 12px 12px 0;
+  }
+  .fLine{font-family:"Courier New",monospace;font-size:15px;letter-spacing:.4px;
+    color:#9fd4ff;text-shadow:0 0 12px rgba(80,170,255,.7);margin:6px 0;white-space:nowrap;}
+  .fLine.sub{font-size:12.5px;color:#8ab4e8;text-shadow:0 0 12px rgba(100,160,255,.6);}
+  .fLine.hot{font-size:13px;color:#7cf0ff;text-shadow:0 0 14px rgba(80,240,255,.9);}
+  .fLine.val{font-size:13px;color:#ffd166;text-shadow:0 0 14px rgba(255,200,80,.85);}
+
+  /* ---------- 右下曲线 ---------- */
+  #chartWrap{
+    position:fixed;right:22px;bottom:20px;z-index:11;pointer-events:none;
+    width:330px;padding:10px 10px 2px;border-radius:14px;
+    background:linear-gradient(180deg,rgba(6,16,32,.66),rgba(6,16,32,.2));
+    border:1px solid rgba(100,160,255,.18);
+    box-shadow:0 0 40px rgba(40,100,200,.22) inset;
+  }
+  #chartCanvas{width:100%;height:auto;display:block;}
+  .chartCap{font-size:11px;color:rgba(150,190,240,.65);text-align:center;
+    letter-spacing:2px;padding:2px 0 4px;}
+
+  /* ---------- 底部提示 ---------- */
+  #hint{
+    position:fixed;bottom:22px;left:50%;transform:translateX(-50%);
+    z-index:11;font-size:12px;letter-spacing:2px;color:rgba(150,190,240,.55);
+    pointer-events:none;white-space:nowrap;
+  }
+
+  /* ---------- 卡片 ---------- */
+  #card{
+    position:fixed;top:50%;left:50%;transform:translate(-50%,-50%) scale(.92);
+    width:min(450px,88vw);z-index:30;padding:22px 26px 24px;
+    border-radius:18px;pointer-events:none;opacity:0;
+    background:linear-gradient(150deg,rgba(10,22,44,.97),rgba(4,10,22,.97));
+    border:1px solid rgba(90,180,255,.45);
+    box-shadow:0 0 60px rgba(40,140,255,.4),0 0 120px rgba(80,200,255,.15);
+    transition:opacity .35s ease,transform .35s cubic-bezier(.2,1.4,.4,1);
+  }
+  #card.show{opacity:1;transform:translate(-50%,-50%) scale(1);}
+  #cardTitle{font-size:20px;font-weight:700;letter-spacing:6px;margin-bottom:14px;}
+  #cardBody{font-size:14px;line-height:1.85;color:rgba(206,224,255,.9);}
+
+  @media (max-width:820px){
+    #chartWrap{width:220px;right:10px;bottom:10px;}
+    #formulaPanel{left:8px;padding:12px;transform:translateY(-50%) scale(.86);}
+    #hudText{font-size:14px;}
+    #hint{font-size:10px;letter-spacing:1px;}
+  }
+</style>
+</head>
+<body>
+
+<canvas id="scene"></canvas>
+
+<div id="topHud">
+  <div id="hudText"></div>
+</div>
+
+<div id="formulaPanel">
+  <div class="fLine">Ra ≤ 5 nm</div>
+  <div class="fLine sub">表面粗糙度</div>
+  <div class="fLine hot">δ ≤ λ / 10</div>
+  <div class="fLine hot">±10 nm 定位精度</div>
+  <div class="fLine val">IT01 · 亚纳米级</div>
+  <div class="fLine val" id="raVal">Ra = 50.0 nm</div>
+</div>
+
+<div id="chartWrap">
+  <canvas id="chartCanvas" width="700" height="300"></canvas>
+  <div class="chartCap">表面粗糙度 Ra ← 加工进度 →</div>
+</div>
+
+<div id="hint">拖拽 · 旋转工作台 ｜ 滚轮 · 从宏观深入埃米尺度 ｜ 点击 · 触发纳米扫描</div>
+
+<div id="card">
+  <div id="cardTitle"></div>
+  <div id="cardBody"></div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.137.0/build/three.min.js"></script>
+<script>
+(function () {
+'use strict';
+
+/* ============================================================
+   工具
+   ============================================================ */
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const smoothstep = (a, b, x) => {
+  const t = clamp((x - a) / (b - a), 0, 1);
+  return t * t * (3 - 2 * t);
+};
+const mix = (a, b, t) => a + (b - a) * t;
+
+/* ============================================================
+   渲染器 / 场景 / 相机
+   ============================================================ */
+const canvas = document.getElementById('scene');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setClearColor(0x03060e, 1);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.15;
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x03060e, 0.0042);
+
+const camera = new THREE.PerspectiveCamera(
+  45, window.innerWidth / window.innerHeight, 0.05, 3000
+);
+
+/* ============================================================
+   光照
+   ============================================================ */
+scene.add(new THREE.AmbientLight(0x3c5a88, 1.35));
+
+const keyLight = new THREE.DirectionalLight(0xbcdcff, 2.2);
+keyLight.position.set(14, 26, 12);
+scene.add(keyLight);
+
+const fillLight = new THREE.DirectionalLight(0x5a86cc, 1.1);
+fillLight.position.set(-18, 12, -14);
+scene.add(fillLight);
+
+const rimLight = new THREE.PointLight(0x44aaff, 2.2, 90);
+rimLight.position.set(0, 10, -14);
+scene.add(rimLight);
+
+const underLight = new THREE.PointLight(0x2266cc, 1.6, 70);
+underLight.position.set(0, -6, 6);
+scene.add(underLight);
+
+/* ============================================================
+   星空 / 悬浮尘埃
+   ============================================================ */
+(function dust() {
+  const N = 700;
+  const g = new THREE.BufferGeometry();
+  const p = new Float32Array(N * 3);
+  const c = new Float32Array(N * 3);
+  const col = new THREE.Color();
+  for (let i = 0; i < N; i++) {
+    const r = 60 + Math.random() * 240;
+    const th = Math.random() * Math.PI * 2;
+    const ph = Math.acos(Math.random() * 2 - 1);
+    p[i * 3]     = r * Math.sin(ph) * Math.cos(th);
+    p[i * 3 + 1] = r * Math.cos(ph) * 0.7;
+    p[i * 3 + 2] = r * Math.sin(ph) * Math.sin(th);
+    col.setHSL(0.56 + Math.random() * 0.12, 0.7, 0.4 + Math.random() * 0.4);
+    c[i * 3] = col.r; c[i * 3 + 1] = col.g; c[i * 3 + 2] = col.b;
+  }
+  g.setAttribute('position', new THREE.BufferAttribute(p, 3));
+  g.setAttribute('color', new THREE.BufferAttribute(c, 3));
+  scene.add(new THREE.Points(g, new THREE.PointsMaterial({
+    size: 0.9, vertexColors: true, transparent: true, opacity: 0.6,
+    blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true
+  })));
+})();
+
+/* ============================================================
+   常量
+   ============================================================ */
+const WB = 34;      // 工件宽 X
+const DB = 22;      // 工件深 Z
+const HB = 2.4;     // 工件高
+const ATOM_Y = 0.075;
+const TOOL_X0 = -WB / 2 - 2.5;
+const TOOL_X1 =  WB / 2 + 2.5;
+
+/* ============================================================
+   工件主体
+   ============================================================ */
+const baseGeo = new THREE.BoxGeometry(WB, HB, DB);
+const baseMat = new THREE.MeshStandardMaterial({
+  color: 0x18202f, metalness: 0.92, roughness: 0.32
+});
+const baseMesh = new THREE.Mesh(baseGeo, baseMat);
+baseMesh.position.y = -HB / 2;
+scene.add(baseMesh);
+
+// 底座侧面棱线发光
+const edgeGeo = new THREE.EdgesGeometry(baseGeo);
+const edgeMat = new THREE.LineBasicMaterial({
+  color: 0x4a9eff, transparent: true, opacity: 0.35,
+  blending: THREE.AdditiveBlending
+});
+const edgeLine = new THREE.LineSegments(edgeGeo, edgeMat);
+edgeLine.position.y = -HB / 2;
+scene.add(edgeLine);
+
+/* ============================================================
+   加工表面（虹彩镜面 Shader）
+   ============================================================ */
+const surfGeo = new THREE.PlaneGeometry(WB, DB, 1, 1);
+surfGeo.rotateX(-Math.PI / 2);
+
+const surfUniforms = {
+  uTime:   { value: 0 },
+  uToolX:  { value: TOOL_X0 },
+  uScan:   { value: -999 },
+  uScanOn: { value: 0 },
+  uGlow:   { value: 0 }
+};
+
+const surfMat = new THREE.ShaderMaterial({
+  uniforms: surfUniforms,
+  vertexShader: `
+    varying vec3 vWorld;
+    void main() {
+      vec4 wp = modelMatrix * vec4(position, 1.0);
+      vWorld = wp.xyz;
+      gl_Position = projectionMatrix * viewMatrix * wp;
+    }
+  `,
+  fragmentShader: `
+    uniform float uTime;
+    uniform float uToolX;
+    uniform float uScan;
+    uniform float uScanOn;
+    uniform float uGlow;
+    varying vec3 vWorld;
+
+    vec3 hsv2rgb(vec3 c) {
+      vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+      vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+      return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+    }
+    float hash(vec2 p) {
+      return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+    }
+
+    void main() {
+      vec3 V = normalize(cameraPosition - vWorld);
+      float fres = pow(1.0 - clamp(abs(V.y), 0.0, 1.0), 3.2);
+
+      // 已加工区域遮罩：x < uToolX 为已加工
+      float done = 1.0 - smoothstep(uToolX - 0.7, uToolX + 0.7, vWorld.x);
+
+      // ---- 未加工：暗色粗糙表面 ----
+      float n1 = hash(floor(vWorld.xz * 7.0));
+      float n2 = hash(floor(vWorld.xz * 23.0 + 11.0));
+      vec3 rough = vec3(0.030, 0.040, 0.058) + n1 * 0.022 + n2 * 0.012;
+
+      // ---- 已加工：虹彩镜面 ----
+      float hue = fract(vWorld.x * 0.042 + vWorld.z * 0.030
+                        + fres * 0.55 + uTime * 0.014);
+      vec3 rainbow = hsv2rgb(vec3(hue, 0.58, 1.0));
+
+      // 原子级微台阶
+      float stepX = smoothstep(0.44, 0.56, fract(vWorld.x * 0.72));
+      float stepZ = smoothstep(0.44, 0.56, fract(vWorld.z * 0.72));
+      float stepField = 0.5 * (stepX + stepZ);
+
+      vec3 shiny = rainbow * (0.24 + 0.92 * fres)
+                 + vec3(0.10, 0.16, 0.26) * fres
+                 + vec3(0.055, 0.075, 0.11) * stepField;
+
+      // 纳米级干涉细纹
+      float fr = sin(vWorld.x * 34.0 + fres * 12.0)
+               * sin(vWorld.z * 41.0 - fres * 9.0);
+      shiny += rainbow * 0.075 * (0.5 + 0.5 * fr);
+
+      vec3 col = mix(rough, shiny, done);
+
+      // ---- 纳米坐标网格 ----
+      vec2 gv = abs(fract(vWorld.xz * 0.5) - 0.5);
+      float grid = smoothstep(0.475, 0.5, max(gv.x, gv.y));
+      col += vec3(0.05, 0.12, 0.24) * grid * (0.35 + 0.45 * done);
+
+      // ---- 扫描线 ----
+      float scanLine = exp(-pow((vWorld.x - uScan) * 4.0, 2.0)) * uScanOn;
+      col += vec3(0.45, 0.85, 1.0) * scanLine * 0.9;
+
+      // ---- 顿悟式整体辉光 ----
+      col += rainbow * uGlow * 0.35;
+
+      gl_FragColor = vec4(col, 1.0);
+    }
+  `
+});
+
+const surfMesh = new THREE.Mesh(surfGeo, surfMat);
+surfMesh.position.y = 0.002;
+scene.add(surfMesh);
+
+/* ============================================================
+   原子层（Points Shader）
+   ============================================================ */
+const SPACING = 0.35;
+const cols = Math.floor(WB / SPACING);
+const rows = Math.floor(DB / SPACING);
+const ATOM_N = cols * rows;
+
+const aPos   = new Float32Array(ATOM_N * 3);
+const aPhase = new Float32Array(ATOM_N);
+const aSize  = new Float32Array(ATOM_N);
+const aCol   = new Float32Array(ATOM_N * 3);
+
+(function buildAtoms() {
+  let k = 0;
+  for (let i = 0; i < cols; i++) {
+    for (let j = 0; j < rows; j++) {
+      const x = -WB / 2 + (i + 0.5) * SPACING;
+      const z = -DB / 2 + (j + 0.5) * SPACING;
+      const y = ATOM_Y + (Math.random() - 0.5) * 0.022;
+
+      aPos[k * 3]     = x;
+      aPos[k * 3 + 1] = y;
+      aPos[k * 3 + 2] = z;
+
+      aPhase[k] = Math.random() * Math.PI * 2;
+      aSize[k]  = 0.062 + Math.random() * 0.055;
+
+      const t = Math.random();
+      let r, g, b;
+      if (t < 0.55)      { r = 0.52; g = 0.78; b = 1.00; }   // 冰蓝
+      else if (t < 0.82) { r = 0.78; g = 0.92; b = 1.00; }   // 白蓝
+      else               { r = 0.72; g = 0.58; b = 1.00; }   // 淡紫
+
+      aCol[k * 3]     = r;
+      aCol[k * 3 + 1] = g;
+      aCol[k * 3 + 2] = b;
+      k++;
+    }
+  }
+})();
+
+const atomGeo = new THREE.BufferGeometry();
+atomGeo.setAttribute('position', new THREE.BufferAttribute(aPos, 3));
+atomGeo.setAttribute('aPhase',   new THREE.BufferAttribute(aPhase, 1));
+atomGeo.setAttribute('aSize',    new THREE.BufferAttribute(aSize, 1));
+atomGeo.setAttribute('aColor',   new THREE.BufferAttribute(aCol, 3));
+
+function computeUScale() {
+  return renderer.domElement.height /
+         (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)));
+}
+
+const atomMat = new THREE.ShaderMaterial({
+  uniforms: {
+    uTime:  { value: 0 },
+    uToolX: { value: TOOL_X0 },
+    uReset: { value: 1 },
+    uScale: { value: computeUScale() }
+  },
+  vertexShader: `
+    uniform float uTime;
+    uniform float uToolX;
+    uniform float uReset;
+    uniform float uScale;
+    attribute float aPhase;
+    attribute float aSize;
+    attribute vec3  aColor;
+    varying vec3  vColor;
+    varying float vAlpha;
+
+    void main() {
+      vec4 wp = modelMatrix * vec4(position, 1.0);
+
+      // 刀具扫过 → 原子被剥离
+      float alive = smoothstep(uToolX - 0.18, uToolX + 0.85, position.x);
+
+      // 刀具前方原子被微微"掀起"
+      float lift = 1.0 - smoothstep(uToolX - 1.4, uToolX - 0.1, position.x);
+      wp.y += lift * 0.22;
+
+      float tw = 0.55 + 0.45 * sin(uTime * 2.4 + aPhase * 6.2831);
+
+      vec4 mv = viewMatrix * wp;
+      float ps = aSize * uScale / max(-mv.z, 0.4);
+      gl_PointSize = max(1.4, ps) * (0.70 + 0.55 * tw) * alive * uReset;
+      gl_Position = projectionMatrix * mv;
+
+      vColor = aColor;
+      vAlpha = alive * uReset * tw;
+    }
+  `,
+  fragmentShader: `
+    varying vec3  vColor;
+    varying float vAlpha;
+    void main() {
+      vec2 uv = gl_PointCoord - vec2(0.5);
+      float d = length(uv);
+      if (d > 0.5) discard;
+      float a = pow(1.0 - d * 2.0, 1.8);
+      vec3 c = vColor * (0.45 + 1.85 * a) + vec3(0.10, 0.16, 0.24) * pow(a, 3.5);
+      gl_FragColor = vec4(c, a * vAlpha * 0.92);
+    }
+  `,
+  transparent: true,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false
+});
+
+const atomPoints = new THREE.Points(atomGeo, atomMat);
+scene.add(atomPoints);
+
+/* ============================================================
+   金刚石刀具
+   ============================================================ */
+const toolGroup = new THREE.Group();
+scene.add(toolGroup);
+
+// 刀尖（六棱锥，钻石质感）
+const tipGeo = new THREE.ConeGeometry(0.62, 1.9, 6, 1);
+tipGeo.rotateX(Math.PI);
+tipGeo.translate(0, 0.95, 0);
+
+const tipMat = new THREE.MeshStandardMaterial({
+  color: 0xd6ecff,
+  metalness: 0.35,
+  roughness: 0.06,
+  emissive: 0x1e4a7a,
+  emissiveIntensity: 0.55,
+  flatShading: true,
+  transparent: true,
+  opacity: 0.95
+});
+const toolTip = new THREE.Mesh(tipGeo, tipMat);
+toolGroup.add(toolTip);
+
+// 刀杆
+const shankGeo = new THREE.CylinderGeometry(0.30, 0.42, 3.4, 12);
+shankGeo.translate(0, 1.9 + 1.7, 0);
+const shankMat = new THREE.MeshStandardMaterial({
+  color: 0x7089a8, metalness: 0.95, roughness: 0.18
+});
+toolGroup.add(new THREE.Mesh(shankGeo, shankMat));
+
+// 刀具辉光
+const tipGlowSprite = (function () {
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = 128;
+  const ctx = cv.getContext('2d');
+  const g = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+  g.addColorStop(0, 'rgba(255,255,255,0.95)');
+  g.addColorStop(0.25, 'rgba(140,215,255,0.6)');
+  g.addColorStop(0.6, 'rgba(70,150,255,0.2)');
+  g.addColorStop(1, 'rgba(40,100,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 128, 128);
+  const tex = new THREE.CanvasTexture(cv);
+  const mat = new THREE.SpriteMaterial({
+    map: tex, transparent: true, opacity: 0.85,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  });
+  const sp = new THREE.Sprite(mat);
+  sp.scale.set(3.2, 3.2, 1);
+  sp.position.y = 0.15;
+  toolGroup.add(sp);
+  return sp;
+})();
+
+/* ============================================================
+   机床结构（半透明剖视）
+   ============================================================ */
+const machineGroup = new THREE.Group();
+scene.add(machineGroup);
+
+const glassMat = new THREE.MeshStandardMaterial({
+  color: 0x3a5a88, metalness: 0.6, roughness: 0.25,
+  transparent: true, opacity: 0.16, side: THREE.DoubleSide,
+  depthWrite: false
+});
+
+const railMat = new THREE.MeshStandardMaterial({
+  color: 0x5a7aa8, metalness: 0.98, roughness: 0.10,
+  transparent: true, opacity: 0.55
+});
+
+// 两根气浮导轨
+[13.5, -13.5].forEach(z => {
+  const g = new THREE.CylinderGeometry(0.34, 0.34, WB + 16, 20);
+  g.rotateZ(Math.PI / 2);
+  const rail = new THREE.Mesh(g, railMat);
+  rail.position.set(0, 0.9, z);
+  machineGroup.add(rail);
+
+  // 导轨内芯发光
+  const g2 = new THREE.CylinderGeometry(0.16, 0.16, WB + 16, 12);
+  g2.rotateZ(Math.PI / 2);
+  const core = new THREE.Mesh(g2, new THREE.MeshBasicMaterial({
+    color: 0x4aa8ff, transparent: true, opacity: 0.35,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  }));
+  core.position.set(0, 0.9, z);
+  machineGroup.add(core);
+});
+
+// 横梁
+const beamGeoM = new THREE.BoxGeometry(2.2, 0.55, DB + 9);
+const beamMesh = new THREE.Mesh(beamGeoM, glassMat);
+beamMesh.position.set(0, 1.45, 0);
+machineGroup.add(beamMesh);
+
+const beamEdge = new THREE.LineSegments(
+  new THREE.EdgesGeometry(beamGeoM),
+  new THREE.LineBasicMaterial({ color: 0x5ab4ff, transparent: true, opacity: 0.4 })
+);
+beamEdge.position.set(0, 1.45, 0);
+machineGroup.add(beamEdge);
+
+// 底座机架
+const frameGeo = new THREE.BoxGeometry(WB + 12, 1.6, DB + 12);
+const frameMesh = new THREE.Mesh(frameGeo, glassMat);
+frameMesh.position.y = -HB - 1.4;
+machineGroup.add(frameMesh);
+
+const frameEdge = new THREE.LineSegments(
+  new THREE.EdgesGeometry(frameGeo),
+  new THREE.LineBasicMaterial({ color: 0x3a7ad0, transparent: true, opacity: 0.3 })
+);
+frameEdge.position.y = -HB - 1.4;
+machineGroup.add(frameEdge);
+
+// 隔振器（四个圆柱）
+[[-1, -1], [-1, 1], [1, -1], [1, 1]].forEach(([sx, sz]) => {
+  const g = new THREE.CylinderGeometry(0.55, 0.75, 1.1, 12);
+  const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({
+    color: 0x2e4468, metalness: 0.9, roughness: 0.28,
+    transparent: true, opacity: 0.7
+  }));
+  m.position.set(sx * (WB / 2 + 3.5), -HB - 2.9, sz * (DB / 2 + 3.5));
+  machineGroup.add(m);
+
+  // 隔振环
+  const rg = new THREE.TorusGeometry(0.62, 0.06, 8, 28);
+  rg.rotateX(Math.PI / 2);
+  const rm = new THREE.Mesh(rg, new THREE.MeshBasicMaterial({
+    color: 0x44aaff, transparent: true, opacity: 0.5,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  }));
+  rm.position.set(sx * (WB / 2 + 3.5), -HB - 2.45, sz * (DB / 2 + 3.5));
+  machineGroup.add(rm);
+});
+
+// 工作台网格
+(function workGrid() {
+  const g = new THREE.GridHelper(WB + 22, 56, 0x2a5a9a, 0x16324f);
+  g.position.y = -HB - 3.55;
+  g.material.transparent = true;
+  g.material.opacity = 0.35;
+  machineGroup.add(g);
+})();
+
+/* ============================================================
+   刀具滑架（跟随刀具）
+   ============================================================ */
+const carriage = new THREE.Group();
+scene.add(carriage);
+
+const carGeo = new THREE.BoxGeometry(1.7, 1.15, 3.0);
+const carMesh = new THREE.Mesh(carGeo, new THREE.MeshStandardMaterial({
+  color: 0x4a6a95, metalness: 0.95, roughness: 0.2,
+  transparent: true, opacity: 0.82
+}));
+carriage.add(carMesh);
+
+const carEdge = new THREE.LineSegments(
+  new THREE.EdgesGeometry(carGeo),
+  new THREE.LineBasicMaterial({ color: 0x6fd8ff, transparent: true, opacity: 0.6 })
+);
+carriage.add(carEdge);
+
+/* ============================================================
+   刀尖轨迹光带
+   ============================================================ */
+const TRAIL_N = 400;
+const trailPos = new Float32Array(TRAIL_N * 3);
+const trailCol = new Float32Array(TRAIL_N * 3);
+const trailGeo = new THREE.BufferGeometry();
+trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPos, 3));
+trailGeo.setAttribute('color', new THREE.BufferAttribute(trailCol, 3));
+
+const trailLine = new THREE.Line(trailGeo, new THREE.LineBasicMaterial({
+  vertexColors: true, transparent: true, opacity: 0.75,
+  blending: THREE.AdditiveBlending, depthWrite: false
+}));
+scene.add(trailLine);
+
+function pushTrail(x) {
+  for (let i = TRAIL_N - 1; i > 0; i--) {
+    trailPos[i * 3]     = trailPos[(i - 1) * 3];
+    trailPos[i * 3 + 1] = trailPos[(i - 1) * 3 + 1];
+    trailPos[i * 3 + 2] = trailPos[(i - 1) * 3 + 2];
+  }
+  trailPos[0] = x;
+  trailPos[1] = 0.10 + Math.random() * 0.02;
+  trailPos[2] = (Math.random() - 0.5) * 0.3;
+
+  for (let i = 0; i < TRAIL_N; i++) {
+    const f = 1 - i / TRAIL_N;
+    trailCol[i * 3]     = 0.35 * f + 0.6 * f * f;
+    trailCol[i * 3 + 1] = 0.78 * f;
+    trailCol[i * 3 + 2] = 1.0 * f;
+  }
+  trailGeo.attributes.position.needsUpdate = true;
+  trailGeo.attributes.color.needsUpdate = true;
+}
+
+/* ============================================================
+   切屑火花粒子
+   ============================================================ */
+const SPARK_N = 180;
+const sparkPos = new Float32Array(SPARK_N * 3);
+const sparkVel = new Float32Array(SPARK_N * 3);
+const sparkLife = new Float32Array(SPARK_N);
+const sparkGeo = new THREE.BufferGeometry();
+sparkGeo.setAttribute('position', new THREE.BufferAttribute(sparkPos, 3));
+const sparkPts = new THREE.Points(sparkGeo, new THREE.PointsMaterial({
+  size: 0.10, color: 0xaadcff, transparent: true, opacity: 0.9,
+  blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true
+}));
+scene.add(sparkPts);
+
+function spawnSpark(x) {
+  for (let s = 0; s < 3; s++) {
+    for (let i = 0; i < SPARK_N; i++) {
+      if (sparkLife[i] <= 0) {
+        sparkPos[i * 3]     = x + (Math.random() - 0.5) * 0.4;
+        sparkPos[i * 3 + 1] = 0.1 + Math.random() * 0.1;
+        sparkPos[i * 3 + 2] = (Math.random() - 0.5) * 0.5;
+        sparkVel[i * 3]     = (Math.random() - 0.3) * 2.2;
+        sparkVel[i * 3 + 1] = Math.random() * 2.6 + 0.6;
+        sparkVel[i * 3 + 2] = (Math.random() - 0.5) * 2.0;
+        sparkLife[i] = 0.5 + Math.random() * 0.6;
+        break;
+      }
+    }
+  }
+}
+
+/* ============================================================
+   相机控制
+   ============================================================ */
+let camTheta = 0.62;
+let camPhi = 1.16;
+let camDist = 38;
+let dragging = false;
+let lastX = 0, lastY = 0, downX = 0, downY = 0, moved = 0;
+let focusY = 0;
+
+canvas.addEventListener('pointerdown', e => {
+  dragging = true; moved = 0;
+  lastX = downX = e.clientX;
+  lastY = downY = e.clientY;
+  try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
+});
+canvas.addEventListener('pointermove', e => {
+  if (!dragging) return;
+  const dx = e.clientX - lastX;
+  const dy = e.clientY - lastY;
+  lastX = e.clientX; lastY = e.clientY;
+  moved += Math.abs(dx) + Math.abs(dy);
+  camTheta -= dx * 0.0055;
+  camPhi = clamp(camPhi - dy * 0.0045, 0.22, 1.55);
+});
+canvas.addEventListener('pointerup', e => {
+  dragging = false;
+  try { canvas.releasePointerCapture(e.pointerId); } catch (err) {}
+  const d = Math.hypot(e.clientX - downX, e.clientY - downY);
+  if (moved < 8 && d < 8) handleClick(e.clientX, e.clientY);
+});
+canvas.addEventListener('pointercancel', () => { dragging = false; });
+
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  camDist = clamp(camDist * (1 + e.deltaY * 0.0013), 3.2, 95);
+}, { passive: false });
+
+/* ============================================================
+   点击 → 纳米扫描
+   ============================================================ */
+const cardEl = document.getElementById('card');
+const cardTitleEl = document.getElementById('cardTitle');
+const cardBodyEl = document.getElementById('cardBody');
+let cardTimer = null;
+
+let scanX = -999;
+let scanOn = 0;
+let globalFlash = 0;
+
+function handleClick(mx, my) {
+  scanX = -WB / 2 - 3;
+  scanOn = 1;
+  globalFlash = 0.55;
+  showCard();
+}
+
+function showCard() {
+  cardTitleEl.innerHTML = '纳米级表面扫描' +
+    '<span class="cardTag" style="color:#7cf0ff">Ra &lt; 1 nm</span>';
+  cardTitleEl.style.color = '#7cf0ff';
+  cardTitleEl.style.textShadow = '0 0 24px #7cf0ff';
+  cardBodyEl.textContent =
+    '金刚石刀具以埃米级切深逐层剥离材料，切屑厚度可小至数个原子层。' +
+    '加工后表面粗糙度 Ra 可控制在 1 nm 以下，面形误差 δ ≤ λ/10，' +
+    '配合 ±0.001°C 的热稳定控制与亚纳米级气浮导轨定位，实现真正的镜面级超精密加工。';
+  cardEl.classList.add('show');
+  clearTimeout(cardTimer);
+  cardTimer = setTimeout(() => cardEl.classList.remove('show'), 6000);
+}
+
+/* ============================================================
+   2D 曲线：Ra 随时间下降
+   ============================================================ */
+const chartCanvas = document.getElementById('chartCanvas');
+const cctx = chartCanvas.getContext('2d');
+const CW = chartCanvas.width;
+const CH = chartCanvas.height;
+
+// 加工进度 p ∈ [0,1] → Ra（nm），对数式下降
+function raOf(p) {
+  // 从 50nm 降到 0.4nm
+  return 0.4 + 49.6 * Math.pow(1 - p, 3.1);
+}
+
+function drawChart(p, time) {
+  cctx.clearRect(0, 0, CW, CH);
+  const padL = 70, padR = 34, padT = 26, padB = 50;
+  const gx = padL, gy = padT;
+  const gw = CW - padL - padR;
+  const gh = CH - padT - padB;
+
+  // 网格
+  cctx.strokeStyle = 'rgba(100,160,255,0.12)';
+  cctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = gy + gh * i / 4;
+    cctx.beginPath(); cctx.moveTo(gx, y); cctx.lineTo(gx + gw, y); cctx.stroke();
+  }
+
+  // 目标线 Ra = 1nm（对数坐标上靠下）
+  const logMax = Math.log10(60), logMin = Math.log10(0.3);
+  const yOfRa = ra => {
+    const lv = Math.log10(clamp(ra, 0.3, 60));
+    return gy + gh - ((lv - logMin) / (logMax - logMin)) * gh;
+  };
+
+  const targetY = yOfRa(1.0);
+  cctx.save();
+  cctx.setLineDash([6, 7]);
+  cctx.strokeStyle = 'rgba(124,240,255,0.45)';
+  cctx.lineWidth = 1.5;
+  cctx.beginPath(); cctx.moveTo(gx, targetY); cctx.lineTo(gx + gw, targetY); cctx.stroke();
+  cctx.restore();
+
+  cctx.fillStyle = 'rgba(124,240,255,0.85)';
+  cctx.font = 'bold 17px "Courier New", monospace';
+  cctx.textAlign = 'right';
+  cctx.fillText('Ra 1nm', gx + gw - 4, targetY - 6);
+
+  // 完整曲线（暗）
+  cctx.beginPath();
+  for (let i = 0; i <= 240; i++) {
+    const x = i / 240;
+    const px = gx + x * gw;
+    const py = yOfRa(raOf(x));
+    i ? cctx.lineTo(px, py) : cctx.moveTo(px, py);
+  }
+  cctx.strokeStyle = 'rgba(100,160,255,0.18)';
+  cctx.lineWidth = 2;
+  cctx.stroke();
+
+  // 已推进曲线
+  const N = Math.max(1, Math.floor(p * 240));
+  const grad = cctx.createLinearGradient(gx, 0, gx + gw, 0);
+  grad.addColorStop(0.00, '#4cc9f0');
+  grad.addColorStop(0.55, '#5a8cff');
+  grad.addColorStop(1.00, '#a06cff');
+
+  cctx.beginPath();
+  for (let i = 0; i <= N; i++) {
+    const x = i / 240;
+    const px = gx + x * gw;
+    const py = yOfRa(raOf(x));
+    i ? cctx.lineTo(px, py) : cctx.moveTo(px, py);
+  }
+  cctx.strokeStyle = grad;
+  cctx.lineWidth = 4.5;
+  cctx.lineJoin = 'round';
+  cctx.shadowColor = '#4cc9f0';
+  cctx.shadowBlur = 16;
+  cctx.stroke();
+  cctx.shadowBlur = 0;
+
+  // 当前点
+  const cxp = gx + p * gw;
+  const cyp = yOfRa(raOf(p));
+  const pulse = 6 + Math.sin(time * 6) * 2.2;
+  cctx.beginPath();
+  cctx.arc(cxp, cyp, pulse + 6, 0, Math.PI * 2);
+  cctx.fillStyle = 'rgba(255,255,255,0.12)';
+  cctx.fill();
+  cctx.beginPath();
+  cctx.arc(cxp, cyp, 6, 0, Math.PI * 2);
+  cctx.fillStyle = '#ffffff';
+  cctx.shadowColor = '#7cf0ff';
+  cctx.shadowBlur = 22;
+  cctx.fill();
+  cctx.shadowBlur = 0;
+
+  // 轴标签
+  cctx.fillStyle = 'rgba(150,190,240,0.68)';
+  cctx.font = '20px "Courier New", monospace';
+  cctx.textAlign = 'center';
+  cctx.textBaseline = 'top';
+  cctx.fillText('0%', gx, gy + gh + 12);
+  cctx.fillText('50%', gx + gw * 0.5, gy + gh + 12);
+  cctx.fillText('100%', gx + gw, gy + gh + 12);
+}
+
+/* ============================================================
+   顶部打字机
+   ============================================================ */
+const hudTextEl = document.getElementById('hudText');
+const FULL_TEXT = '启示：人类制造精度已从毫米深入到亚纳米级别——是对微观世界的极致掌控，体现了“差之毫厘、谬以千里”的极致工匠精神，也启示我们细节决定成败，追求极致精度方能实现尖端突破。';
+let lastLen = -1;
+
+const raValEl = document.getElementById('raVal');
+
+/* ============================================================
+   主循环
+   ============================================================ */
+const DURATION = 30;
+const clock = new THREE.Clock();
+let elapsed = 0;
+
+function animate() {
+  requestAnimationFrame(animate);
+
+  const dt = Math.min(clock.getDelta(), 0.06);
+  elapsed += dt;
+
+  // 循环相位
+  let phase = (elapsed % DURATION) / DURATION;
+
+  /* ---------- 刀具位置 ---------- */
+  // 0.06 → 0.82 为切削行程
+  const toolP = smoothstep(0.06, 0.82, phase);
+  const toolX = mix(TOOL_X0, TOOL_X1, toolP);
+
+  /* ---------- 原子重置淡入淡出 ---------- */
+  let resetVal = 1;
+  if (phase < 0.07) {
+    resetVal = smoothstep(0.0, 0.07, phase);
+  } else if (phase > 0.93) {
+    resetVal = 1 - smoothstep(0.93, 0.995, phase);
+  }
+
+  /* ---------- 更新 uniform ---------- */
+  surfUniforms.uTime.value = elapsed;
+  surfUniforms.uToolX.value = toolX;
+  surfUniforms.uScan.value = scanX;
+  surfUniforms.uScanOn.value = scanOn;
+
+  atomMat.uniforms.uTime.value = elapsed;
+  atomMat.uniforms.uToolX.value = toolX;
+  atomMat.uniforms.uReset.value = resetVal;
+
+  /* ---------- 刀具组 ---------- */
+  toolGroup.position.set(toolX, 0.085, 0);
+  toolGroup.rotation.y = Math.PI * 0.18;
+
+  // 刀具振动（超精密加工中的微小颤振）
+  toolGroup.position.y += Math.sin(elapsed * 18.0) * 0.004;
+  toolGroup.position.z += Math.sin(elapsed * 13.0) * 0.003;
+
+  /* ---------- 滑架跟随 ---------- */
+  carriage.position.set(toolX, 2.6, 0);
+
+  /* ---------- 火花 ---------- */
+  if (toolP > 0.02 && toolP < 0.99) {
+    if (Math.random() < 0.65) spawnSpark(toolX);
+  }
+
+  // 更新火花粒子
+  let sparkAny = false;
+  for (let i = 0; i < SPARK_N; i++) {
+    if (sparkLife[i] > 0) {
+      sparkAny = true;
+      sparkLife[i] -= dt;
+      sparkVel[i * 3 + 1] -= 3.4 * dt;
+      sparkPos[i * 3]     += sparkVel[i * 3]     * dt;
+      sparkPos[i * 3 + 1] += sparkVel[i * 3 + 1] * dt;
+      sparkPos[i * 3 + 2] += sparkVel[i * 3 + 2] * dt;
+      if (sparkLife[i] <= 0) {
+        sparkPos[i * 3 + 1] = -999;
+      }
+    }
+  }
+  sparkGeo.attributes.position.needsUpdate = true;
+  sparkPts.visible = sparkAny;
+  sparkPts.material.opacity = 0.85;
+
+  /* ---------- 轨迹光带 ---------- */
+  if (toolP > 0.01 && toolP < 0.995) {
+    pushTrail(toolX);
+  }
+  trailLine.visible = toolP > 0.01;
+
+  /* ---------- 扫描线推进 ---------- */
+  if (scanOn > 0.01) {
+    scanX += dt * 42;
+    if (scanX > WB / 2 + 4) {
+      scanOn = 0;
+      scanX = -999;
+    } else {
+      scanOn = 1;
+    }
+  }
+  surfUniforms.uScan.value = scanX;
+  surfUniforms.uScanOn.value = scanOn;
+
+  /* ---------- 全局闪光衰减 ---------- */
+  globalFlash = Math.max(0, globalFlash - dt * 1.2);
+  surfUniforms.uGlow.value = globalFlash * 0.6;
+
+  /* ---------- 相机 ---------- */
+  if (!dragging) camTheta += dt * 0.075;
+
+  // 焦点随刀具轻微跟随
+  const targetFocusY = -0.4 + Math.sin(elapsed * 0.4) * 0.3;
+  focusY += (targetFocusY - focusY) * Math.min(1, dt * 1.8);
+
+  const sp = Math.sin(camPhi) * camDist;
+  camera.position.set(
+    Math.sin(camTheta) * sp,
+    focusY + Math.cos(camPhi) * camDist,
+    Math.cos(camTheta) * sp
+  );
+  camera.lookAt(0, focusY * 0.35, 0);
+
+  /* ---------- 动态点尺寸 ---------- */
+  atomMat.uniforms.uScale.value = computeUScale();
+
+  /* ---------- 图表 ---------- */
+  drawChart(toolP, elapsed);
+
+  /* ---------- 公式面板 ---------- */
+  const raNow = raOf(toolP);
+  raValEl.innerHTML = 'Ra = ' + (raNow >= 10 ? raNow.toFixed(1) : raNow.toFixed(2)) + ' nm';
+
+  /* ---------- 顶部文字 ---------- */
+  const shown = Math.floor(clamp((elapsed % DURATION - 1.0) * 7.5, 0, FULL_TEXT.length));
+  if (shown !== lastLen) {
+    hudTextEl.textContent = FULL_TEXT.slice(0, shown);
+    lastLen = shown;
+  }
+  // 循环重置时清空打字机
+  if (phase < 0.035 && lastLen > 0) {
+    lastLen = -1;
+  }
+
+  renderer.render(scene, camera);
+}
+
+/* ============================================================
+   自适应
+   ============================================================ */
+window.addEventListener('resize', () => {
+  const w = window.innerWidth, h = window.innerHeight;
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  renderer.setSize(w, h);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  atomMat.uniforms.uScale.value = computeUScale();
+});
+
+/* ============================================================
+   启动
+   ============================================================ */
+drawChart(0, 0);
+animate();
+
+})();
+</script>
+</body>
+</html>

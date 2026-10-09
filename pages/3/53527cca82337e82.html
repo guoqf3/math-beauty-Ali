@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>哥德巴赫猜想 · 素数分解</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; overflow:hidden; }
+  body {
+    font-family:"PingFang SC","Microsoft YaHei","Helvetica Neue",Arial,sans-serif;
+    background:#02061a;
+  }
+  canvas { display:block; }
+
+  #topText {
+    position:fixed; top:18px; left:50%; transform:translateX(-50%);
+    width:min(82vw,1060px);
+    min-height:2.4em;
+    text-align:center;
+    color:#c8e4ff;
+    font-size:clamp(13px,1.5vw,19.5px);
+    letter-spacing:.07em;
+    line-height:1.75;
+    font-weight:400;
+    text-shadow:0 0 16px rgba(110,200,255,.75),
+                0 0 46px rgba(60,150,255,.35);
+    pointer-events:none;
+    z-index:10;
+  }
+  #topText::after {
+    content:'';
+    display:inline-block;
+    width:2px; height:.95em;
+    background:#7dd8ff;
+    margin-left:5px;
+    vertical-align:-.12em;
+    box-shadow:0 0 9px #7dd8ff;
+    animation:blink 1.1s steps(2) infinite;
+  }
+  @keyframes blink { 50%{opacity:0;} }
+
+  .formula {
+    position:fixed;
+    font-family:"Cambria Math","Times New Roman",Georgia,serif;
+    color:rgba(160,210,255,.55);
+    font-size:clamp(11px,1.02vw,15.5px);
+    letter-spacing:.05em;
+    pointer-events:none;
+    z-index:10;
+    text-shadow:0 0 14px rgba(80,170,255,.55);
+    line-height:1.75;
+  }
+  .f-tl { top:94px; left:24px; text-align:left; }
+  .f-tr { top:94px; right:24px; text-align:right; }
+  .f-bl { bottom:44px; left:24px; text-align:left; }
+
+  #panel {
+    position:fixed; right:24px; bottom:44px;
+    width:236px;
+    padding:13px 15px 11px;
+    background:rgba(6,14,34,.55);
+    border:1px solid rgba(90,170,255,.25);
+    border-radius:11px;
+    backdrop-filter:blur(7px);
+    -webkit-backdrop-filter:blur(7px);
+    color:#9cbbdd;
+    font-size:12px;
+    z-index:20;
+    box-shadow:0 6px 30px rgba(0,0,0,.55),
+               inset 0 0 22px rgba(70,150,255,.08);
+  }
+  #panel .row {
+    display:grid;
+    grid-template-columns:1fr auto;
+    align-items:center;
+    gap:4px 8px;
+    margin-bottom:11px;
+  }
+  #panel .row label { grid-column:1/3; letter-spacing:.05em; }
+  #panel .row .val {
+    font-family:"Cambria Math",Georgia,serif;
+    color:#7dffd8;
+    font-size:13px;
+    min-width:42px;
+    text-align:right;
+  }
+  input[type=range] {
+    -webkit-appearance:none; appearance:none;
+    width:100%; height:3px; border-radius:3px;
+    background:linear-gradient(90deg,#2fd8ff,#4a8dff,#ff6aa8);
+    outline:none; cursor:pointer;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance:none;
+    width:13px; height:13px; border-radius:50%;
+    background:#e8f8ff;
+    box-shadow:0 0 12px rgba(80,220,255,.95);
+    cursor:pointer;
+  }
+  input[type=range]::-moz-range-thumb {
+    width:13px; height:13px; border:none; border-radius:50%;
+    background:#e8f8ff;
+    box-shadow:0 0 12px rgba(80,220,255,.95);
+    cursor:pointer;
+  }
+  #panel .hint {
+    text-align:center;
+    font-size:10.5px;
+    color:rgba(140,180,225,.5);
+    letter-spacing:.1em;
+    margin-top:2px;
+  }
+</style>
+</head>
+<body>
+
+<div id="topText"></div>
+
+<div class="formula f-tl">
+  N = p + q　（p、q 为素数，N &gt; 2 偶数）
+</div>
+<div class="formula f-tr">
+  偶数 N = <span id="nDisplay" style="color:#7dffd8">50</span><br>
+  <span style="font-size:.85em;color:rgba(140,200,255,.45)">素数个数 π(x) 增长</span>
+</div>
+<div class="formula f-bl">
+  任意大于 2 的偶数皆可表为两素数之和
+</div>
+
+<div id="panel">
+  <div class="row">
+    <label>遍历偶数 N</label>
+    <input id="sN" type="range" min="24" max="76" step="2" value="50">
+    <span class="val" id="vN">50</span>
+  </div>
+  <div class="hint">拖拽旋转 · 观察双素配对</div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================================================
+   渲染器 / 场景 / 相机
+   ============================================================ */
+const renderer = new THREE.WebGLRenderer({ antialias:true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.setClearColor(0x02061a, 1);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x02061a, 0.011);
+
+const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 0.1, 900);
+camera.position.set(0, 2.0, 25.5);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, -1.0, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.autoRotate = false;
+controls.enablePan = false;
+controls.minDistance = 12;
+controls.maxDistance = 60;
+controls.maxPolarAngle = Math.PI * 0.62;
+
+/* ============================================================
+   光点贴图
+   ============================================================ */
+function createSpriteTexture(){
+  const s = 128;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = s;
+  const ctx = cv.getContext('2d');
+  const g = ctx.createRadialGradient(s/2, s/2, 0, s/2, s/2, s/2);
+  g.addColorStop(0.00,'rgba(255,255,255,1)');
+  g.addColorStop(0.18,'rgba(255,255,255,0.82)');
+  g.addColorStop(0.46,'rgba(255,255,255,0.22)');
+  g.addColorStop(1.00,'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0,0,s,s);
+  const t = new THREE.CanvasTexture(cv);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+const SPRITE = createSpriteTexture();
+
+/* ============================================================
+   素数筛
+   ============================================================ */
+const LIMIT = 200;
+const isPrime = new Uint8Array(LIMIT + 1).fill(1);
+isPrime[0] = isPrime[1] = 0;
+for (let i = 2; i * i <= LIMIT; i++){
+  if (isPrime[i]){
+    for (let j = i * i; j <= LIMIT; j += i) isPrime[j] = 0;
+  }
+}
+
+/* 哥德巴赫配对：返回 [p, q] 满足 p+q=N，p<=q */
+function getPairs(N){
+  const out = [];
+  for (let p = 2; p <= N / 2; p++){
+    if (isPrime[p] && isPrime[N - p]) out.push([p, N - p]);
+  }
+  return out;
+}
+
+/* ============================================================
+   星空背景
+   ============================================================ */
+(function buildStars(){
+  const COUNT = 1400;
+  const pos = new Float32Array(COUNT * 3);
+  const col = new Float32Array(COUNT * 3);
+  for (let i = 0; i < COUNT; i++){
+    const r  = 70 + Math.random() * 180;
+    const th = Math.random() * Math.PI * 2;
+    const ph = Math.acos(Math.random() * 2 - 1);
+    pos[i*3    ] = r * Math.sin(ph) * Math.cos(th);
+    pos[i*3 + 1] = r * Math.cos(ph) * 0.7 + 10;
+    pos[i*3 + 2] = r * Math.sin(ph) * Math.sin(th);
+
+    const t = Math.random();
+    col[i*3    ] = 0.55 + 0.45 * t;
+    col[i*3 + 1] = 0.70 + 0.30 * t;
+    col[i*3 + 2] = 1.00;
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('color',    new THREE.BufferAttribute(col, 3));
+  const m = new THREE.PointsMaterial({
+    size: 0.85, map: SPRITE, vertexColors: true,
+    transparent: true, opacity: 0.58,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+    sizeAttenuation: true
+  });
+  scene.add(new THREE.Points(g, m));
+})();
+
+/* ============================================================
+   标签工具（Canvas 纹理）
+   ============================================================ */
+function makeLabel(fontSize, color, scaleW, scaleH){
+  const cv  = document.createElement('canvas');
+  cv.width  = 256;
+  cv.height = 128;
+  const ctx = cv.getContext('2d');
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.minFilter  = THREE.LinearFilter;
+
+  const spr = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: tex, transparent: true, depthWrite: false,
+    blending: THREE.NormalBlending
+  }));
+  spr.scale.set(scaleW, scaleH, 1);
+
+  return { spr, ctx, tex, fontSize, color };
+}
+
+function drawLabel(label, text){
+  const { ctx, tex, fontSize, color } = label;
+  ctx.clearRect(0, 0, 256, 128);
+  ctx.font = `bold ${fontSize}px "Cambria Math", Georgia, serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.shadowColor = color;
+  ctx.shadowBlur  = 22;
+  ctx.fillStyle   = color;
+  ctx.fillText(text, 128, 64);
+  tex.needsUpdate = true;
+}
+
+/* ============================================================
+   偶数柱台 + 双素球布局
+   ============================================================ */
+const SLOTS   = 7;
+const SPACING = 3.6;
+
+const slotList = [];
+
+const COL_PILLAR = 0xffc844;
+const COL_ORB_P  = 0x44eeff;   // 青：较小素数
+const COL_ORB_Q  = 0xff4488;   // 红：较大素数
+const COL_ARC    = 0xaae8ff;
+
+for (let k = 0; k < SLOTS; k++){
+  const x = (k - (SLOTS - 1) / 2) * SPACING;
+
+  /* ---- 整数柱台 ---- */
+  const pillarGeo = new THREE.CylinderGeometry(0.26, 0.40, 1.5, 20);
+  const pillarMat = new THREE.MeshBasicMaterial({
+    color: COL_PILLAR,
+    transparent: true,
+    opacity: 0.55,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false
+  });
+  const pillar = new THREE.Mesh(pillarGeo, pillarMat);
+  pillar.position.set(x, -0.60, 0);
+  pillar.renderOrder = 2;
+  scene.add(pillar);
+
+  /* ---- 柱底光晕 ---- */
+  const baseGlow = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: SPRITE, color: COL_PILLAR,
+    transparent: true, opacity: 0.42,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  }));
+  baseGlow.scale.set(1.6, 0.7, 1);
+  baseGlow.position.set(x, -1.30, 0);
+  baseGlow.renderOrder = 3;
+  scene.add(baseGlow);
+
+  /* ---- 双素球 ---- */
+  const orbP = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: SPRITE, color: COL_ORB_P,
+    transparent: true, opacity: 0.95,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  }));
+  orbP.scale.set(1.15, 1.15, 1);
+  orbP.position.set(x - 0.65, 1.0, 0);
+  orbP.renderOrder = 6;
+  scene.add(orbP);
+
+  const orbQ = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: SPRITE, color: COL_ORB_Q,
+    transparent: true, opacity: 0.95,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  }));
+  orbQ.scale.set(1.15, 1.15, 1);
+  orbQ.position.set(x + 0.65, 1.0, 0);
+  orbQ.renderOrder = 6;
+  scene.add(orbQ);
+
+  /* ---- 配对弧线 ---- */
+  const ARCN = 33;
+  const arcPos = new Float32Array(ARCN * 3);
+  const arcGeo = new THREE.BufferGeometry();
+  arcGeo.setAttribute('position', new THREE.BufferAttribute(arcPos, 3));
+  const arcMat = new THREE.LineBasicMaterial({
+    color: COL_ARC, transparent: true, opacity: 0.55,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  });
+  const arc = new THREE.Line(arcGeo, arcMat);
+  arc.frustumCulled = false;
+  arc.renderOrder = 5;
+  scene.add(arc);
+
+  /* ---- 标签：N / p / q ---- */
+  const labelN = makeLabel(64, '#ffd76a', 2.1, 1.05);
+  labelN.spr.position.set(x, -2.20, 0);
+  labelN.spr.renderOrder = 7;
+  scene.add(labelN.spr);
+
+  const labelP = makeLabel(56, '#aef4ff', 1.05, 0.52);
+  labelP.spr.position.set(x - 0.65, 1.0, 0.05);
+  labelP.spr.renderOrder = 9;
+  scene.add(labelP.spr);
+
+  const labelQ = makeLabel(56, '#ffc0d8', 1.05, 0.52);
+  labelQ.spr.position.set(x + 0.65, 1.0, 0.05);
+  labelQ.spr.renderOrder = 9;
+  scene.add(labelQ.spr);
+
+  slotList.push({
+    x, pillar, baseGlow, orbP, orbQ,
+    arc, arcGeo, arcPos, arcMat, ARCN,
+    labelN, labelP, labelQ,
+    curN: -1, curP: -1, curQ: -1
+  });
+}
+
+/* ============================================================
+   数轴 + 素数流动粒子
+   ============================================================ */
+const AXIS_Y   = -3.30;
+const NUM_MIN  = 2;
+const NUM_MAX  = 110;
+const AXIS_X0  = -13.0;
+const AXIS_X1  =  13.0;
+
+function numToX(d){
+  return AXIS_X0 + (d - NUM_MIN) / (NUM_MAX - NUM_MIN) * (AXIS_X1 - AXIS_X0);
+}
+
+/* ---- 数轴基线 ---- */
+(function buildAxis(){
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute([
+    AXIS_X0, AXIS_Y, 0,
+    AXIS_X1, AXIS_Y, 0
+  ], 3));
+  const l = new THREE.Line(g, new THREE.LineBasicMaterial({
+    color: 0x4a7dcc,
+    transparent: true,
+    opacity: 0.38,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false
+  }));
+  l.renderOrder = 1;
+  l.frustumCulled = false;
+  scene.add(l);
+})();
+
+/* ---- 素数静态标记 ---- */
+(function buildPrimeMarks(){
+  const pts = [];
+  const cols = [];
+  for (let d = 2; d <= NUM_MAX; d++){
+    if (isPrime[d]){
+      pts.push(numToX(d), AXIS_Y, 0);
+      cols.push(1.0, 0.84, 0.40);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+  g.setAttribute('color',    new THREE.Float32BufferAttribute(cols, 3));
+
+  const m = new THREE.PointsMaterial({
+    size: 0.26, map: SPRITE, vertexColors: true,
+    transparent: true, opacity: 0.68,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+    sizeAttenuation: true
+  });
+  const p = new THREE.Points(g, m);
+  p.frustumCulled = false;
+  p.renderOrder = 4;
+  scene.add(p);
+})();
+
+/* ---- 流动粒子 ---- */
+const FLOW_N = 260;
+const flowD     = new Float32Array(FLOW_N);
+const flowSpeed = new Float32Array(FLOW_N);
+const flowZo    = new Float32Array(FLOW_N);
+const flowYo    = new Float32Array(FLOW_N);
+const flowPhase = new Float32Array(FLOW_N);
+
+const flowPos = new Float32Array(FLOW_N * 3);
+const flowCol = new Float32Array(FLOW_N * 3);
+
+for (let i = 0; i < FLOW_N; i++){
+  flowD[i]     = NUM_MIN + Math.random() * (NUM_MAX - NUM_MIN);
+  flowSpeed[i] = 4.0 + Math.random() * 9.0;
+  flowZo[i]    = (Math.random() - 0.5) * 0.55;
+  flowYo[i]    = (Math.random() - 0.5) * 0.28;
+  flowPhase[i] = Math.random() * Math.PI * 2;
+}
+
+const flowGeo = new THREE.BufferGeometry();
+flowGeo.setAttribute('position', new THREE.BufferAttribute(flowPos, 3));
+flowGeo.setAttribute('color',    new THREE.BufferAttribute(flowCol, 3));
+
+const flowMat = new THREE.PointsMaterial({
+  size: 0.22, map: SPRITE, vertexColors: true,
+  transparent: true, opacity: 0.95,
+  blending: THREE.AdditiveBlending, depthWrite: false,
+  sizeAttenuation: true
+});
+
+const flowPoints = new THREE.Points(flowGeo, flowMat);
+flowPoints.frustumCulled = false;
+flowPoints.renderOrder = 8;
+scene.add(flowPoints);
+
+/* ============================================================
+   顶部文字
+   ============================================================ */
+const FULL_TEXT = '哥德巴赫猜想的朴素陈述却至今悬而未决——最简单的数学命题可能是最深刻的未解之谜，启示认知世界永远有尚待验证的真命题。';
+const topTextEl = document.getElementById('topText');
+let lastShown = '';
+
+function smoothstep(a, b, x){
+  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+}
+
+function updateTopText(animT){
+  const prog  = smoothstep(0.8, 26.0, animT);
+  const n     = Math.floor(prog * FULL_TEXT.length);
+  const shown = FULL_TEXT.slice(0, n);
+  if (shown !== lastShown){
+    topTextEl.textContent = shown;
+    lastShown = shown;
+  }
+}
+
+/* ============================================================
+   界面交互
+   ============================================================ */
+const DURATION = 30;
+const N_MIN = 24, N_MAX = 76;
+
+let manualN     = 50;
+let manualTimer = 0;
+
+const sNEl = document.getElementById('sN');
+const vNEl = document.getElementById('vN');
+const nDisplayEl = document.getElementById('nDisplay');
+
+sNEl.addEventListener('input', e => {
+  manualN = parseInt(e.target.value, 10);
+  manualTimer = 6.0;
+  vNEl.textContent = manualN;
+  nDisplayEl.textContent = manualN;
+});
+
+/* ============================================================
+   更新偶数柱台
+   ============================================================ */
+function updateSlots(centerN, time){
+  for (let k = 0; k < SLOTS; k++){
+    const s = slotList[k];
+
+    const rawN = centerN + (k - 3) * 2;
+    const N = Math.round(rawN / 2) * 2;
+
+    /* ---- 当 N 改变时更新配对与标签 ---- */
+    if (N !== s.curN){
+      s.curN = N;
+      const pairs = getPairs(N);
+      if (pairs.length > 0){
+        const [p, q] = pairs[0];
+        s.curP = p;
+        s.curQ = q;
+
+        drawLabel(s.labelN, String(N));
+        drawLabel(s.labelP, String(p));
+        drawLabel(s.labelQ, String(q));
+      }
+    }
+
+    /* ---- 光球上下浮动 ---- */
+    const bobA = Math.sin(time * 1.75 + k * 0.6)        * 0.085;
+    const bobB = Math.sin(time * 1.75 + k * 0.6 + 1.35) * 0.085;
+
+    const yp = 1.0 + bobA;
+    const yq = 1.0 + bobB;
+
+    s.orbP.position.set(s.x - 0.65, yp, 0);
+    s.orbQ.position.set(s.x + 0.65, yq, 0);
+
+    /* ---- 光球脉冲 ---- */
+    const pulse  = 1 + 0.18 * Math.sin(time * 3.1 + k * 0.9);
+    const pulse2 = 1 + 0.18 * Math.sin(time * 3.1 + k * 0.9 + Math.PI);
+
+    s.orbP.scale.set(1.15 * pulse,  1.15 * pulse,  1);
+    s.orbQ.scale.set(1.15 * pulse2, 1.15 * pulse2, 1);
+
+    s.orbP.material.opacity = 0.78 + 0.18 * Math.sin(time * 2.4 + k);
+    s.orbQ.material.opacity = 0.78 + 0.18 * Math.sin(time * 2.4 + k + 0.7);
+
+    /* ---- 标签跟随光球 ---- */
+    s.labelP.spr.position.set(s.x - 0.65, yp, 0.05);
+    s.labelQ.spr.position.set(s.x + 0.65, yq, 0.05);
+
+    /* ---- 配对弧线 ---- */
+    const pts = s.arcPos;
+    const n   = s.ARCN;
+    const x0  = s.x - 0.65, y0 = yp;
+    const x1  = s.x + 0.65, y1 = yq;
+    const cx  = s.x,        cy = 2.25;
+
+    for (let i = 0; i < n; i++){
+      const t  = i / (n - 1);
+      const mt = 1 - t;
+      const bx = mt*mt*x0 + 2*mt*t*cx + t*t*x1;
+      const by = mt*mt*y0 + 2*mt*t*cy + t*t*y1;
+      const i3 = i * 3;
+      pts[i3]     = bx;
+      pts[i3 + 1] = by;
+      pts[i3 + 2] = 0;
+    }
+    s.arcGeo.attributes.position.needsUpdate = true;
+
+    s.arcMat.opacity = 0.32 + 0.28 * Math.sin(time * 2.6 + k * 0.8);
+
+    /* ---- 柱体微脉动 ---- */
+    const pPulse = 1 + 0.04 * Math.sin(time * 2.2 + k * 0.5);
+    s.pillar.scale.set(1, pPulse, 1);
+  }
+}
+
+/* ============================================================
+   更新数轴流动粒子
+   ============================================================ */
+function updateFlow(dt, time){
+  for (let i = 0; i < FLOW_N; i++){
+    flowD[i] += flowSpeed[i] * dt;
+    if (flowD[i] > NUM_MAX) flowD[i] = NUM_MIN;
+
+    const d  = flowD[i];
+    const di = Math.round(d);
+    const i3 = i * 3;
+
+    const x  = numToX(d);
+    const yo = flowYo[i] + 0.04 * Math.sin(time * 2.5 + flowPhase[i]);
+
+    flowPos[i3]     = x;
+    flowPos[i3 + 1] = AXIS_Y + yo;
+    flowPos[i3 + 2] = flowZo[i];
+
+    /* ---- 颜色：素数附近发光 ---- */
+    const isP     = isPrime[di] ? 1 : 0;
+    const distToP = isP ? Math.abs(d - di) : 1;
+    const glow    = isP ? Math.max(0, 1 - distToP * 2.2) : 0;
+
+    const flick = 0.70 + 0.30 * Math.sin(time * 6.0 + flowPhase[i]);
+
+    if (isP){
+      flowCol[i3]     = (0.55 + 0.45 * glow) * flick;
+      flowCol[i3 + 1] = (0.62 + 0.28 * glow) * flick;
+      flowCol[i3 + 2] = (0.35 + 0.10 * glow) * flick;
+    } else {
+      flowCol[i3]     = 0.18 * flick;
+      flowCol[i3 + 1] = 0.42 * flick;
+      flowCol[i3 + 2] = 0.85 * flick;
+    }
+  }
+  flowGeo.attributes.position.needsUpdate = true;
+  flowGeo.attributes.color.needsUpdate = true;
+}
+
+/* ============================================================
+   主循环
+   ============================================================ */
+const clock = new THREE.Clock();
+let animT = 0;
+
+function animate(){
+  requestAnimationFrame(animate);
+
+  const dt = Math.min(clock.getDelta(), 0.05);
+
+  animT += dt;
+  if (animT >= DURATION) animT -= DURATION;
+
+  /* ---- 决定中心偶数 ---- */
+  let centerN;
+  if (manualTimer > 0){
+    manualTimer -= dt;
+    centerN = manualN;
+  } else {
+    // 余弦往返：24 → 76 → 24
+    const k = 0.5 - 0.5 * Math.cos(animT / DURATION * Math.PI * 2);
+    centerN = N_MIN + k * (N_MAX - N_MIN);
+
+    // 同步显示
+    const shown = Math.round(centerN / 2) * 2;
+    if (parseInt(sNEl.value, 10) !== shown){
+      sNEl.value = shown;
+      vNEl.textContent = shown;
+      nDisplayEl.textContent = shown;
+    }
+  }
+
+  /* ---- 更新场景 ---- */
+  updateSlots(centerN, animT);
+  updateFlow(dt, animT);
+  updateTopText(animT);
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+
+/* ============================================================
+   启动
+   ============================================================ */
+animate();
+
+/* ============================================================
+   自适应
+   ============================================================ */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

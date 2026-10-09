@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PID 控制 · 反馈调节</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; overflow:hidden; }
+  body {
+    font-family:"PingFang SC","Microsoft YaHei","Helvetica Neue",Arial,sans-serif;
+    background:#03060f;
+  }
+  canvas { display:block; }
+
+  #topText {
+    position:fixed; top:18px; left:50%; transform:translateX(-50%);
+    width:min(82vw,1060px);
+    min-height:2.4em;
+    text-align:center;
+    color:#d8ecff;
+    font-size:clamp(13px,1.5vw,19.5px);
+    letter-spacing:.07em;
+    line-height:1.75;
+    font-weight:400;
+    text-shadow:0 0 16px rgba(90,200,255,.65),
+                0 0 44px rgba(50,140,255,.32);
+    pointer-events:none;
+    z-index:10;
+  }
+  #topText::after {
+    content:'';
+    display:inline-block;
+    width:2px; height:.95em;
+    background:#4dffd2;
+    margin-left:5px;
+    vertical-align:-.12em;
+    box-shadow:0 0 9px #4dffd2;
+    animation:blink 1.1s steps(2) infinite;
+  }
+  @keyframes blink { 50%{opacity:0;} }
+
+  .formula {
+    position:fixed;
+    font-family:"Cambria Math","Times New Roman",Georgia,serif;
+    color:rgba(140,200,255,.5);
+    font-size:clamp(11px,1.02vw,15.5px);
+    letter-spacing:.05em;
+    pointer-events:none;
+    z-index:10;
+    text-shadow:0 0 14px rgba(70,150,255,.55);
+    white-space:nowrap;
+  }
+  .f-tl { top:96px; left:24px; }
+  .f-tr { top:96px; right:24px; text-align:right; }
+  .f-bl { bottom:42px; left:24px; }
+
+  #panel {
+    position:fixed; right:24px; bottom:42px;
+    width:230px;
+    padding:13px 15px 10px;
+    background:rgba(10,18,40,.5);
+    border:1px solid rgba(80,160,255,.22);
+    border-radius:11px;
+    backdrop-filter:blur(7px);
+    -webkit-backdrop-filter:blur(7px);
+    color:#95b2dd;
+    font-size:12px;
+    z-index:20;
+    box-shadow:0 6px 30px rgba(0,0,0,.5),
+               inset 0 0 22px rgba(60,130,255,.07);
+  }
+  #panel .row {
+    display:grid;
+    grid-template-columns:1fr auto;
+    align-items:center;
+    gap:4px 8px;
+    margin-bottom:10px;
+  }
+  #panel .row label { grid-column:1/3; letter-spacing:.05em; }
+  #panel .row .val {
+    font-family:"Cambria Math",Georgia,serif;
+    font-size:12px;
+    min-width:40px;
+    text-align:right;
+  }
+  #vKp { color:#ff8090; }
+  #vKi { color:#79b8ff; }
+  #vKd { color:#5cf0b0; }
+
+  input[type=range] {
+    -webkit-appearance:none; appearance:none;
+    width:100%; height:3px; border-radius:3px;
+    outline:none; cursor:pointer;
+  }
+  #sKp { background:linear-gradient(90deg,#ff4d6a,#ffa0b0); }
+  #sKi { background:linear-gradient(90deg,#3d8bff,#a0c8ff); }
+  #sKd { background:linear-gradient(90deg,#2fe89a,#a0ffd8); }
+
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance:none;
+    width:13px; height:13px; border-radius:50%;
+    background:#eaf4ff;
+    box-shadow:0 0 10px rgba(120,200,255,.9);
+    cursor:pointer;
+  }
+  input[type=range]::-moz-range-thumb {
+    width:13px; height:13px; border:none; border-radius:50%;
+    background:#eaf4ff;
+    box-shadow:0 0 10px rgba(120,200,255,.9);
+    cursor:pointer;
+  }
+  #panel .hint {
+    text-align:center;
+    font-size:10.5px;
+    color:rgba(130,170,215,.5);
+    letter-spacing:.1em;
+    margin-top:2px;
+  }
+</style>
+</head>
+<body>
+
+<div id="topText"></div>
+
+<div class="formula f-tl">u(t) = Kₚ·e(t) + Kᵢ∫₀ᵗe(τ)dτ + K_d·de(t)/dt</div>
+<div class="formula f-tr">e = r − y　（设定值 − 输出）</div>
+<div class="formula f-bl">P：当下纠正　　I：记忆累积　　D：预判趋势</div>
+
+<div id="panel">
+  <div class="row">
+    <label>比例增益 Kₚ</label>
+    <input id="sKp" type="range" min="0.5" max="10" step="0.1" value="3.0">
+    <span class="val" id="vKp">3.0</span>
+  </div>
+  <div class="row">
+    <label>积分增益 Kᵢ</label>
+    <input id="sKi" type="range" min="0" max="5" step="0.05" value="0.80">
+    <span class="val" id="vKi">0.80</span>
+  </div>
+  <div class="row">
+    <label>微分增益 K_d</label>
+    <input id="sKd" type="range" min="0" max="8" step="0.1" value="2.5">
+    <span class="val" id="vKd">2.5</span>
+  </div>
+  <div class="hint">拖拽旋转视角</div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================================================
+   渲染器 / 场景 / 相机
+   ============================================================ */
+const renderer = new THREE.WebGLRenderer({ antialias:true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.setClearColor(0x03060f, 1);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x03060f, 0.0085);
+
+const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 0.1, 900);
+camera.position.set(0, 7.5, 31);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 2.6, -3);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.autoRotate = false;
+controls.enablePan = false;
+controls.minDistance = 10;
+controls.maxDistance = 70;
+controls.maxPolarAngle = Math.PI * 0.56;
+
+/* ============================================================
+   工具
+   ============================================================ */
+function createSpriteTexture(){
+  const s = 128;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = s;
+  const ctx = cv.getContext('2d');
+  const g = ctx.createRadialGradient(s/2, s/2, 0, s/2, s/2, s/2);
+  g.addColorStop(0.00,'rgba(255,255,255,1)');
+  g.addColorStop(0.20,'rgba(255,255,255,0.78)');
+  g.addColorStop(0.50,'rgba(255,255,255,0.22)');
+  g.addColorStop(1.00,'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0,0,s,s);
+  const t = new THREE.CanvasTexture(cv);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+const SPRITE = createSpriteTexture();
+
+/* ============================================================
+   仿真参数
+   ============================================================ */
+const DURATION = 30;
+const FPS      = 60;
+const N        = DURATION * FPS;   // 1800
+const DT       = 1 / FPS;
+
+const X_MIN  = -14.0;
+const X_MAX  =  14.0;
+const X_SPAN = X_MAX - X_MIN;
+
+const BAND_Y   = 3.0;
+const BAND_Z_P = -5.0;
+const BAND_Z_I = -8.5;
+const BAND_Z_D = -12.0;
+
+let kpVal = 3.0;
+let kiVal = 0.80;
+let kdVal = 2.5;
+
+/* 设定值随时间变化（阶跃序列） */
+function setpoint(t){
+  if (t < 12.0) return 3.0;
+  if (t < 22.0) return 5.0;
+  return 3.0;
+}
+
+/* ============================================================
+   仿真数据缓存
+   ============================================================ */
+const simR = new Float32Array(N);
+const simY = new Float32Array(N);
+const simP = new Float32Array(N);
+const simI = new Float32Array(N);
+const simD = new Float32Array(N);
+
+/* ============================================================
+   曲线几何工厂
+   ============================================================ */
+function makeCurve(color, opacity){
+  const pos = new Float32Array(N * 3);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setDrawRange(0, 0);
+  const mat = new THREE.LineBasicMaterial({
+    color,
+    transparent: true,
+    opacity,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false
+  });
+  const line = new THREE.Line(geo, mat);
+  line.frustumCulled = false;
+  line.renderOrder = 4;
+  scene.add(line);
+  return { geo, pos, mat, line };
+}
+
+const respCurve = makeCurve(0x3fe8ff, 0.95);   // 响应曲线（青）
+const setCurve  = makeCurve(0xffd24a, 0.80);   // 设定值（金）
+const pCurve    = makeCurve(0xff4d6a, 0.85);   // 比例（红）
+const iCurve    = makeCurve(0x3d8bff, 0.85);   // 积分（蓝）
+const dCurve    = makeCurve(0x2fe89a, 0.85);   // 微分（绿）
+
+/* ============================================================
+   分量带基线
+   ============================================================ */
+function makeBaseline(z){
+  const pts = [
+    new THREE.Vector3(X_MIN, BAND_Y, z),
+    new THREE.Vector3(X_MAX, BAND_Y, z)
+  ];
+  const g = new THREE.BufferGeometry().setFromPoints(pts);
+  const m = new THREE.LineBasicMaterial({
+    color: 0x3d5a99, transparent: true, opacity: 0.28,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  });
+  const l = new THREE.Line(g, m);
+  l.frustumCulled = false;
+  scene.add(l);
+}
+makeBaseline(BAND_Z_P);
+makeBaseline(BAND_Z_I);
+makeBaseline(BAND_Z_D);
+
+/* ============================================================
+   地面参照网格（淡）
+   ============================================================ */
+const grid = new THREE.GridHelper(44, 22, 0x1d2f5c, 0x121d3a);
+grid.position.set(0, -0.02, -6);
+grid.material.transparent = true;
+grid.material.opacity = 0.24;
+scene.add(grid);
+
+/* ============================================================
+   星空背景
+   ============================================================ */
+(function buildStars(){
+  const COUNT = 800;
+  const pos = new Float32Array(COUNT * 3);
+  for (let i = 0; i < COUNT; i++){
+    const r  = 80 + Math.random() * 150;
+    const th = Math.random() * Math.PI * 2;
+    const ph = Math.acos(Math.random() * 2 - 1);
+    pos[i*3    ] = r * Math.sin(ph) * Math.cos(th);
+    pos[i*3 + 1] = r * Math.cos(ph) * 0.6 + 30;
+    pos[i*3 + 2] = r * Math.sin(ph) * Math.sin(th);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const m = new THREE.PointsMaterial({
+    size: 0.95, map: SPRITE, color: 0x8fb6ff,
+    transparent: true, opacity: 0.5,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+    sizeAttenuation: true
+  });
+  scene.add(new THREE.Points(g, m));
+})();
+
+/* ============================================================
+   被控对象光球
+   ============================================================ */
+const ballGlow = new THREE.Sprite(new THREE.SpriteMaterial({
+  map: SPRITE, color: 0x8ff4ff,
+  transparent: true, opacity: 0.95,
+  blending: THREE.AdditiveBlending, depthWrite: false
+}));
+ballGlow.scale.set(2.4, 2.4, 1);
+ballGlow.renderOrder = 9;
+scene.add(ballGlow);
+
+const ballCore = new THREE.Sprite(new THREE.SpriteMaterial({
+  map: SPRITE, color: 0xffffff,
+  transparent: true, opacity: 1,
+  blending: THREE.AdditiveBlending, depthWrite: false
+}));
+ballCore.scale.set(0.9, 0.9, 1);
+ballCore.renderOrder = 10;
+scene.add(ballCore);
+
+/* ============================================================
+   当前时刻误差指示线
+   ============================================================ */
+const errGeo = new THREE.BufferGeometry();
+errGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
+const errLine = new THREE.Line(errGeo, new THREE.LineBasicMaterial({
+  color: 0xffe98a, transparent: true, opacity: 0.55,
+  blending: THREE.AdditiveBlending, depthWrite: false
+}));
+errLine.frustumCulled = false;
+errLine.renderOrder = 8;
+scene.add(errLine);
+
+/* ============================================================
+   重建：PID 仿真 + 曲线顶点填充
+   ============================================================ */
+function rebuild(){
+  let y = 0, v = 0, integ = 0;
+
+  for (let i = 0; i < N; i++){
+    const t = i * DT;
+    const r = setpoint(t);
+    const e = r - y;
+
+    integ += e * DT;
+    if (integ >  15) integ =  15;
+    if (integ < -15) integ = -15;
+
+    const P = kpVal * e;
+    const I = kiVal * integ;
+    const D = -kdVal * v;          // 对测量值微分，避免设定值跳变冲击
+
+    simR[i] = r;
+    simY[i] = y;
+    simP[i] = P;
+    simI[i] = I;
+    simD[i] = D;
+
+    const u = P + I + D;
+
+    v += u * DT;
+    y += v * DT;
+  }
+
+  /* ---- 填充顶点 ---- */
+  const rp = respCurve.pos, sp = setCurve.pos;
+  const pp = pCurve.pos,    ip = iCurve.pos,    dp = dCurve.pos;
+
+  const clamp = (val, lo, hi) => val < lo ? lo : (val > hi ? hi : val);
+
+  for (let i = 0; i < N; i++){
+    const x  = X_MIN + (i / (N - 1)) * X_SPAN;
+    const i3 = i * 3;
+
+    rp[i3]     = x;  rp[i3 + 1] = simY[i];  rp[i3 + 2] = 0;
+    sp[i3]     = x;  sp[i3 + 1] = simR[i];  sp[i3 + 2] = 0;
+
+    pp[i3]     = x;  pp[i3 + 1] = BAND_Y + clamp(simP[i] / 10, -1.3, 1.3);  pp[i3 + 2] = BAND_Z_P;
+    ip[i3]     = x;  ip[i3 + 1] = BAND_Y + clamp(simI[i] /  5, -1.3, 1.3);  ip[i3 + 2] = BAND_Z_I;
+    dp[i3]     = x;  dp[i3 + 1] = BAND_Y + clamp(simD[i] / 10, -1.3, 1.3);  dp[i3 + 2] = BAND_Z_D;
+  }
+
+  respCurve.geo.attributes.position.needsUpdate = true;
+  setCurve.geo.attributes.position.needsUpdate  = true;
+  pCurve.geo.attributes.position.needsUpdate    = true;
+  iCurve.geo.attributes.position.needsUpdate    = true;
+  dCurve.geo.attributes.position.needsUpdate    = true;
+}
+
+rebuild();
+
+/* ============================================================
+   顶部文字
+   ============================================================ */
+const FULL_TEXT = 'PID用比例-积分-微分三种补偿实现稳定追踪，启示复杂系统稳定运行需当下纠正(P)记忆累积(I)预判趋势(D)三者平衡。';
+const topTextEl = document.getElementById('topText');
+let lastShown = '';
+
+function smoothstep(a, b, x){
+  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+}
+
+function updateTopText(animT){
+  const prog = smoothstep(0.6, 27.0, animT);
+  const n = Math.floor(prog * FULL_TEXT.length);
+  const shown = FULL_TEXT.slice(0, n);
+  if (shown !== lastShown){
+    topTextEl.textContent = shown;
+    lastShown = shown;
+  }
+}
+
+/* ============================================================
+   滑块交互
+   ============================================================ */
+const sKpEl = document.getElementById('sKp');
+const sKiEl = document.getElementById('sKi');
+const sKdEl = document.getElementById('sKd');
+const vKpEl = document.getElementById('vKp');
+const vKiEl = document.getElementById('vKi');
+const vKdEl = document.getElementById('vKd');
+
+sKpEl.addEventListener('input', e => {
+  kpVal = parseFloat(e.target.value);
+  vKpEl.textContent = kpVal.toFixed(1);
+  rebuild();
+});
+sKiEl.addEventListener('input', e => {
+  kiVal = parseFloat(e.target.value);
+  vKiEl.textContent = kiVal.toFixed(2);
+  rebuild();
+});
+sKdEl.addEventListener('input', e => {
+  kdVal = parseFloat(e.target.value);
+  vKdEl.textContent = kdVal.toFixed(1);
+  rebuild();
+});
+
+/* ============================================================
+   主循环
+   ============================================================ */
+const clock = new THREE.Clock();
+let animT = 0;
+
+function animate(){
+  requestAnimationFrame(animate);
+
+  const dt = Math.min(clock.getDelta(), 0.06);
+  animT += dt;
+  if (animT >= DURATION) animT -= DURATION;
+
+  const idx = Math.min(N - 1, Math.floor(animT / DURATION * N));
+  const visible = idx + 1;
+
+  respCurve.geo.setDrawRange(0, visible);
+  setCurve.geo.setDrawRange(0, visible);
+  pCurve.geo.setDrawRange(0, visible);
+  iCurve.geo.setDrawRange(0, visible);
+  dCurve.geo.setDrawRange(0, visible);
+
+  /* ---- 当前时刻位置 ---- */
+  const cx = X_MIN + (idx / (N - 1)) * X_SPAN;
+  const cy = simY[idx];
+  const cset = simR[idx];
+
+  ballGlow.position.set(cx, cy, 0);
+  ballCore.position.set(cx, cy, 0);
+
+  const pulse = 0.86 + 0.14 * Math.sin(animT * 8.5);
+  ballGlow.material.opacity = pulse;
+  ballGlow.scale.setScalar(2.2 + 0.3 * Math.sin(animT * 5.0));
+
+  /* ---- 误差竖线 ---- */
+  const ep = errGeo.attributes.position.array;
+  ep[0] = cx; ep[1] = cset; ep[2] = 0;
+  ep[3] = cx; ep[4] = cy;   ep[5] = 0;
+  errGeo.attributes.position.needsUpdate = true;
+  errLine.material.opacity = 0.30 + 0.35 * Math.min(1, Math.abs(cset - cy) / 1.5);
+
+  /* ---- 顶部文字 ---- */
+  updateTopText(animT);
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+
+/* ============================================================
+   自适应
+   ============================================================ */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+animate();
+</script>
+</body>
+</html>

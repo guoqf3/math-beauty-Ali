@@ -1,0 +1,956 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>智能制造 · 数字孪生工厂</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{
+    width:100%;height:100%;overflow:hidden;background:#03040c;
+    font-family:"Consolas","Menlo","Microsoft YaHei",monospace;
+    -webkit-font-smoothing:antialiased;
+  }
+  canvas{display:block;position:absolute;inset:0;z-index:1;}
+
+  /* 顶部启示文字 */
+  #cap{
+    position:absolute;top:14px;left:50%;transform:translateX(-50%);
+    width:min(1200px,86vw);text-align:center;z-index:20;
+    color:#b8f4ff;font-size:clamp(13px,1.42vw,19px);
+    letter-spacing:2px;line-height:1.7;
+    text-shadow:
+      0 0 8px rgba(90,230,255,.95),
+      0 0 22px rgba(60,160,255,.75),
+      0 0 52px rgba(120,80,255,.45);
+    pointer-events:none;min-height:2.4em;
+    font-weight:600;
+  }
+  #cap::after{
+    content:"";display:block;height:1px;margin:9px auto 0;width:56%;
+    background:linear-gradient(90deg,transparent,rgba(100,240,255,.85),transparent);
+    box-shadow:0 0 14px rgba(100,240,255,.9);
+  }
+
+  /* 两侧公式 */
+  .side{
+    position:absolute;top:0;bottom:0;width:168px;z-index:20;
+    display:flex;flex-direction:column;justify-content:center;gap:22px;
+    font-size:clamp(9px,0.8vw,12.5px);
+    color:rgba(120,225,255,.55);
+    text-shadow:0 0 9px rgba(70,200,255,.8);
+    pointer-events:none;letter-spacing:.6px;line-height:1.6;
+  }
+  .side.left{left:16px;align-items:flex-start;text-align:left;}
+  .side.right{right:16px;align-items:flex-end;text-align:right;}
+  .side .hi{
+    color:rgba(140,255,230,.85);
+    text-shadow:0 0 12px rgba(90,255,215,.95),0 0 26px rgba(60,220,255,.5);
+  }
+  .side .pk{
+    color:rgba(255,140,245,.8);
+    text-shadow:0 0 12px rgba(255,90,235,.95);
+  }
+  .side .dim{color:rgba(120,150,255,.32);text-shadow:none;font-size:.86em;letter-spacing:2px;}
+  .side span{display:block;}
+
+  @media (max-width:920px){
+    .side{width:110px;font-size:9px;gap:14px;}
+    .side.left{left:5px;} .side.right{right:5px;}
+  }
+  @media (max-width:640px){ .side{display:none;} }
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+
+<div id="cap"></div>
+
+<div class="side left">
+  <span>M<sub>d</sub> = f(M<sub>p</sub>)</span>
+  <span>J = min Σ(c<sub>i</sub>t<sub>i</sub>+w<sub>j</sub>q<sub>j</sub>)</span>
+  <span>d(x,t)/dt = f(x,u,t)</span>
+  <span class="hi">OEE &gt; 85%</span>
+  <span class="hi">预测准确率 &gt; 90%</span>
+  <span class="dim">DIGITAL TWIN</span>
+</div>
+
+<div class="side right">
+  <span class="hi">故障预警 &gt; 24h</span>
+  <span class="hi">排程产能 ≥ 20%</span>
+  <span class="pk">CPS 信息物理融合</span>
+  <span>感知 → 决策 → 执行</span>
+  <span class="dim">SMART MFG</span>
+</div>
+
+<script>
+(function(){
+"use strict";
+
+/* ============================================================
+   工具
+============================================================ */
+const cvs = document.getElementById('scene');
+const ctx = cvs.getContext('2d');
+let W = 0, H = 0, DPR = 1;
+
+function resize(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  cvs.width  = Math.max(1, Math.floor(W * DPR));
+  cvs.height = Math.max(1, Math.floor(H * DPR));
+  cvs.style.width  = W + 'px';
+  cvs.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+window.addEventListener('resize', resize);
+resize();
+
+const TAU = Math.PI * 2;
+const LOOP = 30;                    // 循环时长（秒）
+
+const v3 = (x,y,z)=>({x,y,z});
+const sub3 = (a,b)=>v3(a.x-b.x, a.y-b.y, a.z-b.z);
+const dot3 = (a,b)=>a.x*b.x + a.y*b.y + a.z*b.z;
+const cross3 = (a,b)=>v3(a.y*b.z-a.z*b.y, a.z*b.x-a.x*b.z, a.x*b.y-a.y*b.x);
+const norm3 = a=>{const l = Math.hypot(a.x,a.y,a.z) || 1; return v3(a.x/l, a.y/l, a.z/l);};
+
+/* ============================================================
+   相机
+============================================================ */
+const cam = {
+  px:0, py:0, pz:0,
+  fx:0, fy:0, fz:-1,
+  rx:1, ry:0, rz:0,
+  ux:0, uy:1, uz:0,
+  f:1200
+};
+const CAM_TARGET = v3(0, 4.0, -4);
+
+function updateCam(t){
+  const k = t / LOOP * TAU;
+  const yaw   = 0.95 + Math.sin(k) * 0.78;
+  const pitch = 0.40 + Math.sin(k * 0.5) * 0.07;
+  const R = 58;
+
+  cam.px = CAM_TARGET.x + R * Math.cos(pitch) * Math.sin(yaw);
+  cam.py = CAM_TARGET.y + R * Math.sin(pitch);
+  cam.pz = CAM_TARGET.z + R * Math.cos(pitch) * Math.cos(yaw);
+
+  const f = norm3(sub3(CAM_TARGET, v3(cam.px, cam.py, cam.pz)));
+  const r = norm3(cross3(f, v3(0,1,0)));
+  const u = cross3(r, f);
+
+  cam.fx=f.x; cam.fy=f.y; cam.fz=f.z;
+  cam.rx=r.x; cam.ry=r.y; cam.rz=r.z;
+  cam.ux=u.x; cam.uy=u.y; cam.uz=u.z;
+  cam.f = Math.min(W * 0.86, H * 1.55);
+}
+
+function proj(p){
+  const dx = p.x - cam.px, dy = p.y - cam.py, dz = p.z - cam.pz;
+  const cz = dx*cam.fx + dy*cam.fy + dz*cam.fz;
+  if (cz < 2) return null;
+  const cx = dx*cam.rx + dy*cam.ry + dz*cam.rz;
+  const cy = dx*cam.ux + dy*cam.uy + dz*cam.uz;
+  const s = cam.f / cz;
+  return { x: W*0.5 + cx*s, y: H*0.5 - cy*s, s, z: cz };
+}
+
+/* ============================================================
+   面片收集
+============================================================ */
+const quads = [];
+
+function addFace(pts, color, n, stroke){
+  const pr = pts.map(proj);
+  for (let i=0;i<pr.length;i++) if (!pr[i]) return;
+
+  const c = { x:0, y:0, z:0 };
+  for (let i=0;i<pts.length;i++){ c.x+=pts[i].x/pts.length; c.y+=pts[i].y/pts.length; c.z+=pts[i].z/pts.length; }
+
+  const vx = cam.px - c.x, vy = cam.py - c.y, vz = cam.pz - c.z;
+  if (n && (n.x*vx + n.y*vy + n.z*vz) <= 0) return;
+
+  quads.push({
+    pr,
+    color,
+    stroke: stroke || null,
+    d: vx*vx + vy*vy + vz*vz
+  });
+}
+
+/* rgb 数组 + 面亮度 → 颜色字符串 */
+function shade(rgb, lum){
+  const r = Math.min(255, rgb[0]*lum)|0;
+  const g = Math.min(255, rgb[1]*lum)|0;
+  const b = Math.min(255, rgb[2]*lum)|0;
+  return 'rgb('+r+','+g+','+b+')';
+}
+
+function addBox(x, y, z, w, h, d, rgb, opt){
+  opt = opt || {};
+  const amb = opt.amb !== undefined ? opt.amb : 0.30;
+  const stroke = opt.stroke || null;
+
+  const x0 = x - w/2, x1 = x + w/2;
+  const y0 = y,       y1 = y + h;
+  const z0 = z - d/2, z1 = z + d/2;
+
+  const P = (a,b,c)=>({x:a, y:b, z:c});
+
+  // [4点, 法线, 亮度]
+  const F = [
+    [[x0,y1,z0],[x1,y1,z0],[x1,y1,z1],[x0,y1,z1], v3(0,1,0),  1.00],
+    [[x0,y0,z0],[x1,y0,z0],[x1,y1,z0],[x0,y1,z0], v3(0,0,-1), 0.62],
+    [[x1,y0,z0],[x1,y0,z1],[x1,y1,z1],[x1,y1,z0], v3(1,0,0),  0.52],
+    [[x1,y0,z1],[x0,y0,z1],[x0,y1,z1],[x1,y1,z1], v3(0,0,1),  0.37],
+    [[x0,y0,z1],[x0,y0,z0],[x0,y1,z0],[x0,y1,z1], v3(-1,0,0), 0.46]
+  ];
+
+  for (let i=0;i<F.length;i++){
+    const f = F[i];
+    const lum = amb + (1 - amb) * f[5];
+    addFace(
+      [P(f[0][0],f[0][1],f[0][2]), P(f[1][0],f[1][1],f[1][2]),
+       P(f[2][0],f[2][1],f[2][2]), P(f[3][0],f[3][1],f[3][2])],
+      shade(rgb, lum),
+      f[4],
+      stroke
+    );
+  }
+}
+
+/* ============================================================
+   场景常量
+============================================================ */
+const AGV_PATH = [
+  {x:-26, z:3.0},
+  {x: 26, z:3.0},
+  {x: 26, z:13.0},
+  {x:-26, z:13.0}
+];
+
+function pathPoint(u){
+  u = ((u % 1) + 1) % 1;
+  const segs = [];
+  let total = 0;
+  for (let i=0;i<AGV_PATH.length;i++){
+    const a = AGV_PATH[i], b = AGV_PATH[(i+1)%AGV_PATH.length];
+    const len = Math.hypot(b.x-a.x, b.z-a.z);
+    segs.push({a,b,len});
+    total += len;
+  }
+  let dd = u * total;
+  for (let i=0;i<segs.length;i++){
+    const s = segs[i];
+    if (dd <= s.len){
+      const f = dd / s.len;
+      return { x: s.a.x + (s.b.x-s.a.x)*f, z: s.a.z + (s.b.z-s.a.z)*f };
+    }
+    dd -= s.len;
+  }
+  return { x: AGV_PATH[0].x, z: AGV_PATH[0].z };
+}
+
+const AGVS = [
+  { off: 0.00, spd: 3 },
+  { off: 0.26, spd: 3 },
+  { off: 0.51, spd: 3 },
+  { off: 0.77, spd: 3 }
+];
+const agvWorld = [];   // 供光晕绘制使用
+
+/* 立体仓库货箱（固定位置） */
+const CARGOS = (function(){
+  const arr = [];
+  let seed = 7;
+  const rnd = ()=>{ seed = (seed*9301 + 49297) % 233280; return seed/233280; };
+  for (let i=0;i<22;i++){
+    arr.push({
+      x: 22 + (rnd()-0.5)*5.2,
+      y: 0.6 + Math.floor(rnd()*4)*1.9,
+      z: -11 + (rnd()-0.5)*9.6,
+      c: rnd()
+    });
+  }
+  return arr;
+})();
+
+/* ============================================================
+   场景构建
+============================================================ */
+function buildScene(t){
+  quads.length = 0;
+  agvWorld.length = 0;
+  const k = t / LOOP * TAU;
+
+  /* ---------- 加工中心 ×3 ---------- */
+  const cncX = [-21, -15, -9];
+  for (let i=0;i<3;i++){
+    const x = cncX[i], z = -11;
+
+    // 主体
+    addBox(x, 0, z, 5.0, 4.6, 5.0, [24,34,60],
+      { stroke:'rgba(70,175,255,0.45)', amb:0.26 });
+    // 顶部机盖
+    addBox(x, 4.6, z, 4.4, 0.55, 4.4, [42,64,108],
+      { stroke:'rgba(100,215,255,0.55)', amb:0.34 });
+    // 顶部发光条
+    addBox(x, 5.15, z, 3.6, 0.14, 0.6, [90,230,255],
+      { stroke:'rgba(150,255,255,0.9)', amb:0.9 });
+
+    // 正面加工窗口（发光面）
+    const pulse = 0.55 + 0.45*Math.sin(k*3 + i*2.1);
+    const zf = z + 2.52;
+    addFace(
+      [{x:x-1.75, y:1.5, z:zf}, {x:x+1.75, y:1.5, z:zf},
+       {x:x+1.75, y:3.5, z:zf}, {x:x-1.75, y:3.5, z:zf}],
+      'rgba(' + (30+80*pulse|0) + ',' + (190+50*pulse|0) + ',255,' + (0.55+0.35*pulse).toFixed(2) + ')',
+      v3(0,0,1)
+    );
+    // 窗口边框
+    addBox(x, 1.4, z+2.5, 3.9, 0.16, 0.2, [110,220,255], {amb:0.9});
+    addBox(x, 3.6, z+2.5, 3.9, 0.16, 0.2, [110,220,255], {amb:0.9});
+  }
+
+  /* ---------- 装配机器人基座 ×2 ---------- */
+  const armBase = [{x:-2.0, z:-11, ph:0.0}, {x:3.6, z:-11, ph:2.3}];
+  for (let i=0;i<2;i++){
+    const b = armBase[i];
+    addBox(b.x, 0, b.z, 2.2, 0.9, 2.2, [34,52,92],
+      { stroke:'rgba(110,225,255,0.5)', amb:0.34 });
+    addBox(b.x, 0.9, b.z, 1.5, 1.5, 1.5, [40,62,108],
+      { stroke:'rgba(110,225,255,0.4)', amb:0.3 });
+  }
+
+  /* ---------- 在线检测站 ---------- */
+  {
+    const x = 11, z = -11;
+    addBox(x, 0, z, 4.4, 3.2, 4.4, [26,40,70],
+      { stroke:'rgba(120,255,220,0.42)', amb:0.28 });
+    // 扫描光条
+    const scan = (Math.sin(k*2.4)*0.5+0.5);
+    addFace(
+      [{x:x-1.9, y:0.6+scan*2.0, z:z+2.22}, {x:x+1.9, y:0.6+scan*2.0, z:z+2.22},
+       {x:x+1.9, y:0.72+scan*2.0, z:z+2.22}, {x:x-1.9, y:0.72+scan*2.0, z:z+2.22}],
+      'rgba(120,255,215,0.95)', v3(0,0,1)
+    );
+    addBox(x, 3.2, z, 3.0, 0.4, 3.0, [60,180,170], {amb:0.7});
+  }
+
+  /* ---------- 立体仓库 ---------- */
+  {
+    const x = 22, z = -11, cw = 7, cd = 12, ch = 9;
+    // 4 立柱
+    const posts = [
+      [x-cw/2, z-cd/2], [x+cw/2, z-cd/2],
+      [x-cw/2, z+cd/2], [x+cw/2, z+cd/2]
+    ];
+    for (let i=0;i<4;i++){
+      addBox(posts[i][0], 0, posts[i][1], 0.34, ch, 0.34, [70,150,220],
+        { amb:0.55 });
+    }
+    // 层板
+    for (let ly=1.4; ly<ch-0.4; ly+=1.9){
+      addBox(x, ly, z, cw, 0.14, cd, [48,100,180], { amb:0.62 });
+    }
+    // 顶梁
+    addBox(x, ch, z, cw, 0.3, cd, [56,120,200], { amb:0.55 });
+    // 货箱
+    for (let i=0;i<CARGOS.length;i++){
+      const cg = CARGOS[i];
+      const tint = cg.c;
+      const col = tint < 0.5
+        ? [80, 200, 255]
+        : (tint < 0.8 ? [255, 120, 235] : [120, 255, 200]);
+      addBox(cg.x, cg.y, cg.z, 1.5, 1.2, 1.5, col,
+        { stroke:'rgba(180,240,255,0.35)', amb:0.5 });
+    }
+  }
+
+  /* ---------- 主传送带 ---------- */
+  {
+    const z = -3.0;
+    addBox(0, 0.62, z, 46, 0.62, 2.6, [20,32,56],
+      { stroke:'rgba(60,150,255,0.35)', amb:0.26 });
+
+    // 传送带面（发光带）
+    addFace(
+      [{x:-23, y:1.25, z:z-1.2}, {x:23, y:1.25, z:z-1.2},
+       {x:23, y:1.25, z:z+1.2}, {x:-23, y:1.25, z:z+1.2}],
+      'rgba(20,60,110,0.85)', v3(0,1,0)
+    );
+
+    // 传送带流动条纹
+    const flow = (t / LOOP * 10) % 1;
+    for (let i=0;i<16;i++){
+      const u = ((i/16) + flow) % 1;
+      const sx = -23 + u * 46;
+      addFace(
+        [{x:sx-0.45, y:1.27, z:z-1.05}, {x:sx+0.45, y:1.27, z:z-1.05},
+         {x:sx+0.45, y:1.27, z:z+1.05}, {x:sx-0.45, y:1.27, z:z+1.05}],
+        'rgba(90,225,255,0.55)', v3(0,1,0)
+      );
+    }
+
+    // 传送带两侧光条
+    addBox(0, 1.18, z-1.35, 46, 0.14, 0.16, [80,210,255], {amb:0.95});
+    addBox(0, 1.18, z+1.35, 46, 0.14, 0.16, [80,210,255], {amb:0.95});
+
+    // 传送带上的工件
+    const wf = (t / LOOP * 6) % 1;
+    for (let i=0;i<8;i++){
+      const u = ((i/8) + wf) % 1;
+      const wx = -22 + u * 44;
+      addBox(wx, 1.27, z, 1.5, 1.1, 1.5, [70,190,255],
+        { stroke:'rgba(180,250,255,0.75)', amb:0.62 });
+    }
+  }
+
+  /* ---------- AGV 小车 ---------- */
+  for (let i=0;i<AGVS.length;i++){
+    const a = AGVS[i];
+    const u = (t / LOOP * a.spd + a.off) % 1;
+    const p = pathPoint(u);
+    agvWorld.push(p);
+
+    // 底盘
+    addBox(p.x, 0.22, p.z, 2.5, 0.45, 1.7, [14,66,92],
+      { stroke:'rgba(120,255,255,0.8)', amb:0.55 });
+    // 载货
+    addBox(p.x, 0.67, p.z, 1.7, 1.0, 1.25, [46,140,180],
+      { stroke:'rgba(160,255,255,0.7)', amb:0.6 });
+    // 顶部指示灯
+    addBox(p.x, 1.67, p.z, 0.42, 0.22, 0.42, [120,255,240], {amb:1.0});
+  }
+}
+
+/* ============================================================
+   绘制：地面 / 星空 / 涟漪
+============================================================ */
+const STARS = (function(){
+  const a = [];
+  for (let i=0;i<140;i++){
+    a.push({ x:Math.random(), y:Math.random()*0.6, r:Math.random()*1.3+0.25, p:Math.random()*TAU });
+  }
+  return a;
+})();
+
+function drawStars(t){
+  ctx.save();
+  for (let i=0;i<STARS.length;i++){
+    const s = STARS[i];
+    const a = 0.18 + 0.30 * Math.sin(t*1.2 + s.p);
+    if (a <= 0) continue;
+    ctx.globalAlpha = a;
+    ctx.fillStyle = '#9fe0ff';
+    ctx.beginPath();
+    ctx.arc(s.x*W, s.y*H, s.r, 0, TAU);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawGround(t){
+  const RD = 34, DZ = 26;
+  const c1 = proj(v3(-RD,0,-DZ)), c2 = proj(v3(RD,0,-DZ));
+  const c3 = proj(v3(RD,0,DZ)),   c4 = proj(v3(-RD,0,DZ));
+  if (c1 && c2 && c3 && c4){
+    ctx.beginPath();
+    ctx.moveTo(c1.x,c1.y); ctx.lineTo(c2.x,c2.y);
+    ctx.lineTo(c3.x,c3.y); ctx.lineTo(c4.x,c4.y);
+    ctx.closePath();
+    const g = ctx.createLinearGradient(0, H*0.28, 0, H);
+    g.addColorStop(0,   'rgba(16,30,62,0.92)');
+    g.addColorStop(0.55,'rgba(9,16,38,0.94)');
+    g.addColorStop(1,   'rgba(4,7,18,0.97)');
+    ctx.fillStyle = g;
+    ctx.fill();
+  }
+
+  const pulse = 0.5 + 0.5*Math.sin(t*0.9);
+  ctx.lineWidth = 1;
+
+  for (let x=-32; x<=32; x+=4){
+    const a = proj(v3(x,0,-DZ)), b = proj(v3(x,0,DZ));
+    if (!a || !b) continue;
+    const major = (x % 8 === 0);
+    ctx.strokeStyle = major
+      ? 'rgba(64,170,255,' + (0.13 + 0.07*pulse).toFixed(3) + ')'
+      : 'rgba(50,120,210,0.055)';
+    ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+  }
+  for (let z=-24; z<=24; z+=4){
+    const a = proj(v3(-RD,0,z)), b = proj(v3(RD,0,z));
+    if (!a || !b) continue;
+    const major = (z % 8 === 0);
+    ctx.strokeStyle = major
+      ? 'rgba(64,170,255,' + (0.13 + 0.07*pulse).toFixed(3) + ')'
+      : 'rgba(50,120,210,0.055)';
+    ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+  }
+}
+
+function drawRipples(t){
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  const cyc = t / 5;
+  for (let i=0;i<3;i++){
+    const u = ((cyc + i/3) % 1);
+    const r = u * 32;
+    const alpha = (1-u) * 0.32;
+    if (alpha <= 0.01) continue;
+
+    ctx.beginPath();
+    let started = false;
+    for (let a=0; a<=72; a++){
+      const ang = a/72 * TAU;
+      const p = proj(v3(Math.cos(ang)*r, 0.06, Math.sin(ang)*r));
+      if (!p){ started = false; break; }
+      if (!started){ ctx.moveTo(p.x,p.y); started = true; }
+      else ctx.lineTo(p.x,p.y);
+    }
+    if (!started) continue;
+    ctx.strokeStyle = 'rgba(80,225,255,' + alpha.toFixed(3) + ')';
+    ctx.lineWidth = 1.6;
+    ctx.shadowColor = 'rgba(80,225,255,0.9)';
+    ctx.shadowBlur = 14;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+  }
+  ctx.restore();
+}
+
+/* ============================================================
+   绘制：AGV 路径
+============================================================ */
+function drawPaths(t){
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+
+  // 实线
+  ctx.beginPath();
+  let ok = true;
+  for (let i=0;i<=AGV_PATH.length;i++){
+    const p = proj(v3(AGV_PATH[i%AGV_PATH.length].x, 0.07, AGV_PATH[i%AGV_PATH.length].z));
+    if (!p){ ok = false; break; }
+    if (i === 0) ctx.moveTo(p.x, p.y);
+    else ctx.lineTo(p.x, p.y);
+  }
+  if (ok){
+    ctx.strokeStyle = 'rgba(0,235,255,0.42)';
+    ctx.lineWidth = 2.6;
+    ctx.shadowColor = 'rgba(0,240,255,0.95)';
+    ctx.shadowBlur = 16;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+  }
+
+  // 流动虚线
+  ctx.beginPath();
+  ok = true;
+  for (let i=0;i<=AGV_PATH.length;i++){
+    const p = proj(v3(AGV_PATH[i%AGV_PATH.length].x, 0.07, AGV_PATH[i%AGV_PATH.length].z));
+    if (!p){ ok = false; break; }
+    if (i === 0) ctx.moveTo(p.x, p.y);
+    else ctx.lineTo(p.x, p.y);
+  }
+  if (ok){
+    ctx.setLineDash([14, 22]);
+    ctx.lineDashOffset = -t * 58;
+    ctx.strokeStyle = 'rgba(190,255,255,0.95)';
+    ctx.lineWidth = 2.0;
+    ctx.shadowColor = 'rgba(190,255,255,1)';
+    ctx.shadowBlur = 18;
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.shadowBlur = 0;
+  }
+
+  ctx.restore();
+}
+
+/* ============================================================
+   绘制：面片
+============================================================ */
+function drawQuads(){
+  quads.sort((a,b)=>b.d - a.d);
+  for (let i=0;i<quads.length;i++){
+    const q = quads[i], p = q.pr;
+    ctx.beginPath();
+    ctx.moveTo(p[0].x, p[0].y);
+    for (let j=1;j<p.length;j++) ctx.lineTo(p[j].x, p[j].y);
+    ctx.closePath();
+    ctx.fillStyle = q.color;
+    ctx.fill();
+    if (q.stroke){
+      ctx.strokeStyle = q.stroke;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+  }
+}
+
+/* ============================================================
+   绘制：AGV 地面光晕
+============================================================ */
+function drawAgvGlow(t){
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i=0;i<agvWorld.length;i++){
+    const pr = proj(v3(agvWorld[i].x, 0.12, agvWorld[i].z));
+    if (!pr) continue;
+    const rr = Math.max(16, 42 * pr.s / 22);
+    const g = ctx.createRadialGradient(pr.x, pr.y, 0, pr.x, pr.y, rr);
+    g.addColorStop(0, 'rgba(90,255,245,0.42)');
+    g.addColorStop(0.55,'rgba(60,200,255,0.15)');
+    g.addColorStop(1, 'rgba(60,200,255,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(pr.x, pr.y, rr, 0, TAU);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+/* ============================================================
+   绘制：机械臂
+============================================================ */
+function seg3(a, b, color, radius){
+  const pa = proj(a), pb = proj(b);
+  if (!pa || !pb) return;
+  const sAvg = (pa.s + pb.s) * 0.5;
+  const lw = Math.max(1.6, radius * 2 * sAvg);
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = lw;
+  ctx.lineCap = 'round';
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 16;
+  ctx.beginPath();
+  ctx.moveTo(pa.x, pa.y);
+  ctx.lineTo(pb.x, pb.y);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function joint3(p, color, radius){
+  const pr = proj(p);
+  if (!pr) return;
+  const r = Math.max(2, radius * pr.s);
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(pr.x, pr.y, r, 0, TAU);
+  ctx.fillStyle = color;
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 20;
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawArms(t){
+  const k = t / LOOP * TAU;
+  const bases = [{x:-2.0, z:-11, ph:0.0}, {x:3.6, z:-11, ph:2.3}];
+
+  for (let i=0;i<bases.length;i++){
+    const b = bases[i];
+    const a1 = Math.sin(k*2 + b.ph) * 1.15;
+    const a2 = 0.72 + Math.sin(k*2 + b.ph + 1.5) * 0.48;
+    const r1 = 3.3;
+
+    const p0 = v3(b.x, 0.9, b.z);
+    const p1 = v3(b.x, 2.4, b.z);
+    const p2 = v3(
+      p1.x + Math.cos(a1) * r1 * Math.cos(a2),
+      p1.y + r1 * Math.sin(a2),
+      p1.z + Math.sin(a1) * r1 * Math.cos(a2)
+    );
+    const a3 = a2 - 1.15;
+    const p3 = v3(
+      p2.x + Math.cos(a1) * 1.9 * Math.cos(a3),
+      p2.y + 1.9 * Math.sin(a3),
+      p2.z + Math.sin(a1) * 1.9 * Math.cos(a3)
+    );
+
+    seg3(p0, p1, 'rgba(120,200,255,0.9)', 0.26);
+    seg3(p1, p2, 'rgba(90,235,255,0.95)', 0.23);
+    seg3(p2, p3, 'rgba(160,255,225,0.95)', 0.17);
+
+    joint3(p1, 'rgba(140,245,255,0.95)', 0.30);
+    joint3(p2, 'rgba(140,245,255,0.95)', 0.26);
+    joint3(p3, 'rgba(180,255,235,0.95)', 0.17);
+  }
+}
+
+/* ============================================================
+   绘制：数据流粒子
+============================================================ */
+const STREAMS = [
+  { a:v3(-21, 5.4, -11), b:v3(0, 10.2, -4) },
+  { a:v3(-15, 5.4, -11), b:v3(0, 10.2, -4) },
+  { a:v3(-9,  5.4, -11), b:v3(0, 10.2, -4) },
+  { a:v3(-2,  4.2, -11), b:v3(0, 10.2, -4) },
+  { a:v3( 3.6,4.2, -11), b:v3(0, 10.2, -4) },
+  { a:v3( 11, 3.6, -11), b:v3(0, 10.2, -4) },
+  { a:v3( 22, 9.4, -11), b:v3(0, 10.2, -4) },
+  { a:v3(-20, 1.6, -3),  b:v3(0, 10.2, -4) },
+  { a:v3( 20, 1.6, -3),  b:v3(0, 10.2, -4) }
+];
+
+function bez3(a, c, b, u){
+  const m = 1 - u;
+  return v3(
+    m*m*a.x + 2*m*u*c.x + u*u*b.x,
+    m*m*a.y + 2*m*u*c.y + u*u*b.y,
+    m*m*a.z + 2*m*u*c.z + u*u*b.z
+  );
+}
+
+function drawStreams(t){
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+
+  const base = (t / LOOP) * 5;
+
+  for (let si=0; si<STREAMS.length; si++){
+    const s = STREAMS[si];
+    const ctrl = v3(
+      (s.a.x + s.b.x) * 0.5,
+      Math.max(s.a.y, s.b.y) + 3.2,
+      (s.a.z + s.b.z) * 0.5
+    );
+
+    for (let i=0;i<8;i++){
+      const u = ((base + i/8 + si*0.11) % 1 + 1) % 1;
+      const p = bez3(s.a, ctrl, s.b, u);
+      const pr = proj(p);
+      if (!pr) continue;
+      const r = Math.max(1.0, 0.13 * pr.s);
+      const alpha = Math.sin(u * Math.PI) * 0.85;
+      ctx.beginPath();
+      ctx.arc(pr.x, pr.y, r, 0, TAU);
+      ctx.fillStyle = 'rgba(130,255,240,' + alpha.toFixed(3) + ')';
+      ctx.shadowColor = 'rgba(90,255,235,1)';
+      ctx.shadowBlur = 16;
+      ctx.fill();
+    }
+  }
+  ctx.restore();
+}
+
+/* ============================================================
+   绘制：中央全息大脑
+============================================================ */
+function drawHolo(t){
+  const CX = 0, CY = 10.2, CZ = -4;
+  const k = t / LOOP * TAU;
+
+  const core = proj(v3(CX, CY, CZ));
+  if (!core) return;
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+
+  // 旋转光环 ×3
+  for (let ri=0; ri<3; ri++){
+    const rad = 2.6 + ri * 1.25;
+    const yy  = CY + (ri - 1) * 0.85;
+    const tilt = 0.35 + ri * 0.28;
+    const spin = k * (1.5 - ri * 0.35);
+
+    ctx.beginPath();
+    let started = false;
+    for (let i=0; i<=60; i++){
+      const ang = (i/60) * TAU;
+      const px = Math.cos(ang) * rad;
+      const pz = Math.sin(ang) * rad;
+      const py = Math.sin(ang * 2 + spin * 2) * tilt * 0.6;
+      const p = proj(v3(CX + px * Math.cos(spin) - pz * Math.sin(spin),
+                        yy + py,
+                        CZ + px * Math.sin(spin) + pz * Math.cos(spin)));
+      if (!p){ started = false; break; }
+      if (!started){ ctx.moveTo(p.x, p.y); started = true; }
+      else ctx.lineTo(p.x, p.y);
+    }
+    if (!started) continue;
+    ctx.strokeStyle = 'rgba(100,235,255,' + (0.55 - ri*0.11).toFixed(2) + ')';
+    ctx.lineWidth = 2.1;
+    ctx.shadowColor = 'rgba(100,235,255,0.95)';
+    ctx.shadowBlur = 18;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+  }
+
+  // 中心光核
+  const pulse = 0.78 + Math.sin(k * 5) * 0.22;
+  const cg = ctx.createRadialGradient(core.x, core.y, 0, core.x, core.y, 58 * pulse);
+  cg.addColorStop(0,    'rgba(200,255,255,0.98)');
+  cg.addColorStop(0.22, 'rgba(90,230,255,0.62)');
+  cg.addColorStop(0.55, 'rgba(80,120,255,0.22)');
+  cg.addColorStop(1,    'rgba(70,80,255,0)');
+  ctx.fillStyle = cg;
+  ctx.beginPath();
+  ctx.arc(core.x, core.y, 58 * pulse, 0, TAU);
+  ctx.fill();
+
+  // 悬浮数据面板
+  const pw = Math.max(150, Math.min(320, W * 0.21));
+  const ph = pw * 0.56;
+  const px = core.x - pw / 2;
+  const py = core.y - ph - 70;
+  const rad = 9;
+
+  ctx.beginPath();
+  ctx.moveTo(px + rad, py);
+  ctx.lineTo(px + pw - rad, py);
+  ctx.quadraticCurveTo(px + pw, py, px + pw, py + rad);
+  ctx.lineTo(px + pw, py + ph - rad);
+  ctx.quadraticCurveTo(px + pw, py + ph, px + pw - rad, py + ph);
+  ctx.lineTo(px + rad, py + ph);
+  ctx.quadraticCurveTo(px, py + ph, px, py + ph - rad);
+  ctx.lineTo(px, py + rad);
+  ctx.quadraticCurveTo(px, py, px + rad, py);
+  ctx.closePath();
+
+  const pg = ctx.createLinearGradient(px, py, px + pw, py + ph);
+  pg.addColorStop(0, 'rgba(24,180,205,0.26)');
+  pg.addColorStop(1, 'rgba(60,90,225,0.16)');
+  ctx.fillStyle = pg;
+  ctx.fill();
+
+  ctx.strokeStyle = 'rgba(130,255,245,0.85)';
+  ctx.lineWidth = 1.5;
+  ctx.shadowColor = 'rgba(120,255,245,0.95)';
+  ctx.shadowBlur = 18;
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  // 面板内数据条
+  const bars = 5;
+  for (let i=0;i<bars;i++){
+    const by = py + 16 + i * ((ph - 30) / bars);
+    const bw = (pw - 30) * (0.32 + 0.62 * Math.abs(Math.sin(k * 2.6 + i * 1.25)));
+    ctx.fillStyle = 'rgba(130,255,240,0.18)';
+    ctx.fillRect(px + 15, by, pw - 30, 4);
+    ctx.fillStyle = i % 2 === 0 ? 'rgba(130,255,240,0.95)' : 'rgba(255,140,240,0.9)';
+    ctx.shadowColor = ctx.fillStyle;
+    ctx.shadowBlur = 12;
+    ctx.fillRect(px + 15, by, bw, 4);
+    ctx.shadowBlur = 0;
+  }
+
+  // 面板到核心的连接
+  ctx.beginPath();
+  ctx.moveTo(core.x, py + ph);
+  ctx.lineTo(core.x, core.y - 14);
+  ctx.strokeStyle = 'rgba(130,255,240,0.45)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 6]);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // 垂直光柱
+  const bot = proj(v3(CX, 0.1, CZ));
+  if (bot){
+    const lg = ctx.createLinearGradient(bot.x, bot.y, core.x, core.y);
+    lg.addColorStop(0, 'rgba(80,220,255,0)');
+    lg.addColorStop(1, 'rgba(80,220,255,0.16)');
+    ctx.strokeStyle = lg;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(bot.x, bot.y);
+    ctx.lineTo(core.x, core.y);
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+/* ============================================================
+   后期：扫描线 + 暗角
+============================================================ */
+function drawPost(){
+  ctx.save();
+  ctx.globalAlpha = 0.05;
+  ctx.fillStyle = '#000';
+  for (let y=0; y<H; y+=3) ctx.fillRect(0, y, W, 1);
+  ctx.restore();
+
+  const g = ctx.createRadialGradient(W/2, H/2, Math.min(W,H)*0.32, W/2, H/2, Math.max(W,H)*0.8);
+  g.addColorStop(0, 'rgba(0,0,0,0)');
+  g.addColorStop(0.75, 'rgba(0,0,0,0.35)');
+  g.addColorStop(1, 'rgba(0,0,0,0.72)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0,0,W,H);
+}
+
+/* ============================================================
+   主渲染
+============================================================ */
+function draw(t){
+  // 背景
+  const bg = ctx.createRadialGradient(W*0.5, H*0.42, 0, W*0.5, H*0.5, Math.max(W,H)*0.82);
+  bg.addColorStop(0,   '#0a1124');
+  bg.addColorStop(0.5, '#060a18');
+  bg.addColorStop(1,   '#02030a');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0,0,W,H);
+
+  drawStars(t);
+  drawGround(t);
+  drawRipples(t);
+  drawPaths(t);
+
+  buildScene(t);
+  drawQuads();
+
+  drawAgvGlow(t);
+  drawArms(t);
+  drawStreams(t);
+  drawHolo(t);
+  drawPost();
+}
+
+/* ============================================================
+   顶部文字
+============================================================ */
+const capEl = document.getElementById('cap');
+const FULL_TEXT =
+  "启示：智能制造揭示数字化技术赋能传统制造业的革命性升级路径——" +
+  "通过信息物理系统实现“感知-决策-执行”闭环智能优化——" +
+  "启示我们善用数字化技术武装传统产业实现提质降本增效，" +
+  "智能化转型是制造业高质量发展的必由之路。";
+
+const CHUNK = Math.ceil(FULL_TEXT.length / 5);
+let lastChars = -1;
+
+function updateCaption(t){
+  const seg = Math.min(4, Math.floor(t / 6));
+  const n = Math.min(FULL_TEXT.length, (seg + 1) * CHUNK);
+  if (n !== lastChars){
+    lastChars = n;
+    capEl.textContent = FULL_TEXT.slice(0, n);
+  }
+}
+
+/* ============================================================
+   主循环
+============================================================ */
+const t0 = performance.now();
+
+function frame(now){
+  const t = ((now - t0) / 1000) % LOOP;
+  updateCam(t);
+  draw(t);
+  updateCaption(t);
+  requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>渗流实验 · Percolation Experiment</title>
+<style>
+  html,body{
+    margin:0;padding:0;height:100%;overflow:hidden;background:#03040c;
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+    -webkit-user-select:none;user-select:none;
+  }
+  #cv{display:block;position:absolute;inset:0;cursor:grab;}
+  #cv:active{cursor:grabbing;}
+
+  .formula{
+    position:absolute;z-index:5;pointer-events:none;
+    font-family:"Cambria Math",Cambria,Georgia,"Times New Roman",serif;
+    font-size:14px;letter-spacing:.6px;
+    color:#7fe3ff;opacity:.72;
+    text-shadow:0 0 10px rgba(70,170,255,.75),0 0 22px rgba(90,60,255,.5);
+  }
+  .tl{top:14px;left:18px;}
+  .tr{top:14px;right:18px;text-align:right;}
+  .bl{bottom:14px;left:18px;}
+  .br{bottom:14px;right:18px;text-align:right;color:#c9a6ff;
+      text-shadow:0 0 10px rgba(180,120,255,.8);}
+
+  #caption{
+    position:absolute;top:16px;left:50%;transform:translateX(-50%);
+    z-index:6;pointer-events:none;width:min(94vw,760px);text-align:center;
+  }
+  .cap{
+    font-size:16px;line-height:1.55;color:#dff3ff;opacity:0;
+    letter-spacing:1px;
+    text-shadow:0 0 14px rgba(0,0,0,.95),0 0 30px rgba(40,120,255,.55),0 0 4px #000;
+    transition:opacity .15s linear;
+    white-space:nowrap;
+  }
+  .cap b{color:#9ff3ff;font-weight:600;}
+  @media (max-width:820px){
+    .cap{font-size:12px;letter-spacing:.3px;}
+    .formula{font-size:11px;}
+  }
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+
+<div class="formula tl">P(p) → 1　( p &gt; p<sub>c</sub> )</div>
+<div class="formula tr">ξ ∝ |p − p<sub>c</sub>|<sup>−ν</sup></div>
+<div class="formula bl">p<sub>c</sub> = 0.5927　·　ν = 4/3</div>
+<div class="formula br" id="pval">p = 0.0000</div>
+
+<div id="caption">
+  <div class="cap">启示：看似无序的随机过程中，系统在某一临界密度处</div>
+  <div class="cap">会发生突变的“质变”式相变，揭示复杂系统中普遍</div>
+  <div class="cap">存在的临界现象——许多自然与社会系统（如网络传播、</div>
+  <div class="cap">流行病扩散、森林火灾蔓延）都遵循相似的渗流规律。</div>
+</div>
+
+<script>
+(function(){
+'use strict';
+
+/* ======================= 参数 ======================= */
+const L      = 14;                 // 每边格点数 14^3 = 2744
+const N      = L*L*L;
+const PC     = 0.5927;             // 理论临界阈值
+const CYCLE  = 30;                 // 动画周期（秒）
+
+const canvas = document.getElementById('cv');
+const ctx    = canvas.getContext('2d', { alpha:false });
+let W = 0, H = 0, DPR = 1;
+
+function resize(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width  = Math.round(W*DPR);
+  canvas.height = Math.round(H*DPR);
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+}
+window.addEventListener('resize', resize);
+resize();
+
+/* ======================= 晶格构建 ======================= */
+const idxOf = (x,y,z) => (x*L + y)*L + z;
+
+const px = new Float32Array(N);
+const py = new Float32Array(N);
+const pz = new Float32Array(N);
+const faceMask = new Uint8Array(N);
+const nbr = new Int32Array(N*6).fill(-1);
+
+{
+  const stp = 2/(L-1);
+  for (let x=0;x<L;x++) for (let y=0;y<L;y++) for (let z=0;z<L;z++){
+    const i = idxOf(x,y,z);
+    px[i] = x*stp - 1;
+    py[i] = y*stp - 1;
+    pz[i] = z*stp - 1;
+
+    let m = 0;
+    if (x===0)   m|=1;
+    if (x===L-1) m|=2;
+    if (y===0)   m|=4;
+    if (y===L-1) m|=8;
+    if (z===0)   m|=16;
+    if (z===L-1) m|=32;
+    faceMask[i] = m;
+
+    let k = 0;
+    if (x>0)   nbr[i*6 + k++] = idxOf(x-1,y,z);
+    if (x<L-1) nbr[i*6 + k++] = idxOf(x+1,y,z);
+    if (y>0)   nbr[i*6 + k++] = idxOf(x,y-1,z);
+    if (y<L-1) nbr[i*6 + k++] = idxOf(x,y+1,z);
+    if (z>0)   nbr[i*6 + k++] = idxOf(x,y,z-1);
+    if (z<L-1) nbr[i*6 + k++] = idxOf(x,y,z+1);
+  }
+}
+
+/* ======================= 随机阈值 ======================= */
+const t = new Float32Array(N);
+for (let i=0;i<N;i++) t[i] = Math.random();
+
+/* ============ 用并查集标定「真实贯通阈值」 ============ */
+let pcAct = 0.34;
+(function calibrate(){
+  const par = new Int32Array(N);
+  const mk  = new Uint8Array(N);
+  for (let i=0;i<N;i++){ par[i]=i; mk[i]=faceMask[i]; }
+
+  function find(a){
+    let r=a;
+    while (par[r]!==r) r = par[r];
+    while (par[a]!==r){ const nx = par[a]; par[a]=r; a=nx; }
+    return r;
+  }
+
+  const edges = [];
+  for (let i=0;i<N;i++){
+    for (let k=0;k<6;k++){
+      const j = nbr[i*6+k];
+      if (j>i) edges.push([ t[i]>t[j] ? t[i] : t[j], i, j ]);
+    }
+  }
+  edges.sort((a,b)=>a[0]-b[0]);
+
+  let found = false;
+  for (let e=0;e<edges.length;e++){
+    const w = edges[e][0], i = edges[e][1], j = edges[e][2];
+    const a = find(i), b = find(j);
+    if (a===b) continue;
+    par[a] = b;
+    mk[b] |= mk[a];
+    if ((mk[b]&3)===3 || (mk[b]&12)===12 || (mk[b]&48)===48){
+      pcAct = w; found = true; break;
+    }
+  }
+  if (!found) pcAct = 0.34;
+  // 安全区间
+  if (pcAct < 0.20) pcAct = 0.20;
+  if (pcAct > 0.52) pcAct = 0.52;
+})();
+
+/* ======================= 每帧计算缓冲 ======================= */
+const occupied = new Uint8Array(N);
+const cid      = new Int32Array(N);
+const csize    = new Int32Array(N);
+const cperc    = new Uint8Array(N);
+const stack    = new Int32Array(N);
+
+const projX = new Float32Array(N);
+const projY = new Float32Array(N);
+const projF = new Float32Array(N);
+
+/* ======================= 发光贴图 ======================= */
+function makeGlow(r,g,b){
+  const s = 64;
+  const c = document.createElement('canvas');
+  c.width = c.height = s;
+  const x = c.getContext('2d');
+  const grd = x.createRadialGradient(s/2,s/2,0, s/2,s/2,s/2);
+  grd.addColorStop(0.00, `rgba(${r},${g},${b},1)`);
+  grd.addColorStop(0.18, `rgba(${r},${g},${b},0.82)`);
+  grd.addColorStop(0.45, `rgba(${r},${g},${b},0.22)`);
+  grd.addColorStop(0.75, `rgba(${r},${g},${b},0.05)`);
+  grd.addColorStop(1.00, `rgba(${r},${g},${b},0)`);
+  x.fillStyle = grd;
+  x.fillRect(0,0,s,s);
+  return c;
+}
+const glowCyan = makeGlow(160,245,255);
+const glowMag  = makeGlow(255, 80,225);
+const glowBlue = makeGlow( 70,110,255);
+
+/* ======================= 相机 / 交互 ======================= */
+let rotY = 0.62, rotX = -0.42, zoom = 1.0;
+let dragging = false, lastX = 0, lastY = 0, downX = 0, downY = 0, moved = 0;
+let curPa = 0;
+
+canvas.addEventListener('pointerdown', e=>{
+  dragging = true; moved = 0;
+  lastX = downX = e.clientX; lastY = downY = e.clientY;
+  try{ canvas.setPointerCapture(e.pointerId); }catch(_){}
+});
+canvas.addEventListener('pointermove', e=>{
+  if (!dragging) return;
+  const dx = e.clientX - lastX, dy = e.clientY - lastY;
+  moved += Math.abs(dx) + Math.abs(dy);
+  rotY += dx * 0.0065;
+  rotX += dy * 0.0065;
+  rotX = Math.max(-1.42, Math.min(1.42, rotX));
+  lastX = e.clientX; lastY = e.clientY;
+});
+canvas.addEventListener('pointerup', e=>{
+  if (dragging && moved < 6){
+    pickAndFlip(e.clientX, e.clientY);
+  }
+  dragging = false;
+});
+canvas.addEventListener('pointercancel', ()=>{ dragging = false; });
+canvas.addEventListener('wheel', e=>{
+  e.preventDefault();
+  zoom *= Math.exp(-e.deltaY * 0.0011);
+  zoom = Math.max(0.35, Math.min(3.0, zoom));
+}, { passive:false });
+
+function pickAndFlip(mx,my){
+  let best = -1, bestD = 22*22;
+  for (let i=0;i<N;i++){
+    const dx = projX[i]-mx, dy = projY[i]-my;
+    const d = dx*dx + dy*dy;
+    if (d < bestD){ bestD = d; best = i; }
+  }
+  if (best < 0) return;
+  // 翻转该格的占位状态：置为常亮 / 常灭
+  if (t[best] <= curPa) t[best] = 1.6;
+  else                  t[best] = -0.6;
+}
+
+/* ======================= 顶部字幕 ======================= */
+const capEls = Array.from(document.querySelectorAll('.cap'));
+const pvalEl = document.getElementById('pval');
+
+/* ======================= 主循环 ======================= */
+const startTime = performance.now();
+
+function loop(now){
+  requestAnimationFrame(loop);
+
+  const tSec = (now - startTime) / 1000;
+  const u = tSec % CYCLE;              // 0 ~ 30 秒循环
+
+  /* ---------- 时间轴 → 显示概率 pd ---------- */
+  let pd;
+  if (u < 2){
+    pd = 0;
+  } else if (u < 20){
+    const s = (u - 2) / 18;
+    pd = PC * Math.pow(s, 0.62);       // 越接近临界越慢
+  } else if (u < 26.5){
+    const s = (u - 20) / 6.5;
+    pd = PC + (1 - PC) * Math.pow(s, 0.85);
+  } else {
+    pd = 1;
+  }
+  if (pd > 1) pd = 1;
+
+  /* ---------- 全局淡入淡出 ---------- */
+  const fade = Math.max(0, Math.min(1, Math.min(u/1.2, (CYCLE-u)/1.2)));
+
+  /* ---------- 显示概率 → 真实阈值（标定映射） ---------- */
+  let pa;
+  if (pd <= PC) pa = (pd / PC) * pcAct;
+  else          pa = pcAct + ((pd - PC)/(1 - PC)) * (1 - pcAct);
+  curPa = pa;
+
+  /* ---------- 占位判定 ---------- */
+  for (let i=0;i<N;i++) occupied[i] = (t[i] <= pa) ? 1 : 0;
+
+  /* ---------- 连通簇分析（洪泛） ---------- */
+  cid.fill(-1);
+  let nc = 0;
+  for (let i=0;i<N;i++){
+    if (!occupied[i] || cid[i] !== -1) continue;
+    let sp = 0;
+    stack[sp++] = i;
+    cid[i] = nc;
+    let size = 0, m = 0;
+    while (sp > 0){
+      const v = stack[--sp];
+      size++;
+      m |= faceMask[v];
+      const base = v*6;
+      for (let k=0;k<6;k++){
+        const nb = nbr[base+k];
+        if (nb >= 0 && occupied[nb] && cid[nb] === -1){
+          cid[nb] = nc;
+          stack[sp++] = nb;
+        }
+      }
+    }
+    csize[nc] = size;
+    cperc[nc] = ((m&3)===3 || (m&12)===12 || (m&48)===48) ? 1 : 0;
+    nc++;
+  }
+
+  let maxC = -1, maxS = 0, percC = -1;
+  for (let c=0;c<nc;c++){
+    if (csize[c] > maxS){ maxS = csize[c]; maxC = c; }
+    if (cperc[c]) percC = c;
+  }
+
+  const percJust = (pd >= PC);
+  const flick  = Math.max(0, Math.exp(-Math.abs(u-20)*2.6));  // 临界闪烁
+
+  /* ======================= 渲染 ======================= */
+  // 背景
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = '#02030a';
+  ctx.fillRect(0,0,W,H);
+
+  const cx0 = W/2, cy0 = H/2 + H*0.03;
+  let bg = ctx.createRadialGradient(cx0, cy0, 0, cx0, cy0, Math.max(W,H)*0.72);
+  const warm = flick*0.55 + Math.max(0, (pd-PC))*0.15;
+  bg.addColorStop(0,   `rgba(${18+warm*90|0},${16+warm*60|0},${58+warm*70|0},1)`);
+  bg.addColorStop(0.45,'rgba(9,8,28,1)');
+  bg.addColorStop(1,   'rgba(1,1,4,1)');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0,0,W,H);
+
+  /* ---------- 投影 ---------- */
+  const cYv = Math.cos(rotY), sYv = Math.sin(rotY);
+  const cXv = Math.cos(rotX), sXv = Math.sin(rotX);
+  const D  = 3.6;
+  const sc = Math.min(W,H) * 0.325 * zoom;
+  const ox = cx0, oy = cy0;
+
+  for (let i=0;i<N;i++){
+    const x = px[i], y = py[i], z = pz[i];
+    const x1 =  x*cYv + z*sYv;
+    const z1 = -x*sYv + z*cYv;
+    const y1 =  y*cXv - z1*sXv;
+    const z2 =  y*sXv + z1*cXv;
+    const f  = D / (D - z2);
+    projX[i] = ox + x1 * f * sc;
+    projY[i] = oy + y1 * f * sc;
+    projF[i] = f;
+  }
+
+  /* ---------- 立方体边框 ---------- */
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.globalAlpha = 0.20 * fade;
+  ctx.strokeStyle = 'rgba(110,170,255,1)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  const cubeV = [];
+  for (let a=0;a<8;a++){
+    const X = (a&1)?1:-1, Y = (a&2)?1:-1, Z = (a&4)?1:-1;
+    const x1 =  X*cYv + Z*sYv;
+    const z1 = -X*sYv + Z*cYv;
+    const y1 =  Y*cXv - z1*sXv;
+    const z2 =  Y*sXv + z1*cXv;
+    const f  = D/(D-z2);
+    cubeV.push([ox + x1*f*sc, oy + y1*f*sc]);
+  }
+  const cubeE = [[0,1],[2,3],[4,5],[6,7],[0,2],[1,3],[4,6],[5,7],[0,4],[1,5],[2,6],[3,7]];
+  for (const [a,b] of cubeE){
+    ctx.moveTo(cubeV[a][0], cubeV[a][1]);
+    ctx.lineTo(cubeV[b][0], cubeV[b][1]);
+  }
+  ctx.stroke();
+
+  /* ---------- 未占位格：暗蓝点阵 ---------- */
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 0.85 * fade;
+  ctx.fillStyle = 'rgba(58,92,190,0.42)';
+  ctx.beginPath();
+  for (let i=0;i<N;i++){
+    if (occupied[i]) continue;
+    const r = 1.9 * (projF[i]/1.15);
+    ctx.rect(projX[i]-r, projY[i]-r, r*2, r*2);
+  }
+  ctx.fill();
+
+  /* ---------- 已占位格：霓虹发光 ---------- */
+  ctx.globalCompositeOperation = 'lighter';
+
+  const timeFlow = tSec * 4.2;
+
+  for (let i=0;i<N;i++){
+    if (!occupied[i]) continue;
+
+    const c = cid[i];
+    let sprite, alpha, radius;
+
+    if (c === percC){
+      /* 贯通路径 —— 电流般流动 */
+      sprite = glowCyan;
+      const w = Math.sin((px[i]+py[i]+pz[i]) * 3.0 - timeFlow);
+      alpha  = 0.62 + 0.38 * w;
+      radius = 15.5 * (projF[i]/1.15);
+      if (flick > 0.01){ alpha += flick*0.6; radius *= (1 + flick*0.35); }
+    } else if (c === maxC){
+      /* 最大连通簇 —— 品红 */
+      sprite = glowMag;
+      alpha  = 0.52 + 0.10*Math.sin(timeFlow*0.6 + i);
+      radius = 13.5 * (projF[i]/1.15);
+    } else {
+      /* 孤立小簇 —— 蓝紫 */
+      sprite = glowBlue;
+      alpha  = 0.38;
+      radius = 11.5 * (projF[i]/1.15);
+    }
+
+    alpha *= fade;
+    if (alpha <= 0.01) continue;
+
+    ctx.globalAlpha = Math.min(1, alpha);
+    const d = radius;
+    ctx.drawImage(sprite, projX[i]-d, projY[i]-d, d*2, d*2);
+  }
+
+  /* ---------- 临界分形雾团 ---------- */
+  const fogAmt = Math.max(0, Math.min(1, (pd - PC*0.72) / (PC*0.5)));
+  if (fogAmt > 0.01 && fade > 0.01){
+    ctx.globalAlpha = 0.10 * fogAmt * fade * (0.7 + 0.3*Math.sin(tSec*1.7));
+    const R = Math.min(W,H) * (0.28 + 0.16*Math.sin(tSec*0.5));
+    const fg = ctx.createRadialGradient(cx0, cy0, 0, cx0, cy0, R);
+    fg.addColorStop(0,   'rgba(190,235,255,0.85)');
+    fg.addColorStop(0.4, 'rgba(140,90,255,0.35)');
+    fg.addColorStop(1,   'rgba(0,0,0,0)');
+    ctx.fillStyle = fg;
+    ctx.fillRect(0,0,W,H);
+  }
+
+  /* ---------- 临界闪光 ---------- */
+  if (flick > 0.01){
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = flick * 0.30 * fade;
+    const fl = ctx.createRadialGradient(cx0,cy0,0, cx0,cy0, Math.max(W,H)*0.75);
+    fl.addColorStop(0, 'rgba(220,250,255,0.9)');
+    fl.addColorStop(0.5,'rgba(120,180,255,0.28)');
+    fl.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = fl;
+    ctx.fillRect(0,0,W,H);
+  }
+
+  /* ---------- 暗角 ---------- */
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  const vg = ctx.createRadialGradient(cx0, cy0, Math.min(W,H)*0.30, cx0, cy0, Math.max(W,H)*0.78);
+  vg.addColorStop(0, 'rgba(0,0,0,0)');
+  vg.addColorStop(1, 'rgba(0,0,0,0.72)');
+  ctx.fillStyle = vg;
+  ctx.fillRect(0,0,W,H);
+
+  /* ======================= HUD 更新 ======================= */
+  pvalEl.textContent = 'p = ' + pd.toFixed(4) + (pd >= PC ? '  ▸ 贯通' : '');
+  pvalEl.style.color = pd >= PC ? '#9ffff0' : '#c9a6ff';
+
+  for (let i=0;i<capEls.length;i++){
+    const t0 = 1.4 + i*6.4;
+    const a = Math.max(0, Math.min(1, (u - t0)/1.2)) * fade;
+    capEls[i].style.opacity = a.toFixed(3);
+  }
+}
+
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>
