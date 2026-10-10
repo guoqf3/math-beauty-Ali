@@ -1,0 +1,1949 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>无人机机架拓扑优化 · 冲击载荷 · 四工况</title>
+<style>
+  :root{
+    --bg-0:#04070c; --bg-1:#080e16;
+    --neon-cyan:#22e0ff; --neon-green:#3dffb0; --neon-amber:#ffb033; --neon-magenta:#ff3d8c;
+    --text:#cfe6f2; --text-dim:#6d8798; --panel-bd:rgba(34,224,255,.16);
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  html,body{height:100%; overflow:hidden; background:var(--bg-0);}
+  body{
+    font-family:"SF Mono",Menlo,Consolas,"Roboto Mono","PingFang SC","Microsoft YaHei",monospace;
+    color:var(--text); -webkit-font-smoothing:antialiased;
+    display:flex; align-items:center; justify-content:center; position:relative;
+  }
+  #stage{ width:1280px; height:720px; position:relative; transform-origin:center center; overflow:hidden; }
+  #view{ position:absolute; inset:0; width:1280px; height:720px; display:block; }
+  .hud{ position:absolute; pointer-events:none; user-select:none; z-index:5; }
+
+  #topbar{
+    top:0; left:0; right:0; height:54px; display:flex; align-items:center; justify-content:space-between;
+    padding:0 22px;
+    background:linear-gradient(180deg, rgba(6,12,20,.96) 0%, rgba(6,12,20,.55) 62%, rgba(6,12,20,0) 100%);
+    border-bottom:1px solid var(--panel-bd);
+  }
+  #title{ display:flex; align-items:baseline; gap:12px; }
+  #title h1{ font-size:15px; font-weight:600; letter-spacing:1.6px; color:#eaf6ff; text-shadow:0 0 10px rgba(34,224,255,.45); }
+  #title .sub{ font-size:10.5px; letter-spacing:1.3px; color:var(--text-dim); text-transform:uppercase; }
+  #statusWrap{ display:flex; align-items:center; gap:8px; }
+  #statusDot{ width:7px;height:7px;border-radius:50%; background:var(--neon-amber); box-shadow:0 0 10px currentColor; color:var(--neon-amber); }
+  #statusText{ font-size:11.5px; letter-spacing:1.1px; color:var(--neon-amber); }
+
+  #caseWrap{ top:68px; left:0; right:0; display:flex; justify-content:center; gap:9px; }
+  .case{
+    display:flex; flex-direction:column; gap:2px; min-width:134px; padding:7px 13px 8px;
+    border:1px solid rgba(120,160,185,.20); border-radius:6px;
+    background:linear-gradient(160deg, rgba(12,22,34,.82), rgba(6,12,20,.60));
+    transition:box-shadow .45s, border-color .45s, background .45s;
+  }
+  .case .cd{ font-size:9.5px; letter-spacing:1.4px; color:#5e788c; }
+  .case .cn{ font-size:12.5px; letter-spacing:1.1px; color:#8fa9bb; font-weight:600; }
+  .case .cl{ font-size:9.5px; letter-spacing:.7px; color:#4e6577; }
+  .case.on{
+    border-color:rgba(34,224,255,.78);
+    background:linear-gradient(160deg, rgba(20,52,72,.95), rgba(8,20,32,.80));
+    box-shadow:0 0 20px rgba(34,224,255,.34), inset 0 0 16px rgba(34,224,255,.13);
+  }
+  .case.on .cn{ color:#dff6ff; text-shadow:0 0 10px rgba(34,224,255,.6); }
+  .case.on .cd{ color:var(--neon-cyan); }
+  .case.on .cl{ color:#7fbed6; }
+
+  #panel{
+    top:148px; right:22px; width:214px; padding:13px 14px 14px;
+    border:1px solid var(--panel-bd); border-radius:7px;
+    background:linear-gradient(165deg, rgba(10,19,30,.90), rgba(5,10,17,.78));
+    box-shadow:0 0 26px rgba(0,0,0,.55), inset 0 0 22px rgba(34,224,255,.045);
+  }
+  .pTitle{ font-size:9.5px; letter-spacing:1.7px; color:var(--neon-cyan); opacity:.85; margin-bottom:9px; }
+  .row{ display:flex; align-items:baseline; justify-content:space-between; margin-bottom:7px; }
+  .row .k{ font-size:10px; letter-spacing:.9px; color:var(--text-dim); }
+  .row .v{ font-size:15px; letter-spacing:.6px; color:#eaf6ff; font-variant-numeric:tabular-nums; font-weight:600; }
+  .row .v small{ font-size:9.5px; color:#7f97a8; font-weight:400; margin-left:2px; }
+  .divider{ height:1px; background:linear-gradient(90deg, rgba(34,224,255,.30), rgba(34,224,255,0)); margin:10px 0 9px; }
+
+  #weightBig{ margin:2px 0 8px; }
+  #weightBig .num{ font-size:38px; font-weight:700; letter-spacing:-1px; color:var(--neon-green);
+    text-shadow:0 0 20px rgba(61,255,176,.5); font-variant-numeric:tabular-nums; line-height:1; }
+  #weightBig .num i{ font-size:17px; font-style:normal; opacity:.85; margin-left:1px; }
+  #weightBig .lab{ font-size:9.5px; letter-spacing:1.6px; color:var(--text-dim); margin-top:4px; }
+
+  .bar{ height:5px; border-radius:3px; background:rgba(120,160,185,.14); overflow:hidden; margin:5px 0 10px; }
+  .bar i{ display:block; height:100%; width:0%; border-radius:3px;
+    background:linear-gradient(90deg, var(--neon-cyan), var(--neon-green));
+    box-shadow:0 0 11px rgba(61,255,176,.55); transition:width .35s cubic-bezier(.3,.9,.3,1); }
+
+  #legend .lb{ display:flex; justify-content:space-between; font-size:8.5px; letter-spacing:1px; color:var(--text-dim); margin-bottom:4px; }
+  #legend .grad{ height:9px; border-radius:3px; border:1px solid rgba(255,255,255,.10); background-size:100% 100%; }
+
+  #timeline{
+    bottom:22px; left:22px; width:400px; padding:11px 14px 12px;
+    border:1px solid var(--panel-bd); border-radius:7px;
+    background:linear-gradient(165deg, rgba(10,19,30,.88), rgba(5,10,17,.74));
+  }
+  #phaseName{ font-size:12.5px; letter-spacing:1.3px; color:#dff6ff; margin-bottom:3px; }
+  #phaseDesc{ font-size:10px; letter-spacing:.5px; color:var(--text-dim); min-height:14px; }
+  #track{ position:relative; height:28px; margin-top:9px; }
+  #trackLine{ position:absolute; top:9px; left:0; right:0; height:2px; background:rgba(120,160,185,.18); border-radius:2px; }
+  #trackFill{ position:absolute; top:9px; left:0; height:2px; width:0%; border-radius:2px;
+    background:linear-gradient(90deg, rgba(34,224,255,.85), rgba(61,255,176,.95)); box-shadow:0 0 10px rgba(34,224,255,.5); }
+  .seg{ position:absolute; top:4px; width:2px; height:12px; background:rgba(120,160,185,.42); border-radius:1px; transform:translateX(-1px); }
+  .seglab{ position:absolute; top:19px; font-size:8px; letter-spacing:.9px; color:#4e6577; transform:translateX(-50%); white-space:nowrap; }
+  .seg.on{ background:var(--neon-cyan); box-shadow:0 0 9px rgba(34,224,255,.7); }
+
+  #toolbar{ bottom:22px; right:22px; display:flex; gap:8px; align-items:flex-start; }
+  .btn{
+    pointer-events:auto; cursor:pointer; display:flex; align-items:center; gap:6px;
+    padding:8px 13px; font-size:11px; letter-spacing:1.1px; color:#a9c4d4; font-family:inherit;
+    border:1px solid rgba(120,160,185,.28); border-radius:6px;
+    background:linear-gradient(160deg, rgba(14,24,36,.9), rgba(7,13,21,.82)); transition:all .22s;
+  }
+  .btn:hover{ color:#eaf6ff; border-color:rgba(34,224,255,.62); box-shadow:0 0 15px rgba(34,224,255,.25); }
+  .btn.accent{ color:var(--neon-cyan); border-color:rgba(34,224,255,.45); }
+  .btn .ico{ font-size:12px; }
+  .btn .caret{ font-size:8px; opacity:.7; margin-left:-1px; }
+
+  /* 下载菜单 */
+  .dlWrap{ position:relative; }
+  .btn.dl{ color:var(--neon-green); border-color:rgba(61,255,176,.42); }
+  .btn.dl:hover{ border-color:rgba(61,255,176,.85); box-shadow:0 0 18px rgba(61,255,176,.30); }
+  .dlMenu{
+    position:absolute; bottom:calc(100% + 9px); right:0; width:288px;
+    padding:8px; border-radius:8px;
+    border:1px solid rgba(34,224,255,.28);
+    background:linear-gradient(165deg, rgba(11,21,33,.97), rgba(5,10,17,.96));
+    box-shadow:0 10px 34px rgba(0,0,0,.68), inset 0 0 22px rgba(34,224,255,.05);
+    opacity:0; transform:translateY(8px) scale(.97); pointer-events:none;
+    transition:opacity .2s, transform .2s; transform-origin:bottom right;
+  }
+  .dlMenu.open{ opacity:1; transform:translateY(0) scale(1); pointer-events:auto; }
+  .dlHead{ font-size:8.5px; letter-spacing:1.9px; color:var(--neon-cyan); opacity:.8; padding:4px 6px 7px; }
+  .dlItem{
+    width:100%; text-align:left; cursor:pointer; font-family:inherit;
+    display:flex; flex-direction:column; gap:1px;
+    padding:7px 9px; border-radius:5px; border:1px solid transparent;
+    background:transparent; transition:all .16s;
+  }
+  .dlItem:hover{ background:rgba(34,224,255,.10); border-color:rgba(34,224,255,.30); }
+  .dlItem .ti{ font-size:11.5px; font-weight:700; letter-spacing:1.1px; color:#cfe9f6; }
+  .dlItem .td{ font-size:9px; letter-spacing:.4px; color:#61798b; }
+  .dlItem:hover .ti{ color:#eaf9ff; text-shadow:0 0 9px rgba(34,224,255,.5); }
+  .dlSep{ height:1px; background:linear-gradient(90deg, rgba(34,224,255,.28), rgba(34,224,255,0)); margin:6px 4px; }
+
+  /* 提示条 */
+  .toast{
+    position:absolute; bottom:78px; left:50%; transform:translate(-50%, 14px);
+    padding:9px 20px; border-radius:24px; z-index:30;
+    font-size:11.5px; letter-spacing:1.1px; color:#dff8ff;
+    border:1px solid rgba(34,224,255,.48);
+    background:linear-gradient(160deg, rgba(12,34,48,.96), rgba(6,14,22,.94));
+    box-shadow:0 0 24px rgba(34,224,255,.30);
+    opacity:0; pointer-events:none; transition:opacity .3s, transform .3s;
+  }
+  .toast.show{ opacity:1; transform:translate(-50%, 0); }
+  .toast.ok{ border-color:rgba(61,255,176,.55); box-shadow:0 0 24px rgba(61,255,176,.30); color:#e2fff2; }
+
+  #boot{
+    position:absolute; inset:0; z-index:20; cursor:pointer;
+    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px;
+    background:radial-gradient(ellipse at 50% 48%, rgba(12,26,40,.86) 0%, rgba(4,7,12,.98) 68%);
+    transition:opacity .7s ease;
+  }
+  #boot h2{ font-size:22px; letter-spacing:4px; color:#eaf6ff; font-weight:600; text-shadow:0 0 24px rgba(34,224,255,.5); }
+  #boot .d{ font-size:11px; letter-spacing:2px; color:var(--text-dim); }
+  #boot .cta{
+    margin-top:6px; padding:12px 34px; font-size:13px; letter-spacing:3px;
+    color:#04121a; font-weight:700; border-radius:30px;
+    background:linear-gradient(90deg, var(--neon-cyan), var(--neon-green));
+    box-shadow:0 0 30px rgba(34,224,255,.55); animation:pulse 2.1s ease-in-out infinite;
+  }
+  @keyframes pulse{ 0%,100%{transform:scale(1); box-shadow:0 0 26px rgba(34,224,255,.5);} 50%{transform:scale(1.035); box-shadow:0 0 40px rgba(61,255,176,.72);} }
+  #boot .hint{ font-size:10px; letter-spacing:1.2px; color:#4e6577; }
+  #boot.gone{ opacity:0; pointer-events:none; }
+  #vignette{ position:absolute; inset:0; z-index:4; pointer-events:none;
+    background:radial-gradient(ellipse at 50% 50%, rgba(0,0,0,0) 46%, rgba(0,0,0,.55) 100%); }
+</style>
+</head>
+<body>
+<div id="stage" style="transform: scale(0.5875);">
+  <canvas id="view" width="1280" height="720"></canvas>
+  <div id="vignette"></div>
+
+  <div class="hud" id="topbar">
+    <div id="title">
+      <h1>无人机机架拓扑优化</h1>
+      <span class="sub">SIMP / Impact Load / Composite Frame</span>
+    </div>
+    <div id="statusWrap"><span id="statusDot" style="background: rgb(255, 176, 51); color: rgb(255, 176, 51);"></span><span id="statusText" style="color: rgb(255, 176, 51);">系统建模中</span></div>
+  </div>
+
+  <div class="hud" id="caseWrap">
+    <div class="case" data-i="0"><span class="cd">CASE 01</span><span class="cn">悬停</span><span class="cl">HOVER · 4×静载</span></div>
+    <div class="case" data-i="1"><span class="cd">CASE 02</span><span class="cn">前飞</span><span class="cl">CRUISE · 前倾阻力</span></div>
+    <div class="case" data-i="2"><span class="cd">CASE 03</span><span class="cn">急转</span><span class="cl">YAW · 扭矩剪切</span></div>
+    <div class="case" data-i="3"><span class="cd">CASE 04</span><span class="cn">硬着陆</span><span class="cl">IMPACT · 冲击载荷</span></div>
+  </div>
+
+  <div class="hud" id="panel">
+    <div class="pTitle">OPTIMIZATION DATA</div>
+    <div id="weightBig">
+      <div class="num" id="wLoss">0.0<i>%</i></div>
+      <div class="lab">重量减轻 / MASS REDUCTION</div>
+    </div>
+    <div class="bar"><i id="wBar" style="width: 0%;"></i></div>
+    <div class="divider"></div>
+    <div class="row"><span class="k">原始质量</span><span class="v" id="m0">1.842<small>kg</small></span></div>
+    <div class="row"><span class="k">当前质量</span><span class="v" id="m1">1.842<small>kg</small></span></div>
+    <div class="row"><span class="k">迭代步</span><span class="v" id="itv">000<small>/100</small></span></div>
+    <div class="row"><span class="k">柔度 C</span><span class="v" id="cmp">1.000</span></div>
+    <div class="row"><span class="k">峰值应力</span><span class="v" id="sms">0<small>MPa</small></span></div>
+    <div class="divider"></div>
+    <div id="legend">
+      <div class="lb"><span>STRESS σ</span><span>von Mises</span></div>
+      <div class="grad" id="legendGrad" style=""></div>
+      <div class="lb" style="margin-top:3px"><span>低 · LOW</span><span>HIGH · 高</span></div>
+    </div>
+  </div>
+
+  <div class="hud" id="timeline">
+    <div id="phaseName">PHASE 01 · 实心铝合金框架建模</div>
+    <div id="phaseDesc">初始设计域：立体实心结构 · 6061-T6 铝合金 · 无减重</div>
+    <div id="track"><div id="trackLine"></div><div id="trackFill" style="width: 8.41683%;"></div></div>
+  </div>
+
+  <div class="hud" id="toolbar">
+    <button class="btn" id="btnSound"><span class="ico">🔊</span><span id="soundLab">音效 开</span></button>
+    <button class="btn accent" id="btnReplay"><span class="ico">↻</span><span>重播</span></button>
+    <button class="btn" id="btnShot"><span class="ico">▣</span><span>截图</span></button>
+    <div class="dlWrap">
+      <button class="btn dl" id="btnDownload"><span class="ico">⬇</span><span>下载</span><span class="caret">▾</span></button>
+      <div class="dlMenu" id="dlMenu">
+        <div class="dlHead">DOWNLOAD</div>
+        <button class="dlItem" data-type="html"><span class="ti">HTML</span><span class="td">完整动画单文件 · 双击即可播放</span></button>
+        <button class="dlItem" data-type="txt"><span class="ti">TXT</span><span class="td">源码纯文本 · 便于复制/存档</span></button>
+        <button class="dlItem" data-type="png"><span class="ti">PNG</span><span class="td">当前画面静帧 · 原始分辨率</span></button>
+        <button class="dlItem" data-type="json"><span class="ti">JSON</span><span class="td">设计域 + 优化结果矢量数据</span></button>
+        <div class="dlSep"></div>
+        <button class="dlItem" data-type="all"><span class="ti">全部</span><span class="td">HTML + TXT + PNG + JSON</span></button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <div id="boot" class="">
+    <h2>无人机机架拓扑优化</h2>
+    <div class="d">TOPOLOGY OPTIMIZATION · IMPACT LOAD · LIGHTWEIGHT FRAME</div>
+    <div class="cta">▶ 启动演示</div>
+    <div class="hint">建议开启音量 · 总时长约 66 秒 · 空格暂停 · R 重播 · M 静音 · 点击画面跳过当前阶段</div>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* ============================================================================
+   无人机机架拓扑优化动画（HTML5 Canvas 单文件）
+   ----------------------------------------------------------------------------
+   PHASE 01 建模     8.0s   实心铝合金框架逐层成形（银灰渐变金属质感）
+   PHASE 02 悬停     6.5s   4×静升力 · 应力场波前求解（热力图叠加 88%）
+   PHASE 03 前飞     6.5s   前倾气动阻力 · 载荷沿 +X 重分布
+   PHASE 04 急转     6.5s   偏航扭矩 · 对角反向载荷 · 中央剪切带
+   PHASE 05 硬着陆   7.5s   3.2g 垂向冲击脉冲 · 过载峰值 · 低频轰鸣
+   PHASE 06 优化    20.0s   100 次迭代 × 0.2s · 5 个内部种子并行侵蚀
+                            材料 中心→边缘 重分布 · 1px 粒子剥离流(~300ms 淡出)
+                            碳纤维编织声
+   PHASE 07 成型     5.0s   去应力色阶与载荷线 · 镜面高光扫过 · 高应力骨架
+                            青绿/青蓝脉冲光晕
+   合计 66.0s
+   ========================================================================== */
+
+/* ---------------------------- 基本常量 ---------------------------- */
+const W = 1280, H = 720;
+const CX = 640, CY = 392;
+const ARM_SPAN = 258;            // 机臂外端距中心距离(px，水平方向)
+const ASPECT   = 0.74;           // 竖直方向透视压缩
+
+const GC = 300;                  // 网格单元数（300×300）
+const CELL_PX = (2*ARM_SPAN)/GC; // ≈1.72 px/单元
+
+const ITER_TOTAL = 100;
+const ITER_DT    = 0.20;         // 秒/迭代 → 20s
+const KEEP_RATIO = 0.52;         // 优化后保留质量比（减轻 48%）
+const Q_SMOOTH_R = 4;            // 优先度场盒式模糊半径（使构件饱满圆润）
+
+const SEED = 20250416;
+
+/* ---------------------------- 工具函数 ---------------------------- */
+function mulberry32(a){
+  return function(){
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+const rnd = mulberry32(SEED);
+function clamp(v,a,b){ return v<a?a:(v>b?b:v); }
+function smoothstep(e0,e1,x){ const t=clamp((x-e0)/(e1-e0),0,1); return t*t*(3-2*t); }
+function lerp(a,b,t){ return a+(b-a)*t; }
+function easeInOutCubic(t){ return t<.5 ? 4*t*t*t : 1-Math.pow(-2*t+2,3)/2; }
+function hex2rgb(h){ return [parseInt(h.slice(1,3),16), parseInt(h.slice(3,5),16), parseInt(h.slice(5,7),16)]; }
+
+/* 网格中心 对准 (CX,CY) */
+function meshToWorld(mx,my){
+  return [ CX + ((mx/GC) - 0.5)*2*ARM_SPAN,
+           CY + ((my/GC) - 0.5)*2*ARM_SPAN*ASPECT ];
+}
+
+/* ==========================================================================
+   1. 几何：四轴 X 形无人机机架（俯视，带透视压缩）
+      - 中央枢纽  hub : r < HUB_R
+      - 四条机臂  arm : ARM_A0 < along < ARM_A1, |perp| < ARM_HW
+      - 外圈护环  rim : r > RIM_R0
+   ========================================================================== */
+const HUB_R   = 0.34;
+const ARM_A0  = 0.30;
+const ARM_A1  = 0.94;
+const ARM_HW  = 0.13;
+const RIM_R0  = 0.94;
+
+const ARM_DIR = [
+  [ Math.cos(-Math.PI*0.25), Math.sin(-Math.PI*0.25) ],
+  [ Math.cos( Math.PI*0.25), Math.sin( Math.PI*0.25) ],
+  [ Math.cos( Math.PI*0.75), Math.sin( Math.PI*0.75) ],
+  [ Math.cos( Math.PI*1.25), Math.sin( Math.PI*1.25) ]
+];
+const ROTOR = ARM_DIR.map(d=>[ CX + d[0]*ARM_SPAN, CY + d[1]*ARM_SPAN*ASPECT ]);
+
+/* 归一化“面外厚度场”，用于金属立体明暗 */
+function thicknessOf(nx,ny){
+  const r = Math.hypot(nx,ny);
+  const hub = Math.exp(-Math.pow(r/HUB_R, 2.6));
+  const rim = Math.exp(-Math.pow((r-0.97)/0.10, 2.0));
+  let arm = 0;
+  for(let a=0;a<4;a++){
+    const d = ARM_DIR[a];
+    const along =  nx*d[0] + ny*d[1];
+    const perp  = -nx*d[1] + ny*d[0];
+    const A = smoothstep(0.24,0.34,along) * (1 - smoothstep(0.90,1.02,along));
+    const P = Math.exp(-Math.pow(Math.abs(perp)/(ARM_HW*1.05), 2.2));
+    arm = Math.max(arm, A*P);
+  }
+  return clamp(hub + rim*0.72 + arm*0.62, 0, 1);
+}
+
+/* 设计域掩膜 */
+function insideOf(nx,ny){
+  const r = Math.hypot(nx,ny);
+  if(r > 1) return false;
+  if(r > RIM_R0) return true;
+  if(r < HUB_R)  return true;
+  for(let a=0;a<4;a++){
+    const d = ARM_DIR[a];
+    const along =  nx*d[0] + ny*d[1];
+    const perp  = -nx*d[1] + ny*d[0];
+    if(along > ARM_A0 && along < ARM_A1 && Math.abs(perp) < ARM_HW) return true;
+  }
+  return false;
+}
+
+/* 工况定义 */
+const CASES = [
+  { id:0, name:'悬停',   code:'HOVER',  spread:0.55, tip:0.95,
+    desc:'四旋翼对称静升力加载 · 机臂根部弯矩主导' },
+  { id:1, name:'前飞',   code:'CRUISE', spread:0.72, tip:0.42,
+    desc:'前倾姿态 · 气动阻力沿 +X 叠加 · 前后臂应力失衡' },
+  { id:2, name:'急转',   code:'YAW',    spread:0.85, tip:0.00,
+    desc:'偏航扭矩 · 对角机臂反向载荷 · 中央剪切带' },
+  { id:3, name:'硬着陆', code:'IMPACT', spread:1.00, tip:0.55,
+    desc:'3.2g 垂向冲击 · 中央与臂根应力峰值急剧上升' }
+];
+
+/* ==========================================================================
+   2. 应力场（解析式，四工况）
+   ========================================================================== */
+function beamStress(nx,ny,tipBoost){
+  const r = Math.hypot(nx,ny);
+  let v = 0;
+  for(let a=0;a<4;a++){
+    const d = ARM_DIR[a];
+    const along =  nx*d[0] + ny*d[1];
+    const perp  = -nx*d[1] + ny*d[0];
+    if(along < ARM_A0 - 0.02 || along > ARM_A1 + 0.06) continue;
+    const aa   = clamp((along - ARM_A0)/(ARM_A1 - ARM_A0), 0, 1);
+    const bend = Math.pow(1-aa, 1.5);                       // 根部弯矩最大
+    const cross= Math.exp(-Math.pow(perp/0.115, 2.0));
+    const seg  = smoothstep(ARM_A0-0.06, ARM_A0+0.10, along)
+               * (1 - smoothstep(ARM_A1-0.02, ARM_A1+0.06, along));
+    v = Math.max(v, seg*(0.34+0.66*bend)*cross*(1+tipBoost*0.50));
+  }
+  v = Math.max(v, Math.exp(-Math.pow(r/0.30, 2.2)) * 0.50);            // 枢纽
+  v = Math.max(v, Math.exp(-Math.pow((r-0.97)/0.05, 2.0)) * 0.46);     // 护环
+  return clamp(v, 0, 1.25);
+}
+
+function stressField(nx,ny,ci){
+  const C = CASES[ci];
+  const r = Math.hypot(nx,ny);
+  let s = beamStress(nx,ny,C.tip) * (0.62 + 0.42*C.spread);
+
+  if(C.id === 1){                                   // 前飞：+X 阻力 · 后臂超载
+    const drag = Math.exp(-Math.pow((nx-0.30)/0.55,2)) * Math.exp(-Math.pow(ny/0.70,2));
+    s = Math.max(s, drag*0.68);
+    const rear = Math.exp(-Math.pow((nx+0.55)/0.30,2)) * Math.exp(-Math.pow(ny/0.50,2));
+    s += rear*0.50;
+  }
+  if(C.id === 2){                                   // 急转：扭矩 + 双斜剪切带
+    const torque = 0.62 * Math.exp(-Math.pow(r/0.92, 2.4));
+    s = Math.max(s, torque);
+    const b1 = Math.exp(-Math.pow((nx*0.72 - ny*0.69)/0.115, 2.0)) * Math.exp(-Math.pow(r/0.86, 2.2));
+    const b2 = Math.exp(-Math.pow((nx*0.72 + ny*0.69)/0.115, 2.0)) * Math.exp(-Math.pow(r/0.86, 2.2));
+    s = Math.max(s, b1*0.78, b2*0.74);
+    for(let a=0;a<4;a++){                           // 对角臂反向增载
+      const d = ARM_DIR[a];
+      const along =  nx*d[0] + ny*d[1];
+      const perp  = -nx*d[1] + ny*d[0];
+      if(along > ARM_A0 && along < ARM_A1){
+        const sign = (a===0 || a===3) ? 1 : -1;
+        const t = clamp((along-ARM_A0)/(ARM_A1-ARM_A0), 0, 1);
+        const g = Math.exp(-Math.pow(perp/0.12,2.0)) * Math.pow(t,0.8) * sign;
+        if(g > 0) s = Math.max(s, s*0.55 + g*0.60);
+      }
+    }
+  }
+  if(C.id === 3){                                   // 硬着陆：枢纽 + 臂根 + 冲击波
+    s += Math.exp(-Math.pow(r/0.26, 2.1)) * 0.55;
+    for(let a=0;a<4;a++){
+      const d = ARM_DIR[a];
+      const along =  nx*d[0] + ny*d[1];
+      const perp  = -nx*d[1] + ny*d[0];
+      const rootHit = Math.exp(-Math.pow((along-0.40)/0.15,2.0)) * Math.exp(-Math.pow(perp/0.14,2.0));
+      s = Math.max(s, rootHit*0.95);
+    }
+    s = Math.max(s, Math.exp(-Math.pow((r-0.97)/0.05,2.0)) * 0.62);
+    s = Math.max(s, Math.exp(-Math.pow((r-0.55)/0.08,2.0)) * 0.58);
+  }
+  s *= (1 - 0.10*smoothstep(0.94, 1.0, r));
+  return clamp(s, 0, 1.25);
+}
+
+/* ==========================================================================
+   3. 密度场 / 侵蚀优先度 / 侵蚀序列
+   ========================================================================== */
+let RHO = new Float32Array(GC*GC);      // 原始密度
+let Q   = new Float32Array(GC*GC);      // 侵蚀优先度（越小越先剥离）
+let cellCount = 0;
+const SEEDS = [];
+let sortedCells = new Int32Array(0);    // 按 Q 升序的域内单元索引
+
+function buildDensityField(){
+  RHO = new Float32Array(GC*GC);
+  Q   = new Float32Array(GC*GC);
+  cellCount = 0;
+  for(let my=0; my<GC; my++){
+    for(let mx=0; mx<GC; mx++){
+      const k = my*GC + mx;
+      const nx = (mx+0.5)/(GC/2) - 1;
+      const ny = (my+0.5)/(GC/2) - 1;
+      if(!insideOf(nx,ny)){ RHO[k] = 0; Q[k] = 1e6; continue; }
+      const r = Math.hypot(nx,ny);
+      const base = 0.975 + 0.024*(1 - clamp(r,0,1));
+      const fib  = 0.006*(rnd()-0.5);
+      const jit  = 0.011*(Math.sin(nx*31.7+ny*27.3) + Math.sin(nx*17.9-ny*41.1))*0.5;
+      RHO[k] = clamp(base + fib + jit, 0.92, 1.0);
+      cellCount++;
+    }
+  }
+}
+
+function meanStress(nx,ny){
+  let s = 0;
+  for(let c=0;c<4;c++) s += stressField(nx,ny,c);
+  return s/4;
+}
+
+/* 5 个彼此分开的低应力内部种子（1 枢纽 + 4 臂中段） */
+function buildPriority(){
+  SEEDS.length = 0;
+  const cand = [
+    [ 0.06,  0.06, 0.15],          // 枢纽内部
+    [ 0.44, -0.44, 0.16],          // 臂0 中段
+    [ 0.44,  0.44, 0.16],          // 臂1 中段
+    [-0.44,  0.44, 0.16],          // 臂2 中段
+    [-0.44, -0.44, 0.16]           // 臂3 中段
+  ];
+  for(const c of cand) SEEDS.push({ x:c[0], y:c[1], rad:c[2] });
+
+  for(let my=0; my<GC; my++){
+    for(let mx=0; mx<GC; mx++){
+      const k = my*GC + mx;
+      if(RHO[k] <= 0.001){ Q[k] = 1e6; continue; }
+      const nx = (mx+0.5)/(GC/2) - 1;
+      const ny = (my+0.5)/(GC/2) - 1;
+      const r  = Math.hypot(nx,ny);
+      const sig = meanStress(nx,ny);
+      let dmin = 9;
+      for(let i=0;i<SEEDS.length;i++){
+        const s = SEEDS[i];
+        const d = Math.max(0, Math.hypot(nx-s.x, ny-s.y) - s.rad);
+        if(d < dmin) dmin = d;
+      }
+      const dm = Math.max(0, r - 0.12);        // 中心→边缘方向偏好
+      Q[k] = sig*1.00 + dmin*1.25 + dm*0.28;
+    }
+  }
+  /* 盒式模糊（可分离）：侵蚀前沿更圆润、构件更饱满 */
+  const R = Q_SMOOTH_R, tmp = new Float32Array(GC*GC);
+  const win = 2*R+1;
+  for(let my=0; my<GC; my++){
+    for(let mx=0; mx<GC; mx++){
+      let acc = 0, cnt = 0;
+      for(let dx=-R; dx<=R; dx++){
+        const x = mx+dx;
+        if(x<0 || x>=GC) continue;
+        acc += Q[my*GC+x]; cnt++;
+      }
+      tmp[my*GC+mx] = acc/cnt;
+    }
+  }
+  for(let my=0; my<GC; my++){
+    for(let mx=0; mx<GC; mx++){
+      let acc = 0, cnt = 0;
+      for(let dy=-R; dy<=R; dy++){
+        const y = my+dy;
+        if(y<0 || y>=GC) continue;
+        acc += tmp[y*GC+mx]; cnt++;
+      }
+      Q[my*GC+mx] = acc/cnt;
+    }
+  }
+  /* 域外恢复为大值（模糊会稀释边界） */
+  for(let my=0; my<GC; my++){
+    for(let mx=0; mx<GC; mx++){
+      const k = my*GC+mx;
+      if(RHO[k] <= 0.001) Q[k] = 1e6;
+    }
+  }
+  void win;
+  /* 预排序（Q 静态，只需排一次） */
+  const idx = new Int32Array(cellCount);
+  let n = 0;
+  for(let i=0;i<GC*GC;i++) if(RHO[i] > 0.001) idx[n++] = i;
+  const arr = Array.from(idx);
+  arr.sort((a,b)=> Q[a]-Q[b]);
+  sortedCells = Int32Array.from(arr);
+}
+
+/* 最终成型集合：保留 Q 最高的 KEEP_RATIO 部分 + 一次膨胀平滑边缘 */
+let FINAL_SET = null;
+function buildFinalSet(){
+  const keep = Math.floor(cellCount*KEEP_RATIO);
+  FINAL_SET = new Uint8Array(GC*GC);
+  const L = sortedCells.length;
+  for(let i=L-keep; i<L; i++) FINAL_SET[sortedCells[i]] = 1;
+  const cp = Uint8Array.from(FINAL_SET);
+  for(let my=1;my<GC-1;my++){
+    for(let mx=1;mx<GC-1;mx++){
+      const k = my*GC+mx;
+      if(cp[k]) continue;
+      let c = 0;
+      if(cp[k-1]) c++; if(cp[k+1]) c++;
+      if(cp[k-GC]) c++; if(cp[k+GC]) c++;
+      if(c === 3) FINAL_SET[k] = 1;
+    }
+  }
+}
+
+/* ==========================================================================
+   4. 优化状态机（游标式匀速侵蚀）
+   ========================================================================== */
+const opt = {
+  iter: 0,
+  rho: new Float32Array(GC*GC),
+  mass0: 1, mass: 1,
+  cursor: 0,                 // sortedCells 游标（只前进）
+  budgetPerIter: 1,
+  ripples: [],
+  lastRippleIter: -1
+};
+function initOptimization(){
+  buildDensityField();
+  buildPriority();
+  opt.rho = Float32Array.from(RHO);
+  opt.iter = 0;
+  opt.mass0 = cellCount;
+  opt.mass = cellCount;
+  opt.cursor = 0;
+  opt.budgetPerIter = Math.max(1, Math.ceil(cellCount*(1-KEEP_RATIO)/ITER_TOTAL));
+  opt.ripples.length = 0;
+  opt.lastRippleIter = -1;
+  FINAL_SET = null;
+}
+/* 推进一次迭代：沿预排序序列剥除 budget 个单元 */
+function stepIteration(){
+  if(opt.iter >= ITER_TOTAL) return 0;
+  let removed = 0;
+  const L = sortedCells.length;
+  while(removed < opt.budgetPerIter && opt.cursor < L){
+    const k = sortedCells[opt.cursor++];
+    if(opt.rho[k] > 0.06){ opt.rho[k] = 0; removed++; }
+  }
+  opt.mass -= removed;
+  opt.iter++;
+  return removed;
+}
+function spawnRipples(){
+  const it = opt.iter;
+  if(it === opt.lastRippleIter) return;
+  opt.lastRippleIter = it;
+  const n = 2 + (it % 3);
+  for(let i=0;i<n && i<SEEDS.length;i++){
+    const s = SEEDS[(i + (it>>2)) % SEEDS.length];
+    opt.ripples.push({ x:s.x, y:s.y, t:0, dur:0.85 + 0.30*((it*7)%5)/5 });
+  }
+  if(opt.ripples.length > 26) opt.ripples.splice(0, opt.ripples.length-26);
+}
+
+/* ==========================================================================
+   5. 调色板 / 金属预计算
+   ========================================================================== */
+/* 高饱和加深热力色阶：深蓝→蓝→青→绿→黄绿→亮黄→橙→红→深品红 */
+const HEAT_RGB = [
+  hex2rgb('#04086e'), hex2rgb('#0b3fd8'), hex2rgb('#00c8f0'), hex2rgb('#00f090'),
+  hex2rgb('#b6ff2e'), hex2rgb('#ffe000'), hex2rgb('#ff7d00'), hex2rgb('#ff1c00'),
+  hex2rgb('#cf0066')
+];
+const T_STOPS = [0, 0.125, 0.25, 0.375, 0.50, 0.625, 0.75, 0.875, 1.0];
+function heatColor(v){
+  v = clamp(v, 0, 1);
+  for(let i=0;i<8;i++){
+    if(v <= T_STOPS[i+1]){
+      const t = (v - T_STOPS[i])/(T_STOPS[i+1] - T_STOPS[i]);
+      const a = HEAT_RGB[i], b = HEAT_RGB[i+1];
+      return [ a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t, a[2]+(b[2]-a[2])*t ];
+    }
+  }
+  return HEAT_RGB[8];
+}
+
+const MET_A = [226, 237, 246];   // 顶部高光
+const MET_C = [109, 123, 138];
+const MET_D = [ 46,  57,  69];   // 底部暗部
+
+const GRID_MET = new Float32Array(GC*GC*3);   // 金属基色（静态）
+const GRID_STR = new Float32Array(GC*GC*3);   // 应力色（动态）
+function precomputeMetal(){
+  for(let my=0;my<GC;my++){
+    for(let mx=0;mx<GC;mx++){
+      const k = my*GC + mx;
+      const nx = (mx+0.5)/(GC/2) - 1;
+      const ny = (my+0.5)/(GC/2) - 1;
+      const t = thicknessOf(nx,ny);
+      const hi = clamp(0.42 + clamp(0.5 - ny*0.85, 0, 1)*0.58, 0, 1);
+      const spec = Math.exp(-Math.pow((nx-0.30)/0.44,2)) * Math.exp(-Math.pow((ny+0.20)/0.40,2));
+      let cr = lerp(MET_D[0], MET_C[0], hi);
+      let cg = lerp(MET_D[1], MET_C[1], hi);
+      let cb = lerp(MET_D[2], MET_C[2], hi);
+      const sa = clamp(hi*0.72 + spec*0.58, 0, 1);
+      cr = lerp(cr, MET_A[0], sa);
+      cg = lerp(cg, MET_A[1], sa);
+      cb = lerp(cb, MET_A[2], sa);
+      const v = 0.66 + 0.34*Math.pow(clamp(t,0,1), 0.45);
+      GRID_MET[k*3]   = cr*v;
+      GRID_MET[k*3+1] = cg*v;
+      GRID_MET[k*3+2] = cb*v;
+    }
+  }
+}
+
+/* ==========================================================================
+   6. 应力采样
+   ========================================================================== */
+let curStress = new Float32Array(GC*GC);
+let peakStress = 0;
+function sampleStress(ci, reveal, conc){
+  peakStress = 0;
+  const C = CASES[ci];
+  for(let my=0;my<GC;my++){
+    for(let mx=0;mx<GC;mx++){
+      const k = my*GC + mx;
+      if(RHO[k] <= 0.001 || opt.rho[k] <= 0.06){ curStress[k] = 0; continue; }
+      const nx = (mx+0.5)/(GC/2) - 1;
+      const ny = (my+0.5)/(GC/2) - 1;
+      let s = Math.min(1.3, stressField(nx,ny,ci) * conc);
+      if(reveal < 0.999){                        // 求解波前扩散
+        const edge = reveal*1.34;
+        s *= smoothstep(edge+0.15, edge-0.15, Math.hypot(nx,ny));
+      }
+      curStress[k] = s;
+      if(s > peakStress) peakStress = s;
+    }
+  }
+  if(C.id === 3 && caseSolve.impact > 0.001){    // 冲击超载
+    const g = 1 + caseSolve.impact*0.55;
+    for(let i=0;i<GC*GC;i++){
+      if(curStress[i] > 0){
+        curStress[i] = Math.min(1.25, curStress[i]*g);
+        if(curStress[i] > peakStress) peakStress = curStress[i];
+      }
+    }
+  }
+}
+function refreshStressColors(){
+  for(let i=0;i<GC*GC;i++){
+    const s = curStress[i];
+    if(s > 0.004 && opt.rho[i] > 0.06){
+      const c = heatColor(s/1.25);
+      GRID_STR[i*3] = c[0]; GRID_STR[i*3+1] = c[1]; GRID_STR[i*3+2] = c[2];
+    } else {
+      GRID_STR[i*3] = 0; GRID_STR[i*3+1] = 0; GRID_STR[i*3+2] = 0;
+    }
+  }
+}
+
+/* ==========================================================================
+   7. 粒子系统（1px 有限元单元剥离）
+   ========================================================================== */
+const parts = { list: [], MAX: 4600 };
+function emitParticles(wx,wy,n,heat,speedScale){
+  const room = parts.MAX - parts.list.length;
+  if(room <= 0) return;
+  n = Math.min(n, room, 44);
+  for(let i=0;i<n;i++){
+    const a = rnd()*Math.PI*2;
+    const sp = (0.20 + rnd()*0.95)*(speedScale||1);
+    parts.list.push({
+      x: wx + (rnd()-0.5)*1.9,
+      y: wy + (rnd()-0.5)*1.9,
+      vx: Math.cos(a)*sp*13,
+      vy: Math.sin(a)*sp*13 - 9*rnd(),
+      life: 0,
+      dur: 0.27 + rnd()*0.11,       // ≈300ms 快速淡出
+      h0: heat
+    });
+  }
+}
+function updateParts(dt){
+  const L = parts.list;
+  for(let i=L.length-1;i>=0;i--){
+    const p = L[i];
+    p.life += dt;
+    if(p.life >= p.dur){ L[i] = L[L.length-1]; L.pop(); continue; }
+    p.x += p.vx*dt; p.y += p.vy*dt;
+    p.vx *= (1-2.3*dt); p.vy *= (1-2.3*dt);
+  }
+}
+const partBatch = [];
+function drawParts(g){
+  const L = parts.list;
+  partBatch.length = 0;
+  for(let i=0;i<L.length;i++){
+    const p = L[i];
+    const u = p.life/p.dur;
+    const a = 1-u;
+    if(a <= 0.02) continue;
+    const c = heatColor(p.h0);
+    let r = c[0], gc = c[1], b = c[2];
+    if(u > 0.62){                    // 尾段降温为冷灰余烬
+      const t = (u-0.62)/0.38;
+      r  = lerp(r, 120, t);
+      gc = lerp(gc,130, t);
+      b  = lerp(b, 138, t);
+    }
+    partBatch.push([p.x, p.y, a, r, gc, b]);
+  }
+  partBatch.sort((A,B)=> A[2]-B[2]);
+  for(let i=0;i<partBatch.length;i++){
+    const q = partBatch[i];
+    g.fillStyle = 'rgba('+(q[3]|0)+','+(q[4]|0)+','+(q[5]|0)+','+q[2].toFixed(3)+')';
+    g.fillRect(q[0], q[1], 1, 1);    // 1 像素颗粒
+  }
+}
+
+/* ==========================================================================
+   8. 时间轴编排
+   ========================================================================== */
+const PH = [
+  { key:'build', dur: 8.0, name:'PHASE 01 · 实心铝合金框架建模',
+    desc:'初始设计域：立体实心结构 · 6061-T6 铝合金 · 无减重' },
+  { key:'case0', dur: 6.5, name:'PHASE 02 · 载荷工况一：悬停 HOVER',
+    desc:'四旋翼对称静升力 · 机臂根部弯矩主导 · 应力场求解' },
+  { key:'case1', dur: 6.5, name:'PHASE 03 · 载荷工况二：前飞 CRUISE',
+    desc:'前倾姿态气动阻力 · 载荷沿 +X 重新分布' },
+  { key:'case2', dur: 6.5, name:'PHASE 04 · 载荷工况三：急转 YAW',
+    desc:'偏航扭矩 · 对角机臂反向载荷 · 中央剪切带' },
+  { key:'case3', dur: 7.5, name:'PHASE 05 · 载荷工况四：硬着陆 IMPACT',
+    desc:'3.2g 垂向冲击脉冲 · 过载系数峰值 2.4' },
+  { key:'optim', dur:20.0, name:'PHASE 06 · 拓扑优化迭代 100 步',
+    desc:'材料自中心向边缘重分布 · 5 个内部种子并行侵蚀 · 生成镂空骨架' },
+  { key:'final', dur: 5.0, name:'PHASE 07 · 优化收敛 · 成型',
+    desc:'移除应力色阶与载荷传递线 · 保留金属光泽构件' }
+];
+const PH_START = (()=>{ let a=0; return PH.map(p=>{ const s=a; a+=p.dur; return s; }); })();
+const TOTAL = PH_START[PH_START.length-1] + PH[PH.length-1].dur;
+
+const anim = {
+  playing:false, t:0, phase:0,
+  buildT:0, stressMix:0, loadLineA:0, sweep:-1, finalGlow:0,
+  disp:{ m:1.842, m0:1.842, it:0, loss:0, smax:0 },
+  caseOn:-9, boomFired:false, finalSampled:false
+};
+const caseSolve = { solveT:0, impact:0 };
+
+/* ==========================================================================
+   9. HUD
+   ========================================================================== */
+const el = {
+  statusText: document.getElementById('statusText'),
+  statusDot:  document.getElementById('statusDot'),
+  wLoss: document.getElementById('wLoss'),
+  wBar:  document.getElementById('wBar'),
+  m0: document.getElementById('m0'),
+  m1: document.getElementById('m1'),
+  itv: document.getElementById('itv'),
+  cmp: document.getElementById('cmp'),
+  sms: document.getElementById('sms'),
+  phaseName: document.getElementById('phaseName'),
+  phaseDesc: document.getElementById('phaseDesc'),
+  trackFill: document.getElementById('trackFill'),
+  cases: Array.prototype.slice.call(document.querySelectorAll('.case')),
+  soundLab: document.getElementById('soundLab'),
+  btnSound: document.getElementById('btnSound')
+};
+(function buildTrack(){
+  const track = document.getElementById('track');
+  PH.forEach((p,i)=>{
+    const seg = document.createElement('div');
+    seg.className = 'seg';
+    seg.style.left = (PH_START[i]/TOTAL*100)+'%';
+    track.appendChild(seg);
+    const lab = document.createElement('div');
+    lab.className = 'seglab';
+    lab.textContent = String(i+1).padStart(2,'0');
+    lab.style.left = (PH_START[i]/TOTAL*100)+'%';
+    track.appendChild(lab);
+  });
+})();
+(function buildLegend(){
+  const c = document.createElement('canvas'); c.width = 214; c.height = 9;
+  const g = c.getContext('2d');
+  for(let x=0;x<214;x++){
+    const col = heatColor(x/213);
+    g.fillStyle = 'rgb('+(col[0]|0)+','+(col[1]|0)+','+(col[2]|0)+')';
+    g.fillRect(x,0,1,9);
+  }
+  document.getElementById('legendGrad').style.backgroundImage = 'url('+c.toDataURL()+')';
+})();
+
+const PHASE_STATUS = [
+  ['系统建模中','#ffb033'], ['工况求解中','#ffb033'], ['工况求解中','#ffb033'],
+  ['工况求解中','#ffb033'], ['工况求解中','#ffb033'],
+  ['优化迭代中','#22e0ff'], ['优化收敛','#3dffb0']
+];
+function updateHUD(){
+  const st = PHASE_STATUS[anim.phase];
+  if(el.statusText.textContent !== st[0]){
+    el.statusText.textContent = st[0];
+    el.statusText.style.color = st[1];
+    el.statusDot.style.background = st[1];
+    el.statusDot.style.color = st[1];
+  }
+  let ci = -9;
+  if(anim.phase >= 1 && anim.phase <= 4) ci = anim.phase-1;
+  else if(anim.phase === 5) ci = 3;
+  else if(anim.phase === 6) ci = -2;        // 全部收敛
+  if(ci !== anim.caseOn){
+    anim.caseOn = ci;
+    el.cases.forEach((c,i)=> c.classList.toggle('on', ci === i || ci === -2));
+  }
+  el.wLoss.innerHTML = anim.disp.loss.toFixed(1) + '<i>%</i>';
+  el.wBar.style.width = clamp(anim.disp.loss, 0, 100) + '%';
+  el.m0.innerHTML = anim.disp.m0.toFixed(3) + '<small>kg</small>';
+  el.m1.innerHTML = anim.disp.m.toFixed(3) + '<small>kg</small>';
+  el.itv.innerHTML = String(Math.round(anim.disp.it)).padStart(3,'0') + '<small>/100</small>';
+  const lf = anim.disp.loss/100;
+  el.cmp.textContent = (1 + Math.pow(lf,1.35)*0.85).toFixed(3);
+  el.sms.innerHTML = Math.round(anim.disp.smax) + '<small>MPa</small>';
+
+  el.phaseName.textContent = PH[anim.phase].name;
+  el.phaseDesc.textContent = PH[anim.phase].desc;
+  el.trackFill.style.width = (anim.t/TOTAL*100) + '%';
+  const segs = document.querySelectorAll('.seg');
+  for(let i=0;i<segs.length;i++) segs[i].classList.toggle('on', i <= anim.phase);
+}
+
+/* ==========================================================================
+   10. Web Audio 音效（旋翼背景 + 碳纤维编织 + 冲击轰鸣）
+   ========================================================================== */
+const audio = {
+  ctx:null, master:null, ready:false, enabled:true,
+  rotors:[], rotorGain:null, windGain:null, windFilter:null,
+  carbonGain:null, noiseBuf:null
+};
+function makePinkNoise(ctx, sec){
+  const len = Math.floor(ctx.sampleRate*sec);
+  const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+  const d = buf.getChannelData(0);
+  let b0=0,b1=0,b2=0;
+  for(let i=0;i<len;i++){
+    const wn = Math.random()*2-1;
+    b0 = 0.99765*b0 + wn*0.0990460;
+    b1 = 0.96300*b1 + wn*0.2965164;
+    b2 = 0.57000*b2 + wn*1.0526913;
+    d[i] = (b0+b1+b2+wn*0.1848)*0.28;
+  }
+  return buf;
+}
+function initAudio(){
+  if(audio.ctx) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if(!AC) return;
+  const ac = new AC();
+  audio.ctx = ac;
+
+  const master = ac.createGain();
+  master.gain.value = 0;
+  master.connect(ac.destination);
+  audio.master = master;
+
+  const noiseBuf = makePinkNoise(ac, 3.0);
+  audio.noiseBuf = noiseBuf;
+
+  /* —— 旋翼声：4 组桨叶基频 + 谐波 + 带通噪声 + 旋转节拍 —— */
+  const rotorMix = ac.createGain(); rotorMix.gain.value = 1;
+  const rotorLP = ac.createBiquadFilter();
+  rotorLP.type = 'lowpass'; rotorLP.frequency.value = 1500; rotorLP.Q.value = 0.7;
+  rotorMix.connect(rotorLP);
+  const rg = ac.createGain(); rg.gain.value = 0.16;
+  rotorLP.connect(rg); rg.connect(master);
+  audio.rotorGain = rg;
+
+  const baseF = [112, 121, 116, 126];
+  for(let i=0;i<4;i++){
+    const o1 = ac.createOscillator();
+    o1.type = (i%2) ? 'sawtooth' : 'triangle';
+    o1.frequency.value = baseF[i];
+    const g1 = ac.createGain(); g1.gain.value = 0.20;
+    o1.connect(g1);
+
+    const o2 = ac.createOscillator();
+    o2.type = 'sine'; o2.frequency.value = baseF[i]*2;
+    const g2 = ac.createGain(); g2.gain.value = 0.09;
+    o2.connect(g2);
+
+    const nz = ac.createBufferSource();
+    nz.buffer = noiseBuf; nz.loop = true;
+    const nf = ac.createBiquadFilter();
+    nf.type='bandpass'; nf.frequency.value = baseF[i]*3.1; nf.Q.value = 2.2;
+    const ng = ac.createGain(); ng.gain.value = 0.05;
+    nz.connect(nf); nf.connect(ng);
+
+    const lfo = ac.createOscillator();
+    lfo.type='sine'; lfo.frequency.value = baseF[i]/3.4;
+    const lfoG = ac.createGain(); lfoG.gain.value = 0.34;
+    lfo.connect(lfoG);
+    const modG = ac.createGain(); modG.gain.value = 0.66;
+    g1.connect(modG); lfoG.connect(modG.gain);
+
+    const og = ac.createGain(); og.gain.value = 0.30;
+    modG.connect(og); og.connect(rotorMix);
+    g2.connect(rotorMix); ng.connect(rotorMix);
+
+    o1.start(); o2.start(); nz.start(); lfo.start();
+    audio.rotors.push({ o1, o2, base: baseF[i] });
+  }
+
+  /* —— 风 / 气流 —— */
+  const wn = ac.createBufferSource(); wn.buffer = noiseBuf; wn.loop = true;
+  const wf = ac.createBiquadFilter();
+  wf.type='lowpass'; wf.frequency.value = 520; wf.Q.value = 0.6;
+  const wg = ac.createGain(); wg.gain.value = 0.05;
+  wn.connect(wf); wf.connect(wg); wg.connect(master);
+  const wlfo = ac.createOscillator(); wlfo.type='sine'; wlfo.frequency.value = 0.17;
+  const wlg = ac.createGain(); wlg.gain.value = 0.03;
+  wlfo.connect(wlg); wlg.connect(wg.gain);
+  wlfo.start(); wn.start();
+  audio.windGain = wg; audio.windFilter = wf;
+
+  /* —— 碳纤维编织总线（高频咔嗒簇） —— */
+  const cg = ac.createGain(); cg.gain.value = 0;
+  const cf = ac.createBiquadFilter();
+  cf.type='highpass'; cf.frequency.value = 1600;
+  cg.connect(cf); cf.connect(master);
+  audio.carbonGain = cg;
+
+  audio.ready = true;
+}
+function carbonClick(intensity, pitch){
+  const ac = audio.ctx;
+  if(!ac || !audio.enabled) return;
+  const t = ac.currentTime;
+  const src = ac.createBufferSource();
+  src.buffer = audio.noiseBuf;
+  src.playbackRate.value = 1.6 + pitch*0.9;
+  const bp = ac.createBiquadFilter();
+  bp.type='bandpass';
+  bp.frequency.value = 2100 + pitch*2400;
+  bp.Q.value = 6.5;
+  const g = ac.createGain();
+  const amp = 0.030*intensity;
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.linearRampToValueAtTime(amp, t+0.0035);
+  g.gain.exponentialRampToValueAtTime(0.0001, t+0.055+0.03*pitch);
+  src.connect(bp); bp.connect(g);
+  if(ac.createStereoPanner){
+    const pan = ac.createStereoPanner();
+    pan.pan.value = (Math.random()*2-1)*0.65;
+    g.connect(pan); pan.connect(audio.carbonGain);
+  } else {
+    g.connect(audio.carbonGain);
+  }
+  src.start(t, Math.random()*1.5, 0.12);
+  src.stop(t+0.14);
+}
+function impactBoom(){
+  const ac = audio.ctx;
+  if(!ac || !audio.enabled) return;
+  const t = ac.currentTime;
+  const o = ac.createOscillator(); o.type='sine';
+  o.frequency.setValueAtTime(150, t);
+  o.frequency.exponentialRampToValueAtTime(34, t+0.55);
+  const g = ac.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.linearRampToValueAtTime(0.30, t+0.015);
+  g.gain.exponentialRampToValueAtTime(0.0001, t+0.75);
+  o.connect(g); g.connect(audio.master);
+  o.start(t); o.stop(t+0.8);
+  const s = ac.createBufferSource(); s.buffer = audio.noiseBuf;
+  const f = ac.createBiquadFilter(); f.type='lowpass';
+  f.frequency.setValueAtTime(2400, t);
+  f.frequency.exponentialRampToValueAtTime(200, t+0.5);
+  const g2 = ac.createGain();
+  g2.gain.setValueAtTime(0.22, t);
+  g2.gain.exponentialRampToValueAtTime(0.0001, t+0.6);
+  s.connect(f); f.connect(g2); g2.connect(audio.master);
+  s.start(t); s.stop(t+0.65);
+}
+function chime(freq, amp){
+  const ac = audio.ctx;
+  if(!ac || !audio.enabled) return;
+  const t = ac.currentTime;
+  const o = ac.createOscillator(); o.type='triangle'; o.frequency.value = freq;
+  const g = ac.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.linearRampToValueAtTime(amp, t+0.008);
+  g.gain.exponentialRampToValueAtTime(0.0001, t+0.42);
+  o.connect(g); g.connect(audio.master);
+  o.start(t); o.stop(t+0.45);
+}
+function setMaster(v, ramp){
+  if(!audio.ctx) return;
+  const t = audio.ctx.currentTime;
+  const g = audio.master.gain;
+  g.cancelScheduledValues(t);
+  g.setValueAtTime(g.value, t);
+  g.linearRampToValueAtTime(v, t + (ramp || 0.8));
+}
+function updateAudio(dt){
+  if(!audio.ctx || !audio.ready) return;
+  const ac = audio.ctx;
+  const key = PH[anim.phase].key;
+  let rpm = 1.0, rv = 0.16, wv = 0.05, wfq = 520;
+  if(key === 'build'){ rpm=0.72; rv=0.10; wv=0.030; }
+  else if(key === 'case0'){ rpm=1.00; rv=0.17; wv=0.050; }
+  else if(key === 'case1'){ rpm=1.14; rv=0.19; wv=0.080; wfq=760; }
+  else if(key === 'case2'){ rpm=1.30; rv=0.21; wv=0.070; wfq=640; }
+  else if(key === 'case3'){ rpm=1.02; rv=0.16; wv=0.050; }
+  else if(key === 'optim'){ rpm=1.06; rv=0.14; wv=0.045; }
+  else { rpm=0.86; rv=0.115; wv=0.040; }
+
+  const k = 1 - Math.pow(0.001, dt);
+  for(let i=0;i<audio.rotors.length;i++){
+    const r = audio.rotors[i];
+    r.o1.frequency.value += (r.base*rpm - r.o1.frequency.value)*k;
+    r.o2.frequency.value += (r.base*rpm*2 - r.o2.frequency.value)*k;
+  }
+  const t = ac.currentTime;
+  audio.rotorGain.gain.setTargetAtTime(rv, t, 0.25);
+  audio.windGain.gain.setTargetAtTime(wv, t, 0.30);
+  audio.windFilter.frequency.setTargetAtTime(wfq, t, 0.40);
+
+  const carbonBus = (key === 'optim') ? 0.90 : (key === 'final' ? 0.20 : 0.0);
+  audio.carbonGain.gain.setTargetAtTime(carbonBus, t, 0.25);
+
+  if(key === 'case3'){
+    const u = anim.t - PH_START[anim.phase];
+    if(!anim.boomFired && u > 0.60){ anim.boomFired = true; impactBoom(); }
+  }
+}
+
+/* ==========================================================================
+   11. 渲染
+   ========================================================================== */
+const cv  = document.getElementById('view');
+const ctx = cv.getContext('2d', { alpha:false });
+const img = ctx.createImageData(GC, GC);
+const gridCv  = document.createElement('canvas'); gridCv.width = GC; gridCv.height = GC;
+const gridCtx = gridCv.getContext('2d');
+
+const bgCv = document.createElement('canvas'); bgCv.width = W; bgCv.height = H;
+(function drawBG(){
+  const g = bgCv.getContext('2d');
+  g.fillStyle = '#04070c'; g.fillRect(0,0,W,H);
+  const rg = g.createRadialGradient(CX, CY-10, 20, CX, CY, 720);
+  rg.addColorStop(0,    '#0a1725');
+  rg.addColorStop(0.36, '#071019');
+  rg.addColorStop(0.75, '#040a11');
+  rg.addColorStop(1,    '#03060a');
+  g.fillStyle = rg; g.fillRect(0,0,W,H);
+
+  g.strokeStyle = 'rgba(34,224,255,0.048)'; g.lineWidth = 1;
+  for(let x=0;x<=W;x+=40){ g.beginPath(); g.moveTo(x+.5,0); g.lineTo(x+.5,H); g.stroke(); }
+  for(let y=0;y<=H;y+=40){ g.beginPath(); g.moveTo(0,y+.5); g.lineTo(W,y+.5); g.stroke(); }
+  g.strokeStyle = 'rgba(34,224,255,0.075)';
+  for(let x=0;x<=W;x+=200){ g.beginPath(); g.moveTo(x+.5,0); g.lineTo(x+.5,H); g.stroke(); }
+  for(let y=0;y<=H;y+=160){ g.beginPath(); g.moveTo(0,y+.5); g.lineTo(W,y+.5); g.stroke(); }
+
+  g.font = '10px "SF Mono",Menlo,Consolas,monospace';
+  g.fillStyle = 'rgba(90,130,155,0.55)';
+  g.fillText('DESIGN DOMAIN  516 × 382 mm', 24, H-92);
+  g.fillText('MESH  300 × 300  (90 000 CELLS · '+CELL_PX.toFixed(2)+' px)', 24, H-78);
+  g.fillText('E = 68.9 GPa    ν = 0.33    ρ = 2.70 g/cm³', 24, H-64);
+  g.fillText('MATERIAL  6061-T6 ALUMINUM ALLOY', 24, H-50);
+
+  g.strokeStyle = 'rgba(34,224,255,0.22)'; g.lineWidth = 1;
+  g.beginPath();
+  g.moveTo(CX-9, CY+.5); g.lineTo(CX+9, CY+.5);
+  g.moveTo(CX+.5, CY-9); g.lineTo(CX+.5, CY+9);
+  g.stroke();
+
+  const corner = (x,y,sx,sy)=>{
+    g.strokeStyle = 'rgba(34,224,255,0.30)'; g.lineWidth = 1.4;
+    g.beginPath();
+    g.moveTo(x, y+sy*22); g.lineTo(x, y); g.lineTo(x+sx*22, y);
+    g.stroke();
+  };
+  corner(18,18,1,1); corner(W-18,18,-1,1); corner(18,H-18,1,-1); corner(W-18,H-18,-1,-1);
+})();
+
+/* 网格像素填充 */
+function paintGrid(stressMix){
+  const d = img.data;
+  for(let my=0; my<GC; my++){
+    const row = my*GC;
+    for(let mx=0; mx<GC; mx++){
+      const k = row + mx;
+      const o = k*4;
+      const rho = opt.rho[k];
+      if(rho <= 0.06){ d[o+3] = 0; continue; }
+
+      let r = GRID_MET[k*3], g2 = GRID_MET[k*3+1], b = GRID_MET[k*3+2];
+
+      if(stressMix > 0.002){                    // 热力图直接颜色混合（占主导 88%）
+        const s = curStress[k];
+        if(s > 0.004){
+          const hr = GRID_STR[k*3], hg = GRID_STR[k*3+1], hb = GRID_STR[k*3+2];
+          r  = r  + (hr - r )*stressMix;
+          g2 = g2 + (hg - g2)*stressMix;
+          b  = b  + (hb - b)*stressMix;
+        }
+      }
+      if(rho < 0.995){                          // 半侵蚀单元略暗
+        const dk = 0.55 + 0.45*rho;
+        r *= dk; g2 *= dk; b *= dk;
+      }
+      d[o]   = r  < 0 ? 0 : (r  > 255 ? 255 : r);
+      d[o+1] = g2 < 0 ? 0 : (g2 > 255 ? 255 : g2);
+      d[o+2] = b  < 0 ? 0 : (b  > 255 ? 255 : b);
+      d[o+3] = 255;
+    }
+  }
+}
+
+/* 载荷传递路径（转子 → 机体） */
+const LOAD_PATHS = [];
+for(let a=0;a<4;a++){
+  const d = ARM_DIR[a];
+  const pts = [];
+  const N = 16;
+  for(let i=0;i<=N;i++){
+    const t = i/N;
+    const rr = lerp(1.0, 0.03, easeInOutCubic(t));
+    const bend = Math.sin(t*Math.PI)*0.055;
+    const px = d[0]*rr - d[1]*bend;
+    const py = d[1]*rr + d[0]*bend;
+    pts.push([ CX + px*ARM_SPAN, CY + py*ARM_SPAN*ASPECT ]);
+  }
+  LOAD_PATHS.push(pts);
+}
+
+function render(){
+  const key = PH[anim.phase].key;
+  const g = ctx;
+  g.globalCompositeOperation = 'source-over';
+  g.globalAlpha = 1;
+  g.drawImage(bgCv, 0, 0);
+
+  paintGrid(anim.stressMix);
+  gridCtx.putImageData(img, 0, 0);
+  g.imageSmoothingEnabled = true;
+
+  const [dx, dy]   = meshToWorld(0, 0);
+  const [dx2, dy2] = meshToWorld(GC, GC);
+  const DW = dx2-dx, DH = dy2-dy;
+
+  /* 建模阶段：自上而下逐层揭示 */
+  const bt = anim.buildT;
+  g.save();
+  if(bt < 0.999){
+    g.beginPath();
+    g.rect(dx-6, dy-6, DW+12, DH*bt + 10);
+    g.clip();
+  }
+  g.shadowColor = 'rgba(34,224,255,0.30)';
+  g.shadowBlur = 26;
+  g.globalAlpha = 0.5*(0.4+0.6*bt);
+  g.drawImage(gridCv, 0,0,GC,GC, dx,dy,DW,DH);
+  g.shadowBlur = 0;
+  g.globalAlpha = 1;
+  g.drawImage(gridCv, 0,0,GC,GC, dx,dy,DW,DH);
+  g.restore();
+
+  /* 内轮廓亮边 */
+  if(bt > 0.55) drawInnerEdges(g, (bt-0.55)/0.45);
+
+  /* 载荷传递线（成型阶段随 stressMix 一起淡出） */
+  if(anim.loadLineA > 0.012) drawLoadLines(g, key);
+
+  /* 侵蚀波纹 */
+  if(opt.ripples.length) drawRipples(g);
+
+  /* 剥离粒子 */
+  if(parts.list.length) drawParts(g);
+
+  /* 高应力骨架脉冲光晕 */
+  const optimU = (anim.t - PH_START[5]) / PH[5].dur;
+  const pulseA = (key === 'optim' ? smoothstep(0.14, 0.86, optimU) : 0)
+               + (key === 'final' ? anim.finalGlow : 0);
+  if(pulseA > 0.01) drawSkeletonPulse(g, clamp(pulseA,0,1.35));
+
+  /* 最终镜面高光扫过 */
+  if(key === 'final' && anim.sweep >= 0) drawSpecularSweep(g, anim.sweep, anim.finalGlow);
+
+  /* 附加元素 */
+  if(key === 'build') drawBuildLabels(g, bt);
+  if(key === 'case3' && caseSolve.impact > 0.02) drawImpactShock(g, caseSolve.impact);
+
+  drawFrameBox(g);
+}
+
+/* 内轮廓亮边（金属内轮廓反光） */
+function drawInnerEdges(g, a){
+  if(a <= 0.01) return;
+  g.save();
+  g.globalCompositeOperation = 'lighter';
+  g.strokeStyle = 'rgba(196,224,244,' + (0.26*a).toFixed(3) + ')';
+  g.lineWidth = 1.1;
+  // 枢纽轮廓
+  g.beginPath();
+  for(let i=0;i<=64;i++){
+    const t = i/64*Math.PI*2;
+    const x = CX + Math.cos(t)*HUB_R*ARM_SPAN*1.02;
+    const y = CY + Math.sin(t)*HUB_R*ARM_SPAN*ASPECT*1.02;
+    i ? g.lineTo(x,y) : g.moveTo(x,y);
+  }
+  g.closePath(); g.stroke();
+  // 护环内沿
+  g.beginPath();
+  for(let i=0;i<=96;i++){
+    const t = i/96*Math.PI*2;
+    const x = CX + Math.cos(t)*RIM_R0*ARM_SPAN;
+    const y = CY + Math.sin(t)*RIM_R0*ARM_SPAN*ASPECT;
+    i ? g.lineTo(x,y) : g.moveTo(x,y);
+  }
+  g.closePath(); g.stroke();
+  // 机臂双边线
+  for(let a2=0;a2<4;a2++){
+    const d = ARM_DIR[a2];
+    for(let sgn=-1; sgn<=1; sgn+=2){
+      g.beginPath();
+      for(let s=0;s<=14;s++){
+        const t = s/14;
+        const rr = lerp(ARM_A0, ARM_A1, t);
+        const off = ARM_HW*sgn;
+        const x = CX + (d[0]*rr - d[1]*off)*ARM_SPAN;
+        const y = CY + (d[1]*rr + d[0]*off)*ARM_SPAN*ASPECT;
+        s ? g.lineTo(x,y) : g.moveTo(x,y);
+      }
+      g.stroke();
+    }
+  }
+  g.restore();
+}
+
+/* 载荷传递线 + 工况矢量 */
+function drawLoadLines(g, key){
+  const base = anim.loadLineA;
+  if(base < 0.01) return;
+  g.save();
+  g.globalCompositeOperation = 'lighter';
+
+  for(let i=0;i<LOAD_PATHS.length;i++){
+    const pts = LOAD_PATHS[i];
+    const isActive = (key !== 'case1') ? 1.0 : ((i===0 || i===1) ? 1.0 : 0.38);
+    const alpha = base * (isActive===1 ? 0.85 : 0.32);
+    if(alpha < 0.012) continue;
+
+    g.strokeStyle = 'rgba(34,224,255,' + (alpha*0.26).toFixed(3) + ')';
+    g.lineWidth = 6; g.lineCap = 'round';
+    g.beginPath();
+    for(let j=0;j<pts.length;j++) j ? g.lineTo(pts[j][0],pts[j][1]) : g.moveTo(pts[j][0],pts[j][1]);
+    g.stroke();
+
+    g.strokeStyle = 'rgba(152,246,255,' + (alpha*0.92).toFixed(3) + ')';
+    g.lineWidth = 1.6;
+    g.beginPath();
+    for(let j=0;j<pts.length;j++) j ? g.lineTo(pts[j][0],pts[j][1]) : g.moveTo(pts[j][0],pts[j][1]);
+    g.stroke();
+
+    // 流动光点（载荷自转子向机体传递）
+    const t0 = (anim.t*1.05 + i*0.25) % 1;
+    for(let k2=0;k2<3;k2++){
+      const tt = (t0 + k2/3) % 1;
+      const idx = tt*(pts.length-1);
+      const i0 = Math.floor(idx), i1 = Math.min(pts.length-1, i0+1);
+      const ft = idx - i0;
+      const x = lerp(pts[i0][0], pts[i1][0], ft);
+      const y = lerp(pts[i0][1], pts[i1][1], ft);
+      const rr = 2.6*(1 - tt*0.55);
+      const gr = g.createRadialGradient(x,y,0, x,y,rr*3);
+      gr.addColorStop(0,   'rgba(224,255,255,' + (alpha*0.95) + ')');
+      gr.addColorStop(0.40,'rgba(34,224,255,'  + (alpha*0.48) + ')');
+      gr.addColorStop(1,   'rgba(34,224,255,0)');
+      g.fillStyle = gr;
+      g.beginPath(); g.arc(x,y,rr*3,0,7); g.fill();
+    }
+
+    // 升力箭头
+    if(key === 'case0' || key === 'case1' || key === 'case3'){
+      const tip = pts[0];
+      const up = (key === 'case1') ? [0.25,-1] : [0,-1];
+      const L = 46 + 8*Math.sin(anim.t*4 + i);
+      g.strokeStyle = 'rgba(255,176,51,' + (alpha*0.85).toFixed(3) + ')';
+      g.lineWidth = 2;
+      g.beginPath();
+      g.moveTo(tip[0], tip[1]);
+      g.lineTo(tip[0]+up[0]*L, tip[1]+up[1]*L);
+      g.stroke();
+      g.beginPath();
+      g.moveTo(tip[0]+up[0]*L, tip[1]+up[1]*L);
+      g.lineTo(tip[0]+up[0]*L - up[1]*8 - up[0]*10, tip[1]+up[1]*L + up[0]*8 - up[1]*10);
+      g.lineTo(tip[0]+up[0]*L + up[1]*8 - up[0]*10, tip[1]+up[1]*L - up[0]*8 - up[1]*10);
+      g.closePath();
+      g.fillStyle = 'rgba(255,176,51,' + (alpha*0.9).toFixed(3) + ')';
+      g.fill();
+    }
+  }
+
+  // 急转：中心扭矩弧线
+  if(key === 'case2'){
+    const R = 92, a0 = anim.t*2.0;
+    g.strokeStyle = 'rgba(255,61,140,' + (base*0.85).toFixed(3) + ')';
+    g.lineWidth = 3;
+    g.beginPath(); g.arc(CX, CY, R, a0, a0+Math.PI*1.5); g.stroke();
+    const ae = a0+Math.PI*1.5;
+    const hx = CX+Math.cos(ae)*R, hy = CY+Math.sin(ae)*R;
+    g.beginPath();
+    g.moveTo(hx,hy); g.lineTo(hx-14,hy-4); g.lineTo(hx-4,hy-14);
+    g.closePath();
+    g.fillStyle = 'rgba(255,61,140,' + (base*0.9).toFixed(3) + ')';
+    g.fill();
+    g.strokeStyle = 'rgba(255,61,140,' + (base*0.5).toFixed(3) + ')';
+    g.lineWidth = 2;
+    g.beginPath(); g.arc(CX, CY, R-18, -a0, -a0+Math.PI*1.2); g.stroke();
+  }
+
+  // 硬着陆：向下冲击箭头
+  if(key === 'case3'){
+    const imp = caseSolve.impact;
+    g.strokeStyle = 'rgba(255,90,40,' + (base*(0.35+imp*0.6)).toFixed(3) + ')';
+    g.lineWidth = 3;
+    for(let i=0;i<4;i++){
+      const d = ARM_DIR[i];
+      const x = CX + d[0]*ARM_SPAN*0.42;
+      const y = CY + d[1]*ARM_SPAN*0.42*ASPECT;
+      const L = 34 + imp*28;
+      const y0 = y - 40 - imp*14;
+      g.beginPath(); g.moveTo(x, y0); g.lineTo(x, y0+L); g.stroke();
+      g.beginPath();
+      g.moveTo(x, y0+L+10); g.lineTo(x-8, y0+L-2); g.lineTo(x+8, y0+L-2);
+      g.closePath();
+      g.fillStyle = 'rgba(255,90,40,' + (base*(0.4+imp*0.55)).toFixed(3) + ')';
+      g.fill();
+    }
+  }
+  g.restore();
+}
+
+/* 侵蚀波纹（剥离起点可视化） */
+function drawRipples(g){
+  g.save();
+  g.globalCompositeOperation = 'lighter';
+  for(let i=0;i<opt.ripples.length;i++){
+    const r = opt.ripples[i];
+    const u = r.t/r.dur;
+    const a = (1-u)*0.55;
+    const w = meshToWorld((r.x+1)*GC/2, (r.y+1)*GC/2);
+    const R = u*150 + 12;
+    g.strokeStyle = 'rgba(120,240,255,' + a.toFixed(3) + ')';
+    g.lineWidth = 1.6*(1-u) + 0.4;
+    g.beginPath(); g.ellipse(w[0], w[1], R, R*ASPECT, 0, 0, 7); g.stroke();
+    g.strokeStyle = 'rgba(61,255,176,' + (a*0.55).toFixed(3) + ')';
+    g.lineWidth = 0.8;
+    g.beginPath(); g.ellipse(w[0], w[1], R*0.62, R*0.62*ASPECT, 0, 0, 7); g.stroke();
+  }
+  g.restore();
+}
+
+/* 高应力骨架脉冲光晕（青绿 / 青蓝） */
+const pulseCv = document.createElement('canvas'); pulseCv.width = GC; pulseCv.height = GC;
+const pulseCtx = pulseCv.getContext('2d');
+function drawSkeletonPulse(g, amt){
+  const pulse = 0.5 + 0.5*Math.sin(anim.t*2.9);
+  const id = pulseCtx.createImageData(GC, GC);
+  const dd = id.data;
+  for(let i=0;i<GC*GC;i++){
+    if(opt.rho[i] <= 0.06) continue;
+    const s = curStress[i];
+    if(s < 0.30) continue;
+    const hot = s > 0.85;
+    dd[i*4]   = hot ? 60  : 70;
+    dd[i*4+1] = hot ? 255 : 225;
+    dd[i*4+2] = hot ? 215 : 255;
+    const a = clamp((s-0.30)/0.60, 0, 1) * (0.60 + 0.40*pulse) * amt;
+    dd[i*4+3] = clamp(a*255, 0, 215);
+  }
+  pulseCtx.putImageData(id, 0, 0);
+  const [dx,dy] = meshToWorld(0,0), [dx2,dy2] = meshToWorld(GC,GC);
+  g.save();
+  g.globalCompositeOperation = 'lighter';
+  /* 外扩柔光晕 */
+  g.globalAlpha = 0.34;
+  g.drawImage(pulseCv, dx-6, dy-4.5, (dx2-dx)+12, (dy2-dy)+9);
+  /* 本体脉冲 */
+  g.globalAlpha = 0.88;
+  g.drawImage(pulseCv, 0,0,GC,GC, dx,dy, dx2-dx, dy2-dy);
+  g.restore();
+}
+
+/* 最终镜面高光扫过（裁剪到构件形状） */
+const specMask = document.createElement('canvas');
+const specAlpha = document.createElement('canvas');
+function drawSpecularSweep(g, sweep, glow){
+  const [dx,dy] = meshToWorld(0,0), [dx2,dy2] = meshToWorld(GC,GC);
+  const DW = Math.round(dx2-dx), DH = Math.round(dy2-dy);
+  if(specMask.width !== DW || specMask.height !== DH){
+    specMask.width = DW; specMask.height = DH;
+    specAlpha.width = GC; specAlpha.height = GC;
+  }
+  const ag = specAlpha.getContext('2d');
+  const id = ag.createImageData(GC, GC);
+  const dd = id.data;
+  for(let i=0;i<GC*GC;i++) dd[i*4+3] = opt.rho[i] > 0.06 ? 255 : 0;
+  ag.putImageData(id, 0, 0);
+
+  const mg = specMask.getContext('2d');
+  mg.clearRect(0,0,DW,DH);
+  const x = (sweep*1.35 - 0.18)*DW;
+  const grd = mg.createLinearGradient(x-150, 0, x+150, 0);
+  grd.addColorStop(0,    'rgba(255,255,255,0)');
+  grd.addColorStop(0.36, 'rgba(190,240,255,' + (0.42*glow) + ')');
+  grd.addColorStop(0.50, 'rgba(255,255,255,' + (0.78*glow) + ')');
+  grd.addColorStop(0.64, 'rgba(190,240,255,' + (0.42*glow) + ')');
+  grd.addColorStop(1,    'rgba(255,255,255,0)');
+  mg.fillStyle = grd;
+  mg.fillRect(0,0,DW,DH);
+  mg.globalCompositeOperation = 'destination-in';
+  mg.imageSmoothingEnabled = true;
+  mg.drawImage(specAlpha, 0,0,GC,GC, 0,0,DW,DH);
+  mg.globalCompositeOperation = 'source-over';
+
+  g.save();
+  g.globalCompositeOperation = 'lighter';
+  g.drawImage(specMask, dx, dy, DW, DH);
+  g.restore();
+}
+
+/* 建模阶段：扫描线 + 参数 */
+function drawBuildLabels(g, bt){
+  g.save();
+  g.font = '10px "SF Mono",Menlo,Consolas,monospace';
+  if(bt < 0.995){
+    const my = bt*GC;
+    const x0 = meshToWorld(0, my)[0];
+    const x1 = meshToWorld(GC, my)[0];
+    const y  = meshToWorld(0, my)[1];
+    const gr = g.createLinearGradient(0, y-34, 0, y+34);
+    gr.addColorStop(0,   'rgba(34,224,255,0)');
+    gr.addColorStop(0.5, 'rgba(34,224,255,0.20)');
+    gr.addColorStop(1,   'rgba(34,224,255,0)');
+    g.fillStyle = gr;
+    g.fillRect(x0, y-34, x1-x0, 68);
+    g.strokeStyle = 'rgba(34,224,255,0.55)';
+    g.lineWidth = 1.4;
+    g.beginPath(); g.moveTo(x0, y); g.lineTo(x1, y); g.stroke();
+  }
+  const bx = CX + ARM_SPAN + 34, by = CY - ARM_SPAN*ASPECT + 16;
+  g.fillStyle = 'rgba(140,215,240,0.85)';
+  g.fillText('BUILD  ' + Math.round(bt*100) + '%', bx, by);
+  g.fillStyle = 'rgba(90,130,155,0.62)';
+  g.fillText('LAYER  ' + String(Math.max(1,Math.round(bt*GC))).padStart(3,'0') + ' / 300', bx, by+16);
+  g.fillText('ELEMENTS  ' + Math.round(bt*bt*cellCount).toLocaleString(), bx, by+32);
+  g.restore();
+}
+
+/* 冲击波环 */
+function drawImpactShock(g, imp){
+  g.save();
+  g.globalCompositeOperation = 'lighter';
+  const u = clamp(imp, 0, 1.25);
+  for(let i=0;i<3;i++){
+    const ph = (anim.t*1.5 + i*0.33) % 1;
+    const R = 60 + ph*420;
+    const a = (1-ph)*0.32*u;
+    g.strokeStyle = 'rgba(255,120,60,' + a.toFixed(3) + ')';
+    g.lineWidth = 3*(1-ph) + 0.5;
+    g.beginPath(); g.ellipse(CX, CY, R, R*ASPECT, 0, 0, 7); g.stroke();
+  }
+  g.restore();
+}
+
+/* 设计域虚线外框 */
+function drawFrameBox(g){
+  g.save();
+  g.strokeStyle = 'rgba(34,224,255,0.10)';
+  g.lineWidth = 1;
+  g.setLineDash([6,6]);
+  const p = 46;
+  const a = meshToWorld(0,0), b = meshToWorld(GC,GC);
+  g.strokeRect(a[0]-p, a[1]-p, (b[0]-a[0])+p*2, (b[1]-a[1])+p*2);
+  g.setLineDash([]);
+  g.restore();
+}
+
+/* ==========================================================================
+   12. 粒子发射 / 主循环
+   ========================================================================== */
+let emitPtr = 0;
+function emitFromField(budget, prob){
+  const total = GC*GC;
+  let scanned = 0, emitted = 0;
+  while(scanned < total && emitted < budget){
+    const k = emitPtr;
+    emitPtr = (emitPtr+1) % total;
+    scanned++;
+    if(opt.rho[k] > 0.06) continue;
+    if(RHO[k] <= 0.001) continue;
+    if(rnd() > prob) continue;
+    const my = (k/GC)|0, mx = k - my*GC;
+    const w = meshToWorld(mx+0.5, my+0.5);
+    emitParticles(w[0], w[1], 2, curStress[k], 1.15);
+    emitted++;
+  }
+}
+
+let lastTs = 0, frameN = 0, emitAcc = 0;
+function frame(ts){
+  requestAnimationFrame(frame);
+  if(!anim.playing){ lastTs = ts; return; }
+  const dt = clamp((ts - lastTs)/1000 || 0.016, 0, 0.05);
+  lastTs = ts;
+
+  anim.t += dt;
+  if(anim.t >= TOTAL){ anim.t = TOTAL - 0.001; endAnim(); }
+
+  /* 阶段判定 */
+  let p = 0;
+  for(let i=PH.length-1;i>=0;i--){ if(anim.t >= PH_START[i]){ p = i; break; } }
+  if(p !== anim.phase){
+    anim.phase = p;
+    if(p >= 1 && p <= 4){ caseSolve.solveT = 0; caseSolve.impact = 0; anim.boomFired = false; chime(560 + p*90, 0.07); }
+    if(p === 5) chime(880, 0.09);
+    if(p === 6) chime(1180, 0.08);
+  }
+  const key = PH[p].key;
+  const u = (anim.t - PH_START[p]) / PH[p].dur;
+
+  /* ---------- 阶段状态机 ---------- */
+  let tStress = 0, tLoad = 0, ci = 3, reveal = 1, conc = 1.0;
+
+  if(key === 'build'){
+    anim.buildT = clamp(u/0.86, 0, 1);
+    tStress = 0; tLoad = 0;
+    ci = 0;
+  }
+  else if(key === 'case0' || key === 'case1' || key === 'case2' || key === 'case3'){
+    anim.buildT = 1;
+    caseSolve.solveT = clamp(u/0.74, 0, 1);
+    reveal = 0.385*(1 - Math.pow(1 - Math.min(1, caseSolve.solveT/0.30), 2.4));
+    if(caseSolve.solveT > 0.30)
+      reveal = 0.385 + 0.615*easeInOutCubic((caseSolve.solveT-0.30)/0.70);
+    tStress = 0.88 * smoothstep(0.00, 0.34, u);
+    tLoad   = 0.92 * smoothstep(0.05, 0.45, u);
+    ci = p - 1;
+    if(key === 'case3'){
+      const imp = Math.exp(-Math.pow((u-0.62)/0.085,2)) + 0.55*Math.exp(-Math.pow((u-0.70)/0.10,2));
+      caseSolve.impact = clamp(imp, 0, 1.25);
+      tStress = 0.92 * smoothstep(0.00, 0.30, u);
+      tLoad   = 0.95 * smoothstep(0.05, 0.40, u);
+    }
+  }
+  else if(key === 'optim'){
+    anim.buildT = 1;
+    tStress = 0.86; tLoad = 0.55; ci = 3; reveal = 1;
+    conc = 1 + 0.35*(opt.iter/ITER_TOTAL);          // 应力向保留骨架集中
+    const wantIter = Math.min(ITER_TOTAL, Math.floor((anim.t - PH_START[p]) / ITER_DT));
+    while(opt.iter < wantIter){
+      const rm = stepIteration();
+      if(rm > 0){
+        spawnRipples();
+        emitFromField(24, 0.045);
+        const n = 1 + (opt.iter % 4);
+        for(let i=0;i<n;i++) carbonClick(0.95, (i/n + (opt.iter%7)/7)*0.5);
+      }
+    }
+    if(opt.iter % 6 === 0) carbonClick(0.55, 0.3);
+  }
+  else if(key === 'final'){
+    anim.buildT = 1;
+    const f = smoothstep(0.02, 0.30, u);  // 应力色阶/载荷线快速淡出
+    tStress = 0.86*(1-f);                 // 应力色阶淡出
+    tLoad   = 0.55*(1-f);                 // 载荷线淡出
+    anim.sweep  = clamp((u-0.26)/0.68, 0, 1);
+    anim.finalGlow = smoothstep(0.16, 0.58, u);
+    ci = 3;
+    if(opt.iter < ITER_TOTAL) while(opt.iter < ITER_TOTAL) stepIteration();
+    if(!FINAL_SET) buildFinalSet();
+    for(let i=0;i<GC*GC;i++) opt.rho[i] = FINAL_SET[i];
+    if(!anim.finalSampled){               // 固化最终应力用于脉冲光晕
+      sampleStress(3, 1, 1.35);
+      anim.finalSampled = true;
+    }
+  }
+
+  /* ---------- 平滑插值 ---------- */
+  const lk = 1 - Math.pow(0.0009, dt);
+  anim.stressMix += (tStress - anim.stressMix)*lk;
+  anim.loadLineA += (tLoad - anim.loadLineA)*lk;
+  if(key !== 'final') anim.sweep = -1;
+
+  /* ---------- 应力采样（隔帧） ---------- */
+  if(key !== 'final'){
+    frameN = (frameN+1) & 1;
+    if(frameN === 0){
+      sampleStress(ci, key === 'optim' ? 1 : reveal, key === 'optim' ? conc : 1.0);
+      refreshStressColors();
+    }
+  }
+
+  /* ---------- 数值动画 ---------- */
+  const realRatio = (opt.iter > 0) ? (1 - opt.mass/opt.mass0) : 0;
+  const lossT = (key === 'optim' || key === 'final') ? realRatio*100 : 0;
+  anim.disp.loss += (lossT - anim.disp.loss)*(1 - Math.pow(0.055, dt));
+  const itT = (key === 'final') ? ITER_TOTAL : opt.iter;
+  anim.disp.it += (itT - anim.disp.it)*(1 - Math.pow(0.02, dt));
+  const massT = (key === 'optim' || key === 'final') ? (1.842*(1-realRatio)) : 1.842;
+  anim.disp.m += (massT - anim.disp.m)*(1 - Math.pow(0.05, dt));
+  anim.disp.m0 = 1.842;
+  const smaxT = (key === 'build') ? 0 : peakStress*196;
+  anim.disp.smax += (smaxT - anim.disp.smax)*(1 - Math.pow(0.04, dt));
+
+  /* ---------- 更新与绘制 ---------- */
+  updateParts(dt);
+  for(let i=opt.ripples.length-1;i>=0;i--){
+    const r = opt.ripples[i];
+    r.t += dt;
+    if(r.t >= r.dur) opt.ripples.splice(i,1);
+  }
+  if(key === 'optim'){
+    emitAcc += dt;
+    if(emitAcc > 0.012){ emitAcc = 0; emitFromField(26, 0.05); }
+  }
+
+  render();
+  updateHUD();
+  updateAudio(dt);
+}
+
+function endAnim(){
+  anim.playing = false;
+  el.statusText.textContent = '优化完成';
+  el.statusText.style.color = '#3dffb0';
+  el.statusDot.style.background = '#3dffb0';
+  el.statusDot.style.color = '#3dffb0';
+  setMaster(0, 1.4);
+}
+
+/* ==========================================================================
+   13. 控制
+   ========================================================================== */
+function resetAnim(){
+  anim.t = 0; anim.phase = 0; anim.buildT = 0;
+  anim.stressMix = 0; anim.loadLineA = 0; anim.sweep = -1; anim.finalGlow = 0;
+  anim.disp = { m:1.842, m0:1.842, it:0, loss:0, smax:0 };
+  anim.caseOn = -9; anim.boomFired = false; anim.finalSampled = false;
+  caseSolve.solveT = 0; caseSolve.impact = 0;
+  parts.list.length = 0;
+  frameN = 0; emitAcc = 0; emitPtr = 0;
+  initOptimization();
+  for(let i=0;i<GC*GC;i++) curStress[i] = 0;
+  peakStress = 0;
+}
+function start(){
+  resetAnim();
+  anim.playing = true;
+  lastTs = performance.now();
+  setMaster(audio.enabled ? 0.62 : 0, 1.6);
+}
+document.getElementById('boot').addEventListener('click', ()=>{
+  document.getElementById('boot').classList.add('gone');
+  initAudio();
+  if(audio.ctx && audio.ctx.state === 'suspended') audio.ctx.resume();
+  start();
+});
+document.getElementById('btnReplay').addEventListener('click', ()=>{
+  if(audio.ctx && audio.ctx.state === 'suspended') audio.ctx.resume();
+  start();
+  setMaster(audio.enabled ? 0.62 : 0, 0.9);
+});
+el.btnSound.addEventListener('click', ()=>{
+  audio.enabled = !audio.enabled;
+  el.soundLab.textContent = audio.enabled ? '音效 开' : '音效 关';
+  setMaster(audio.enabled ? 0.62 : 0, 0.35);
+});
+/* 点击画面跳到下一阶段 */
+cv.addEventListener('click', ()=>{
+  if(!anim.playing) return;
+  for(let i=0;i<PH.length;i++){
+    if(anim.t < PH_START[i] + PH[i].dur){ anim.t = PH_START[i] + PH[i].dur - 0.02; break; }
+  }
+});
+window.addEventListener('keydown', e=>{
+  if(e.code === 'Space'){
+    e.preventDefault();
+    anim.playing = !anim.playing;
+    lastTs = performance.now();
+    setMaster(anim.playing && audio.enabled ? 0.62 : 0, 0.35);
+  }
+  if(e.code === 'KeyR') start();
+  if(e.code === 'KeyM') el.btnSound.click();
+});
+
+/* ==========================================================================
+   14. 下载 / 导出功能
+   ========================================================================== */
+const toastEl = document.getElementById('toast');
+let toastTimer = 0;
+function toast(msg, ok){
+  toastEl.textContent = msg;
+  toastEl.classList.toggle('ok', !!ok);
+  toastEl.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(()=> toastEl.classList.remove('show'), 2400);
+}
+function saveBlob(blob, filename){
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(()=> URL.revokeObjectURL(url), 1500);
+}
+function stamp(){
+  const d = new Date(), p = n => String(n).padStart(2,'0');
+  return d.getFullYear() + p(d.getMonth()+1) + p(d.getDate()) + '_' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
+}
+/* 序列化完整页面源码（克隆节点并清除运行时状态，保证下载文件可独立重放） */
+function serializePage(){
+  const clone = document.documentElement.cloneNode(true);
+  // 移除运行时动态生成的节点（重载后会重新生成，避免重复）
+  clone.querySelectorAll('#track .seg, #track .seglab').forEach(n=>n.remove());
+  // 复位交互状态
+  const boot = clone.querySelector('#boot');
+  if(boot) boot.classList.remove('gone');
+  const menu = clone.querySelector('#dlMenu');
+  if(menu) menu.classList.remove('open');
+  const tt = clone.querySelector('#toast');
+  if(tt) tt.classList.remove('show','ok');
+  const lg = clone.querySelector('#legendGrad');
+  if(lg) lg.style.backgroundImage = '';
+  return '<!DOCTYPE html>\n' + clone.outerHTML;
+}
+function downloadHTML(){
+  const name = '无人机机架拓扑优化动画_' + stamp() + '.html';
+  const src = serializePage();
+  saveBlob(new Blob([src], { type:'text/html;charset=utf-8' }), name);
+  return { name, size: src.length };
+}
+function downloadTXT(){
+  const name = '无人机机架拓扑优化动画_源码_' + stamp() + '.txt';
+  const src = serializePage();
+  const head =
+    '=======================================================================\n' +
+    ' 无人机机架拓扑优化动画 · 完整源码（HTML5 Canvas 单文件）\n' +
+    ' Topology Optimization of a Drone Frame · 4 Load Cases · Impact\n' +
+    ' -------' + '---------------------------------------------------------------\n' +
+    ' 打开方式：将本文件内容另存为 .html 后双击，用浏览器打开即可播放\n' +
+    ' 建议浏览器：Chrome / Edge / Firefox / Safari（需支持 Canvas + Web Audio）\n' +
+    ' 交互：空格 暂停/继续 · R 重播 · M 静音 · 点击画面 跳过当前阶段\n' +
+    ' 说明：音效为 Web Audio 实时合成，首次点击「启动演示」后才会发声\n' +
+    ' 阶段：01 建模 → 02 悬停 → 03 前飞 → 04 急转 → 05 硬着陆\n' +
+    '        → 06 拓扑优化 100 步 → 07 成型    合计约 66 秒\n' +
+    ' 生成时间：' + new Date().toLocaleString('zh-CN') + '\n' +
+    '=======================================================================\n\n';
+  const code = src.replace(/<\/script>/g, '<\\/script>');   // 防止外部解析歧义
+  saveBlob(new Blob([head + code], { type:'text/plain;charset=utf-8' }), name);
+  return { name, size: (head + code).length };
+}
+function downloadPNG(){
+  const name = '无人机机架拓扑优化_静帧_' + stamp() + '.png';
+  try{
+    cv.toBlob(blob=>{
+      if(!blob){ toast('截图失败：浏览器未返回图像数据'); return; }
+      saveBlob(blob, name);
+      toast('已保存 PNG：' + name, true);
+    }, 'image/png');
+  }catch(err){
+    toast('截图失败：' + err.message);
+    return null;
+  }
+  return { name, size: 0 };
+}
+/* 导出设计域几何 + 优化结果矢量数据（供 CAD / 后续仿真使用） */
+function downloadJSON(){
+  const name = '无人机机架拓扑优化_结果_' + stamp() + '.json';
+  /* 若尚未进入成型阶段，先按保留率即时推导骨架 */
+  if(!FINAL_SET) buildFinalSet();
+  /* 轮廓追踪：保留骨架的边界单元，取每个网格行的左右端点 */
+  const outline = [];
+  for(let my=0; my<GC; my++){
+    let a = -1, b = -1;
+    for(let mx=0; mx<GC; mx++){
+      if(FINAL_SET && FINAL_SET[my*GC+mx]){ if(a<0) a = mx; b = mx; }
+    }
+    if(a >= 0){
+      const wa = meshToWorld(a, my), wb = meshToWorld(b, my);
+      outline.push([ +wa[0].toFixed(2), +wa[1].toFixed(2), +wb[0].toFixed(2), +wb[1].toFixed(2) ]);
+    }
+  }
+  const mass0 = 1.842;
+  const data = {
+    project: '无人机机架拓扑优化动画',
+    generator: 'HTML5 Canvas SIMP-style topology optimization demo',
+    generatedAt: new Date().toISOString(),
+    unit: 'px (1280×720 舞台坐标系)',
+    designDomain: {
+      stage: { w: W, h: H },
+      center: { x: CX, y: CY },
+      armSpan: ARM_SPAN,
+      aspect: ASPECT,
+      mesh: { cols: GC, rows: GC, cellPx: +CELL_PX.toFixed(4), insideCells: cellCount },
+      geometry: {
+        hubRadius: HUB_R,
+        armRange: [ARM_A0, ARM_A1],
+        armHalfWidth: ARM_HW,
+        rimRadius: RIM_R0,
+        armDirections: ARM_DIR.map(d=>[ +d[0].toFixed(6), +d[1].toFixed(6) ]),
+        rotorCenters: ROTOR.map(p=>[ +p[0].toFixed(2), +p[1].toFixed(2) ])
+      },
+      material: { name:'6061-T6 铝合金', E_GPa:68.9, poisson:0.33, density_g_cm3:2.70 }
+    },
+    loadCases: CASES.map(c=>({
+      index: c.id, name: c.name, code: c.code,
+      spread: c.spread, tipThrust: c.tip,
+      desc: c.desc,
+      type: (c.id===0 ? 'hover' : c.id===1 ? 'cruise' : c.id===2 ? 'yaw' : 'impact')
+    })),
+    optimization: {
+      iterations: ITER_TOTAL,
+      intervalSec: ITER_DT,
+      keepRatio: KEEP_RATIO,
+      priorityWeights: { stress:1.00, seedDistance:1.25, radial:0.28 },
+      seeds: SEEDS.map(s=>({ x:+s.x.toFixed(3), y:+s.y.toFixed(3), radius:+s.rad.toFixed(3) })),
+      /* 每步保留质量比：线性由 1.0 降至 keepRatio（游标式匀速侵蚀） */
+      massRatioCurve: Array.from({ length: ITER_TOTAL+1 }, (_, i)=>
+        +(1 - (1-KEEP_RATIO)*(i/ITER_TOTAL)).toFixed(5)),
+      /* 每步剥离单元数（域内单元数 × 单步侵蚀配额） */
+      cellsPerIteration: opt.budgetPerIter
+    },
+    result: {
+      originalMass_kg: mass0,
+      finalMass_kg: +(mass0*KEEP_RATIO).toFixed(3),
+      massReduction_pct: +((1-KEEP_RATIO)*100).toFixed(1),
+      keptCells: cellCount - Math.floor(cellCount*(1-KEEP_RATIO)),
+      skeletonRowSpans: outline
+    }
+  };
+  const txt = JSON.stringify(data, null, 2);
+  saveBlob(new Blob([txt], { type:'application/json;charset=utf-8' }), name);
+  return { name, size: txt.length };
+}
+
+/* 下载菜单交互 */
+const dlMenu = document.getElementById('dlMenu');
+const btnDownload = document.getElementById('btnDownload');
+btnDownload.addEventListener('click', e=>{
+  e.stopPropagation();
+  dlMenu.classList.toggle('open');
+});
+document.addEventListener('click', ()=> dlMenu.classList.remove('open'));
+dlMenu.addEventListener('click', e=> e.stopPropagation());
+
+function fmtSize(n){
+  if(!n) return '';
+  return n < 1024 ? ' · ' + n + ' B'
+       : n < 1024*1024 ? ' · ' + (n/1024).toFixed(1) + ' KB'
+       : ' · ' + (n/1048576).toFixed(2) + ' MB';
+}
+dlMenu.querySelectorAll('.dlItem').forEach(item=>{
+  item.addEventListener('click', ()=>{
+    const type = item.dataset.type;
+    const done = [];
+    if(type === 'html' || type === 'all'){
+      try{ const r = downloadHTML(); done.push('HTML' + fmtSize(r.size)); }catch(e){ toast('HTML 导出失败：' + e.message); }
+    }
+    if(type === 'txt' || type === 'all'){
+      try{ const r = downloadTXT(); done.push('TXT' + fmtSize(r.size)); }catch(e){ toast('TXT 导出失败：' + e.message); }
+    }
+    if(type === 'png' || type === 'all') downloadPNG();
+    if(type === 'json' || type === 'all'){
+      try{ const r = downloadJSON(); done.push('JSON' + fmtSize(r.size)); }catch(e){ toast('JSON 导出失败：' + e.message); }
+    }
+    dlMenu.classList.remove('open');
+    if(done.length) toast('已开始下载：' + done.join('  '), true);
+    else if(type === 'png') toast('正在生成 PNG 截图…');
+  });
+});
+/* 工具栏截图按钮 */
+document.getElementById('btnShot').addEventListener('click', ()=> downloadPNG());
+
+/* 等比缩放适配 */
+function fit(){
+  const s = Math.min(window.innerWidth/W, window.innerHeight/H);
+  document.getElementById('stage').style.transform = 'scale(' + s + ')';
+}
+window.addEventListener('resize', fit);
+fit();
+
+/* ---------- 启动预计算 ---------- */
+initOptimization();
+precomputeMetal();
+requestAnimationFrame(frame);
+</script>
+
+
+</body></html>

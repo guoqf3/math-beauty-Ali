@@ -1,0 +1,977 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>自行车车架拓扑优化 · Frame Topology Optimization</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{
+    width:100%;height:100%;overflow:hidden;
+    background:#05070e;
+    font-family:system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  }
+  #wrap{
+    position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+  }
+  #cv{
+    display:block;
+    width:min(100vw, calc(100vh * 1000 / 620));
+    height:auto;
+    max-height:100vh;
+    box-shadow:0 0 80px rgba(0,140,255,.18), 0 0 200px rgba(0,80,200,.10);
+    border-radius:6px;
+  }
+  #overlay{
+    position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+    background:radial-gradient(circle at 50% 45%,rgba(10,22,45,.82),rgba(3,5,10,.96));
+    backdrop-filter:blur(3px);
+    z-index:10;transition:opacity .5s;
+  }
+  #overlay.hide{opacity:0;pointer-events:none}
+  #startBtn{
+    padding:16px 46px;border:1.5px solid rgba(90,210,255,.55);
+    border-radius:40px;background:linear-gradient(180deg,rgba(30,120,220,.28),rgba(10,40,90,.35));
+    color:#dff2ff;font-size:17px;font-weight:600;letter-spacing:.14em;cursor:pointer;
+    box-shadow:0 0 30px rgba(0,160,255,.30), inset 0 0 24px rgba(0,160,255,.12);
+    transition:.25s;font-family:inherit;
+  }
+  #startBtn:hover{
+    background:linear-gradient(180deg,rgba(50,170,255,.40),rgba(15,60,130,.45));
+    box-shadow:0 0 50px rgba(0,190,255,.55), inset 0 0 30px rgba(0,190,255,.22);
+    transform:translateY(-1px);
+  }
+  #hint{
+    position:absolute;bottom:12%;color:rgba(130,200,255,.45);
+    font-size:12px;letter-spacing:.22em;
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="cv"></canvas>
+  <div id="overlay">
+    <button id="startBtn">▶ 开始演示</button>
+    <div id="hint">含音效 · 建议开启扬声器</div>
+  </div>
+</div>
+<script>
+(function(){
+'use strict';
+
+/* ============================================================
+   0. 基础常量
+   ============================================================ */
+const W = 1000, H = 620;
+
+const cv  = document.getElementById('cv');
+cv.width = W; cv.height = H;
+const ctx = cv.getContext('2d');
+
+// 离屏帧缓冲（承载 1px 粒子）
+const off   = document.createElement('canvas');
+off.width = W; off.height = H;
+const octx  = off.getContext('2d');
+const imgData = octx.createImageData(W, H);
+const buf32   = new Uint32Array(imgData.data.buffer);
+const buf8    = imgData.data;
+
+/* ---------- 颜色工具 ---------- */
+function packRGB(r,g,b){
+  r = r < 0 ? 0 : r > 255 ? 255 : r|0;
+  g = g < 0 ? 0 : g > 255 ? 255 : g|0;
+  b = b < 0 ? 0 : b > 255 ? 255 : b|0;
+  return (255<<24) | (b<<16) | (g<<8) | r;
+}
+function hash(x,y){
+  let n = Math.imul(x|0, 374761393) + Math.imul(y|0, 668265263);
+  n = Math.imul(n ^ (n>>>13), 1274126177);
+  return ((n ^ (n>>>16)) >>> 0) / 4294967295;
+}
+
+/* ============================================================
+   1. 车架几何  —— 关键修正：提高上管/前叉的基础应力，
+      让它们在优化后能保留为承力骨架，而不是被整根删掉。
+   ============================================================ */
+const BB = {x:392,y:452};   // 五通（中轴）
+const ST = {x:424,y:148};   // 座管顶
+const HT = {x:762,y:146};   // 头管顶
+const HB = {x:800,y:250};   // 头管底
+const RA = {x:172,y:452};   // 后轮轴
+const FA = {x:875,y:455};   // 前轮轴
+
+// base[c] : 平路 / 爬坡 / 冲刺 / 越野 四种工况下的基础应力系数
+const TUBES = [
+  {a:BB, b:HB, r:16, base:[0.62,0.95,0.92,0.58]}, // 下管
+  {a:ST, b:HT, r:13, base:[0.52,0.68,0.92,0.62]}, // 上管 ← 大幅提高，避免被删
+  {a:BB, b:ST, r:13, base:[0.52,0.82,0.78,0.72]}, // 立管
+  {a:HT, b:HB, r:17, base:[0.45,0.65,0.95,0.85]}, // 头管
+  {a:BB, b:RA, r:9,  base:[0.58,0.90,0.86,0.82]}, // 后下叉
+  {a:ST, b:RA, r:8,  base:[0.45,0.58,0.60,0.92]}, // 后上叉
+  {a:HB, b:FA, r:10, base:[0.50,0.58,0.72,0.98]}, // 前叉 ← 大幅提高
+];
+
+// 预计算管段向量 / 法线 / 包围盒
+TUBES.forEach(T=>{
+  T.dx = T.b.x - T.a.x;
+  T.dy = T.b.y - T.a.y;
+  T.L2 = T.dx*T.dx + T.dy*T.dy;
+  const L = Math.sqrt(T.L2);
+  T.nx = -T.dy / L;
+  T.ny =  T.dx / L;
+  const pad = T.r + 1;
+  T.bx0 = Math.min(T.a.x,T.b.x) - pad;
+  T.bx1 = Math.max(T.a.x,T.b.x) + pad;
+  T.by0 = Math.min(T.a.y,T.b.y) - pad;
+  T.by1 = Math.max(T.a.y,T.b.y) + pad;
+});
+
+/* ============================================================
+   2. 生成粒子（1px = 1 有限元单元）
+   ============================================================ */
+const pX = [], pY = [], pMetal = [];
+const sArr = [ [], [], [], [] ];      // 四种工况应力
+const sAll = [];                       // 综合应力
+
+for (let y = 0; y < H; y++){
+  for (let x = 0; x < W; x++){
+
+    let shade = -1;                    // 金属明暗
+    let a0 = 0, a1 = 0, a2 = 0, a3 = 0;
+
+    for (let k = 0; k < TUBES.length; k++){
+      const T = TUBES[k];
+      if (x < T.bx0 || x > T.bx1 || y < T.by0 || y > T.by1) continue;
+
+      let tt = ((x - T.a.x) * T.dx + (y - T.a.y) * T.dy) / T.L2;
+      if (tt < 0) tt = 0; else if (tt > 1) tt = 1;
+      const qx = T.a.x + tt * T.dx, qy = T.a.y + tt * T.dy;
+      const ex = x - qx, ey = y - qy;
+      const d = Math.sqrt(ex*ex + ey*ey);
+      if (d >= T.r) continue;
+
+      const n    = d / T.r;                                    // 0=轴线 1=表面
+      const perp = ((x - T.a.x) * T.nx + (y - T.a.y) * T.ny) / T.r; // 带符号垂距
+
+      // —— 金属质感：顶部高光 / 底部暗部 ——
+      let sv = 0.30 + 0.55 * (0.5 - 0.5 * perp);
+      const hp = (perp + 0.55) * 3.3333;
+      sv += 0.55 * Math.exp(-hp * hp);                          // 顶部镜面高光带
+      if (sv > shade) shade = sv;
+
+      // —— 应力：表面高 / 中性轴低 ——
+      const np = Math.pow(n, 0.8);
+      const kk = 0.28 + 0.72 * np;
+      let v;
+      v = T.base[0] * kk; if (v > a0) a0 = v;
+      v = T.base[1] * kk; if (v > a1) a1 = v;
+      v = T.base[2] * kk; if (v > a2) a2 = v;
+      v = T.base[3] * kk; if (v > a3) a3 = v;
+    }
+
+    if (shade < 0) continue;            // 不在车架上
+
+    // —— 节点应力集中 ——
+    const c1 = Math.exp(-Math.hypot(x-BB.x, y-BB.y)/65);
+    const c2 = Math.exp(-Math.hypot(x-HB.x, y-HB.y)/65);
+    const c3 = Math.exp(-Math.hypot(x-RA.x, y-RA.y)/55);
+    const c4 = Math.exp(-Math.hypot(x-FA.x, y-FA.y)/55);
+    const conc = 1 + 0.55*c1 + 0.40*c2 + 0.35*c3 + 0.30*c4;
+    const nz = hash(x, y) * 0.05;
+
+    const svv = Math.min(shade, 1.12);
+    pX.push(x); pY.push(y);
+    pMetal.push(packRGB(35 + 220*svv, 42 + 220*svv, 58 + 212*svv));
+    sArr[0].push(a0 * conc + nz);
+    sArr[1].push(a1 * conc + nz);
+    sArr[2].push(a2 * conc + nz);
+    sArr[3].push(a3 * conc + nz);
+  }
+}
+
+const N = pX.length;
+
+/* ---------- 应力归一化（用 97% 分位数，避免热点吃掉动态范围） ---------- */
+function normalizeField(arr){
+  const tmp = Float32Array.from(arr);
+  tmp.sort();
+  const q = tmp[Math.floor(tmp.length * 0.97)] || 1;
+  const inv = 1 / q;
+  for (let i = 0; i < arr.length; i++){
+    let v = arr[i] * inv;
+    arr[i] = v > 1 ? 1 : v;
+  }
+}
+const F0 = Float32Array.from(sArr[0]);
+const F1 = Float32Array.from(sArr[1]);
+const F2 = Float32Array.from(sArr[2]);
+const F3 = Float32Array.from(sArr[3]);
+normalizeField(F0); normalizeField(F1); normalizeField(F2); normalizeField(F3);
+
+// 综合场（四种工况平均）
+const FALL = new Float32Array(N);
+for (let i = 0; i < N; i++) FALL[i] = (F0[i] + F1[i] + F2[i] + F3[i]) * 0.25;
+normalizeField(FALL);
+
+const stressFields = [F0, F1, F2, F3, FALL];
+
+/* ---------- 金属色缓存 ---------- */
+const metalColors = Uint32Array.from(pMetal);
+
+/* ============================================================
+   3. 热力图色阶（深蓝→青→绿→亮黄→橙→红→深品红）
+   ============================================================ */
+const PAL = [
+  [0.00, [ 10, 24, 90]],
+  [0.14, [ 16, 80,200]],
+  [0.28, [  0,190,230]],
+  [0.40, [  0,230,160]],
+  [0.52, [ 60,235, 60]],
+  [0.63, [235,245, 40]],
+  [0.74, [255,150, 10]],
+  [0.84, [250, 40, 20]],
+  [0.93, [200,  0,120]],
+  [1.00, [120,  0, 80]],
+];
+const heatLUT = new Uint32Array(256);
+for (let i = 0; i < 256; i++){
+  const t = i / 255;
+  let k = 0;
+  while (k < PAL.length - 2 && t > PAL[k+1][0]) k++;
+  const t0 = PAL[k][0], t1 = PAL[k+1][0];
+  const f = (t - t0) / (t1 - t0);
+  const A = PAL[k][1], B = PAL[k+1][1];
+  heatLUT[i] = packRGB(
+    A[0] + (B[0]-A[0]) * f,
+    A[1] + (B[1]-A[1]) * f,
+    A[2] + (B[2]-A[2]) * f
+  );
+}
+
+/* ============================================================
+   4. 单元状态
+   ============================================================ */
+const alive      = new Uint8Array(N).fill(1);
+let   aliveCount = N;
+let   order      = null;
+let   ptr        = 0;
+let   seeds      = [];
+const ghosts     = [];          // 剥离粒子（快速淡出）
+
+/* ============================================================
+   5. 相位 / 时间轴
+   ============================================================ */
+const CASES = [
+  {name:'平路巡航', en:'FLAT ROAD', speed:1.0},
+  {name:'爬坡',     en:'CLIMB',     speed:1.35},
+  {name:'冲刺',     en:'SPRINT',    speed:1.75},
+  {name:'越野',     en:'OFF-ROAD',  speed:0.85},
+];
+
+const PHASES = [
+  {n:'intro',    d:2.0,  cs:0},
+  {n:'flat',     d:4.5,  cs:0},
+  {n:'climb',    d:4.5,  cs:1},
+  {n:'sprint',   d:4.5,  cs:2},
+  {n:'offroad',  d:4.5,  cs:3},
+  {n:'optimize', d:40.0, cs:4},
+  {n:'final',    d:6.0,  cs:4},
+];
+const TOTAL = PHASES.reduce((a,p)=>a+p.d, 0);
+
+let phaseIdx = 0, phaseT = 0, T = 0;
+let curField = 0;
+let heatAmount = 0.0;               // 当前热力图混合权重
+const HEAT_BASE = 0.88;             // 热力图主导 88%
+let iter = 0, iterAcc = 0;
+let running = false;
+
+/* ============================================================
+   6. 载荷示意
+   ============================================================ */
+const FORCES = [
+  // 平路
+  [
+    {x:BB.x, y:BB.y, dx: 0,   dy: 1,   mag:1.0},
+    {x:ST.x, y:ST.y, dx: 0,   dy: 1,   mag:0.45},
+  ],
+  // 爬坡
+  [
+    {x:BB.x, y:BB.y, dx:-0.18,dy: 1,   mag:1.55},
+    {x:HT.x, y:HT.y, dx:-1,   dy: 0.15,mag:0.85},
+  ],
+  // 冲刺
+  [
+    {x:BB.x, y:BB.y, dx: 0.12,dy: 1,   mag:1.75},
+    {x:HT.x, y:HT.y, dx:-0.5, dy:-0.6, mag:1.35},
+  ],
+  // 越野
+  [
+    {x:RA.x, y:RA.y, dx: 0,   dy:-1,   mag:1.45},
+    {x:FA.x, y:FA.y, dx: 0,   dy:-1,   mag:1.65},
+    {x:BB.x, y:BB.y, dx: 0,   dy: 1,   mag:1.0},
+  ],
+];
+
+/* ============================================================
+   7. 音频
+   ============================================================ */
+let actx = null, master = null, noiseBuf = null;
+let chainTimer = 0;
+
+function initAudio(){
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  actx = new AC();
+  master = actx.createGain();
+  master.gain.value = 0.30;
+  master.connect(actx.destination);
+
+  const len = Math.floor(actx.sampleRate * 1.0);
+  noiseBuf = actx.createBuffer(1, len, actx.sampleRate);
+  const d = noiseBuf.getChannelData(0);
+  for (let i = 0; i < len; i++) d[i] = Math.random()*2 - 1;
+}
+
+// 链条咔哒声
+function playClick(vol){
+  if (!actx || !noiseBuf) return;
+  const t = actx.currentTime;
+  const src = actx.createBufferSource();
+  src.buffer = noiseBuf;
+  const bp = actx.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.frequency.value = 1700 + Math.random()*2400;
+  bp.Q.value = 2.6;
+  const g = actx.createGain();
+  g.gain.setValueAtTime(0, t);
+  g.gain.linearRampToValueAtTime(vol, t + 0.003);
+  g.gain.exponentialRampToValueAtTime(0.0006, t + 0.07);
+  src.connect(bp); bp.connect(g); g.connect(master);
+  src.start(t, Math.random()*0.8, 0.09);
+}
+
+// 碳纤维固化 / 结构剥离声
+function playCrackle(){
+  if (!actx || !noiseBuf) return;
+  const t0 = actx.currentTime;
+  const n = 2 + ((Math.random()*3)|0);
+  for (let i = 0; i < n; i++){
+    const t = t0 + Math.random()*0.13;
+    const src = actx.createBufferSource();
+    src.buffer = noiseBuf;
+    const hp = actx.createBiquadFilter();
+    hp.type = 'highpass';
+    hp.frequency.value = 2400 + Math.random()*3200;
+    const g = actx.createGain();
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(0.075 + Math.random()*0.04, t + 0.002);
+    g.gain.exponentialRampToValueAtTime(0.0004, t + 0.055);
+    src.connect(hp); hp.connect(g); g.connect(master);
+    src.start(t, Math.random()*0.9, 0.06);
+  }
+}
+
+/* ============================================================
+   8. 优化核心 —— 重写
+   ============================================================ */
+
+/* 种子点：在低应力区挑选 3~5 个彼此分散的点 */
+function pickSeeds(){
+  const cand = [];
+  for (let i = 0; i < N; i++) if (FALL[i] < 0.42) cand.push(i);
+  if (cand.length < 8) return [];
+
+  const chosen = [ cand[(Math.random()*cand.length)|0] ];
+  const target = 3 + ((Math.random()*3)|0);   // 3 ~ 5
+
+  while (chosen.length < target){
+    let best = -1, bestD = -1;
+    const step = Math.max(1, Math.floor(cand.length / 700));
+    for (let k = 0; k < cand.length; k += step){
+      const i = cand[k];
+      let dmin = Infinity;
+      for (let s = 0; s < chosen.length; s++){
+        const si = chosen[s];
+        const dx = pX[i]-pX[si], dy = pY[i]-pY[si];
+        const d = dx*dx + dy*dy;
+        if (d < dmin) dmin = d;
+      }
+      if (dmin > bestD){ bestD = dmin; best = i; }
+    }
+    if (best < 0 || bestD < 3000) break;    // 太近就不加了
+    chosen.push(best);
+  }
+  return chosen;
+}
+
+/* 启动优化：按「移除优先级」升序排列 */
+function startOptimization(){
+  seeds = pickSeeds();
+
+  // 到最近种子点的归一化距离（仅在排序时作为轻微修正项）
+  const seedDist = new Float32Array(N);
+  const RAD2 = 260 * 260;
+  for (let i = 0; i < N; i++){
+    if (seeds.length === 0){ seedDist[i] = 1; continue; }
+    let d2min = Infinity;
+    for (let s = 0; s < seeds.length; s++){
+      const si = seeds[s];
+      const dx = pX[i]-pX[si], dy = pY[i]-pY[si];
+      const d2 = dx*dx + dy*dy;
+      if (d2 < d2min) d2min = d2;
+    }
+    seedDist[i] = Math.min(1, d2min / RAD2);
+  }
+
+  // 移除分数：低应力优先，靠近种子点略加分（先被侵蚀）
+  const score = new Float32Array(N);
+  for (let i = 0; i < N; i++){
+    let s = FALL[i];                                    // 应力主导
+    s -= (1 - seedDist[i]) * 0.08;                      // 靠近种子点 → 先侵蚀
+    s += (hash(pX[i]*13+5, pY[i]*17+9) - 0.5) * 0.04;   // 轻微噪声
+    score[i] = s;
+  }
+
+  const arr = new Array(N);
+  for (let i = 0; i < N; i++) arr[i] = i;
+  arr.sort((a,b) => score[a] - score[b]);
+  order = arr;
+  ptr = 0;
+}
+
+/* 单次迭代：阈值上升式侵蚀，保留下高应力骨架 */
+function doIteration(){
+  if (iter >= 100 || !order) return;
+  iter++;
+
+  // 阈值 0.10 → 0.46（非对称，后期缓慢）
+  const t = iter / 100;
+  const th = 0.10 + Math.pow(t, 0.85) * 0.36;
+
+  // 最少保留 62% 单元（重量减轻 ≈ 38%，更接近真实优化结果）
+  const minAlive = Math.floor(N * 0.62);
+
+  // 每轮最多移除 0.8% 单元，避免突然出现大洞
+  const maxRemove = Math.max(2, Math.ceil(N * 0.008));
+  let removed = 0;
+
+  for (let k = 0; k < order.length && removed < maxRemove; k++){
+    const i = order[k];
+    if (!alive[i]) continue;
+    if (aliveCount <= minAlive) break;
+
+    // 只移除低于当前阈值的单元 —— 高应力区域天然免疫
+    if (FALL[i] < th){
+      alive[i] = 0;
+      aliveCount--;
+      removed++;
+
+      // 剥离粒子：1px，快速淡出 300ms
+      if (ghosts.length < 4000){
+        ghosts.push({
+          x: pX[i], y: pY[i],
+          c: metalColors[i],
+          age: 0, life: 0.30
+        });
+      }
+    }
+  }
+
+  if (removed > 0) playCrackle();
+}
+
+/* ============================================================
+   9. 颜色缓存
+   ============================================================ */
+let currentColors = null;
+let cacheField = -1, cacheHeat = -1;
+
+function updateColors(){
+  if (cacheField === curField && Math.abs(cacheHeat - heatAmount) < 0.008) return;
+
+  const fld = stressFields[curField];
+  const out = new Uint32Array(N);
+  const hAmt = heatAmount;
+
+  for (let i = 0; i < N; i++){
+    let si = (fld[i] * 255) | 0;
+    if (si < 0) si = 0; else if (si > 255) si = 255;
+    const hc = heatLUT[si];
+    const mc = metalColors[i];
+
+    const mr = mc & 255,        mg = (mc >> 8) & 255,  mb = (mc >> 16) & 255;
+    const hr = hc & 255,        hg = (hc >> 8) & 255,  hb = (hc >> 16) & 255;
+
+    out[i] = packRGB(
+      mr + (hr - mr) * hAmt,
+      mg + (hg - mg) * hAmt,
+      mb + (hb - mb) * hAmt
+    );
+  }
+  currentColors = out;
+  cacheField = curField;
+  cacheHeat  = heatAmount;
+}
+
+/* ============================================================
+   10. 阶段控制
+   ============================================================ */
+function enterPhase(i){
+  const p = PHASES[i];
+  if (p.n === 'optimize'){
+    curField = 4;
+    startOptimization();
+  } else if (p.n === 'final'){
+    curField = 4;
+  } else {
+    curField = p.cs;
+  }
+}
+
+/* ============================================================
+   11. 更新
+   ============================================================ */
+let chainSpeed = 1.0;
+
+function update(dt){
+  if (!running) return;
+  T += dt;
+  phaseT += dt;
+
+  while (phaseIdx < PHASES.length - 1 && phaseT >= PHASES[phaseIdx].d){
+    phaseT -= PHASES[phaseIdx].d;
+    phaseIdx++;
+    enterPhase(phaseIdx);
+  }
+
+  const ph = PHASES[phaseIdx];
+
+  // 热力图淡入 / 淡出
+  const targetHeat = (ph.n === 'final') ? 0 : HEAT_BASE;
+  heatAmount += (targetHeat - heatAmount) * Math.min(1, dt * 3.2);
+
+  // 优化迭代：100 次，间隔约 0.4s
+  if (ph.n === 'optimize'){
+    iterAcc += dt;
+    while (iterAcc >= 0.4 && iter < 100){
+      iterAcc -= 0.4;
+      doIteration();
+    }
+  }
+
+  // 幽灵粒子
+  for (let i = ghosts.length - 1; i >= 0; i--){
+    const g = ghosts[i];
+    g.age += dt;
+    if (g.age >= g.life) ghosts.splice(i, 1);
+  }
+
+  // 链条音效节奏
+  if (actx){
+    if (ph.n === 'flat' || ph.n === 'climb' || ph.n === 'sprint' || ph.n === 'offroad'){
+      chainSpeed = CASES[ph.cs].speed;
+    } else if (ph.n === 'optimize'){
+      chainSpeed = 0.7;
+    } else {
+      chainSpeed = 0.45;
+    }
+    chainTimer -= dt;
+    if (chainTimer <= 0){
+      chainTimer = 0.115 / chainSpeed;
+      playClick(0.10 + 0.06 * chainSpeed);
+    }
+  }
+}
+
+/* ============================================================
+   12. 绘制：背景 / 车轮 / 载荷 / UI
+   ============================================================ */
+function drawBackground(t){
+  const g = ctx.createRadialGradient(W*0.5, H*0.44, 80, W*0.5, H*0.5, 800);
+  g.addColorStop(0,   '#111c31');
+  g.addColorStop(0.55,'#0a1120');
+  g.addColorStop(1,   '#04060c');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+
+  // 网格
+  ctx.strokeStyle = 'rgba(60,160,220,0.065)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let x = 0; x <= W; x += 40){ ctx.moveTo(x, 0); ctx.lineTo(x, H); }
+  for (let y = 0; y <= H; y += 40){ ctx.moveTo(0, y); ctx.lineTo(W, y); }
+  ctx.stroke();
+
+  // 地平线光带
+  const lg = ctx.createLinearGradient(0, H*0.72, 0, H);
+  lg.addColorStop(0, 'rgba(0,140,255,0)');
+  lg.addColorStop(1, 'rgba(0,120,220,0.07)');
+  ctx.fillStyle = lg;
+  ctx.fillRect(0, H*0.72, W, H*0.28);
+}
+
+function drawWheel(cx, cy, r, t, dir){
+  ctx.save();
+  ctx.translate(cx, cy);
+
+  ctx.strokeStyle = 'rgba(110,185,235,0.16)';
+  ctx.lineWidth = 6;
+  ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.stroke();
+
+  ctx.strokeStyle = 'rgba(110,185,235,0.10)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.arc(0,0,r-14,0,Math.PI*2); ctx.stroke();
+
+  ctx.rotate(t * (dir ? 2.1 : -2.1));
+  ctx.strokeStyle = 'rgba(90,170,220,0.11)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let i = 0; i < 18; i++){
+    const a = i / 18 * Math.PI * 2;
+    ctx.moveTo(Math.cos(a)*(r-14), Math.sin(a)*(r-14));
+    ctx.lineTo(Math.cos(a+0.55)*13, Math.sin(a+0.55)*13);
+  }
+  ctx.stroke();
+
+  ctx.fillStyle = 'rgba(150,215,255,0.22)';
+  ctx.beginPath(); ctx.arc(0,0,8,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+
+function drawWheels(t){
+  drawWheel(RA.x, RA.y, 108, t, 0);
+  drawWheel(FA.x, FA.y, 108, t, 1);
+}
+
+function drawForces(t, cs, alpha){
+  const list = FORCES[cs];
+  if (!list) return;
+
+  for (let i = 0; i < list.length; i++){
+    const f = list[i];
+    const L = 58 * f.mag;
+    const len = L * (0.86 + 0.14 * Math.sin(t * 6 + i * 1.7));
+    const ex = f.x + f.dx * len;
+    const ey = f.y + f.dy * len;
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.shadowColor = 'rgba(255,175,40,0.95)';
+    ctx.shadowBlur = 16;
+    ctx.strokeStyle = 'rgba(255,200,70,0.95)';
+    ctx.lineWidth = 3.2;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(f.x, f.y);
+    ctx.lineTo(ex, ey);
+    ctx.stroke();
+
+    // 箭头
+    const ang = Math.atan2(f.dy, f.dx);
+    ctx.beginPath();
+    ctx.moveTo(ex, ey);
+    ctx.lineTo(ex - 13*Math.cos(ang - 0.42), ey - 13*Math.sin(ang - 0.42));
+    ctx.lineTo(ex - 13*Math.cos(ang + 0.42), ey - 13*Math.sin(ang + 0.42));
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(255,215,110,0.98)';
+    ctx.fill();
+
+    // 脉冲环
+    const pr = (t * 1.4 + i * 0.33) % 1;
+    ctx.shadowBlur = 10;
+    ctx.globalAlpha = alpha * (1 - pr) * 0.75;
+    ctx.strokeStyle = 'rgba(255,205,90,0.9)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(f.x, f.y, 9 + pr * 46, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // 施力点
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = 'rgba(255,235,160,0.95)';
+    ctx.beginPath(); ctx.arc(f.x, f.y, 4.2, 0, Math.PI*2); ctx.fill();
+
+    ctx.restore();
+  }
+}
+
+function drawUI(){
+  const ph = PHASES[phaseIdx];
+  const weightLoss = (1 - aliveCount / N) * 100;
+
+  ctx.save();
+
+  // —— 标题 ——
+  ctx.font = '700 27px system-ui,-apple-system,"Segoe UI","PingFang SC",sans-serif';
+  ctx.fillStyle = '#eaf6ff';
+  ctx.shadowColor = 'rgba(0,190,255,0.75)';
+  ctx.shadowBlur = 20;
+  ctx.fillText('车架拓扑优化', 36, 56);
+
+  ctx.shadowBlur = 0;
+  ctx.font = '500 11px system-ui,sans-serif';
+  ctx.fillStyle = 'rgba(120,200,255,0.62)';
+  ctx.fillText('F R A M E   T O P O L O G Y   O P T I M I Z A T I O N', 36, 78);
+
+  // —— 工况 ——
+  let label, sub;
+  if (ph.n === 'intro'){
+    label = '系统初始化'; sub = 'SOLID MODEL';
+  } else if (ph.n === 'optimize'){
+    label = '多工况综合优化'; sub = 'MULTI-LOAD SIMP';
+  } else if (ph.n === 'final'){
+    label = '优化完成'; sub = 'FINAL STRUCTURE';
+  } else {
+    label = CASES[ph.cs].name; sub = CASES[ph.cs].en;
+  }
+
+  ctx.textAlign = 'right';
+  ctx.font = '700 24px system-ui,sans-serif';
+  ctx.fillStyle = '#7df0ff';
+  ctx.shadowColor = 'rgba(0,220,255,0.8)';
+  ctx.shadowBlur = 18;
+  ctx.fillText(label, W - 36, 56);
+
+  ctx.shadowBlur = 0;
+  ctx.font = '500 11px system-ui,sans-serif';
+  ctx.fillStyle = 'rgba(120,200,255,0.55)';
+  ctx.fillText(sub, W - 36, 78);
+  ctx.textAlign = 'left';
+
+  // —— 底部信息面板 ——
+  const panelY = H - 74;
+  ctx.fillStyle = 'rgba(8,18,34,0.55)';
+  ctx.strokeStyle = 'rgba(70,170,240,0.18)';
+  ctx.lineWidth = 1;
+  roundRect(ctx, 30, panelY, W - 60, 52, 10);
+  ctx.fill();
+  ctx.stroke();
+
+  // 进度条
+  const barX = 48, barW = W - 300, barH = 7;
+  const barY = panelY + 32;
+
+  ctx.fillStyle = 'rgba(60,130,200,0.20)';
+  roundRect(ctx, barX, barY, barW, barH, 4);
+  ctx.fill();
+
+  let prog = 0;
+  if (ph.n === 'optimize') prog = iter / 100;
+  else if (ph.n === 'final') prog = 1;
+  else if (ph.n === 'intro') prog = 0;
+  else prog = 0.02;
+
+  if (prog > 0){
+    const g = ctx.createLinearGradient(barX, 0, barX + barW * prog, 0);
+    g.addColorStop(0, '#00d0ff');
+    g.addColorStop(0.6, '#35f0c0');
+    g.addColorStop(1, '#ffe23a');
+    ctx.fillStyle = g;
+    ctx.shadowColor = 'rgba(0,220,255,0.85)';
+    ctx.shadowBlur = 12;
+    roundRect(ctx, barX, barY, barW * prog, barH, 4);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+  }
+
+  // 迭代计数
+  ctx.font = '600 13px ui-monospace,Menlo,Consolas,monospace';
+  ctx.fillStyle = 'rgba(140,220,255,0.85)';
+  ctx.fillText('ITER  ' + String(iter).padStart(3,'0') + ' / 100', barX, panelY + 20);
+
+  ctx.font = '500 12px system-ui,sans-serif';
+  ctx.fillStyle = 'rgba(120,190,240,0.55)';
+  ctx.fillText('单元数 ' + aliveCount.toLocaleString() + ' / ' + N.toLocaleString(), barX + 210, panelY + 20);
+
+  // 减重百分比
+  ctx.textAlign = 'right';
+  ctx.font = '700 13px system-ui,sans-serif';
+  ctx.fillStyle = 'rgba(140,220,255,0.75)';
+  ctx.fillText('重量减轻', W - 48, panelY + 20);
+
+  ctx.font = '800 30px ui-monospace,Menlo,Consolas,monospace';
+  const cg = ctx.createLinearGradient(W - 220, 0, W - 48, 0);
+  cg.addColorStop(0, '#5ff0c0');
+  cg.addColorStop(1, '#ffe23a');
+  ctx.fillStyle = cg;
+  ctx.shadowColor = 'rgba(90,240,190,0.75)';
+  ctx.shadowBlur = 18;
+  ctx.fillText('−' + weightLoss.toFixed(1) + '%', W - 48, panelY + 50);
+  ctx.shadowBlur = 0;
+  ctx.textAlign = 'left';
+
+  // —— 最终成型提示 ——
+  if (ph.n === 'final'){
+    const a = Math.min(1, phaseT * 1.2) * (1 - Math.max(0, (phaseT - 4.5) / 1.5));
+    ctx.globalAlpha = Math.max(0, a);
+    ctx.textAlign = 'center';
+    ctx.font = '700 22px system-ui,sans-serif';
+    ctx.fillStyle = '#9ff5ff';
+    ctx.shadowColor = 'rgba(0,230,255,0.9)';
+    ctx.shadowBlur = 24;
+    ctx.fillText('优化完成 · 减重 ' + weightLoss.toFixed(1) + '%', W/2, H - 108);
+    ctx.shadowBlur = 0;
+    ctx.textAlign = 'left';
+    ctx.globalAlpha = 1;
+  }
+
+  ctx.restore();
+}
+
+function roundRect(c, x, y, w, h, r){
+  if (w < r*2) r = w/2;
+  if (h < r*2) r = h/2;
+  c.beginPath();
+  c.moveTo(x + r, y);
+  c.lineTo(x + w - r, y);
+  c.quadraticCurveTo(x + w, y, x + w, y + r);
+  c.lineTo(x + w, y + h - r);
+  c.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  c.lineTo(x + r, y + h);
+  c.quadraticCurveTo(x, y + h, x, y + h - r);
+  c.lineTo(x, y + r);
+  c.quadraticCurveTo(x, y, x + r, y);
+  c.closePath();
+}
+
+/* ============================================================
+   13. 渲染
+   ============================================================ */
+function render(){
+  const ph = PHASES[phaseIdx];
+  const isFinal = (ph.n === 'final');
+
+  // ---- 背景 & 车轮 ----
+  drawBackground(T);
+  drawWheels(T);
+
+  // ---- 粒子帧缓冲 ----
+  updateColors();
+  buf32.fill(0);
+
+  if (isFinal){
+    // 最终：金属光泽 + 镜面高光扫过 + 高应力青绿脉冲
+    const sweep = ((T * 0.42) % 1) * (W + 700) - 350;
+    const colors = currentColors;
+
+    for (let i = 0; i < N; i++){
+      if (!alive[i]) continue;
+
+      let c = colors[i];
+      const x = pX[i];
+
+      // 镜面高光扫过
+      const dx = x - sweep;
+      const gl = Math.exp(-dx * dx / 24000);
+      if (gl > 0.008){
+        const r = c & 255, g = (c >> 8) & 255, b = (c >> 16) & 255;
+        c = packRGB(r + 175*gl, g + 190*gl, b + 205*gl);
+      }
+
+      // 高应力骨架脉冲光晕
+      const st = FALL[i];
+      if (st > 0.70){
+        const pu = 0.5 + 0.5 * Math.sin(T * 5 - st * 7);
+        const amt = pu * ((st - 0.70) / 0.30) * 0.95;
+        const r = c & 255, g = (c >> 8) & 255, b = (c >> 16) & 255;
+        c = packRGB(r + 30*amt, g + 205*amt, b + 225*amt);
+      }
+
+      buf32[pY[i] * W + x] = c;
+    }
+  } else {
+    const colors = currentColors;
+    for (let i = 0; i < N; i++){
+      if (alive[i]) buf32[pY[i] * W + pX[i]] = colors[i];
+    }
+  }
+
+  // ---- 剥离粒子（快速淡出） ----
+  for (let i = 0; i < ghosts.length; i++){
+    const g = ghosts[i];
+    const k = 1 - g.age / g.life;
+    if (k <= 0) continue;
+    const a = (k * k * 255) | 0;
+    buf32[g.y * W + g.x] = (a << 24) | (g.c & 0x00FFFFFF);
+  }
+
+  octx.putImageData(imgData, 0, 0);
+  ctx.drawImage(off, 0, 0);
+
+  // ---- 载荷可视化 ----
+  if (ph.n === 'flat' || ph.n === 'climb' || ph.n === 'sprint' || ph.n === 'offroad'){
+    let a = 1;
+    if (phaseT < 0.4) a = phaseT / 0.4;
+    if (phaseT > ph.d - 0.4) a = Math.max(0, (ph.d - phaseT) / 0.4);
+    drawForces(T, ph.cs, a);
+  } else if (ph.n === 'intro'){
+    // 开场时的载荷线淡入
+    drawForces(T, 0, Math.min(1, phaseT / 1.5) * 0.85);
+  }
+
+  // ---- UI ----
+  drawUI();
+
+  // ---- 扫描线质感 ----
+  ctx.save();
+  ctx.globalAlpha = 0.035;
+  ctx.fillStyle = '#8fd8ff';
+  for (let y = ((T * 60) % 4); y < H; y += 4){
+    ctx.fillRect(0, y, W, 1);
+  }
+  ctx.restore();
+
+  // ---- 暗角 ----
+  const vg = ctx.createRadialGradient(W/2, H/2, H*0.35, W/2, H/2, H*0.95);
+  vg.addColorStop(0, 'rgba(0,0,0,0)');
+  vg.addColorStop(1, 'rgba(0,0,0,0.55)');
+  ctx.fillStyle = vg;
+  ctx.fillRect(0, 0, W, H);
+}
+
+/* ============================================================
+   14. 主循环
+   ============================================================ */
+let lastT = 0;
+
+function loop(now){
+  requestAnimationFrame(loop);
+
+  if (!lastT) lastT = now;
+  let dt = (now - lastT) / 1000;
+  lastT = now;
+  if (dt > 0.06) dt = 0.06;
+
+  update(dt);
+  render();
+}
+
+/* ============================================================
+   15. 启动
+   ============================================================ */
+const overlay  = document.getElementById('overlay');
+const startBtn = document.getElementById('startBtn');
+
+startBtn.addEventListener('click', () => {
+  overlay.classList.add('hide');
+  initAudio();
+  if (actx && actx.state === 'suspended') actx.resume();
+
+  running = true;
+  phaseIdx = 0;
+  phaseT = 0;
+  T = 0;
+  lastT = 0;
+  enterPhase(0);
+});
+
+// 首帧静态绘制（便于开场预览）
+enterPhase(0);
+render();
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>
