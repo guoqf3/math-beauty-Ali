@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>洛伦兹变换 · 霓虹深海琵琶鱼</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #000; overflow: hidden;
+    font-family: 'Cambria Math', 'Times New Roman', serif;
+  }
+  #app { display: flex; height: 100%; width: 100%; }
+
+  /* ---------- 左侧：洛伦兹变换 ---------- */
+  #left {
+    width: 20%;
+    min-width: 170px;
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background:
+      radial-gradient(circle at 50% 48%, rgba(0, 120, 120, 0.16), transparent 68%),
+      radial-gradient(circle at 50% 48%, rgba(0, 80, 60, 0.10), transparent 90%);
+    border-right: 1px solid rgba(64, 255, 220, 0.10);
+    overflow: hidden;
+  }
+  #left::after {
+    content: '';
+    position: absolute; inset: 0;
+    background: repeating-linear-gradient(
+      to bottom,
+      rgba(80, 255, 220, 0.022) 0px,
+      rgba(80, 255, 220, 0.022) 1px,
+      transparent 1px,
+      transparent 4px
+    );
+    pointer-events: none;
+  }
+  #lorentz { width: 100%; height: 100%; display: block; }
+
+  .halo { animation: haloPulse 5.2s ease-in-out infinite; }
+  .core { animation: corePulse 5.2s ease-in-out infinite; }
+
+  @keyframes haloPulse {
+    0%, 100% { opacity: 0.16; }
+    50%      { opacity: 0.80; }
+  }
+  @keyframes corePulse {
+    0%, 100% { opacity: 0.78; }
+    50%      { opacity: 1.00; }
+  }
+
+  /* ---------- 右侧：深海琵琶鱼 ---------- */
+  #right {
+    width: 80%;
+    position: relative;
+    overflow: hidden;
+    background: #000306;
+  }
+  #fish {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+</style>
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ================= 左：洛伦兹变换 ================= -->
+  <div id="left">
+    <svg id="lorentz" viewBox="0 0 320 560" preserveAspectRatio="xMidYMid meet">
+      <defs>
+        <linearGradient id="ng" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%"   stop-color="#6ff9ff"/>
+          <stop offset="52%"  stop-color="#48dfff"/>
+          <stop offset="100%" stop-color="#3dffa4"/>
+        </linearGradient>
+        <filter id="softGlow" x="-60%" y="-60%" width="220%" height="220%">
+          <feGaussianBlur stdDeviation="2.6" result="b"/>
+          <feMerge>
+            <feMergeNode in="b"/>
+            <feMergeNode in="SourceGraphic"/>
+          </feMerge>
+        </filter>
+        <filter id="bigGlow" x="-120%" y="-120%" width="340%" height="340%">
+          <feGaussianBlur stdDeviation="10"/>
+        </filter>
+
+        <g id="eqs" fill="url(#ng)">
+          <!-- 标题 -->
+          <text x="160" y="70" text-anchor="middle"
+                font-size="17" letter-spacing="7"
+                font-family="system-ui, 'PingFang SC', 'Microsoft YaHei', sans-serif"
+                fill="#8bfcff" opacity="0.95">洛伦兹变换</text>
+
+          <line x1="70" y1="92" x2="250" y2="92"
+                stroke="#4be6ff" stroke-width="0.8" opacity="0.35"/>
+
+          <!-- 公式主体 -->
+          <text x="160" y="164" text-anchor="middle" font-size="27">x′ = γ (x − v t)</text>
+          <text x="160" y="222" text-anchor="middle" font-size="27">y′ = y</text>
+          <text x="160" y="280" text-anchor="middle" font-size="27">z′ = z</text>
+          <text x="160" y="338" text-anchor="middle" font-size="27">t′ = γ (t − v x / c²)</text>
+
+          <line x1="70" y1="378" x2="250" y2="378"
+                stroke="#4be6ff" stroke-width="0.8" opacity="0.35"/>
+
+          <text x="160" y="428" text-anchor="middle" font-size="24">γ = 1 / √(1 − v²/c²)</text>
+          <text x="160" y="486" text-anchor="middle" font-size="15"
+                font-family="system-ui, 'PingFang SC', sans-serif"
+                opacity="0.72">v → c 时，γ → ∞</text>
+        </g>
+      </defs>
+
+      <!-- 外发光层 -->
+      <use href="#eqs" class="halo" filter="url(#bigGlow)"/>
+      <!-- 清晰层 -->
+      <use href="#eqs" class="core" filter="url(#softGlow)"/>
+    </svg>
+  </div>
+
+  <!-- ================= 右：深海琵琶鱼 ================= -->
+  <div id="right">
+    <canvas id="fish"></canvas>
+  </div>
+
+</div>
+
+<script>
+(function () {
+"use strict";
+
+/* =========================================================
+   基础设置
+   ========================================================= */
+const cv  = document.getElementById('fish');
+const ctx = cv.getContext('2d');
+
+let W = 1, H = 1, CX = 0, CY = 0, S = 1;
+
+const TAU = Math.PI * 2;
+
+/* 世界坐标：鱼体中心在原点，体长 BL */
+const NL = 150;      // 体轴采样数
+const BL = 300;      // 体长（世界单位）
+
+/* 色相 / 亮度工具 */
+function hsl(h, s, l, a) {
+  h = ((h % 360) + 360) % 360;
+  return 'hsla(' + h.toFixed(0) + ',' + Math.round(s * 100) + '%,' +
+         Math.round(l * 100) + '%,' + (a === undefined ? 1 : a) + ')';
+}
+
+/* =========================================================
+   体形（世界坐标）
+   ========================================================= */
+
+// 半宽：头部饱满、尾部收束
+function halfWidth(s) {
+  let hw = Math.pow(Math.sin(Math.PI * Math.pow(s, 0.45)), 0.9);
+  hw *= 1 - 0.5 * Math.pow(s, 2.4);
+  return Math.max(0.6, hw * BL * 0.155);
+}
+
+// 体轴：横向铺展 + 后段正弦摆动 + 轻微弓身
+function spinePt(s, t) {
+  const x = (s - 0.5) * BL;
+  const amp = BL * (0.010 + 0.082 * Math.pow(s, 1.9));
+  const y = amp * Math.sin(s * 5.4 - t * 2.2)
+          + BL * 0.030 * Math.sin(Math.PI * s)
+          + BL * 0.012 * Math.sin(s * 3.1 + t * 1.3);
+  return [x, y];
+}
+
+// 采样：位置 / 切线 / 法线 / 上下缘
+function buildBody(t) {
+  const P = [];
+  for (let i = 0; i <= NL; i++) {
+    const s = i / NL;
+    const p = spinePt(s, t);
+    P.push({ s: s, x: p[0], y: p[1], hw: halfWidth(s) });
+  }
+  for (let i = 0; i <= NL; i++) {
+    const a = P[Math.max(0, i - 1)];
+    const b = P[Math.min(NL, i + 1)];
+    let dx = b.x - a.x, dy = b.y - a.y;
+    const m = Math.hypot(dx, dy) || 1;
+    dx /= m; dy /= m;
+    const p = P[i];
+    p.tx = dx; p.ty = dy;
+    p.nx = -dy; p.ny = dx;          // 法线（默认指向"下方"）
+  }
+  return P;
+}
+
+// 取边缘点：side = +1 上缘，-1 下缘，off 为额外外扩
+function edgePt(p, side, off) {
+  const r = p.hw + (off || 0);
+  return [p.x - p.nx * side * r, p.y - p.ny * side * r];
+}
+
+/* =========================================================
+   主绘制：一只深海琵琶鱼
+   ========================================================= */
+function drawFish(t) {
+  const P = buildBody(t);
+
+  /* ---------- 0. 环境辉光 ---------- */
+  let g = ctx.createRadialGradient(0, 0, 0, 0, 0, BL * 1.05);
+  g.addColorStop(0.00, 'hsla(178,100%,50%,0.105)');
+  g.addColorStop(0.45, 'hsla(160,100%,45%,0.050)');
+  g.addColorStop(1.00, 'rgba(0,0,0,0)');
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(0, 0, BL * 1.05, 0, TAU);
+  ctx.fill();
+
+  /* ---------- 1. 体腔柔光填充 ---------- */
+  ctx.beginPath();
+  for (let i = 0; i <= NL; i++) {
+    const q = edgePt(P[i], 1, 0);
+    i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]);
+  }
+  for (let i = NL; i >= 0; i--) {
+    const q = edgePt(P[i], -1, 0);
+    ctx.lineTo(q[0], q[1]);
+  }
+  ctx.closePath();
+  ctx.fillStyle = 'hsla(172,100%,52%,0.030)';
+  ctx.fill();
+
+  /* ---------- 2. 横向肋纹（密集丝线） ---------- */
+  for (let i = 0; i <= NL; i += 2) {
+    const p = P[i];
+    const hue = 190 - 42 * p.s + 6 * Math.sin(t * 0.7 + p.s * 4);
+    const k = 0.86 + 0.10 * Math.sin(p.s * 26 - t * 3.1);
+    const a = 0.052 + 0.026 * Math.sin(p.s * 9 - t * 2.3);
+    ctx.strokeStyle = hsl(hue, 0.9, Math.max(0.012, a), 1);
+    ctx.lineWidth = 0.72;
+    ctx.beginPath();
+    ctx.moveTo(p.x + (p.x - p.nx * p.hw - p.x) * k, p.y + (p.y - p.ny * p.hw - p.y) * k);
+    ctx.lineTo(p.x + (p.x + p.nx * p.hw - p.x) * k, p.y + (p.y + p.ny * p.hw - p.y) * k);
+    ctx.stroke();
+  }
+
+  /* ---------- 3. 上下缘多层描边（毛发感） ---------- */
+  for (let side = 1; side >= -1; side -= 2) {
+    for (let layer = 0; layer < 3; layer++) {
+      const off = layer * 1.05;
+      ctx.beginPath();
+      for (let i = 0; i <= NL; i++) {
+        const q = edgePt(P[i], side, off);
+        i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]);
+      }
+      const hue = side > 0 ? 186 : 160;
+      ctx.strokeStyle = hsl(hue, 1, Math.max(0.02, 0.145 - layer * 0.040), 1);
+      ctx.lineWidth = 1.55 - layer * 0.38;
+      ctx.stroke();
+    }
+  }
+
+  /* ---------- 4. 体轴主脉 ---------- */
+  // 柔光内芯
+  ctx.beginPath();
+  for (let i = 0; i <= NL; i++) {
+    i ? ctx.lineTo(P[i].x, P[i].y) : ctx.moveTo(P[0].x, P[0].y);
+  }
+  ctx.strokeStyle = hsl(178, 1, 0.055, 1);
+  ctx.lineWidth = 7.0;
+  ctx.stroke();
+  // 亮芯
+  ctx.strokeStyle = hsl(174, 1, 0.085 + 0.045 * Math.sin(t * 2.6), 1);
+  ctx.lineWidth = 1.9;
+  ctx.stroke();
+
+  /* ---------- 5. 嘴裂 ---------- */
+  {
+    const lim = Math.round(0.20 * NL);
+    ctx.beginPath();
+    for (let i = 0; i <= lim; i++) {
+      const p = P[i];
+      const f = i / lim;
+      const q = edgePt(p, -1, 0.6 + 2.6 * Math.sin(f * Math.PI));
+      i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]);
+    }
+    ctx.strokeStyle = hsl(186, 1, 0.15, 1);
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    ctx.strokeStyle = hsl(190, 1, 0.07, 1);
+    ctx.lineWidth = 4.0;
+    ctx.stroke();
+  }
+
+  /* ---------- 6. 眼睛 ---------- */
+  {
+    const p = P[Math.round(0.145 * NL)];
+    const e = edgePt(p, 1, -p.hw * 0.42);
+    const pulse = 0.6 + 0.4 * Math.sin(t * 2.2);
+    let eg = ctx.createRadialGradient(e[0], e[1], 0, e[0], e[1], 12);
+    eg.addColorStop(0.00, 'hsla(186,100%,96%,' + (0.55 + 0.35 * pulse) + ')');
+    eg.addColorStop(0.22, 'hsla(182,100%,70%,0.55)');
+    eg.addColorStop(1.00, 'rgba(0,0,0,0)');
+    ctx.fillStyle = eg;
+    ctx.beginPath(); ctx.arc(e[0], e[1], 12, 0, TAU); ctx.fill();
+
+    ctx.fillStyle = 'hsla(185,100%,97%,' + (0.55 + 0.4 * pulse) + ')';
+    ctx.beginPath(); ctx.arc(e[0], e[1], 2.0, 0, TAU); ctx.fill();
+  }
+
+  /* ---------- 7. 头顶发光诱饵（正弦波驱动） ---------- */
+  {
+    const hp = P[Math.round(0.105 * NL)];
+    const base = edgePt(hp, 1, 1.5);
+    const bx = base[0], by = base[1];
+
+    const ph = t * 1.55;
+    const ex = bx - 64 + 13 * Math.sin(ph) + 5 * Math.sin(ph * 2.3);
+    const ey = by - 62 + 20 * Math.sin(ph * 0.83 + 1.1) + 7 * Math.sin(ph * 1.9 + 0.4);
+
+    const cx = (bx + ex) * 0.5 - 10 + 9 * Math.sin(ph * 1.25);
+    const cy = (by + ey) * 0.5 - 24 + 11 * Math.cos(ph * 1.05);
+
+    // 诱饵柄：密集采样 + 叠加描边
+    const NS = 44;
+    for (let layer = 0; layer < 2; layer++) {
+      ctx.beginPath();
+      for (let i = 0; i <= NS; i++) {
+        const f = i / NS;
+        const u = 1 - f;
+        const x = u * u * bx + 2 * u * f * cx + f * f * ex;
+        const y = u * u * by + 2 * u * f * cy + f * f * ey;
+        i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      }
+      ctx.strokeStyle = layer === 0
+        ? hsl(174, 1, 0.055, 1)
+        : hsl(178, 1, 0.145, 1);
+      ctx.lineWidth = layer === 0 ? 4.2 : 1.15;
+      ctx.stroke();
+    }
+
+    // 诱饵光球
+    const puls = 0.62 + 0.38 * Math.sin(t * 3.3);
+    const rr = 4.4 + 1.7 * puls;
+
+    let lg = ctx.createRadialGradient(ex, ey, 0, ex, ey, rr * 10);
+    lg.addColorStop(0.00, 'hsla(182,100%,92%,' + (0.65 + 0.35 * puls) + ')');
+    lg.addColorStop(0.14, 'hsla(174,100%,70%,0.55)');
+    lg.addColorStop(0.42, 'hsla(158,100%,52%,0.18)');
+    lg.addColorStop(1.00, 'rgba(0,0,0,0)');
+    ctx.fillStyle = lg;
+    ctx.beginPath(); ctx.arc(ex, ey, rr * 10, 0, TAU); ctx.fill();
+
+    ctx.fillStyle = 'hsla(184,100%,96%,' + (0.7 + 0.3 * puls) + ')';
+    ctx.beginPath(); ctx.arc(ex, ey, rr, 0, TAU); ctx.fill();
+
+    // 光针
+    for (let k = 0; k < 9; k++) {
+      const a = k / 9 * TAU + t * 0.55;
+      const len = rr * 3.4 + 7 * puls * Math.abs(Math.sin(t * 2.1 + k * 1.3));
+      ctx.strokeStyle = 'hsla(176,100%,78%,0.10)';
+      ctx.lineWidth = 0.75;
+      ctx.beginPath();
+      ctx.moveTo(ex + Math.cos(a) * rr * 1.3, ey + Math.sin(a) * rr * 1.3);
+      ctx.lineTo(ex + Math.cos(a) * (rr * 1.3 + len), ey + Math.sin(a) * (rr * 1.3 + len));
+      ctx.stroke();
+    }
+  }
+
+  /* ---------- 8. 下颌触须 ---------- */
+  {
+    const NT = 6;
+    for (let k = 0; k < NT; k++) {
+      const s0 = 0.055 + k * 0.052;
+      const p = P[Math.round(Math.min(0.9, s0) * NL)];
+      const o = edgePt(p, -1, 1.0);
+      const x0 = o[0], y0 = o[1];
+
+      const len = 52 + 32 * Math.sin(k * 2.1 + t * 0.45);
+      const ph2 = t * 1.8 + k * 1.15;
+      const M = 18;
+
+      ctx.beginPath();
+      for (let m = 0; m <= M; m++) {
+        const f = m / M;
+        const bend = f * f * (1 - 0.28 * f);
+        const x = x0 + 26 * bend + 9 * f * Math.sin(ph2 + f * 3.2);
+        const y = y0 + len * f + 7 * f * Math.sin(ph2 * 1.3 + f * 4.0 + k);
+        m ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      }
+      ctx.strokeStyle = hsl(166 + k * 5, 1, 0.085, 1);
+      ctx.lineWidth = 0.85;
+      ctx.stroke();
+
+      // 触须末端微光
+      const fl = Math.sin(ph2 * 0.9 + k) * 0.5 + 0.5;
+      ctx.fillStyle = hsl(172, 1, 0.10 + 0.10 * fl, 1);
+      ctx.beginPath();
+      ctx.arc(x0 + 26 * 0.72 + 9 * Math.sin(ph2 + 3.2 * 0.72),
+              y0 + len + 7 * Math.sin(ph2 * 1.3 + 4.0 + k),
+              1.1, 0, TAU);
+      ctx.fill();
+    }
+  }
+
+  /* ---------- 9. 背鳍丝 ---------- */
+  {
+    const NF = 28;
+    for (let k = 0; k < NF; k++) {
+      const f = k / (NF - 1);
+      const s = 0.24 + 0.56 * f;
+      const p = P[Math.round(s * NL)];
+      const o = edgePt(p, 1, 0);
+      const x0 = o[0], y0 = o[1];
+
+      const w = Math.sin(f * Math.PI);
+      const len = 14 + 36 * w + 7 * Math.sin(t * 3.0 + f * 6.2);
+      const M = 5;
+
+      ctx.beginPath();
+      for (let m = 0; m <= M; m++) {
+        const gg = m / M;
+        const x = x0 + (5 + 9 * f) * gg + 5 * gg * gg * Math.sin(t * 2.1 + f * 5.0);
+        const y = y0 - len * gg;
+        m ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      }
+      ctx.strokeStyle = hsl(178 - 18 * f, 1, 0.055 + 0.05 * w, 1);
+      ctx.lineWidth = 0.7;
+      ctx.stroke();
+    }
+  }
+
+  /* ---------- 10. 胸鳍 ---------- */
+  {
+    const p = P[Math.round(0.315 * NL)];
+    const o = edgePt(p, -1, 0);
+    const px = o[0], py = o[1];
+
+    for (let k = 0; k < 18; k++) {
+      const f = k / 17;
+      const ang = -0.15 + f * 1.15 + 0.09 * Math.sin(t * 2.2);
+      const len = 42 + 24 * Math.sin(f * Math.PI) + 8 * Math.sin(t * 2.6 + f * 4);
+      const ex = px + Math.cos(ang) * len * 0.78;
+      const ey = py + Math.sin(ang) * len;
+
+      ctx.beginPath();
+      ctx.moveTo(px, py);
+      ctx.quadraticCurveTo(
+        px + Math.cos(ang) * len * 0.42,
+        py + Math.sin(ang) * len * 0.42,
+        ex, ey
+      );
+      ctx.strokeStyle = hsl(170 + 14 * f, 1, 0.065, 1);
+      ctx.lineWidth = 0.72;
+      ctx.stroke();
+    }
+  }
+
+  /* ---------- 11. 尾鳍 ---------- */
+  {
+    const tp = P[NL];
+    const NF = 24;
+    for (let k = 0; k < NF; k++) {
+      const f = k / (NF - 1);
+      const ang = (f - 0.5) * 1.55 + 0.08 * Math.sin(t * 2.4);
+      const len = 42 + 26 * Math.sin(f * Math.PI) + 11 * Math.sin(t * 3.1 + f * 5.2);
+      const ex = tp.x + Math.cos(ang) * len;
+      const ey = tp.y + Math.sin(ang) * len;
+
+      ctx.beginPath();
+      ctx.moveTo(tp.x, tp.y);
+      ctx.quadraticCurveTo(
+        tp.x + Math.cos(ang) * len * 0.5,
+        tp.y + Math.sin(ang) * len * 0.45 + (f - 0.5) * 6,
+        ex, ey
+      );
+      ctx.strokeStyle = hsl(152 + 20 * (1 - f), 1, 0.055, 1);
+      ctx.lineWidth = 0.75;
+      ctx.stroke();
+    }
+  }
+
+  /* ---------- 12. 下缘生物荧光点 ---------- */
+  for (let k = 0; k < 44; k++) {
+    const f = k / 43;
+    const p = P[Math.round((0.05 + 0.9 * f) * NL)];
+    const o = edgePt(p, -1, 1.8 + 2.2 * Math.sin(f * 22 + t * 4));
+    const a = 0.045 + 0.055 * Math.sin(t * 3.1 + f * 15);
+    ctx.fillStyle = hsl(168 + 22 * Math.sin(f * 5.5 + t * 0.8), 1, Math.max(0.02, a), 1);
+    ctx.beginPath();
+    ctx.arc(o[0], o[1], 0.95, 0, TAU);
+    ctx.fill();
+  }
+}
+
+/* =========================================================
+   背景浮游粒子
+   ========================================================= */
+let parts = [];
+function initParts() {
+  const n = Math.max(30, Math.min(150, Math.round(W * H / 26000)));
+  parts = [];
+  for (let i = 0; i < n; i++) {
+    parts.push({
+      x: Math.random() * W,
+      y: Math.random() * H,
+      r: 0.4 + Math.random() * 1.5,
+      sp: 0.08 + Math.random() * 0.45,
+      ph: Math.random() * TAU,
+      hue: 150 + Math.random() * 60
+    });
+  }
+}
+
+function drawParticles(t) {
+  for (let i = 0; i < parts.length; i++) {
+    const q = parts[i];
+    q.y -= q.sp;
+    if (q.y < -6) { q.y = H + 6; q.x = Math.random() * W; }
+
+    const a = 0.10 + 0.11 * Math.sin(t * 1.7 + q.ph);
+    ctx.fillStyle = hsl(q.hue, 0.9, 0.62, Math.max(0.02, a));
+    ctx.beginPath();
+    ctx.arc(q.x + Math.sin(t * 0.5 + q.ph) * 9, q.y, q.r * S * 0.55, 0, TAU);
+    ctx.fill();
+  }
+}
+
+/* =========================================================
+   尺寸 / 循环
+   ========================================================= */
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const r = cv.getBoundingClientRect();
+  const w = Math.max(1, r.width || window.innerWidth * 0.8);
+  const h = Math.max(1, r.height || window.innerHeight);
+
+  W = cv.width  = Math.round(w * dpr);
+  H = cv.height = Math.round(h * dpr);
+
+  CX = W / 2;
+  CY = H / 2;
+
+  // 让整条鱼（含诱饵与触须）恰好落在画布内
+  S = Math.min(W / 470, H / 340);
+
+  initParts();
+}
+
+let T = 0;
+let last = performance.now();
+
+function frame(now) {
+  let dt = (now - last) / 1000;
+  last = now;
+  if (!isFinite(dt) || dt <= 0) dt = 0.016;
+  dt = Math.min(dt, 0.05);
+  T += dt;
+
+  /* 拖影式清屏 */
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = 'rgba(0,5,8,0.30)';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  /* 背景粒子 */
+  drawParticles(T);
+
+  /* 鱼群 */
+  ctx.save();
+  ctx.translate(CX, CY + Math.sin(T * 0.65) * 9 * S);
+  ctx.rotate(Math.sin(T * 0.42) * 0.055);
+  ctx.scale(S, S);
+  drawFish(T);
+  ctx.restore();
+
+  requestAnimationFrame(frame);
+}
+
+/* =========================================================
+   启动
+   ========================================================= */
+window.addEventListener('resize', resize);
+if (window.ResizeObserver) {
+  new ResizeObserver(resize).observe(document.getElementById('right'));
+}
+
+resize();
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

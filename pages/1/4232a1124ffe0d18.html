@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>波动方程 · 声波飞蛾</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; position: absolute; inset: 0; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+"use strict";
+
+const cv  = document.getElementById('c');
+const ctx = cv.getContext('2d');
+const TAU = Math.PI * 2;
+
+/* ================================================================== */
+/*  布局                                                               */
+/* ================================================================== */
+let W = 0, H = 0, PW = 0, RW = 0, CX = 0, CY = 0, S = 1, DPR = 1;
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = innerWidth;
+  H = innerHeight;
+
+  cv.width  = Math.round(W * DPR);
+  cv.height = Math.round(H * DPR);
+  cv.style.width  = W + 'px';
+  cv.style.height = H + 'px';
+
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  PW = Math.max(120, W * 0.2);   // 左侧 1/5
+  RW = W - PW;                   // 右侧 4/5
+  CX = PW + RW * 0.5;
+  CY = H * 0.5;
+  S  = Math.min(RW / 700, H / 620);
+}
+addEventListener('resize', resize);
+resize();
+
+/* ================================================================== */
+/*  翼长包络                                                            */
+/* ================================================================== */
+function upperLen(v) {
+  const t = Math.pow(v, 0.72);
+  return 158 * (0.32 + 0.68 * Math.sin(Math.PI * t));
+}
+function lowerLen(v) {
+  const t = Math.pow(v, 0.70);
+  return 112 * (0.32 + 0.68 * Math.sin(Math.PI * t));
+}
+
+/* ================================================================== */
+/*  声波涟漪                                                            */
+/* ================================================================== */
+const ripples = [];
+let rippleClock = 0;
+
+function spawnRipple() {
+  const side   = Math.random() < 0.5 ? 1 : -1;
+  const isUpper = Math.random() < 0.62;
+
+  let lx, ly;
+
+  if (isUpper) {
+    const v     = Math.random();
+    const theta = -1.48 + 1.74 * v;
+    const R     = upperLen(v) * (0.28 + 0.72 * Math.random());
+    lx = side * (4 + Math.cos(theta) * R);
+    ly = -36 + Math.sin(theta) * R;
+  } else {
+    const v     = Math.random();
+    const theta = 0.42 + 1.36 * v;
+    const R     = lowerLen(v) * (0.28 + 0.72 * Math.random());
+    lx = side * (4 + Math.cos(theta) * R);
+    ly = 18 + Math.sin(theta) * R;
+  }
+
+  ripples.push({
+    x: lx, y: ly,
+    r: 3,
+    maxR: 46 + 92 * Math.random(),
+    life: 1,
+    speed: 52 + 58 * Math.random(),
+    hue: Math.random() < 0.5 ? 285 : 150
+  });
+}
+
+function updateRipples(dt) {
+  rippleClock += dt;
+  if (rippleClock > 0.13 && ripples.length < 90) {
+    rippleClock = 0;
+    spawnRipple();
+    if (Math.random() < 0.5) spawnRipple();
+  }
+
+  for (let i = ripples.length - 1; i >= 0; i--) {
+    const r = ripples[i];
+    r.r    += r.speed * dt;
+    r.life -= dt * 0.62;
+    if (r.life <= 0 || r.r >= r.maxR) ripples.splice(i, 1);
+  }
+}
+
+function drawRipples() {
+  for (let i = 0; i < ripples.length; i++) {
+    const r = ripples[i];
+    const a = r.life * 0.34 * (1 - r.r / r.maxR);
+
+    ctx.strokeStyle = `hsla(${r.hue}, 100%, 66%, ${a})`;
+    ctx.lineWidth = 0.9;
+    ctx.beginPath();
+    ctx.arc(r.x, r.y, r.r, 0, TAU);
+    ctx.stroke();
+
+    if (r.r > 16) {
+      ctx.strokeStyle = `hsla(${r.hue + 22}, 100%, 72%, ${a * 0.55})`;
+      ctx.lineWidth = 0.7;
+      ctx.beginPath();
+      ctx.arc(r.x, r.y, r.r - 13, 0, TAU);
+      ctx.stroke();
+    }
+  }
+}
+
+/* ================================================================== */
+/*  上翅                                                                */
+/* ================================================================== */
+function drawUpperWing(t, side) {
+  const rootX = 3, rootY = -36;
+  const a0 = -1.48, a1 = 0.26;
+  const NR = 22, NP = 34;
+
+  for (let i = 0; i <= NR; i++) {
+    const v     = i / NR;
+    const theta = a0 + (a1 - a0) * v;
+    const R     = upperLen(v);
+
+    const cx = Math.cos(theta), cy = Math.sin(theta);
+    const nx = -cy, ny = cx;             // 法向
+
+    const hue   = 285 - 140 * v + 22 * Math.sin(t * 1.1 + v * 4.5 + side * 0.6);
+    const alpha = 0.09 + 0.26 * Math.sin(Math.PI * Math.pow(v, 0.35));
+
+    /* 每根肋线的振动频率随时间和位置变化 */
+    const fMod = 3.2 + 1.4 * Math.sin(t * 0.75 + v * 3.8 + side * 0.4);
+
+    ctx.beginPath();
+    for (let k = 0; k <= NP; k++) {
+      const u = k / NP;
+      const r = u * R;
+
+      const env = Math.pow(u, 0.55) * (1 - 0.35 * u);
+      const off = 13 * env *
+                  Math.sin(TAU * fMod * u - t * 3.8 + v * 2.4 + side * 0.5);
+
+      const px = rootX + cx * r + nx * off;
+      const py = rootY + cy * r + ny * off;
+
+      if (k === 0) ctx.moveTo(px, py);
+      else         ctx.lineTo(px, py);
+    }
+
+    ctx.strokeStyle = `hsla(${hue}, 100%, ${58 + 16 * Math.sin(t * 1.5 + v * 4)}%, ${alpha})`;
+    ctx.lineWidth = 0.85;
+    ctx.stroke();
+  }
+
+  /* 翅缘描边 */
+  ctx.beginPath();
+  for (let i = 0; i <= 40; i++) {
+    const v     = i / 40;
+    const theta = a0 + (a1 - a0) * v;
+    const R     = upperLen(v) * 1.02;
+    const px    = rootX + Math.cos(theta) * R;
+    const py    = rootY + Math.sin(theta) * R;
+    if (i === 0) ctx.moveTo(px, py);
+    else         ctx.lineTo(px, py);
+  }
+  ctx.strokeStyle = `hsla(${262 + 12 * Math.sin(t * 1.4)}, 100%, 74%, 0.22)`;
+  ctx.lineWidth = 1.3;
+  ctx.stroke();
+}
+
+/* ================================================================== */
+/*  下翅                                                                */
+/* ================================================================== */
+function drawLowerWing(t, side) {
+  const rootX = 3, rootY = 18;
+  const a0 = 0.42, a1 = 1.78;
+  const NR = 18, NP = 30;
+
+  for (let i = 0; i <= NR; i++) {
+    const v     = i / NR;
+    const theta = a0 + (a1 - a0) * v;
+    const R     = lowerLen(v);
+
+    const cx = Math.cos(theta), cy = Math.sin(theta);
+    const nx = -cy, ny = cx;
+
+    const hue   = 285 - 138 * v + 20 * Math.sin(t * 1.2 + v * 5.0 + side * 0.9);
+    const alpha = 0.08 + 0.24 * Math.sin(Math.PI * Math.pow(v, 0.38));
+
+    const fMod = 3.6 + 1.5 * Math.sin(t * 0.82 + v * 4.2 + side * 0.7);
+
+    ctx.beginPath();
+    for (let k = 0; k <= NP; k++) {
+      const u = k / NP;
+      const r = u * R;
+
+      const env = Math.pow(u, 0.55) * (1 - 0.35 * u);
+      const off = 11 * env *
+                  Math.sin(TAU * fMod * u - t * 4.2 + v * 2.8 + side * 0.8);
+
+      const px = rootX + cx * r + nx * off;
+      const py = rootY + cy * r + ny * off;
+
+      if (k === 0) ctx.moveTo(px, py);
+      else         ctx.lineTo(px, py);
+    }
+
+    ctx.strokeStyle = `hsla(${hue}, 100%, ${56 + 15 * Math.sin(t * 1.7 + v * 4.6)}%, ${alpha})`;
+    ctx.lineWidth = 0.8;
+    ctx.stroke();
+  }
+
+  ctx.beginPath();
+  for (let i = 0; i <= 34; i++) {
+    const v     = i / 34;
+    const theta = a0 + (a1 - a0) * v;
+    const R     = lowerLen(v) * 1.02;
+    const px    = rootX + Math.cos(theta) * R;
+    const py    = rootY + Math.sin(theta) * R;
+    if (i === 0) ctx.moveTo(px, py);
+    else         ctx.lineTo(px, py);
+  }
+  ctx.strokeStyle = `hsla(${268 + 14 * Math.sin(t * 1.6 + 1.2)}, 100%, 72%, 0.20)`;
+  ctx.lineWidth = 1.2;
+  ctx.stroke();
+}
+
+/* ================================================================== */
+/*  躯干                                                                */
+/* ================================================================== */
+function bodyHW(u) {
+  const s = Math.exp(-Math.pow((u - 0.25) / 0.36, 2));
+  return 1 + 15 * s * (1 - 0.45 * u);
+}
+
+function drawBody(t) {
+  const yTop = -86, yBot = 100;
+  const N = 56;
+
+  /* --- 底层柔光填充 --- */
+  ctx.beginPath();
+  for (let i = 0; i <= N; i++) {
+    const u  = i / N;
+    const y  = yTop + (yBot - yTop) * u;
+    const hw = bodyHW(u);
+    if (i === 0) ctx.moveTo(-hw, y);
+    else         ctx.lineTo(-hw, y);
+  }
+  for (let i = N; i >= 0; i--) {
+    const u  = i / N;
+    const y  = yTop + (yBot - yTop) * u;
+    const hw = bodyHW(u);
+    ctx.lineTo(hw, y);
+  }
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(110, 35, 190, 0.13)';
+  ctx.fill();
+
+  /* --- 横向声波肋线 --- */
+  for (let i = 0; i <= N; i += 1) {
+    const u  = i / N;
+    const y  = yTop + (yBot - yTop) * u;
+    const hw = bodyHW(u);
+    if (hw < 1.2) continue;
+
+    const hue   = 280 - 130 * u + 18 * Math.sin(t * 1.3 + u * 7);
+    const alpha = 0.06 + 0.20 * Math.sin(Math.PI * Math.pow(u, 0.7));
+
+    ctx.beginPath();
+    const NP = 16;
+    for (let k = 0; k <= NP; k++) {
+      const q  = k / NP;
+      const x  = (q * 2 - 1) * hw;
+      const wy = y + 2.2 * Math.sin(q * 11 + t * 5.2 + u * 9);
+      if (k === 0) ctx.moveTo(x, wy);
+      else         ctx.lineTo(x, wy);
+    }
+    ctx.strokeStyle = `hsla(${hue}, 100%, 62%, ${alpha})`;
+    ctx.lineWidth = 0.75;
+    ctx.stroke();
+  }
+
+  /* --- 纵向脊柱 --- */
+  ctx.beginPath();
+  for (let i = 0; i <= N; i++) {
+    const u  = i / N;
+    const y  = yTop + (yBot - yTop) * u;
+    const ox = 2.6 * Math.sin(u * 12 - t * 3.8);
+    if (i === 0) ctx.moveTo(ox, y);
+    else         ctx.lineTo(ox, y);
+  }
+  ctx.strokeStyle = `hsla(${200 + 60 * Math.sin(t * 0.9)}, 100%, 78%, 0.26)`;
+  ctx.lineWidth = 1.1;
+  ctx.stroke();
+
+  /* --- 体缘描边 --- */
+  ctx.beginPath();
+  for (let i = 0; i <= N; i++) {
+    const u  = i / N;
+    const y  = yTop + (yBot - yTop) * u;
+    const hw = bodyHW(u);
+    if (i === 0) ctx.moveTo(-hw, y);
+    else         ctx.lineTo(-hw, y);
+  }
+  for (let i = N; i >= 0; i--) {
+    const u  = i / N;
+    const y  = yTop + (yBot - yTop) * u;
+    const hw = bodyHW(u);
+    ctx.lineTo(hw, y);
+  }
+  ctx.closePath();
+  ctx.strokeStyle = `hsla(${275 + 15 * Math.sin(t * 1.1)}, 100%, 70%, 0.30)`;
+  ctx.lineWidth = 1.15;
+  ctx.stroke();
+}
+
+/* ================================================================== */
+/*  触角                                                                */
+/* ================================================================== */
+function drawAntenna(side, t) {
+  const N = 42;
+  const pts = [];
+
+  let x = side * 5, y = -84;
+  let ang = -Math.PI / 2 + side * 0.42;
+
+  for (let i = 0; i <= N; i++) {
+    const u = i / N;
+    ang += side * 0.031;
+    const step = 3.3;
+    x += Math.cos(ang) * step;
+    y += Math.sin(ang) * step;
+
+    /* 声波式微颤 */
+    const perp = ang + Math.PI / 2;
+    const wob  = 2.0 * Math.sin(u * 9 - t * 4.5 + side * 1.3) * u;
+    pts.push([
+      x + Math.cos(perp) * wob,
+      y + Math.sin(perp) * wob
+    ]);
+  }
+
+  /* 虚影（叠加态） */
+  for (let g = 1; g <= 2; g++) {
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) {
+      const off = Math.sin(i * 0.5 + t * 7 + g * 2.1) * 1.6;
+      ctx.lineTo(pts[i][0] + off, pts[i][1] + off * 0.6);
+    }
+    ctx.strokeStyle = `hsla(${side > 0 ? 285 : 155}, 100%, 68%, ${0.07 + 0.05 * g})`;
+    ctx.lineWidth = 1.6 + g * 0.8;
+    ctx.stroke();
+  }
+
+  /* 实体 */
+  ctx.beginPath();
+  ctx.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+  ctx.strokeStyle = `hsla(${side > 0 ? 275 : 145}, 100%, 76%, 0.55)`;
+  ctx.lineWidth = 1.25;
+  ctx.stroke();
+
+  /* 尖端亮斑 */
+  const tip = pts[pts.length - 1];
+  ctx.fillStyle = `hsla(${side > 0 ? 285 : 150}, 100%, 82%, 0.55)`;
+  ctx.beginPath();
+  ctx.arc(tip[0], tip[1], 1.8, 0, TAU);
+  ctx.fill();
+}
+
+/* ================================================================== */
+/*  整只飞蛾                                                            */
+/* ================================================================== */
+function drawMoth(t, dt) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(PW, 0, RW, H);
+  ctx.clip();
+
+  ctx.translate(CX, CY);
+  ctx.scale(S, S);
+
+  /* 轻微悬浮与倾斜 */
+  ctx.rotate(Math.sin(t * 0.52) * 0.055 + Math.sin(t * 0.31 + 1.7) * 0.03);
+  ctx.translate(0, Math.sin(t * 0.88) * 6.5);
+
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  /* --- 背景辉光 --- */
+  const bg = ctx.createRadialGradient(0, -10, 0, 0, -10, 340);
+  bg.addColorStop(0,   'rgba(120,40,200,0.10)');
+  bg.addColorStop(0.45,'rgba(40,160,120,0.05)');
+  bg.addColorStop(1,   'rgba(0,0,0,0)');
+  ctx.fillStyle = bg;
+  ctx.beginPath(); ctx.arc(0, -10, 340, 0, TAU); ctx.fill();
+
+  /* --- 声波涟漪（底层） --- */
+  updateRipples(dt);
+  drawRipples();
+
+  /* --- 翅膀（左右镜像） --- */
+  const flap = Math.sin(t * 1.45) * 0.06;
+
+  /* 右翅 */
+  ctx.save();
+  ctx.rotate(flap);
+  drawUpperWing(t,  1);
+  drawLowerWing(t,  1);
+  ctx.restore();
+
+  /* 左翅（关于竖直轴镜像） */
+  ctx.save();
+  ctx.scale(-1, 1);
+  ctx.rotate(-flap);
+  drawUpperWing(t, -1);
+  drawLowerWing(t, -1);
+  ctx.restore();
+
+  /* --- 躯干 --- */
+  drawBody(t);
+
+  /* --- 触角 --- */
+  drawAntenna( 1, t);
+  drawAntenna(-1, t);
+
+  /* --- 头部辉光 --- */
+  const hg = ctx.createRadialGradient(0, -80, 0, 0, -80, 34);
+  hg.addColorStop(0,   'rgba(220,200,255,0.42)');
+  hg.addColorStop(0.4, 'rgba(160,80,255,0.16)');
+  hg.addColorStop(1,   'rgba(0,200,140,0)');
+  ctx.fillStyle = hg;
+  ctx.beginPath(); ctx.arc(0, -80, 34, 0, TAU); ctx.fill();
+
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
+/* ================================================================== */
+/*  左侧：波动方程                                                      */
+/* ================================================================== */
+function drawFormula(t) {
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  const cx = PW / 2;
+  const cy = H * 0.40;
+  const fs = Math.max(12, Math.min(PW * 0.135, H * 0.046));
+
+  const rows = ['∂²u', '——', '∂t²', '= v² ∇²u'];
+
+  /* 用逐行方式排版：主式分两段 */
+  const line1 = '∂²u / ∂t²';
+  const line2 = '= v² ∇²u';
+  const fontMain = `italic ${fs}px "Cambria Math","Times New Roman",Georgia,serif`;
+
+  /* --- 观测扰动虚影 --- */
+  ctx.font = fontMain;
+  for (let k = 0; k < 4; k++) {
+    const jx = Math.sin(t * 11.7 + k * 2.3) * fs * 0.062;
+    const jy = Math.cos(t *  9.4 + k * 1.8) * fs * 0.062;
+    ctx.globalAlpha = 0.06 + 0.055 * (0.5 + 0.5 * Math.sin(t * 4.9 + k * 3.2));
+    ctx.fillStyle   = (k % 2) ? '#b06cff' : '#3dffa0';
+    ctx.fillText(line1, cx + jx, cy - fs * 0.80 + jy);
+    ctx.fillText(line2, cx + jx, cy + fs * 0.80 + jy);
+  }
+
+  /* --- 主体 --- */
+  ctx.globalAlpha = 1;
+  ctx.shadowColor = '#8b5cff';
+  ctx.shadowBlur  = fs * 0.85;
+  ctx.fillStyle   = '#f0e6ff';
+  ctx.fillText(line1, cx, cy - fs * 0.80);
+
+  ctx.shadowColor = '#2effa8';
+  ctx.fillStyle   = '#e6fff4';
+  ctx.fillText(line2, cx, cy + fs * 0.80);
+  ctx.shadowBlur = 0;
+
+  /* --- 分隔线 --- */
+  const dy = cy + fs * 2.10;
+  ctx.strokeStyle = 'rgba(140,90,255,0.24)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(cx - PW * 0.30, dy);
+  ctx.lineTo(cx + PW * 0.30, dy);
+  ctx.stroke();
+
+  /* --- 注解 --- */
+  const fs2 = Math.max(9, fs * 0.36);
+  ctx.font = `${fs2}px "PingFang SC","Microsoft YaHei",system-ui,sans-serif`;
+
+  const notes = [
+    ['u  介质位移',   '#c9a4ff'],
+    ['v  波速',       '#a8ffd8'],
+    ['∇² 拉普拉斯算子', '#9fd4ff'],
+    ['λ = v / f',     '#ffb0e8']
+  ];
+  for (let i = 0; i < notes.length; i++) {
+    const y = dy + fs2 * 2.2 + i * fs2 * 2.0;
+    ctx.globalAlpha = 0.40 + 0.28 * (0.5 + 0.5 * Math.sin(t * 2.0 + i * 1.35));
+    ctx.fillStyle   = notes[i][1];
+    ctx.fillText(notes[i][0], cx, y);
+  }
+
+  /* --- 底部小字 --- */
+  ctx.globalAlpha = 0.24 + 0.14 * (0.5 + 0.5 * Math.sin(t * 1.5));
+  ctx.font = `italic ${fs2 * 1.05}px "Cambria Math","Times New Roman",Georgia,serif`;
+  ctx.fillStyle = '#b6ffe0';
+  ctx.fillText('u(x,t) = A·sin(kx − ωt)', cx, dy + fs2 * 11.8);
+
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
+/* ================================================================== */
+/*  中缝光带                                                            */
+/* ================================================================== */
+function drawDivider() {
+  const g = ctx.createLinearGradient(PW - 38, 0, PW + 38, 0);
+  g.addColorStop(0.0, 'rgba(0,0,0,0)');
+  g.addColorStop(0.5, 'rgba(150,80,255,0.15)');
+  g.addColorStop(1.0, 'rgba(0,0,0,0)');
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.fillStyle = g;
+  ctx.fillRect(PW - 38, 0, 76, H);
+  ctx.restore();
+}
+
+/* ================================================================== */
+/*  主循环                                                              */
+/* ================================================================== */
+let T = 0, last = 0;
+
+function loop(now) {
+  if (!last) last = now;
+  let dt = (now - last) / 1000;
+  last = now;
+  if (dt > 0.05)   dt = 0.05;
+  if (dt < 0.0005) dt = 0.0005;
+  T += dt;
+
+  /* 拖尾 */
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = 'rgba(0,0,0,0.24)';
+  ctx.fillRect(0, 0, W, H);
+
+  drawMoth(T, dt);
+  drawDivider();
+  drawFormula(T);
+
+  requestAnimationFrame(loop);
+}
+
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

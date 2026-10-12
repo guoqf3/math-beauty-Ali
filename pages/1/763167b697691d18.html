@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>量子乌贼 · 海森堡不确定性原理</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; position: absolute; inset: 0; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+"use strict";
+
+const cv  = document.getElementById('c');
+const ctx = cv.getContext('2d');
+const TAU = Math.PI * 2;
+
+let W = 0, H = 0, DPR = 1;
+let PW = 0, CX = 0, CY = 0, S = 1;
+
+/* ------------------------------------------------------------------ */
+/*  尺寸 / 布局                                                        */
+/* ------------------------------------------------------------------ */
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = innerWidth;
+  H = innerHeight;
+  cv.width  = Math.round(W * DPR);
+  cv.height = Math.round(H * DPR);
+  cv.style.width  = W + 'px';
+  cv.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  PW = W * 0.2;                 // 左侧 1/5 公式区
+  const rw = W - PW;            // 右侧 4/5 乌贼区
+  CX = PW + rw / 2;
+  CY = H / 2;
+  S  = Math.min(rw / 640, H / 560);
+}
+addEventListener('resize', resize);
+resize();
+
+/* ------------------------------------------------------------------ */
+/*  工具                                                               */
+/* ------------------------------------------------------------------ */
+function hsl(h, s, l, a) { return `hsla(${h},${s}%,${l}%,${a})`; }
+
+/* ------------------------------------------------------------------ */
+/*  乌贼局部几何参数                                                    */
+/* ------------------------------------------------------------------ */
+const BL  = 210;   // 外套膜长度
+const BW  = 66;    // 外套膜最大半宽
+const NBM = 96;    // 外套膜采样数
+
+/* 外套膜脊线 */
+function mantleP(u, t) {
+  const x = u * BL;
+  const y = Math.sin(u * 2.9 + 0.5) * 7
+          + Math.sin(u * 5.2 - t * 2.0) * 7 * u
+          + Math.sin(u * 2.2 + t * 1.5) * 5 * u;
+  return [x, y];
+}
+
+/* 外套膜半宽包络 */
+function mantleHW(u) {
+  const s = Math.sin(Math.PI * (0.15 + 0.85 * u));
+  return Math.max(2.5, BW * Math.pow(Math.max(s, 0), 0.82) * (1 - 0.18 * u));
+}
+
+/* 局部坐标架：点 / 切向 / 法向 / 半宽 */
+function mantleFrame(u, t) {
+  const e = 0.004;
+  const a = mantleP(Math.max(0, u - e), t);
+  const b = mantleP(Math.min(1, u + e), t);
+  let dx = b[0] - a[0], dy = b[1] - a[1];
+  const l = Math.hypot(dx, dy) || 1;
+  dx /= l; dy /= l;
+  return { p: mantleP(u, t), tx: dx, ty: dy, nx: -dy, ny: dx, hw: mantleHW(u) };
+}
+
+function buildMantle(t) {
+  const pts = [];
+  for (let i = 0; i <= NBM; i++) {
+    const u  = i / NBM;
+    const fr = mantleFrame(u, t);
+    pts.push({
+      u,
+      x: fr.p[0], y: fr.p[1],
+      tx: fr.tx, ty: fr.ty,
+      nx: fr.nx, ny: fr.ny,
+      hw: fr.hw
+    });
+  }
+  return pts;
+}
+
+/* ------------------------------------------------------------------ */
+/*  触手（手臂 + 长触腕）                                               */
+/* ------------------------------------------------------------------ */
+const ARMS = [];
+for (let i = 0; i < 8; i++) {
+  const f = (i / 7) - 0.5;                 // -0.5 .. 0.5
+  ARMS.push({
+    x: -14 + Math.abs(f) * 10,
+    y: f * 58,
+    ang: Math.PI + f * 0.85,
+    len: 150 + 90 * Math.cos(f * Math.PI * 0.9),
+    curl: f * 1.1 + (i % 2 ? 0.3 : -0.3),
+    w: 2.4,
+    spd: 1.5 + 0.28 * i,
+    ph: i * 1.37
+  });
+}
+
+const TENTACLES = [
+  { x: -18, y: -14, ang: Math.PI - 0.17, len: 300, curl: -0.95, w: 3.0, spd: 1.05, ph: 4.2 },
+  { x: -18, y:  14, ang: Math.PI + 0.17, len: 300, curl:  0.95, w: 3.0, spd: 1.25, ph: 7.9 }
+];
+
+/* 计算一条触手的折线点集；gOff 用于生成"叠加态"的其它分支 */
+function tendrilPoints(cfg, t, gOff, n) {
+  const out = [];
+  let x = cfg.x, y = cfg.y;
+  const L  = cfg.len * (0.90 + 0.18 * Math.sin(t * cfg.spd * 0.8 + cfg.ph + gOff));
+  const ds = L / n;
+  out.push([x, y]);
+  for (let k = 1; k <= n; k++) {
+    const f    = k / n;
+    const wave = 0.55 * Math.sin(f * 3.4 - t * cfg.spd * 1.3 + cfg.ph + gOff * 1.4) * f;
+    const curl = cfg.curl * f * f * 1.1;
+    const ang  = cfg.ang + wave + curl;
+    x += Math.cos(ang) * ds;
+    y += Math.sin(ang) * ds;
+    out.push([x, y]);
+  }
+  return out;
+}
+
+/* 绘制单条触手：2 层虚影（叠加态）+ 1 层实体 */
+function drawOneTendril(cfg, t, nseg) {
+  const pulse  = 0.5 + 0.5 * Math.sin(t * 1.6 + cfg.ph * 1.7);
+  const solid  = Math.pow(pulse, 1.5);
+  const ghostA = (1 - solid) * 0.50 + 0.05;
+  const mainA  = 0.12 + 0.78 * solid;
+  const hue    = 205 + 75 * (0.5 + 0.5 * Math.sin(t * 0.5 + cfg.ph));
+
+  /* --- 叠加态虚影 --- */
+  for (let g = 1; g <= 2; g++) {
+    const gp = tendrilPoints(cfg, t, g * 2.1, Math.max(8, Math.round(nseg * 0.7)));
+    const fl = 0.5 + 0.5 * Math.sin(t * (6 + g * 1.7) + cfg.ph * 3 + g);
+    ctx.beginPath();
+    ctx.moveTo(gp[0][0], gp[0][1]);
+    for (let k = 1; k < gp.length; k++) ctx.lineTo(gp[k][0], gp[k][1]);
+    ctx.strokeStyle = hsl(hue + g * 18, 100, 66, ghostA * (0.35 + 0.65 * fl));
+    ctx.lineWidth   = cfg.w * (1.3 + g * 1.0);
+    ctx.stroke();
+  }
+
+  /* --- 实体 --- */
+  const pts = tendrilPoints(cfg, t, 0, nseg);
+  ctx.beginPath();
+  ctx.moveTo(pts[0][0], pts[0][1]);
+  for (let k = 1; k < pts.length; k++) ctx.lineTo(pts[k][0], pts[k][1]);
+
+  ctx.strokeStyle = hsl(hue, 100, 60, mainA * 0.45);   // 外辉光
+  ctx.lineWidth   = cfg.w * 2.4;
+  ctx.stroke();
+
+  ctx.strokeStyle = hsl(hue + 22, 100, 82, mainA);     // 内亮芯
+  ctx.lineWidth   = cfg.w * 0.9;
+  ctx.stroke();
+
+  /* --- 触手尖端量子闪烁 --- */
+  const tip = pts[pts.length - 1];
+  const tw  = 0.6 + 0.4 * Math.sin(t * 9 + cfg.ph * 5);
+  ctx.fillStyle = hsl(hue, 100, 66, 0.10 * tw);
+  ctx.beginPath(); ctx.arc(tip[0], tip[1], cfg.w * 5.0 * tw, 0, TAU); ctx.fill();
+
+  ctx.fillStyle = hsl(hue + 30, 100, 88, mainA * tw);
+  ctx.beginPath(); ctx.arc(tip[0], tip[1], cfg.w * 1.5 * (0.7 + 0.6 * Math.random()), 0, TAU); ctx.fill();
+}
+
+/* ------------------------------------------------------------------ */
+/*  外套膜绘制：量子波动纹理                                            */
+/* ------------------------------------------------------------------ */
+function drawMantle(pts, t) {
+  const n = pts.length;
+  const edgeA = [], edgeB = [];
+  for (const p of pts) {
+    edgeA.push([p.x + p.nx * p.hw, p.y + p.ny * p.hw]);
+    edgeB.push([p.x - p.nx * p.hw, p.y - p.ny * p.hw]);
+  }
+
+  /* 柔和底填充 */
+  ctx.beginPath();
+  ctx.moveTo(edgeA[0][0], edgeA[0][1]);
+  for (let i = 1; i < n; i++) ctx.lineTo(edgeA[i][0], edgeA[i][1]);
+  for (let i = n - 1; i >= 0; i--) ctx.lineTo(edgeB[i][0], edgeB[i][1]);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(70,30,150,0.13)';
+  ctx.fill();
+
+  /* 密集肋纹：被量子波函数调制 */
+  for (let i = 0; i < n; i++) {
+    const p = pts[i];
+    const w1 = 0.5 + 0.5 * Math.sin(p.u * 26 - t * 3.4 + Math.sin(p.u * 8) * 3.0);
+    const w2 = 0.5 + 0.5 * Math.sin(p.u * 11 + t * 2.1);
+    const a  = 0.012 + 0.105 * w1 * w2;
+    const hue = 215 + 70 * (0.5 + 0.5 * Math.sin(p.u * 6 - t * 1.2));
+    ctx.strokeStyle = hsl(hue, 100, 72, a);
+    ctx.lineWidth = 0.9;
+    ctx.beginPath();
+    ctx.moveTo(p.x + p.nx * p.hw * 0.96, p.y + p.ny * p.hw * 0.96);
+    ctx.lineTo(p.x - p.nx * p.hw * 0.96, p.y - p.ny * p.hw * 0.96);
+    ctx.stroke();
+  }
+
+  /* 沿体轴流动的量子环 */
+  for (let k = 0; k < 5; k++) {
+    const uu = (t * 0.18 + k * 0.2) % 1;
+    const i  = Math.min(n - 1, Math.round(uu * (n - 1)));
+    const p  = pts[i];
+    const a  = 0.20 * Math.sin(Math.PI * uu);
+    if (a <= 0.001) continue;
+    ctx.strokeStyle = hsl(200 + 80 * uu, 100, 78, a);
+    ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    ctx.moveTo(p.x + p.nx * p.hw * 1.06, p.y + p.ny * p.hw * 1.06);
+    ctx.lineTo(p.x - p.nx * p.hw * 1.06, p.y - p.ny * p.hw * 1.06);
+    ctx.stroke();
+  }
+
+  /* 纵向光脉 */
+  for (const k of [-0.62, -0.3, 0, 0.3, 0.62]) {
+    ctx.beginPath();
+    for (let i = 0; i < n; i++) {
+      const p  = pts[i];
+      const xx = p.x + p.nx * p.hw * k;
+      const yy = p.y + p.ny * p.hw * k;
+      i ? ctx.lineTo(xx, yy) : ctx.moveTo(xx, yy);
+    }
+    ctx.strokeStyle = 'rgba(130,170,255,0.10)';
+    ctx.lineWidth = 0.9;
+    ctx.stroke();
+  }
+
+  /* 双缘描边 */
+  ctx.beginPath();
+  ctx.moveTo(edgeA[0][0], edgeA[0][1]);
+  for (let i = 1; i < n; i++) ctx.lineTo(edgeA[i][0], edgeA[i][1]);
+  for (let i = n - 1; i >= 0; i--) ctx.lineTo(edgeB[i][0], edgeB[i][1]);
+  ctx.closePath();
+  ctx.strokeStyle = 'rgba(165,135,255,0.45)';
+  ctx.lineWidth = 1.4;
+  ctx.stroke();
+
+  /* 内部再描一圈，形成"膜"的厚度 */
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) {
+    const p = pts[i];
+    const xx = p.x + p.nx * p.hw * 0.86;
+    const yy = p.y + p.ny * p.hw * 0.86;
+    i ? ctx.lineTo(xx, yy) : ctx.moveTo(xx, yy);
+  }
+  for (let i = n - 1; i >= 0; i--) {
+    const p = pts[i];
+    ctx.lineTo(p.x - p.nx * p.hw * 0.86, p.y - p.ny * p.hw * 0.86);
+  }
+  ctx.closePath();
+  ctx.strokeStyle = 'rgba(90,150,255,0.20)';
+  ctx.lineWidth = 0.8;
+  ctx.stroke();
+}
+
+/* ------------------------------------------------------------------ */
+/*  鳍（外套膜边缘的纱状羽丝）                                          */
+/* ------------------------------------------------------------------ */
+function drawFins(pts, t) {
+  const n = pts.length;
+  for (const side of [-1, 1]) {
+    for (let k = 0; k <= 64; k++) {
+      const f = k / 64;
+      const u = 0.06 + 0.88 * f;
+      const i = Math.min(n - 1, Math.round(u * (n - 1)));
+      const p = pts[i];
+
+      const edgeX = p.x + side * p.nx * p.hw;
+      const edgeY = p.y + side * p.ny * p.hw;
+
+      const env = Math.sin(Math.PI * f);
+      const fl  = 30 * Math.pow(env, 0.7) * (0.75 + 0.40 * Math.sin(f * 14 - t * 5.5 + side * 1.3));
+      if (fl <= 0.6) continue;
+
+      const tipX = edgeX + side * p.nx * fl + p.tx * fl * 0.55;
+      const tipY = edgeY + side * p.ny * fl + p.ty * fl * 0.55;
+
+      const hue = 205 + 70 * f;
+      ctx.strokeStyle = hsl(hue, 100, 70, 0.03 + 0.16 * env);
+      ctx.lineWidth = 0.7;
+      ctx.beginPath();
+      ctx.moveTo(edgeX, edgeY);
+      ctx.quadraticCurveTo(
+        edgeX + side * p.nx * fl * 0.40 + p.tx * fl * 0.60,
+        edgeY + side * p.ny * fl * 0.40 + p.ty * fl * 0.60,
+        tipX, tipY
+      );
+      ctx.stroke();
+    }
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  眼睛                                                               */
+/* ------------------------------------------------------------------ */
+function drawEyes(t) {
+  const blink = 0.5 + 0.5 * Math.sin(t * 1.3);
+  const list = [[8, -22], [8, 22]];
+  for (const [ex, ey] of list) {
+    const g = ctx.createRadialGradient(ex, ey, 0, ex, ey, 26);
+    g.addColorStop(0,   'rgba(190,225,255,0.55)');
+    g.addColorStop(0.42,'rgba(120,80,255,0.22)');
+    g.addColorStop(1,   'rgba(60,0,180,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(ex, ey, 26, 0, TAU); ctx.fill();
+
+    ctx.strokeStyle = `rgba(200,225,255,${0.45 + 0.45 * blink})`;
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.ellipse(ex, ey, 7.5, 9.5, 0, 0, TAU);
+    ctx.stroke();
+
+    ctx.fillStyle = 'rgba(235,244,255,0.92)';
+    ctx.beginPath();
+    ctx.ellipse(ex, ey, 3.2, 4.2, 0, 0, TAU);
+    ctx.fill();
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  量子泡沫粒子                                                        */
+/* ------------------------------------------------------------------ */
+function drawSquidParticles(t) {
+  for (let k = 0; k < 60; k++) {
+    const a  = k * 2.399 + t * 0.25;
+    const r  = 90 + 200 * (0.5 + 0.5 * Math.sin(k * 1.7 + t * 0.6));
+    const px = Math.cos(a) * r * 0.85 + 30;
+    const py = Math.sin(a) * r * 0.50;
+    const al = 0.04 + 0.16 * (0.5 + 0.5 * Math.sin(t * 2.1 + k * 3.1));
+    ctx.fillStyle = hsl(210 + 70 * Math.sin(k * 0.9 + t * 0.4), 100, 75, al);
+    ctx.beginPath();
+    ctx.arc(px, py, 0.9 + 0.8 * Math.abs(Math.sin(t * 3 + k)), 0, TAU);
+    ctx.fill();
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  整只乌贼                                                           */
+/* ------------------------------------------------------------------ */
+function drawSquid(t) {
+  ctx.save();
+  ctx.translate(CX, CY);
+  ctx.rotate(Math.sin(t * 0.37) * 0.26 + Math.sin(t * 0.23 + 2.1) * 0.12);
+  ctx.scale(S, S);
+  ctx.translate(22, 0);
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  /* 背景辉光 */
+  const bg = ctx.createRadialGradient(60, 0, 0, 60, 0, 320);
+  bg.addColorStop(0,   'rgba(90,40,200,0.18)');
+  bg.addColorStop(0.5, 'rgba(40,60,220,0.07)');
+  bg.addColorStop(1,   'rgba(0,0,0,0)');
+  ctx.fillStyle = bg;
+  ctx.beginPath(); ctx.arc(60, 0, 320, 0, TAU); ctx.fill();
+
+  const pts = buildMantle(t);
+
+  /* 长触腕（最后层） */
+  for (const cfg of TENTACLES) drawOneTendril(cfg, t, 26);
+  /* 八条手臂 */
+  for (const cfg of ARMS) drawOneTendril(cfg, t, 20);
+  /* 鳍 */
+  drawFins(pts, t);
+  /* 身体 */
+  drawMantle(pts, t);
+  /* 眼睛 */
+  drawEyes(t);
+  /* 量子泡沫 */
+  drawSquidParticles(t);
+
+  ctx.restore();
+}
+
+/* ------------------------------------------------------------------ */
+/*  左侧：海森堡不确定性原理                                            */
+/* ------------------------------------------------------------------ */
+function drawFormula(t) {
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  const cx = PW / 2;
+  const cy = H / 2;
+  const fs = Math.min(PW * 0.175, H * 0.088);
+
+  const line1 = 'Δx · Δp';
+  const line2 = '≥  ℏ / 2';
+
+  ctx.font = `italic ${fs}px "Cambria Math","Times New Roman",Georgia,serif`;
+
+  /* 不确定的抖动虚影 —— 观测即扰动 */
+  const jitter = fs * 0.07;
+  for (let k = 0; k < 5; k++) {
+    const jx = Math.sin(t * 13.7 + k * 2.1) * jitter;
+    const jy = Math.cos(t * 11.3 + k * 1.7) * jitter;
+    ctx.globalAlpha = 0.08 + 0.10 * (0.5 + 0.5 * Math.sin(t * 7.3 + k * 3.9));
+    ctx.fillStyle = (k % 2) ? '#7a5cff' : '#4fa8ff';
+    ctx.fillText(line1, cx + jx, cy - fs * 0.72 + jy);
+    ctx.fillText(line2, cx + jx, cy + fs * 0.72 + jy);
+  }
+
+  /* 主字 */
+  ctx.globalAlpha = 1;
+  ctx.shadowColor = '#8a6bff';
+  ctx.shadowBlur  = fs * 0.9;
+  ctx.fillStyle   = '#eaf1ff';
+  ctx.fillText(line1, cx, cy - fs * 0.72);
+  ctx.fillText(line2, cx, cy + fs * 0.72);
+  ctx.shadowBlur = 0;
+
+  /* 分隔线 */
+  ctx.strokeStyle = 'rgba(120,110,255,0.28)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(cx - PW * 0.30, cy + fs * 1.42);
+  ctx.lineTo(cx + PW * 0.30, cy + fs * 1.42);
+  ctx.stroke();
+
+  /* 副式 */
+  const fs2 = Math.max(9, fs * 0.40);
+  ctx.font = `italic ${fs2}px "Cambria Math","Times New Roman",Georgia,serif`;
+  ctx.globalAlpha = 0.45 + 0.30 * (0.5 + 0.5 * Math.sin(t * 2.3));
+  ctx.fillStyle = '#9fb4ff';
+  ctx.shadowColor = '#5b7bff';
+  ctx.shadowBlur = fs2 * 0.8;
+  ctx.fillText('ΔE · Δt ≥ ℏ / 2', cx, cy + fs * 2.05);
+  ctx.shadowBlur = 0;
+  ctx.globalAlpha = 1;
+
+  /* 小小的 ψ 标记 */
+  const fs3 = Math.max(10, fs * 0.46);
+  ctx.font = `italic ${fs3}px "Cambria Math","Times New Roman",Georgia,serif`;
+  ctx.globalAlpha = 0.22 + 0.20 * (0.5 + 0.5 * Math.sin(t * 1.7 + 1.1));
+  ctx.fillStyle = '#c7b6ff';
+  ctx.fillText('|ψ|²', cx, cy - fs * 2.10);
+  ctx.globalAlpha = 1;
+
+  ctx.restore();
+}
+
+/* ------------------------------------------------------------------ */
+/*  中缝分隔光带                                                        */
+/* ------------------------------------------------------------------ */
+function drawDivider(t) {
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  const g = ctx.createLinearGradient(PW - 26, 0, PW + 26, 0);
+  g.addColorStop(0,   'rgba(0,0,0,0)');
+  g.addColorStop(0.5, 'rgba(120,90,255,0.30)');
+  g.addColorStop(1,   'rgba(0,0,0,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(PW - 26, 0, 52, H);
+  ctx.restore();
+}
+
+/* ------------------------------------------------------------------ */
+/*  主循环                                                             */
+/* ------------------------------------------------------------------ */
+let T = 0, last = 0;
+
+function render(t) {
+  /* 拖尾 */
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = 'rgba(0,0,0,0.22)';
+  ctx.fillRect(0, 0, W, H);
+
+  drawSquid(t);
+  drawDivider(t);
+  drawFormula(t);
+}
+
+function loop(now) {
+  if (!last) last = now;
+  const dt = Math.min((now - last) / 1000, 0.05);
+  last = now;
+  T += dt;
+  render(T);
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

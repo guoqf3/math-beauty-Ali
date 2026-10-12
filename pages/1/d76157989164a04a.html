@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>爱因斯坦场方程 · 引力蜘蛛</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; position: absolute; top: 0; }
+  #gl  { left: 20%; width: 80%; height: 100%; }
+  #hud { left: 0; width: 100%; height: 100%; pointer-events: none; }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<canvas id="hud"></canvas>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"></script>
+<script>
+"use strict";
+
+/* ================================================================== */
+/*  0. 常量与布局                                                       */
+/* ================================================================== */
+const TAU  = Math.PI * 2;
+const glCv  = document.getElementById('gl');
+const hudCv = document.getElementById('hud');
+const hctx  = hudCv.getContext('2d');
+
+let W = 0, H = 0, PW = 0, RW = 0, DPR = 1;
+let T = 0, last = 0;
+
+/* ================================================================== */
+/*  1. Three.js 基础                                                    */
+/* ================================================================== */
+const renderer = new THREE.WebGLRenderer({ canvas: glCv, antialias: true });
+renderer.setClearColor(0x000000, 1);
+renderer.autoClear = true;
+
+const scene  = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 400);
+
+/* ================================================================== */
+/*  2. 引力阱 / 曲率波函数                                              */
+/* ================================================================== */
+function wellY(r) {
+  return -2.6 / (1 + r * r * 0.26);
+}
+function waveY(r, t, ph) {
+  return (
+    Math.sin(r * 2.2 - t * 3.0 + ph * 0.22) * 0.16 * Math.exp(-r * 0.20) +
+    Math.sin(r * 4.8 - t * 4.6 + ph * 0.10) * 0.055 * Math.exp(-r * 0.34)
+  );
+}
+
+/* ================================================================== */
+/*  3. 蛛网（时空曲率线）                                               */
+/* ================================================================== */
+const RADIAL = 12;         // 径向主脉（蛛丝 + 蜘蛛足）
+const RSEG   = 68;         // 每条径向线的采样段数
+const RINGS  = 15;         // 同心环数
+const OSEG   = 100;        // 每环采样段数
+const RADMAX = 7.4;        // 网半径
+
+const SEG_TOTAL = RADIAL * RSEG + RINGS * OSEG;
+const posArr = new Float32Array(SEG_TOTAL * 6);
+const colArr = new Float32Array(SEG_TOTAL * 6);
+
+const webGeo = new THREE.BufferGeometry();
+webGeo.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
+webGeo.setAttribute('color',    new THREE.BufferAttribute(colArr, 3));
+
+const webMat = new THREE.LineBasicMaterial({
+  vertexColors: true,
+  blending: THREE.AdditiveBlending,
+  transparent: true,
+  depthWrite: false,
+  opacity: 1.0
+});
+
+const webMesh = new THREE.LineSegments(webGeo, webMat);
+webMesh.frustumCulled = false;
+scene.add(webMesh);
+
+/* 颜色混合：金色(近) → 深紫(远) */
+function mixCol(f) {
+  return [
+    1.00 * (1 - f) + 0.58 * f,
+    0.80 * (1 - f) + 0.16 * f,
+    0.28 * (1 - f) + 0.98 * f
+  ];
+}
+
+function updateWeb(t) {
+  let p = 0, c = 0;
+
+  /* ---------- ① 径向主脉（曲率测地线） ---------- */
+  for (let a = 0; a < RADIAL; a++) {
+    const baseAng = (a / RADIAL) * TAU + t * 0.055;
+    const ph      = a * 1.37;
+
+    for (let i = 0; i < RSEG; i++) {
+      const u0 = i / RSEG;
+      const u1 = (i + 1) / RSEG;
+
+      const r0 = 0.18 + Math.pow(u0, 0.86) * RADMAX;
+      const r1 = 0.18 + Math.pow(u1, 0.86) * RADMAX;
+
+      /* 螺旋扭曲 + 高频抖动 */
+      const ang0 = baseAng
+        + Math.sin(r0 * 0.85 - t * 0.70 + ph) * 0.24
+        + Math.sin(r0 * 3.90 - t * 2.40 + ph * 1.7) * 0.055;
+      const ang1 = baseAng
+        + Math.sin(r1 * 0.85 - t * 0.70 + ph) * 0.24
+        + Math.sin(r1 * 3.90 - t * 2.40 + ph * 1.7) * 0.055;
+
+      const x0 = Math.cos(ang0) * r0, z0 = Math.sin(ang0) * r0;
+      const x1 = Math.cos(ang1) * r1, z1 = Math.sin(ang1) * r1;
+
+      const y0 = wellY(r0) + waveY(r0, t, ph);
+      const y1 = wellY(r1) + waveY(r1, t, ph);
+
+      posArr[p++] = x0; posArr[p++] = y0; posArr[p++] = z0;
+      posArr[p++] = x1; posArr[p++] = y1; posArr[p++] = z1;
+
+      /* 颜色 —— 顶点 0 */
+      {
+        const f     = Math.min(1, r0 / 5.2);
+        const pulse = 0.5 + 0.5 * Math.sin(r0 * 1.6 - t * 2.4 + ph * 0.9);
+        const k     = (0.22 + 0.64 * pulse) * 1.18;
+        const col   = mixCol(f);
+        colArr[c++] = col[0] * k;
+        colArr[c++] = col[1] * k;
+        colArr[c++] = col[2] * k;
+      }
+      /* 颜色 —— 顶点 1 */
+      {
+        const f     = Math.min(1, r1 / 5.2);
+        const pulse = 0.5 + 0.5 * Math.sin(r1 * 1.6 - t * 2.4 + ph * 0.9);
+        const k     = (0.22 + 0.64 * pulse) * 1.18;
+        const col   = mixCol(f);
+        colArr[c++] = col[0] * k;
+        colArr[c++] = col[1] * k;
+        colArr[c++] = col[2] * k;
+      }
+    }
+  }
+
+  /* ---------- ② 同心环（被质量压弯的曲面） ---------- */
+  for (let ring = 0; ring < RINGS; ring++) {
+    const vv = ring / (RINGS - 1);
+    const rr = 0.55 + Math.pow(vv, 0.90) * (RADMAX - 0.55);
+    const ph = ring * 2.13;
+
+    /* 越靠外越暗 */
+    const fade = Math.sin(Math.PI * (0.16 + 0.84 * (1 - vv)));
+
+    for (let i = 0; i < OSEG; i++) {
+      const a0 = (i / OSEG) * TAU;
+      const a1 = ((i + 1) / OSEG) * TAU;
+
+      const wob = 0.32 * Math.sin(ring * 1.25 + t * 1.45);
+      const r0  = rr + wob * Math.sin(a0 * 3 + t * 2.0 + ring);
+      const r1  = rr + wob * Math.sin(a1 * 3 + t * 2.0 + ring);
+
+      const x0 = Math.cos(a0) * r0, z0 = Math.sin(a0) * r0;
+      const x1 = Math.cos(a1) * r1, z1 = Math.sin(a1) * r1;
+
+      const y0 = wellY(r0) + waveY(r0, t, ph);
+      const y1 = wellY(r1) + waveY(r1, t, ph);
+
+      posArr[p++] = x0; posArr[p++] = y0; posArr[p++] = z0;
+      posArr[p++] = x1; posArr[p++] = y1; posArr[p++] = z1;
+
+      {
+        const f     = Math.min(1, r0 / 5.2);
+        const pulse = 0.5 + 0.5 * Math.sin(r0 * 1.5 - t * 2.2 + ph);
+        const k     = (0.14 + 0.46 * pulse) * fade;
+        const col   = mixCol(f);
+        colArr[c++] = col[0] * k;
+        colArr[c++] = col[1] * k;
+        colArr[c++] = col[2] * k;
+      }
+      {
+        const f     = Math.min(1, r1 / 5.2);
+        const pulse = 0.5 + 0.5 * Math.sin(r1 * 1.5 - t * 2.2 + ph);
+        const k     = (0.14 + 0.46 * pulse) * fade;
+        const col   = mixCol(f);
+        colArr[c++] = col[0] * k;
+        colArr[c++] = col[1] * k;
+        colArr[c++] = col[2] * k;
+      }
+    }
+  }
+
+  webGeo.attributes.position.needsUpdate = true;
+  webGeo.attributes.color.needsUpdate    = true;
+}
+
+/* ================================================================== */
+/*  4. 奇点（蜘蛛本体）                                                 */
+/* ================================================================== */
+function makeGlowTex(r, g, b) {
+  const S = 128;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = S;
+  const c = cv.getContext('2d');
+  const grd = c.createRadialGradient(S/2, S/2, 0, S/2, S/2, S/2);
+  grd.addColorStop(0.00, `rgba(255,255,255,1)`);
+  grd.addColorStop(0.14, `rgba(${r},${g},${b},0.90)`);
+  grd.addColorStop(0.38, `rgba(${r},${g},${b},0.30)`);
+  grd.addColorStop(0.70, `rgba(${r},${g},${b},0.07)`);
+  grd.addColorStop(1.00, `rgba(0,0,0,0)`);
+  c.fillStyle = grd;
+  c.fillRect(0, 0, S, S);
+  return new THREE.CanvasTexture(cv);
+}
+
+const coreGold = new THREE.Sprite(new THREE.SpriteMaterial({
+  map: makeGlowTex(255, 205, 110),
+  blending: THREE.AdditiveBlending,
+  depthWrite: false,
+  transparent: true,
+  opacity: 0.95
+}));
+coreGold.scale.set(3.6, 3.6, 1);
+coreGold.position.set(0, wellY(0), 0);
+scene.add(coreGold);
+
+const coreViolet = new THREE.Sprite(new THREE.SpriteMaterial({
+  map: makeGlowTex(180, 90, 255),
+  blending: THREE.AdditiveBlending,
+  depthWrite: false,
+  transparent: true,
+  opacity: 0.55
+}));
+coreViolet.scale.set(9.5, 9.5, 1);
+coreViolet.position.set(0, wellY(0), 0);
+scene.add(coreViolet);
+
+/* ================================================================== */
+/*  5. 环绕粒子（被引力束缚的物质）                                     */
+/* ================================================================== */
+const NPC = 340;
+const pcPos = new Float32Array(NPC * 3);
+const pcCol = new Float32Array(NPC * 3);
+const pcDat = [];
+
+for (let i = 0; i < NPC; i++) {
+  pcDat.push({
+    r:  0.8 + Math.random() * 6.4,
+    a:  Math.random() * TAU,
+    sp: (0.16 + Math.random() * 0.50) * (Math.random() < 0.5 ? 1 : -1),
+    ph: Math.random() * TAU
+  });
+}
+
+const pcGeo = new THREE.BufferGeometry();
+pcGeo.setAttribute('position', new THREE.BufferAttribute(pcPos, 3));
+pcGeo.setAttribute('color',    new THREE.BufferAttribute(pcCol, 3));
+
+const pcMat = new THREE.PointsMaterial({
+  size: 0.11,
+  map: (function () {
+    const S = 32, cv = document.createElement('canvas');
+    cv.width = cv.height = S;
+    const g = cv.getContext('2d');
+    const grd = g.createRadialGradient(S/2, S/2, 0, S/2, S/2, S/2);
+    grd.addColorStop(0,   'rgba(255,255,255,1)');
+    grd.addColorStop(0.35,'rgba(255,255,255,0.55)');
+    grd.addColorStop(1,   'rgba(255,255,255,0)');
+    g.fillStyle = grd; g.fillRect(0, 0, S, S);
+    return new THREE.CanvasTexture(cv);
+  })(),
+  vertexColors: true,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false,
+  transparent: true,
+  sizeAttenuation: true
+});
+
+const points = new THREE.Points(pcGeo, pcMat);
+points.frustumCulled = false;
+scene.add(points);
+
+function updatePoints(t, dt) {
+  for (let i = 0; i < NPC; i++) {
+    const d = pcDat[i];
+    /* 开普勒式角速度：内快外慢 */
+    d.a += d.sp * dt * (1.7 / (d.r + 0.55));
+
+    const wob = Math.sin(t * 1.6 + d.ph) * 0.16;
+    const r   = d.r + wob;
+
+    const x = Math.cos(d.a) * r;
+    const z = Math.sin(d.a) * r;
+    const y = wellY(r) + Math.sin(r * 3.2 - t * 2.1 + d.ph) * 0.10;
+
+    pcPos[i*3]     = x;
+    pcPos[i*3 + 1] = y;
+    pcPos[i*3 + 2] = z;
+
+    const f = Math.min(1, r / 5.2);
+    const k = 0.35 + 0.65 * Math.abs(Math.sin(t * 2.1 + d.ph));
+    const col = mixCol(f);
+    pcCol[i*3]     = col[0] * k;
+    pcCol[i*3 + 1] = col[1] * k;
+    pcCol[i*3 + 2] = col[2] * k;
+  }
+  pcGeo.attributes.position.needsUpdate = true;
+  pcGeo.attributes.color.needsUpdate    = true;
+}
+
+/* ================================================================== */
+/*  6. 后处理：引力透镜                                                 */
+/* ================================================================== */
+let rt = null;
+
+const lensMat = new THREE.ShaderMaterial({
+  uniforms: {
+    tDiffuse: { value: null },
+    uTime:    { value: 0 },
+    uAspect:  { value: 1 }
+  },
+  vertexShader: `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = vec4(position.xy, 0.0, 1.0);
+    }
+  `,
+  fragmentShader: `
+    precision highp float;
+
+    uniform sampler2D tDiffuse;
+    uniform float     uTime;
+    uniform float     uAspect;
+    varying vec2      vUv;
+
+    void main() {
+      vec2 uv = vUv;
+      vec2 d  = uv - vec2(0.5);
+      d.x *= uAspect;
+
+      float r  = length(d);
+      float rs = max(r, 0.0008);
+      vec2  dir = d / rs;
+
+      /* --- 引力透镜偏折 ~ 1/r --- */
+      float lens = 0.0092 / (rs + 0.10);
+      vec2  off  = dir * lens;
+      off.x /= uAspect;
+
+      /* --- 时空涟漪 --- */
+      float ring = sin(rs * 34.0 - uTime * 3.2) * 0.0032 / (rs + 0.14);
+      off += dir * ring / vec2(uAspect, 1.0);
+
+      /* --- 色散（引力彩虹） --- */
+      float ca  = 0.0028 / (rs + 0.06);
+      vec2 caOff = dir * ca;
+      caOff.x /= uAspect;
+
+      vec3 col;
+      col.r = texture2D(tDiffuse, uv + off + caOff).r;
+      col.g = texture2D(tDiffuse, uv + off).g;
+      col.b = texture2D(tDiffuse, uv + off - caOff).b;
+
+      /* --- 视界光晕 --- */
+      float halo = 0.00035 / (rs * rs + 0.00009);
+      col += vec3(1.0, 0.82, 0.46) * halo * 0.55;
+
+      /* --- 紫边 --- */
+      col += vec3(0.32, 0.06, 0.55) * (1.0 - smoothstep(0.0, 0.30, rs)) * 0.14;
+
+      gl_FragColor = vec4(col, 1.0);
+    }
+  `,
+  depthTest:  false,
+  depthWrite: false
+});
+
+const postScene = new THREE.Scene();
+const postCam   = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+postScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), lensMat));
+
+function makeRT(w, h) {
+  if (rt) rt.dispose();
+  rt = new THREE.WebGLRenderTarget(w, h, {
+    minFilter: THREE.LinearFilter,
+    magFilter: THREE.LinearFilter,
+    format:    THREE.RGBAFormat
+  });
+  lensMat.uniforms.tDiffuse.value = rt.texture;
+}
+
+/* ================================================================== */
+/*  7. 尺寸 / 相机自适应                                                */
+/* ================================================================== */
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 1.6);
+
+  W = innerWidth;
+  H = innerHeight;
+
+  PW = Math.max(120, W * 0.2);
+  RW = W - PW;
+
+  /* --- HUD --- */
+  hudCv.width  = Math.round(W * DPR);
+  hudCv.height = Math.round(H * DPR);
+  hudCv.style.width  = W + 'px';
+  hudCv.style.height = H + 'px';
+
+  /* --- WebGL --- */
+  glCv.style.left   = PW + 'px';
+  glCv.style.width  = RW + 'px';
+  glCv.style.height = H  + 'px';
+
+  renderer.setPixelRatio(DPR);
+  renderer.setSize(RW, H, false);
+
+  makeRT(Math.max(2, Math.round(RW * DPR)), Math.max(2, Math.round(H * DPR)));
+
+  /* --- 相机取景：自动容纳整张网 --- */
+  camera.aspect = RW / H;
+
+  const fovV = 50 * Math.PI / 180;
+  const fovH = 2 * Math.atan(Math.tan(fovV / 2) * camera.aspect);
+
+  const VIEW_R = 8.3;
+  const dV = VIEW_R / Math.tan(fovV / 2);
+  const dH = VIEW_R / Math.tan(fovH / 2);
+  const dist = Math.max(dV, dH) * 1.10;
+
+  const elev = 0.70;   // 约 40°
+  camera.position.set(0, dist * Math.sin(elev), dist * Math.cos(elev));
+  camera.lookAt(0, -1.0, 0);
+  camera.updateProjectionMatrix();
+
+  lensMat.uniforms.uAspect.value = RW / H;
+}
+addEventListener('resize', resize);
+
+/* ================================================================== */
+/*  8. 左侧 HUD：爱因斯坦场方程                                         */
+/* ================================================================== */
+function drawHUD(t) {
+  hctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  hctx.clearRect(0, 0, W, H);
+
+  hctx.save();
+  hctx.globalCompositeOperation = 'lighter';
+  hctx.textAlign = 'center';
+  hctx.textBaseline = 'middle';
+
+  const cx = PW / 2;
+  const cy = H * 0.40;
+  const fs = Math.max(12, Math.min(PW * 0.105, H * 0.042));
+
+  const row1 = 'Rμν − ½R gμν';
+  const row2 = '= 8πG Tμν / c⁴';
+  const serif = `italic ${fs}px "Cambria Math","Times New Roman",Georgia,serif`;
+
+  /* ---------- 观测扰动虚影 ---------- */
+  hctx.font = serif;
+  for (let k = 0; k < 4; k++) {
+    const jx = Math.sin(t * 10.9 + k * 2.3) * fs * 0.058;
+    const jy = Math.cos(t *  9.1 + k * 1.8) * fs * 0.058;
+    hctx.globalAlpha = 0.055 + 0.055 * (0.5 + 0.5 * Math.sin(t * 4.7 + k * 3.1));
+    hctx.fillStyle   = (k % 2) ? '#ffcf6b' : '#a05cff';
+    hctx.fillText(row1, cx + jx, cy - fs * 0.84 + jy);
+    hctx.fillText(row2, cx + jx, cy + fs * 0.84 + jy);
+  }
+
+  /* ---------- 主体 ---------- */
+  hctx.globalAlpha = 1;
+  hctx.shadowColor = '#ffc24d';
+  hctx.shadowBlur  = fs * 0.90;
+  hctx.fillStyle   = '#fff4dd';
+  hctx.fillText(row1, cx, cy - fs * 0.84);
+
+  hctx.shadowColor = '#9b4dff';
+  hctx.fillStyle   = '#f0e4ff';
+  hctx.fillText(row2, cx, cy + fs * 0.84);
+  hctx.shadowBlur  = 0;
+
+  /* ---------- 分隔线 ---------- */
+  const dy = cy + fs * 2.20;
+  hctx.strokeStyle = 'rgba(200,140,80,0.22)';
+  hctx.lineWidth = 1;
+  hctx.beginPath();
+  hctx.moveTo(cx - PW * 0.30, dy);
+  hctx.lineTo(cx + PW * 0.30, dy);
+  hctx.stroke();
+
+  /* ---------- 符号说明 ---------- */
+  const fs2 = Math.max(9, fs * 0.37);
+  hctx.font = `${fs2}px "PingFang SC","Microsoft YaHei",system-ui,sans-serif`;
+
+  const notes = [
+    ['Rμν  里奇曲率张量',  '#ffd58a'],
+    ['gμν  度规张量',      '#c8a4ff'],
+    ['Tμν  能量-动量张量', '#ff9f6b'],
+    ['G  引力常数',        '#ffdfa0']
+  ];
+  for (let i = 0; i < notes.length; i++) {
+    const y = dy + fs2 * 2.3 + i * fs2 * 2.0;
+    hctx.globalAlpha = 0.40 + 0.28 * (0.5 + 0.5 * Math.sin(t * 2.0 + i * 1.3));
+    hctx.fillStyle   = notes[i][1];
+    hctx.fillText(notes[i][0], cx, y);
+  }
+
+  /* ---------- 底部小注 ---------- */
+  hctx.globalAlpha = 0.24 + 0.14 * (0.5 + 0.5 * Math.sin(t * 1.5));
+  hctx.font = `italic ${fs2 * 1.02}px "Cambria Math","Times New Roman",Georgia,serif`;
+  hctx.fillStyle = '#e8c48a';
+  hctx.fillText('时空告诉物质如何运动', cx, dy + fs2 * 11.6);
+  hctx.fillText('物质告诉时空如何弯曲', cx, dy + fs2 * 13.4);
+
+  hctx.restore();
+  hctx.globalAlpha = 1;
+}
+
+/* ================================================================== */
+/*  9. 中缝光带                                                         */
+/* ================================================================== */
+function drawDivider() {
+  const g = hctx.createLinearGradient(PW - 38, 0, PW + 38, 0);
+  g.addColorStop(0.0, 'rgba(0,0,0,0)');
+  g.addColorStop(0.5, 'rgba(210,150,60,0.15)');
+  g.addColorStop(1.0, 'rgba(0,0,0,0)');
+  hctx.save();
+  hctx.globalCompositeOperation = 'lighter';
+  hctx.fillStyle = g;
+  hctx.fillRect(PW - 38, 0, 76, H);
+  hctx.restore();
+}
+
+/* ================================================================== */
+/*  10. 主循环                                                         */
+/* ================================================================== */
+function loop(now) {
+  if (!last) last = now;
+  let dt = (now - last) / 1000;
+  last = now;
+  if (dt > 0.05)   dt = 0.05;
+  if (dt < 0.0005) dt = 0.0005;
+  T += dt;
+
+  /* ---- 场景更新 ---- */
+  updateWeb(T);
+  updatePoints(T, dt);
+
+  /* 奇点脉动 —— 类似引力波爆发 */
+  const pulse = 0.5 + 0.5 * Math.sin(T * 2.6);
+  const pulse2 = 0.5 + 0.5 * Math.sin(T * 1.7 + 1.3);
+  coreGold.scale.setScalar(3.3 + 1.4 * pulse);
+  coreGold.material.opacity = 0.78 + 0.22 * pulse;
+  coreViolet.scale.setScalar(9.0 + 2.6 * pulse2);
+  coreViolet.material.opacity = 0.40 + 0.24 * pulse2;
+
+  /* 相机微幅漂浮 */
+  camera.position.y += Math.sin(T * 0.55) * 0.006;
+
+  /* ---- Pass 1: 场景 → RT ---- */
+  renderer.setRenderTarget(rt);
+  renderer.clear();
+  renderer.render(scene, camera);
+
+  /* ---- Pass 2: 透镜畸变 → 屏幕 ---- */
+  lensMat.uniforms.uTime.value = T;
+  renderer.setRenderTarget(null);
+  renderer.render(postScene, postCam);
+
+  /* ---- HUD ---- */
+  drawHUD(T);
+  drawDivider();
+
+  requestAnimationFrame(loop);
+}
+
+/* 启动 */
+resize();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
