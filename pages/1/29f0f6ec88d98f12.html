@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>时间齿轮蛇 · Time Gear Serpent</title>
+<style>
+  html, body {
+    margin: 0; padding: 0;
+    width: 100%; height: 100%;
+    background: #000;
+    overflow: hidden;
+  }
+  canvas { display: block; }
+  .hint {
+    position: fixed; left: 12px; bottom: 10px;
+    color: rgba(255,255,255,0.32);
+    font: 12px/1.6 -apple-system, "PingFang SC", sans-serif;
+    letter-spacing: 1px;
+    user-select: none; pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hint">TIME GEAR SERPENT · ∞ DRIFT · drag to stir · press R to reseed</div>
+<script>
+'use strict';
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const TAU = Math.PI * 2;
+
+let W = 0, H = 0, DPR = 1;
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width  = Math.round(W * DPR);
+  canvas.height = Math.round(H * DPR);
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+}
+window.addEventListener('resize', resize);
+resize();
+
+/* ============================================================
+   交互
+   ============================================================ */
+let seed = Math.random() * 1000;
+let mx = 0.5, my = 0.5, smx = 0.5, smy = 0.5;
+
+window.addEventListener('pointermove', e => {
+  mx = e.clientX / window.innerWidth;
+  my = e.clientY / window.innerHeight;
+}, { passive: true });
+
+window.addEventListener('keydown', e => {
+  if (e.key === 'r' || e.key === 'R') {
+    seed = Math.random() * 1000;
+    for (const g of gears) {
+      g.rot = Math.random() * TAU;
+      g.wobble = Math.random() * TAU;
+    }
+  }
+});
+
+/* ============================================================
+   伯努利双纽线（∞ 曲线） + 弧长参数化
+   ============================================================ */
+function infPoint(u) {
+  const th = u * TAU;
+  const s = Math.sin(th), c = Math.cos(th);
+  const d = 1 + s * s;
+  return { x: c / d, y: s * c / d };
+}
+
+const LUT_N = 1024;
+const lutU = new Float32Array(LUT_N + 1);
+const lutS = new Float32Array(LUT_N + 1);
+
+(function buildLUT() {
+  let px = infPoint(0).x, py = infPoint(0).y;
+  lutU[0] = 0; lutS[0] = 0;
+  for (let i = 1; i <= LUT_N; i++) {
+    const u = i / LUT_N;
+    const p = infPoint(u);
+    lutS[i] = lutS[i - 1] + Math.hypot(p.x - px, p.y - py);
+    lutU[i] = u;
+    px = p.x; py = p.y;
+  }
+  const total = lutS[LUT_N];
+  for (let i = 0; i <= LUT_N; i++) lutS[i] /= total;
+})();
+
+function uFromS(s) {
+  s = s - Math.floor(s);
+  let lo = 0, hi = LUT_N;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (lutS[mid] <= s) lo = mid; else hi = mid;
+  }
+  const a = lutS[lo], b = lutS[hi];
+  const f = b > a ? (s - a) / (b - a) : 0;
+  return lutU[lo] + (lutU[hi] - lutU[lo]) * f;
+}
+
+/* ============================================================
+   齿轮配置
+   ============================================================ */
+const N_BODY = 118;   // 身体齿轮数量
+const gears = [];
+
+function hueFromS(s) {
+  // 冰蓝(195) → 黄铜(45) → 暗红(355) → 冰蓝
+  const p = s * 3;
+  if (p < 1)      return 195 + (45 - 195) * p;
+  else if (p < 2) return 45 + (355 - 45) * (p - 1);
+  else            return 355 + (195 + 360 - 355) * (p - 2);
+}
+
+function buildGears() {
+  gears.length = 0;
+  for (let i = 0; i < N_BODY; i++) {
+    const s = i / (N_BODY - 1);
+    const env = Math.sin(Math.PI * s) ** 0.55;
+    const rBase = 0.010 + 0.052 * env;
+    const N = Math.max(6, Math.round(6 + 24 * env));
+    const dir = (i % 2 === 0) ? 1 : -1;
+    gears.push({
+      s, env, rBase, N, dir,
+      omega: 14 / N,          // ω ∝ 1/N，保证接触线速度一致
+      rot: Math.random() * TAU,
+      hue: hueFromS(s),
+      wobble: Math.random() * TAU
+    });
+  }
+}
+buildGears();
+
+/* ============================================================
+   齿轮轮廓构建（纯函数）
+   ============================================================ */
+function addGear(path, x, y, R, N, rot) {
+  const innerR = R * 0.70;
+  const outerR = R;
+  const step = TAU / N;
+  const ht = step * 0.30;
+
+  let a = rot;
+  for (let i = 0; i < N; i++) {
+    const a0 = a;
+    const a1 = a + ht;
+    const a2 = a + step - ht;
+    const a3 = a + step;
+
+    const c0 = Math.cos(a0), s0 = Math.sin(a0);
+    const c1 = Math.cos(a1), s1 = Math.sin(a1);
+    const c2 = Math.cos(a2), s2 = Math.sin(a2);
+    const c3 = Math.cos(a3), s3 = Math.sin(a3);
+
+    path.moveTo(x + c0 * innerR, y + s0 * innerR);
+    path.lineTo(x + c1 * outerR, y + s1 * outerR);
+    path.lineTo(x + c2 * outerR, y + s2 * outerR);
+    path.lineTo(x + c3 * innerR, y + s3 * innerR);
+
+    a = a3;
+  }
+}
+
+/* ============================================================
+   色相分桶
+   ============================================================ */
+const HB = 48;
+function bucketOf(h) {
+  let i = ((h | 0) % 360 + 360) % 360 / 7.5 | 0;
+  return i < 0 ? 0 : (i >= HB ? HB - 1 : i);
+}
+
+/* ============================================================
+   主循环
+   ============================================================ */
+let last = performance.now();
+let t = 0;
+
+function frame(now) {
+  let dt = (now - last) / 1000;
+  last = now;
+  if (dt > 0.05) dt = 0.05;
+  if (dt < 0) dt = 0;
+  t += dt;
+
+  /* ---------- 硬清屏 ---------- */
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap  = 'round';
+  ctx.lineJoin = 'round';
+
+  /* ---------- 鼠标平滑扰动 ---------- */
+  smx += (mx - smx) * 0.04;
+  smy += (my - smy) * 0.04;
+
+  /* ---------- 屏幕布局 ---------- */
+  const cx = W * 0.5 + (smx - 0.5) * W * 0.10;
+  const cy = H * 0.5 + (smy - 0.5) * H * 0.10;
+
+  const SX = Math.min(W * 0.40, H * 0.72);
+  const SY = Math.min(W * 0.40, H * 0.72) * 0.92;
+
+  const unit = Math.min(W, H) * 0.001;
+
+  /* ---------- 头部沿 ∞ 移动 ---------- */
+  const headArc = (t * 0.055) % 1;
+  const bodyLen = 0.62;
+
+  /* ---------- 清空分桶 ---------- */
+  const glowPaths = new Array(HB);
+  const corePaths = new Array(HB);
+  for (let i = 0; i < HB; i++) {
+    glowPaths[i] = new Path2D();
+    corePaths[i] = new Path2D();
+  }
+
+  /* ---------- 逐齿轮绘制 ---------- */
+  for (let i = 0; i < N_BODY; i++) {
+    const g = gears[i];
+    const s = g.s;
+
+    /* 位置：沿 ∞ 弧长取样 */
+    const arc = headArc - s * bodyLen;
+    const u = uFromS(arc);
+    const p = infPoint(u);
+
+    let px = cx + p.x * SX;
+    let py = cy + p.y * SY;
+
+    /* 切向 */
+    const eps = 0.0015;
+    const pA = infPoint(u - eps);
+    const pB = infPoint(u + eps);
+    let tx = (pB.x - pA.x) * SX;
+    let ty = (pB.y - pA.y) * SY;
+    const tl = Math.hypot(tx, ty) || 1;
+    tx /= tl; ty /= tl;
+
+    /* 法向 */
+    const nx = -ty, ny = tx;
+
+    /* 蜿蜒波动（双层正弦叠加） */
+    const wobAmp = unit * 24 * g.env;
+    const wob = wobAmp * (
+      0.72 * Math.sin(s * 14 - t * 3.2 + seed * 0.30) +
+      0.28 * Math.sin(s * 23 + t * 2.1 + g.wobble)
+    );
+    px += nx * wob;
+    py += ny * wob;
+
+    /* 齿轮半径 */
+    const R = g.rBase * Math.min(W, H) * 0.58;
+
+    /* 齿轮自转 */
+    g.rot += g.omega * g.dir * dt * 2.0;
+
+    /* 分桶并写入路径 */
+    const b = bucketOf(g.hue);
+    addGear(glowPaths[b], px, py, R, g.N, g.rot);
+    addGear(corePaths[b], px, py, R, g.N, g.rot);
+  }
+
+  /* ---------- 描边：三层辉光 ---------- */
+  for (let i = 0; i < HB; i++) {
+    const hue = i * 7.5 + 3.75;
+    ctx.strokeStyle = `hsla(${hue}, 100%, 52%, 0.045)`;
+    ctx.lineWidth = 9.0;
+    ctx.stroke(glowPaths[i]);
+  }
+  for (let i = 0; i < HB; i++) {
+    const hue = i * 7.5 + 3.75;
+    ctx.strokeStyle = `hsla(${hue}, 100%, 62%, 0.13)`;
+    ctx.lineWidth = 3.4;
+    ctx.stroke(glowPaths[i]);
+  }
+  for (let i = 0; i < HB; i++) {
+    const hue = i * 7.5 + 3.75;
+    ctx.strokeStyle = `hsla(${hue}, 90%, 86%, 0.78)`;
+    ctx.lineWidth = 0.95;
+    ctx.stroke(corePaths[i]);
+  }
+
+  /* ---------- 蛇头光核 ---------- */
+  {
+    const u = uFromS(headArc);
+    const p = infPoint(u);
+    const hx = cx + p.x * SX;
+    const hy = cy + p.y * SY;
+    const HR = unit * 55;
+    const grd = ctx.createRadialGradient(hx, hy, 0, hx, hy, HR);
+    grd.addColorStop(0.00, 'hsla(198, 100%, 96%, 0.92)');
+    grd.addColorStop(0.22, 'hsla(195, 100%, 78%, 0.42)');
+    grd.addColorStop(0.58, 'hsla(195, 100%, 62%, 0.13)');
+    grd.addColorStop(1.00, 'hsla(195, 100%, 62%, 0)');
+    ctx.fillStyle = grd;
+    ctx.beginPath();
+    ctx.arc(hx, hy, HR, 0, TAU);
+    ctx.fill();
+  }
+
+  /* ---------- 蛇尾余晖 ---------- */
+  {
+    const u = uFromS(headArc - bodyLen);
+    const p = infPoint(u);
+    const hx = cx + p.x * SX;
+    const hy = cy + p.y * SY;
+    const HR = unit * 38;
+    const grd = ctx.createRadialGradient(hx, hy, 0, hx, hy, HR);
+    grd.addColorStop(0.00, 'hsla(355, 100%, 84%, 0.55)');
+    grd.addColorStop(0.42, 'hsla(355, 100%, 60%, 0.18)');
+    grd.addColorStop(1.00, 'hsla(355, 100%, 60%, 0)');
+    ctx.fillStyle = grd;
+    ctx.beginPath();
+    ctx.arc(hx, hy, HR, 0, TAU);
+    ctx.fill();
+  }
+
+  ctx.globalCompositeOperation = 'source-over';
+  requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

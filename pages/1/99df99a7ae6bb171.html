@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>梦境烟雾触手 · Dream Smoke Tentacles</title>
+<style>
+  html, body {
+    margin: 0; padding: 0;
+    width: 100%; height: 100%;
+    background: #000;
+    overflow: hidden;
+  }
+  canvas { display: block; }
+  .hint {
+    position: fixed; left: 12px; bottom: 10px;
+    color: rgba(255,255,255,0.28);
+    font: 12px/1.6 -apple-system, "PingFang SC", sans-serif;
+    letter-spacing: 1px;
+    user-select: none; pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hint">DREAM SMOKE TENTACLES · ∞ DRIFT · drag to stir · press R to reseed</div>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const TAU = Math.PI * 2;
+
+let W = 0, H = 0, DPR = 1, S = 1, R0 = 1, CAM_Z = 1;
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width  = Math.round(W * DPR);
+  canvas.height = Math.round(H * DPR);
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  S = Math.min(W, H);
+  R0 = S * 0.040;
+  CAM_Z = S * 1.05;
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+}
+window.addEventListener('resize', resize);
+resize();
+
+/* ============================================================
+   参数
+   ============================================================ */
+const MAIN_COUNT = 18;       // 主触手数量
+const SUB_COUNT  = 4;        // 每条主触手分叉数
+const SUB_S      = [0.24, 0.44, 0.62, 0.80];
+const SEGS       = 62;       // 每条触手采样段数
+const BUCKETS    = 18;       // 色相桶（每 20° 一桶）
+const P_MAX      = 2600;     // 粒子池上限
+
+// 色相：水蜜桃粉 / 浅蓝 / 淡紫
+const HUE_A = 20;   // 水蜜桃粉
+const HUE_B = 200;  // 浅蓝
+const HUE_C = 274;  // 淡紫
+
+let seed = Math.random() * 1000;
+let t = 0;
+let globalYaw = 0;
+
+/* ============================================================
+   交互
+   ============================================================ */
+let mx = 0.5, my = 0.5, smx = 0.5, smy = 0.5;
+
+window.addEventListener('pointermove', e => {
+  mx = e.clientX / window.innerWidth;
+  my = e.clientY / window.innerHeight;
+}, { passive: true });
+
+window.addEventListener('keydown', e => {
+  if (e.key === 'r' || e.key === 'R') {
+    seed = Math.random() * 1000;
+    particles.length = 0;
+  }
+});
+
+/* ============================================================
+   粒子池
+   ============================================================ */
+const particles = [];
+
+function emit(x, y, hue, spd, size, life) {
+  if (particles.length >= P_MAX) particles.shift();
+  const a = Math.random() * TAU;
+  const sp = spd * (0.3 + Math.random() * 0.7);
+  particles.push({
+    x, y,
+    vx: Math.cos(a) * sp,
+    vy: Math.sin(a) * sp - spd * 0.15,
+    hue: hue + (Math.random() - 0.5) * 30,
+    size: size * (0.55 + Math.random() * 0.9),
+    life: 0,
+    maxLife: life * (0.65 + Math.random() * 0.7)
+  });
+}
+
+/* ============================================================
+   三维工具
+   ============================================================ */
+function norm3(x, y, z) {
+  const l = Math.hypot(x, y, z) || 1;
+  return [x / l, y / l, z / l];
+}
+
+function projectPoint(x, y, z) {
+  // Y 轴旋转
+  const cY = Math.cos(globalYaw), sY = Math.sin(globalYaw);
+  const x1 = x * cY + z * sY;
+  const z1 = -x * sY + z * cY;
+
+  // X 轴轻微俯仰
+  const pitch = 0.18 * Math.sin(t * 0.07);
+  const cP = Math.cos(pitch), sP = Math.sin(pitch);
+  const y2 = y * cP - z1 * sP;
+  const z2 = y * sP + z1 * cP;
+
+  // 透视
+  const d = CAM_Z + z2;
+  const p = CAM_Z / Math.max(d, CAM_Z * 0.35);
+  return [x1 * p, y2 * p, z2];
+}
+
+/* ============================================================
+   触手路径：欧拉积分 + 多频转向
+   ============================================================ */
+function computeTentacle(startPos, startDir, k, subSeed, lengthScale, segCount) {
+  const pts = [];
+  let px = startPos[0], py = startPos[1], pz = startPos[2];
+  let [dx, dy, dz] = norm3(startDir[0], startDir[1], startDir[2]);
+
+  const segLen = lengthScale / segCount;
+  const ph1 = subSeed * 0.9 + k * 1.618;
+  const ph2 = subSeed * 1.3 + k * 2.718;
+  const ph3 = subSeed * 0.7 + k * 4.669;
+  const ph4 = subSeed * 1.7 + k * 3.141;
+  const tt = t * 0.55;
+
+  for (let i = 0; i <= segCount; i++) {
+    const s = i / segCount;
+    pts.push([px, py, pz, s]);
+    if (i === segCount) break;
+
+    // 转向幅度：末端弯曲更明显
+    const turnAmp = 0.16 * (0.22 + s * 0.95);
+
+    const t1 = Math.sin(tt * 0.70 + ph1 + s * 3.1);
+    const t2 = Math.sin(tt * 1.15 + ph2 + s * 5.7);
+    const t3 = Math.sin(tt * 0.48 + ph3 + s * 4.3);
+    const t4 = Math.sin(tt * 1.55 + ph4 + s * 7.9);
+
+    // 构造与前进方向垂直的局部坐标系
+    const [ux, uy, uz] = Math.abs(dy) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+    let [vx, vy, vz] = norm3(
+      dy * uz - dz * uy,
+      dz * ux - dx * uz,
+      dx * uy - dy * ux
+    );
+    let [wx, wy, wz] = norm3(
+      dy * vz - dz * vy,
+      dz * vx - dx * vz,
+      dx * vy - dy * vx
+    );
+
+    // 转向力组合
+    const rx = (vx * t1 + wx * t2 * 0.6 + vx * t3 * 0.45) * turnAmp;
+    const ry = (vy * t1 + wy * t2 * 0.6 + vy * t3 * 0.45) * turnAmp;
+    const rz = (vz * t1 + wz * t2 * 0.6 + vz * t3 * 0.45) * turnAmp;
+
+    dx += rx;
+    dy += ry + t4 * 0.004;   // 轻微下垂
+    dz += rz;
+    [dx, dy, dz] = norm3(dx, dy, dz);
+
+    px += dx * segLen;
+    py += dy * segLen;
+    pz += dz * segLen;
+  }
+
+  return pts;
+}
+
+/* ============================================================
+   构建整套触手结构
+   ============================================================ */
+function buildTentacles() {
+  const list = [];
+
+  for (let k = 0; k < MAIN_COUNT; k++) {
+    const fid = k / MAIN_COUNT;
+    const basePhi   = fid * TAU + t * 0.085;
+    const baseTheta = 0.62 + 0.78 * Math.sin(k * 0.83 + seed * 0.3);
+
+    const bx = Math.sin(baseTheta) * Math.cos(basePhi);
+    const by = Math.cos(baseTheta) * 0.72;
+    const bz = Math.sin(baseTheta) * Math.sin(basePhi);
+
+    const startPos = [bx * R0, by * R0, bz * R0];
+    const startDir = [bx, by, bz];
+
+    const mainLen = R0 * (6.2 + 2.4 * Math.sin(t * 0.26 + k * 0.71 + seed));
+    const mainPts = computeTentacle(startPos, startDir, k, seed + k * 1.3, mainLen, SEGS);
+
+    const colorIdx = k % 3;
+    const hueBase = colorIdx === 0 ? HUE_A : colorIdx === 1 ? HUE_B : HUE_C;
+
+    list.push({
+      pts: mainPts,
+      hue: hueBase + Math.sin(t * 0.14 + k * 0.42) * 9,
+      isMain: true
+    });
+
+    // 子触手（分叉）
+    for (let b = 0; b < SUB_COUNT; b++) {
+      const sIdx = Math.max(1, Math.floor(SUB_S[b] * SEGS));
+      const sp   = mainPts[sIdx];
+      const spN  = mainPts[Math.min(sIdx + 2, SEGS)];
+
+      let [tx, ty, tz] = norm3(
+        spN[0] - sp[0],
+        spN[1] - sp[1],
+        spN[2] - sp[2]
+      );
+
+      const subSeed = seed + k * 7.3 + b * 13.7;
+      const side = (b % 2 === 0) ? 1 : -1;
+
+      // 随机参考向量 → 求垂直方向
+      const rx = Math.sin(subSeed);
+      const ry = Math.cos(subSeed * 1.7);
+      const rz = Math.sin(subSeed * 2.3);
+      let [px, py, pz] = norm3(
+        ty * rz - tz * ry,
+        tz * rx - tx * rz,
+        tx * ry - ty * rx
+      );
+
+      // 子触手方向：切向 + 侧向偏移
+      let [sdx, sdy, sdz] = norm3(
+        tx + px * 0.75 * side,
+        ty + py * 0.75 * side,
+        tz + pz * 0.75 * side
+      );
+
+      const subLen = mainLen * (0.32 + 0.22 * Math.sin(subSeed + t * 0.42));
+      const subPts = computeTentacle(
+        [sp[0], sp[1], sp[2]],
+        [sdx, sdy, sdz],
+        k * 7 + b,
+        subSeed,
+        subLen,
+        SEGS
+      );
+
+      list.push({
+        pts: subPts,
+        hue: hueBase + 10 + Math.sin(t * 0.2 + k * 0.6 + b * 1.7) * 14,
+        isMain: false
+      });
+    }
+  }
+
+  return list;
+}
+
+/* ============================================================
+   主循环
+   ============================================================ */
+let lastTime = performance.now();
+
+function frame(now) {
+  let dt = (now - lastTime) / 1000;
+  lastTime = now;
+  if (dt > 0.05) dt = 0.05;
+  if (dt < 0) dt = 0;
+  t += dt;
+  globalYaw += dt * 0.16;
+
+  /* ---------- 硬清屏 ---------- */
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap  = 'round';
+  ctx.lineJoin = 'round';
+
+  /* ---------- 鼠标平滑 ---------- */
+  smx += (mx - smx) * 0.035;
+  smy += (my - smy) * 0.035;
+
+  /* ---------- ∞ 轨迹（伯努利双纽线，40 秒一圈）---------- */
+  const tt  = (t / 40) * TAU;
+  const sn  = Math.sin(tt), cs = Math.cos(tt);
+  const den = 1 + sn * sn;
+  const LX  = cs / den;
+  const LY  = sn * cs / den;
+
+  const cx = W * 0.5 + LX * W * 0.28 + (smx - 0.5) * W * 0.11;
+  const cy = H * 0.5 + LY * H * 1.15 + (smy - 0.5) * H * 0.11;
+
+  /* ---------- 中心呼吸辉光 ---------- */
+  const breathe = 1 + 0.07 * Math.sin(t * 0.55);
+  const glowR = S * 0.48 * breathe;
+  const bg = ctx.createRadialGradient(cx, cy, 0, cx, cy, glowR);
+  bg.addColorStop(0.00, 'hsla(20,100%,76%,0.10)');
+  bg.addColorStop(0.26, 'hsla(200,85%,74%,0.055)');
+  bg.addColorStop(0.55, 'hsla(274,78%,72%,0.026)');
+  bg.addColorStop(1.00, 'hsla(274,78%,72%,0)');
+  ctx.fillStyle = bg;
+  ctx.beginPath(); ctx.arc(cx, cy, glowR, 0, TAU); ctx.fill();
+
+  /* ---------- 构建触手 ---------- */
+  const tentacles = buildTentacles();
+
+  /* ---------- 收集线段（分桶）---------- */
+  const glowP = new Array(BUCKETS);
+  const coreP = new Array(BUCKETS);
+  for (let i = 0; i < BUCKETS; i++) {
+    glowP[i] = new Path2D();
+    coreP[i] = new Path2D();
+  }
+
+  for (let ti = 0; ti < tentacles.length; ti++) {
+    const tent = tentacles[ti];
+    const pts = tent.pts;
+
+    let hue = tent.hue % 360;
+    if (hue < 0) hue += 360;
+    let bi = (hue / 20) | 0;
+    if (bi < 0) bi = 0;
+    else if (bi >= BUCKETS) bi = BUCKETS - 1;
+
+    const gPath = glowP[bi];
+    const cPath = coreP[bi];
+
+    let first = true;
+    let prevX = 0, prevY = 0;
+
+    for (let i = 0; i < pts.length; i++) {
+      const p = pts[i];
+      const proj = projectPoint(p[0], p[1], p[2]);
+      const sx = cx + proj[0];
+      const sy = cy + proj[1];
+
+      if (!first) {
+        gPath.moveTo(prevX, prevY); gPath.lineTo(sx, sy);
+        cPath.moveTo(prevX, prevY); cPath.lineTo(sx, sy);
+      }
+      prevX = sx; prevY = sy;
+      first = false;
+    }
+
+    /* ---------- 末梢发射烟雾粒子 ---------- */
+    const last = pts[pts.length - 1];
+    const lp = projectPoint(last[0], last[1], last[2]);
+    const tipX = cx + lp[0], tipY = cy + lp[1];
+
+    const spd  = S * (0.055 + 0.030 * Math.sin(t * 0.85 + ti * 1.4 + seed));
+    const baseSize = tent.isMain ? 2.4 : 1.6;
+
+    const emitCount = tent.isMain ? 2 : 1;
+    for (let e = 0; e < emitCount; e++) {
+      emit(
+        tipX + (Math.random() - 0.5) * S * 0.012,
+        tipY + (Math.random() - 0.5) * S * 0.012,
+        hue,
+        spd * (0.7 + Math.random() * 0.6),
+        baseSize,
+        0.9 + Math.random() * 0.8
+      );
+    }
+
+    /* ---------- 沿触手流动的内部发光粒子 ---------- */
+    const flowCount = tent.isMain ? 3 : 1;
+    for (let e = 0; e < flowCount; e++) {
+      const idx = (Math.random() * (pts.length - 2)) | 0;
+      const p = pts[idx];
+      const pN = pts[idx + 1];
+      const pp = projectPoint(p[0], p[1], p[2]);
+      const ppN = projectPoint(pN[0], pN[1], pN[2]);
+
+      // 沿屏幕切向速度
+      let vx = (ppN[0] - pp[0]) * 0.8;
+      let vy = (ppN[1] - pp[1]) * 0.8;
+      const vl = Math.hypot(vx, vy) || 1;
+      const vsp = S * 0.045;
+      vx = vx / vl * vsp;
+      vy = vy / vl * vsp;
+
+      if (particles.length < P_MAX) {
+        particles.push({
+          x: cx + pp[0] + (Math.random() - 0.5) * 3,
+          y: cy + pp[1] + (Math.random() - 0.5) * 3,
+          vx, vy,
+          hue: hue + (Math.random() - 0.5) * 18,
+          size: 0.9 + Math.random() * 1.3,
+          life: 0,
+          maxLife: 0.7 + Math.random() * 0.7
+        });
+      }
+    }
+  }
+
+  /* ---------- 统一描边：三层辉光 + 核心 ---------- */
+  // 最外层柔和光晕
+  for (let i = 0; i < BUCKETS; i++) {
+    const hue = i * 20 + 10;
+    ctx.strokeStyle = `hsla(${hue}, 100%, 62%, 0.055)`;
+    ctx.lineWidth = 12;
+    ctx.stroke(glowP[i]);
+  }
+  // 中层辉光
+  for (let i = 0; i < BUCKETS; i++) {
+    const hue = i * 20 + 10;
+    ctx.strokeStyle = `hsla(${hue}, 100%, 70%, 0.10)`;
+    ctx.lineWidth = 5.0;
+    ctx.stroke(glowP[i]);
+  }
+  // 内层亮芯
+  for (let i = 0; i < BUCKETS; i++) {
+    const hue = i * 20 + 10;
+    ctx.strokeStyle = `hsla(${hue}, 95%, 90%, 0.72)`;
+    ctx.lineWidth = 1.4;
+    ctx.stroke(coreP[i]);
+  }
+
+  /* ---------- 中心磁核 ---------- */
+  const coreR = R0 * 1.25;
+  const cg = ctx.createRadialGradient(cx, cy, 0, cx, cy, coreR);
+  cg.addColorStop(0.00, 'hsla(50,100%,96%,0.85)');
+  cg.addColorStop(0.20, 'hsla(22,100%,82%,0.55)');
+  cg.addColorStop(0.55, 'hsla(200,90%,78%,0.22)');
+  cg.addColorStop(0.82, 'hsla(274,85%,76%,0.08)');
+  cg.addColorStop(1.00, 'hsla(274,85%,76%,0)');
+  ctx.fillStyle = cg;
+  ctx.beginPath(); ctx.arc(cx, cy, coreR, 0, TAU); ctx.fill();
+
+  /* ---------- 粒子更新与绘制 ---------- */
+  const damp = Math.max(0, 1 - 1.05 * dt);
+  const buoy = S * 0.014;
+
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.life += dt;
+    if (p.life >= p.maxLife) {
+      particles[i] = particles[particles.length - 1];
+      particles.pop();
+      continue;
+    }
+
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.vx *= damp;
+    p.vy *= damp;
+    p.vy -= buoy * dt;
+
+    const q = p.life / p.maxLife;
+    const a = (1 - q) * (1 - q) * 0.82;
+    if (a < 0.010) continue;
+
+    const sz = p.size * (1 - q * 0.4);
+
+    // 外层柔光
+    ctx.fillStyle = `hsla(${p.hue}, 100%, 70%, ${a * 0.16})`;
+    ctx.fillRect(p.x - sz * 2.1, p.y - sz * 2.1, sz * 4.2, sz * 4.2);
+
+    // 内层亮芯
+    ctx.fillStyle = `hsla(${p.hue}, 100%, 92%, ${a})`;
+    ctx.fillRect(p.x - sz * 0.55, p.y - sz * 0.55, sz * 1.1, sz * 1.1);
+  }
+
+  /* ---------- 环境漂浮尘埃 ---------- */
+  for (let i = 0; i < 3; i++) {
+    const ang = Math.random() * TAU;
+    const dist = S * (0.30 + Math.random() * 0.30);
+    const dx = cx + Math.cos(ang) * dist;
+    const dy = cy + Math.sin(ang) * dist * 0.8;
+    const hueMix = [HUE_A, HUE_B, HUE_C][(Math.random() * 3) | 0];
+    ctx.fillStyle = `hsla(${hueMix}, 90%, 88%, 0.35)`;
+    const sz = 0.6 + Math.random() * 0.8;
+    ctx.fillRect(dx, dy, sz, sz);
+  }
+
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+
+  requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

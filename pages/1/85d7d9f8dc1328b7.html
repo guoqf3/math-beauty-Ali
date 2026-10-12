@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>细胞吞噬体 · Phagocyte Entity</title>
+<style>
+  html, body {
+    margin: 0; padding: 0;
+    width: 100%; height: 100%;
+    background: #000;
+    overflow: hidden;
+  }
+  canvas { display: block; }
+  .hint {
+    position: fixed; left: 12px; bottom: 10px;
+    color: rgba(255, 200, 140, 0.32);
+    font: 12px/1.6 -apple-system, "PingFang SC", sans-serif;
+    letter-spacing: 1.5px;
+    user-select: none; pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hint">PHAGOCYTE ENTITY · 布朗漂浮 · 伪足吞噬 · 按 R 重组</div>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W, H, DPR, cx, cy, baseR;
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width  = W * DPR;
+  canvas.height = H * DPR;
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  cx = W * 0.5;
+  cy = H * 0.5;
+  baseR = Math.min(W, H) * 0.175;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ---------- 调色板：琥珀 / 幽绿 / 深紫 ----------
+const PALETTE = [
+  { h: 38,  s: 100, l: 62 },   // 琥珀
+  { h: 150, s: 100, l: 58 },   // 幽绿
+  { h: 275, s: 85,  l: 65 },   // 深紫
+  { h: 48,  s: 100, l: 70 },   // 亮琥珀
+  { h: 165, s: 92,  l: 62 },   // 薄荷绿
+  { h: 292, s: 78,  l: 62 }    // 紫罗兰
+];
+
+// ---------- 工具 ----------
+function smoothstep(a, b, x) {
+  x = Math.max(0, Math.min(1, (x - a) / (b - a)));
+  return x * x * (3 - 2 * x);
+}
+function wrapAngle(d) {
+  while (d >  Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return d;
+}
+
+// ---------- 伪足 ----------
+const NUM_PSEUDO = 15;
+const pseudopods = [];
+let seed = Math.random() * 1000;
+
+function initPseudopods() {
+  pseudopods.length = 0;
+  for (let i = 0; i < NUM_PSEUDO; i++) {
+    const a = (i / NUM_PSEUDO) * Math.PI * 2 + (Math.random() - 0.5) * 0.45;
+    pseudopods.push({
+      baseAngle: a,
+      angle: a,
+      width: 0.115 + Math.random() * 0.10,
+      maxExt: 0.55 + Math.random() * 0.60,   // 相对 baseR
+      speed: 1.5 + Math.random() * 2.3,
+      phase: Math.random() * Math.PI * 2,
+      wobble: Math.random() * Math.PI * 2,
+      extend: 0,
+      tipX: 0,
+      tipY: 0,
+      flash: 0
+    });
+  }
+}
+initPseudopods();
+
+// ---------- 布朗运动（受限圆周） ----------
+let bx = 0, by = 0, bvx = 0, bvy = 0;
+
+function updateBrownian(dt, t) {
+  bvx += (Math.random() - 0.5) * 1600 * dt;
+  bvy += (Math.random() - 0.5) * 1600 * dt;
+  bvx += -bx * 5.0 * dt;
+  bvy += -by * 5.0 * dt;
+  const damp = Math.pow(0.02, dt);
+  bvx *= damp;  bvy *= damp;
+  bx += bvx * dt;
+  by += bvy * dt;
+  const maxOff = Math.min(W, H) * 0.135;
+  const d = Math.hypot(bx, by);
+  if (d > maxOff) {
+    bx *= maxOff / d;
+    by *= maxOff / d;
+    bvx *= 0.4;
+    bvy *= 0.4;
+  }
+}
+
+// ---------- 内部粒子 ----------
+const INNER_COUNT = 280;
+const innerParticles = [];
+for (let i = 0; i < INNER_COUNT; i++) {
+  const a = Math.random() * Math.PI * 2;
+  const r = Math.sqrt(Math.random()) * 0.82;
+  innerParticles.push({
+    nx: Math.cos(a) * r,
+    ny: Math.sin(a) * r,
+    vx: (Math.random() - 0.5) * 0.18,
+    vy: (Math.random() - 0.5) * 0.18,
+    size: 1.1 + Math.random() * 2.3,
+    ci: (Math.random() * PALETTE.length) | 0,
+    phase: Math.random() * Math.PI * 2
+  });
+}
+
+function spawnInner(x, y, ci) {
+  // 吸收新粒子：从边缘注入
+  const a = Math.random() * Math.PI * 2;
+  const r = 0.75;
+  innerParticles.push({
+    nx: Math.cos(a) * r,
+    ny: Math.sin(a) * r,
+    vx: (Math.random() - 0.5) * 0.4,
+    vy: (Math.random() - 0.5) * 0.4,
+    size: 1.4 + Math.random() * 2.2,
+    ci: ci,
+    phase: Math.random() * Math.PI * 2,
+    born: 0
+  });
+  // 保持总数恒定
+  while (innerParticles.length > INNER_COUNT + 60) innerParticles.shift();
+}
+
+// ---------- 外部漂浮粒子 ----------
+const OUTER_COUNT = 110;
+const outerParticles = [];
+
+function respawnFree(p) {
+  const a = Math.random() * Math.PI * 2;
+  const r = baseR * (1.35 + Math.random() * 0.9);
+  p.x = cx + Math.cos(a) * r;
+  p.y = cy + Math.sin(a) * r;
+  p.vx = (Math.random() - 0.5) * 40;
+  p.vy = (Math.random() - 0.5) * 40;
+  p.size = 1.4 + Math.random() * 2.6;
+  p.ci = (Math.random() * PALETTE.length) | 0;
+  p.state = 'free';
+  p.life = 1;
+  p.phase = Math.random() * Math.PI * 2;
+}
+
+for (let i = 0; i < OUTER_COUNT; i++) {
+  const p = {};
+  respawnFree(p);
+  outerParticles.push(p);
+}
+
+// ---------- 形状采样 ----------
+const N_SAMP = 340;
+const shapeR = new Float32Array(N_SAMP + 1);
+const shapeX = new Float32Array(N_SAMP + 1);
+const shapeY = new Float32Array(N_SAMP + 1);
+
+function computeShape(ox, oy, t) {
+  const breath = 1 + 0.035 * Math.sin(t * 1.25);
+  for (let i = 0; i <= N_SAMP; i++) {
+    const th = (i / N_SAMP) * Math.PI * 2;
+    let r = 1;
+    // 基础有机起伏
+    r += 0.040 * Math.sin(th * 3 + t * 0.85 + seed);
+    r += 0.024 * Math.sin(th * 5 - t * 1.35 + seed * 1.7);
+    r += 0.014 * Math.sin(th * 9 + t * 2.10);
+    // 伪足贡献
+    for (let k = 0; k < pseudopods.length; k++) {
+      const p = pseudopods[k];
+      const d = wrapAngle(th - p.angle);
+      const g = Math.exp(-(d * d) / (2 * p.width * p.width));
+      r += p.extend * g;
+    }
+    r *= breath;
+    shapeR[i] = r;
+    shapeX[i] = ox + Math.cos(th) * r * baseR;
+    shapeY[i] = oy + Math.sin(th) * r * baseR;
+  }
+}
+
+// ---------- 主循环 ----------
+let t = 0;
+let last = performance.now();
+
+function frame(now) {
+  const dt = Math.min(0.05, Math.max(0.001, (now - last) / 1000));
+  last = now;
+  t += dt;
+
+  updateBrownian(dt, t);
+  const ox = cx + bx;
+  const oy = cy + by;
+
+  // ---- 更新伪足 ----
+  for (let k = 0; k < pseudopods.length; k++) {
+    const p = pseudopods[k];
+    p.angle = p.baseAngle + 0.28 * Math.sin(t * 0.34 + p.wobble);
+    const s = Math.sin(t * p.speed + p.phase);
+    const target = p.maxExt * smoothstep(0.18, 0.96, s);
+    const rate = target > p.extend ? 4.6 : 1.9;   // 伸出快、缩回慢 → 侵略性黏稠感
+    p.extend += (target - p.extend) * Math.min(1, dt * rate);
+    p.flash *= Math.pow(0.03, dt);
+
+    const rr = baseR * (1 + p.extend);
+    p.tipX = ox + Math.cos(p.angle) * rr;
+    p.tipY = oy + Math.sin(p.angle) * rr;
+  }
+
+  computeShape(ox, oy, t);
+
+  // ================= 渲染 =================
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  // ---- 环境光晕 ----
+  const amb = ctx.createRadialGradient(ox, oy, baseR * 0.2, ox, oy, baseR * 2.6);
+  amb.addColorStop(0,    'rgba(255,170,70,0.055)');
+  amb.addColorStop(0.45, 'rgba(120,70,200,0.032)');
+  amb.addColorStop(1,    'rgba(0,0,0,0)');
+  ctx.fillStyle = amb;
+  ctx.beginPath();
+  ctx.arc(ox, oy, baseR * 2.6, 0, Math.PI * 2);
+  ctx.fill();
+
+  // ---- 本体填充 ----
+  const body = new Path2D();
+  body.moveTo(shapeX[0], shapeY[0]);
+  for (let i = 1; i <= N_SAMP; i++) body.lineTo(shapeX[i], shapeY[i]);
+  body.closePath();
+
+  const bg = ctx.createRadialGradient(
+    ox - baseR * 0.30, oy - baseR * 0.35, baseR * 0.08,
+    ox, oy, baseR * 1.15
+  );
+  bg.addColorStop(0,    'rgba(255,205,120,0.135)');
+  bg.addColorStop(0.42, 'rgba(205,120,55,0.085)');
+  bg.addColorStop(0.78, 'rgba(95,60,170,0.075)');
+  bg.addColorStop(1,    'rgba(60,25,120,0.03)');
+  ctx.fillStyle = bg;
+  ctx.fill(body);
+
+  // ---- 内部荧光颗粒 ----
+  for (let i = 0; i < innerParticles.length; i++) {
+    const q = innerParticles[i];
+    const r = Math.hypot(q.nx, q.ny);
+    // 向心 + 切向旋转 + 噪声
+    q.vx += -q.nx * 0.55 * dt + (-q.ny) * 0.42 * dt;
+    q.vy += -q.ny * 0.55 * dt + ( q.nx) * 0.42 * dt;
+    q.vx += (Math.random() - 0.5) * 1.6 * dt;
+    q.vy += (Math.random() - 0.5) * 1.6 * dt;
+    const damp = Math.pow(0.30, dt);
+    q.vx *= damp; q.vy *= damp;
+    q.nx += q.vx * dt;
+    q.ny += q.vy * dt;
+
+    // 约束在体内
+    const rr = Math.hypot(q.nx, q.ny);
+    if (rr > 0.88) {
+      const k = 0.88 / rr;
+      q.nx *= k; q.ny *= k;
+      q.vx *= -0.4; q.vy *= -0.4;
+    }
+
+    const px = ox + q.nx * baseR;
+    const py = oy + q.ny * baseR;
+    const c  = PALETTE[q.ci];
+    const pulse = 0.55 + 0.45 * Math.sin(t * 2.4 + q.phase);
+    const sz = q.size * (0.75 + 0.45 * pulse);
+
+    ctx.fillStyle = `hsla(${c.h}, ${c.s}%, ${c.l}%, ${0.10 + 0.06 * pulse})`;
+    ctx.beginPath(); ctx.arc(px, py, sz * 4.2, 0, Math.PI * 2); ctx.fill();
+
+    ctx.fillStyle = `hsla(${c.h}, ${c.s}%, ${Math.min(94, c.l + 22)}%, ${0.30 + 0.30 * pulse})`;
+    ctx.beginPath(); ctx.arc(px, py, sz, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // ---- 外部粒子 & 吞噬逻辑 ----
+  for (let i = 0; i < outerParticles.length; i++) {
+    const q = outerParticles[i];
+
+    if (q.state === 'free') {
+      // 布朗漂浮
+      q.vx += (Math.random() - 0.5) * 90 * dt;
+      q.vy += (Math.random() - 0.5) * 90 * dt;
+      const damp = Math.pow(0.35, dt);
+      q.vx *= damp; q.vy *= damp;
+      // 轻微向细胞漂移
+      const dx = ox - q.x, dy = oy - q.y;
+      const dd = Math.hypot(dx, dy) || 1;
+      q.vx += (dx / dd) * 8 * dt;
+      q.vy += (dy / dd) * 8 * dt;
+      q.x += q.vx * dt;
+      q.y += q.vy * dt;
+
+      if (dd > baseR * 3.2) respawnFree(q);
+
+      // 被伪足捕获检测
+      for (let k = 0; k < pseudopods.length; k++) {
+        const p = pseudopods[k];
+        if (p.extend < 0.18) continue;
+        const ex = q.x - p.tipX, ey = q.y - p.tipY;
+        if (ex * ex + ey * ey < 44 * 44) {
+          q.state = 'caught';
+          p.flash = 1;
+          break;
+        }
+      }
+    } else if (q.state === 'caught') {
+      // 被拖向细胞中心
+      const dx = ox - q.x, dy = oy - q.y;
+      const d = Math.hypot(dx, dy) || 1;
+      const sp = 190 + (1 - Math.min(1, d / (baseR * 1.6))) * 380;
+      q.x += (dx / d) * sp * dt;
+      q.y += (dy / d) * sp * dt;
+      if (d < baseR * 0.42) {
+        spawnInner(q.x, q.y, q.ci);
+        q.state = 'absorbed';
+        q.life = 0.45;
+      }
+    } else if (q.state === 'absorbed') {
+      q.life -= dt;
+      if (q.life <= 0) respawnFree(q);
+    }
+
+    // 绘制
+    if (q.state === 'absorbed') {
+      const c = PALETTE[q.ci];
+      const a = q.life / 0.45;
+      ctx.fillStyle = `hsla(${c.h}, ${c.s}%, ${c.l + 20}%, ${a * 0.5})`;
+      ctx.beginPath(); ctx.arc(q.x, q.y, q.size * (0.4 + a * 0.6), 0, Math.PI * 2); ctx.fill();
+      continue;
+    }
+
+    const c = PALETTE[q.ci];
+    const twinkle = 0.65 + 0.35 * Math.sin(t * 3.1 + q.phase);
+    const sz = q.size * twinkle;
+
+    ctx.fillStyle = `hsla(${c.h}, ${c.s}%, ${c.l}%, 0.16)`;
+    ctx.beginPath(); ctx.arc(q.x, q.y, sz * 4.5, 0, Math.PI * 2); ctx.fill();
+
+    ctx.fillStyle = `hsla(${c.h}, ${c.s}%, ${Math.min(95, c.l + 24)}%, 0.85)`;
+    ctx.beginPath(); ctx.arc(q.x, q.y, sz, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // ---- 伪足尖端光斑 ----
+  for (let k = 0; k < pseudopods.length; k++) {
+    const p = pseudopods[k];
+    if (p.extend < 0.10) continue;
+    const a = Math.min(1, p.extend * 1.8) * (0.35 + 0.65 * p.flash + 0.25);
+    const g = ctx.createRadialGradient(p.tipX, p.tipY, 0, p.tipX, p.tipY, 26);
+    g.addColorStop(0, `hsla(42, 100%, 78%, ${0.30 * a})`);
+    g.addColorStop(0.5, `hsla(300, 90%, 68%, ${0.10 * a})`);
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(p.tipX, p.tipY, 26, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // ---- 轮廓：辉光层 + 核心层 + 紫色外辉 ----
+  ctx.strokeStyle = 'rgba(255,185,95,0.065)';
+  ctx.lineWidth = 9;
+  ctx.stroke(body);
+
+  ctx.strokeStyle = 'rgba(255,225,165,0.34)';
+  ctx.lineWidth = 1.6;
+  ctx.stroke(body);
+
+  ctx.strokeStyle = 'rgba(170,130,255,0.16)';
+  ctx.lineWidth = 0.7;
+  ctx.stroke(body);
+
+  // ---- 细胞核光斑 ----
+  const ng = ctx.createRadialGradient(
+    ox + baseR * 0.10, oy - baseR * 0.05, 0,
+    ox + baseR * 0.10, oy - baseR * 0.05, baseR * 0.55
+  );
+  ng.addColorStop(0,   'rgba(255,215,150,0.075)');
+  ng.addColorStop(0.5, 'rgba(150,110,255,0.035)');
+  ng.addColorStop(1,   'rgba(0,0,0,0)');
+  ctx.fillStyle = ng;
+  ctx.beginPath();
+  ctx.arc(ox + baseR * 0.10, oy - baseR * 0.05, baseR * 0.55, 0, Math.PI * 2);
+  ctx.fill();
+
+  requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
+
+// ---------- 重新播种 ----------
+window.addEventListener('keydown', e => {
+  if (e.key === 'r' || e.key === 'R') {
+    seed = Math.random() * 1000;
+    initPseudopods();
+    for (let i = 0; i < outerParticles.length; i++) respawnFree(outerParticles[i]);
+  }
+});
+
+// 拖拽扰动：轻微改变布朗速度
+window.addEventListener('pointerdown', () => {
+  bvx += (Math.random() - 0.5) * 260;
+  bvy += (Math.random() - 0.5) * 260;
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>体积光线渲染 · Volumetric Raymarching</title>
+
+<script>
+  window.MathJax = {
+    tex: {
+      inlineMath: [['$', '$'], ['\\(', '\\)']],
+      displayMath: [['$$', '$$'], ['\\[', '\\]']],
+      tags: 'none'
+    },
+    svg: { fontCache: 'global', scale: 1.0 },
+    options: { enableMenu: false }
+  };
+</script>
+<script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
+
+<style>
+  *{ box-sizing: border-box; }
+  html, body{
+    margin:0; padding:0; height:100%; background:#000;
+    overflow:hidden; color:#eae8ff;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+                 "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  #app{
+    display: grid;
+    grid-template-columns: 1fr 5fr;
+    height: 100vh; width: 100vw;
+  }
+
+  #left{
+    position: relative; background:#000;
+    border-right: 1px solid rgba(91, 140, 255, .22);
+    box-shadow: inset -22px 0 48px -34px rgba(91, 140, 255, .95);
+    display:flex; align-items:center; justify-content:center;
+    overflow:hidden;
+    padding: 2.4vh clamp(6px, .72vw, 18px);
+    font-size: clamp(5.5px, .63vw, 11.5px);
+    contain: strict;
+  }
+
+  #left::after{
+    content:""; position:absolute; inset:0;
+    background:
+      radial-gradient(130% 55% at 50% 18%, rgba(255,138,61,.07), transparent 70%),
+      radial-gradient(130% 55% at 50% 82%, rgba(91,140,255,.08), transparent 70%);
+    pointer-events:none;
+  }
+
+  .panel{
+    position:relative; z-index:1; width:100%;
+    display:flex; flex-direction:column; gap:.95em;
+  }
+
+  .kicker{
+    font-size:1.15em; letter-spacing:.30em; text-transform:uppercase;
+    white-space:nowrap; color:#ff8a3d;
+    text-shadow: 0 0 6px rgba(255,138,61,.85);
+  }
+  .kicker.blue{
+    color:#5b8cff; text-shadow: 0 0 6px rgba(91,140,255,.85);
+  }
+  .kicker.timer{
+    font-variant-numeric: tabular-nums; letter-spacing:.20em; color:#ff8a3d;
+  }
+
+  .rule{
+    height:1px; width:100%;
+    background: linear-gradient(90deg,
+                rgba(255,138,61,.85), rgba(91,140,255,.50), transparent);
+  }
+
+  .eqnote{
+    font-size:.88em; letter-spacing:.20em; text-transform:uppercase;
+    color: rgba(91,140,255,.82); margin-bottom:-.30em;
+  }
+  .eqnote.warm{ color: rgba(255,138,61,.82); }
+
+  .eqwrap{ width:100%; overflow:hidden; }
+
+  mjx-container{
+    display:inline-block;
+    filter: drop-shadow(0 0 4px rgba(255,138,61,.55));
+  }
+  .eqwrap.alt mjx-container{
+    filter: drop-shadow(0 0 4px rgba(91,140,255,.55));
+  }
+  mjx-container[jax="SVG"] > svg{ overflow: visible; }
+
+  #right{
+    position:relative; background:#000; overflow:hidden;
+  }
+  #gl{ display:block; width:100%; height:100%; }
+  #right::after{
+    content:""; position:absolute; inset:0; pointer-events:none;
+    background: radial-gradient(125% 105% at 50% 50%,
+                transparent 52%, rgba(0,0,0,.62) 100%);
+  }
+</style>
+</head>
+
+<body>
+<div id="app">
+
+  <aside id="left">
+    <div class="panel">
+      <div class="kicker">Volumetric RT</div>
+      <div class="rule"></div>
+
+      <div class="eqnote warm">体积渲染积分</div>
+      <div class="eqwrap">
+        $$L(\mathbf{o},\omega)=\int_{0}^{D}\!T(s)\,\sigma_{s}\,\mathbf{c}\,ds\;+\;T(D)\,L_{\text{bg}}$$
+      </div>
+
+      <div class="eqnote">透射率</div>
+      <div class="eqwrap alt">
+        $$T(s)=\exp\!\Big(-\!\int_{0}^{s}\!\sigma_{t}(\mathbf{x}_{u})\,du\Big)$$
+      </div>
+
+      <div class="eqnote">光线–球求交</div>
+      <div class="eqwrap">
+        $$t_{\pm}=-\mathbf{o}\!\cdot\!\mathbf{d}\pm\sqrt{(\mathbf{o}\!\cdot\!\mathbf{d})^{2}-\|\mathbf{o}\|^{2}+R^{2}}$$
+      </div>
+
+      <div class="eqnote">分形布朗运动</div>
+      <div class="eqwrap alt">
+        $$\mathrm{fbm}(\mathbf{p})=\sum_{i=0}^{n-1}\frac{1}{2^{i}}\,\mathrm{noise}\!\big(2^{i}\mathbf{p}\big)$$
+      </div>
+
+      <div class="eqnote warm">脉冲光核</div>
+      <div class="eqwrap">
+        $$\mathcal{P}(\psi)=\Big[\tfrac{1}{2}+\tfrac{1}{2}\sin(3\psi)\Big]^{3}$$
+      </div>
+
+      <div class="eqnote">相位重映射</div>
+      <div class="eqwrap alt">
+        $$\psi(t)=\frac{2\pi t}{T}+a\sin\!\left(\frac{2\pi t}{T}\right)$$
+      </div>
+
+      <div class="rule"></div>
+      <div class="kicker timer" id="timer">t = 0.0 s</div>
+    </div>
+  </aside>
+
+  <section id="right">
+    <canvas id="gl"></canvas>
+  </section>
+
+</div>
+
+<script>
+  function fitEquations(){
+    document.querySelectorAll('.eqwrap').forEach(function(wrap){
+      var mjx = wrap.querySelector('mjx-container');
+      if (!mjx) return;
+      mjx.style.transform = 'none';
+      mjx.style.transformOrigin = 'left top';
+      mjx.style.display = 'inline-block';
+      wrap.style.height = 'auto';
+      var avail = wrap.clientWidth;
+      if (avail <= 0) return;
+      var rect = mjx.getBoundingClientRect();
+      var w = rect.width, h = rect.height;
+      if (w > avail && w > 0){
+        var k = avail / w;
+        mjx.style.transform = 'scale(' + k + ')';
+        wrap.style.height = (h * k + 2) + 'px';
+      }
+    });
+  }
+  function bootFit(){
+    if (window.MathJax && MathJax.startup && MathJax.startup.promise){
+      MathJax.startup.promise.then(function(){
+        fitEquations(); setTimeout(fitEquations, 120);
+      });
+    } else {
+      window.addEventListener('load', function(){
+        fitEquations(); setTimeout(fitEquations, 400);
+      });
+    }
+  }
+  bootFit();
+  window.addEventListener('resize', function(){
+    clearTimeout(window.__fitT);
+    window.__fitT = setTimeout(fitEquations, 200);
+  });
+</script>
+
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+
+/* ============================================================
+   全局参数
+   ============================================================ */
+const T    = 60.0;
+const TAU  = Math.PI * 2;
+const WARP = 0.55;
+
+/* ============================================================
+   渲染器 / 场景 / 相机
+   ============================================================ */
+const host   = document.getElementById('right');
+const canvas = document.getElementById('gl');
+
+const renderer = new THREE.WebGLRenderer({
+  canvas,
+  antialias: false,
+  powerPreference: 'high-performance',
+  depth: false,
+  stencil: false
+});
+renderer.setClearColor(0x000000, 1);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+const scene = new THREE.Scene();
+const cam   = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+
+/* ============================================================
+   Uniforms
+   ============================================================ */
+const uniforms = {
+  uRes:  { value: new THREE.Vector2(1, 1) },
+  uPsi:  { value: 0.0 }
+};
+
+/* ============================================================
+   顶点着色器
+   ============================================================ */
+const vertexShader = /* glsl */`
+  void main(){
+    gl_Position = vec4(position.xy, 0.0, 1.0);
+  }
+`;
+
+/* ============================================================
+   片段着色器 —— 性能优化版
+   ------------------------------------------------------------
+   优化点：
+     1. 步数 40 → 20
+     2. fbm 3 octave → 2 octave，域扭曲用单次 vnoise
+     3. 提前退出（trans 阈值 + 边界检测）
+     4. 用包络快速剔除空区域
+     5. 静态抖动（不随时间闪烁，便于低步数下的噪点稳定）
+   ============================================================ */
+const fragmentShader = /* glsl */`
+  precision highp float;
+
+  uniform vec2  uRes;
+  uniform float uPsi;
+
+  const vec3 SUNSET_ORANGE = vec3(1.00, 0.42, 0.08);
+  const vec3 DEEP_BLUE     = vec3(0.03, 0.10, 0.44);
+
+  /* ---------- 哈希 ---------- */
+  float hash13(vec3 p){
+    p = fract(p * 0.1031);
+    p += dot(p, p.zyx + 31.32);
+    return fract((p.x + p.y) * p.z);
+  }
+
+  /* ---------- 3D 值噪声（8 次哈希，比 fbm 便宜） ---------- */
+  float vnoise(vec3 x){
+    vec3 i = floor(x);
+    vec3 f = fract(x);
+    f = f * f * (3.0 - 2.0 * f);
+
+    float n000 = hash13(i);
+    float n100 = hash13(i + vec3(1.0, 0.0, 0.0));
+    float n010 = hash13(i + vec3(0.0, 1.0, 0.0));
+    float n110 = hash13(i + vec3(1.0, 1.0, 0.0));
+    float n001 = hash13(i + vec3(0.0, 0.0, 1.0));
+    float n101 = hash13(i + vec3(1.0, 0.0, 1.0));
+    float n011 = hash13(i + vec3(0.0, 1.0, 1.0));
+    float n111 = hash13(i + vec3(1.0, 1.0, 1.0));
+
+    return mix(
+      mix(mix(n000, n100, f.x), mix(n010, n110, f.x), f.y),
+      mix(mix(n001, n101, f.x), mix(n011, n111, f.x), f.y),
+      f.z
+    );
+  }
+
+  /* ---------- 2-octave FBM（16 次哈希） ---------- */
+  float fbm2(vec3 p){
+    return 0.667 * vnoise(p)
+         + 0.333 * vnoise(p * 2.03 + vec3(1.7, 9.2, 3.3));
+  }
+
+  /* ---------- 密度场：单 octave 域扭曲 + 2 octave FBM ---------- */
+  float cloudDensity(vec3 p, float psi){
+    // 全周期漂移（sin/cos 整数倍 psi，严格无缝）
+    vec3 q = p + vec3(sin(psi) * 0.70,
+                      0.42 * cos(psi),
+                      0.70 * sin(2.0 * psi));
+
+    // 单 octave 域扭曲，成本低但足够打散形状
+    float w = vnoise(q * 0.90 + vec3(7.3, 2.1, 5.5)) - 0.5;
+    q += w * vec3(2.3, 1.5, -2.3);
+
+    float d = fbm2(q * 1.18);
+
+    // 球状包络
+    float env = smoothstep(3.5, 1.0, length(p));
+
+    return max((d * 1.10 - 0.52) * env, 0.0);
+  }
+
+  /* ---------- 背景：深空 + 星云 + 星点 ---------- */
+  vec3 background(vec3 rd){
+    float y = rd.y * 0.5 + 0.5;
+    vec3 col = mix(vec3(0.010, 0.016, 0.055),
+                   vec3(0.001, 0.003, 0.022), y);
+
+    float n = fbm2(rd * 2.2 + vec3(11.0));
+    col += vec3(0.048, 0.036, 0.135) * n * n;
+
+    float s = hash13(floor(rd * 260.0));
+    float star = smoothstep(0.9962, 1.0, s);
+    col += vec3(0.85, 0.88, 1.00) * star * 1.7;
+
+    return col;
+  }
+
+  void main(){
+    vec2 uv = (gl_FragCoord.xy - 0.5 * uRes) / uRes.y;
+
+    float psi = uPsi;
+
+    /* ---- 相机：1× 圆周 + 2× 摆 → ∞ / 圆周复合运动 ---- */
+    vec3 camPos = vec3(
+      sin(psi) * 8.4 + sin(2.0 * psi) * 2.2,
+      1.5 + 1.7 * sin(2.0 * psi + 0.7),
+      cos(psi) * 8.4 + cos(2.0 * psi) * 2.2
+    );
+
+    vec3 tgt = vec3(
+      sin(2.0 * psi) * 0.85,
+      0.50 * sin(psi + 1.1),
+      cos(2.0 * psi) * 0.85
+    );
+
+    vec3 fwd = normalize(tgt - camPos);
+    vec3 rgt = normalize(cross(vec3(0.0, 1.0, 0.0), fwd));
+    vec3 upv = cross(fwd, rgt);
+
+    vec3 rd = normalize(uv.x * rgt + uv.y * upv + 1.55 * fwd);
+
+    /* ---- 与云球求交 ---- */
+    const float R = 3.5;
+    float b = dot(camPos, rd);
+    float c = dot(camPos, camPos) - R * R;
+    float h = b * b - c;
+
+    vec3 col;
+
+    if (h < 0.0){
+      col = background(rd);
+    } else {
+      h = sqrt(h);
+      float tn = max(-b - h, 0.0);
+      float tf = -b + h;
+
+      /* ---- 20 步光线步进 ---- */
+      const int STEPS = 20;
+      float dt = (tf - tn) / float(STEPS);
+
+      // 静态抖动（每像素固定，不随时间变化 → 不闪烁）
+      float jit = fract(sin(dot(gl_FragCoord.xy,
+                                vec2(12.9898, 78.233))) * 43758.5453);
+
+      vec3  acc   = vec3(0.0);
+      float trans = 1.0;
+
+      float t0 = tn + jit * dt;
+
+      for (int i = 0; i < STEPS; i++){
+        if (t0 > tf || trans < 0.010) break;
+
+        vec3  p = camPos + rd * t0;
+
+        // 快速包围盒剔除：只有靠近球心区域才做完整密度计算
+        float r2 = dot(p, p);
+        if (r2 < 12.25){                       // 3.5² = 12.25
+
+          float d = cloudDensity(p, psi);
+
+          if (d > 0.003){
+            // 颜色：高度决定 深空蓝 ↔ 落日橙
+            float hgt = clamp((p.y + 3.2) / 6.4, 0.0, 1.0);
+            vec3  c1  = mix(DEEP_BLUE, SUNSET_ORANGE,
+                            smoothstep(0.05, 0.95, hgt));
+
+            // 脉冲光核
+            vec3 core = vec3(sin(psi) * 0.60,
+                             sin(2.0 * psi) * 0.40,
+                             cos(psi) * 0.60);
+
+            float pulse = 0.5 + 0.5 * sin(psi * 3.0 + 1.2);
+            pulse = pulse * pulse * pulse;
+
+            float dl   = length(p - core);
+            float glow = pulse * 1.6 / (1.0 + dl * dl * 2.6);
+
+            vec3 emit = c1 * d * 2.4
+                      + vec3(1.00, 0.60, 0.24) * glow * d * 5.0;
+
+            acc   += trans * emit * dt;
+            trans *= exp(-d * dt * 3.2);
+          }
+        }
+
+        t0 += dt;
+      }
+
+      col = acc + background(rd) * trans;
+    }
+
+    col = pow(max(col, 0.0), vec3(0.92));
+    gl_FragColor = vec4(col, 1.0);
+  }
+`;
+
+const material = new THREE.ShaderMaterial({
+  uniforms,
+  vertexShader,
+  fragmentShader,
+  depthTest: false,
+  depthWrite: false
+});
+
+const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material);
+quad.frustumCulled = false;
+scene.add(quad);
+
+/* ============================================================
+   自适应分辨率
+   ------------------------------------------------------------
+   基础目标：约 420K 渲染像素（体积步进开销大，此值兼顾清晰与流畅）
+   同时加入运行时帧率监测：连续掉帧则自动降档
+   ============================================================ */
+const BASE_PIXEL_BUDGET = 420000;
+const QUALITY_MIN  = 0.42;
+const QUALITY_MAX  = 1.00;
+
+let qualityBias = 1.0;           // 运行时调节系数
+
+function applySize(){
+  const w = host.clientWidth  || 1;
+  const h = host.clientHeight || 1;
+
+  const dpr = Math.min(window.devicePixelRatio || 1, 2.0);
+  const basePR = 0.72 * dpr;
+
+  let pr = basePR * qualityBias;
+
+  // 按像素预算缩放
+  const budgetPR = Math.sqrt(BASE_PIXEL_BUDGET / (w * h));
+  if (pr > budgetPR) pr = budgetPR;
+
+  pr = Math.max(QUALITY_MIN, Math.min(pr, QUALITY_MAX));
+
+  renderer.setPixelRatio(pr);
+  renderer.setSize(w, h, false);
+
+  const size = new THREE.Vector2();
+  renderer.getDrawingBufferSize(size);
+  uniforms.uRes.value.copy(size);
+}
+
+if (window.ResizeObserver) new ResizeObserver(applySize).observe(host);
+window.addEventListener('resize', applySize);
+applySize();
+
+/* ============================================================
+   主循环 —— 60 秒无缝循环 + 帧率自适应
+   ============================================================ */
+const timerEl = document.getElementById('timer');
+const clock   = new THREE.Clock();
+
+let t = 0;
+let slowFrames = 0;
+let fastFrames = 0;
+let lastAdapt  = 0;
+
+function frame(){
+  const dt = Math.min(clock.getDelta(), 0.05);
+
+  t += dt;
+  if (t >= T) t -= T;
+
+  const phase = TAU * t / T;
+  const psi   = phase + WARP * Math.sin(phase);
+
+  uniforms.uPsi.value = psi;
+  timerEl.textContent = 't = ' + t.toFixed(1) + ' s';
+
+  renderer.render(scene, cam);
+
+  /* ---- 自适应画质：连续掉帧降档，连续流畅回档 ---- */
+  if (dt > 0.030) { slowFrames++; fastFrames = 0; }
+  else if (dt < 0.019) { fastFrames++; slowFrames = 0; }
+  else { slowFrames = Math.max(0, slowFrames - 1);
+         fastFrames = Math.max(0, fastFrames - 1); }
+
+  const now = performance.now();
+  if (now - lastAdapt > 1200){
+    if (slowFrames > 30 && qualityBias > 0.55){
+      qualityBias = Math.max(0.55, qualityBias - 0.12);
+      applySize();
+      slowFrames = 0; lastAdapt = now;
+    } else if (fastFrames > 120 && qualityBias < 1.0){
+      qualityBias = Math.min(1.0, qualityBias + 0.08);
+      applySize();
+      fastFrames = 0; lastAdapt = now;
+    }
+  }
+
+  requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>发光流体网格 · Glowing Fluid Lattice</title>
+
+<!-- ===================== MathJax 配置 ===================== -->
+<script>
+  window.MathJax = {
+    tex: {
+      inlineMath: [['$', '$'], ['\\(', '\\)']],
+      displayMath: [['$$', '$$'], ['\\[', '\\]']],
+      tags: 'none'
+    },
+    svg: { fontCache: 'global', scale: 1.0 },
+    options: { enableMenu: false }
+  };
+</script>
+<script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
+
+<style>
+  :root{
+    --violet:  #9b5cff;
+    --emerald: #25e6a0;
+  }
+
+  *{ box-sizing: border-box; }
+
+  html, body{
+    margin:0; padding:0;
+    height:100%;
+    background:#000;
+    overflow:hidden;
+    color:#e8e6ff;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+                 "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ===================== 主布局：CSS Grid ===================== */
+  #app{
+    display: grid;
+    grid-template-columns: 1fr 5fr;   /* 左 1/6  ·  右 5/6 */
+    height: 100vh;
+    width: 100vw;
+  }
+
+  /* ===================== 左侧：纯黑 · 公式面板 ===================== */
+  #left{
+    position: relative;
+    background: #000;
+    border-right: 1px solid rgba(155, 92, 255, .22);
+    box-shadow: inset -22px 0 48px -34px rgba(155, 92, 255, .95);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    padding: 2.5vh clamp(6px, .72vw, 18px);
+    /* 公式整体字号随视口宽度缩放（左栏永远是视口的 1/6） */
+    font-size: clamp(5.5px, .63vw, 11.5px);
+  }
+
+  #left::after{
+    content:"";
+    position:absolute; inset:0;
+    background: radial-gradient(130% 55% at 50% 50%,
+                rgba(155, 92, 255, .07), transparent 72%);
+    pointer-events:none;
+  }
+
+  .panel{
+    position: relative;
+    z-index: 1;
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 1.15em;
+  }
+
+  .kicker{
+    font-size: 1.15em;
+    letter-spacing: .34em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    color: var(--violet);
+    text-shadow: 0 0 6px rgba(155, 92, 255, .85),
+                 0 0 20px rgba(155, 92, 255, .38);
+  }
+  .kicker.green{
+    color: var(--emerald);
+    text-shadow: 0 0 6px rgba(37, 230, 160, .8),
+                 0 0 18px rgba(37, 230, 160, .32);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: .22em;
+  }
+
+  .rule{
+    height: 1px;
+    width: 100%;
+    background: linear-gradient(90deg,
+                rgba(155, 92, 255, .85),
+                rgba(37, 230, 160, .45),
+                transparent);
+  }
+
+  .eqnote{
+    font-size: .9em;
+    letter-spacing: .2em;
+    text-transform: uppercase;
+    color: rgba(37, 230, 160, .78);
+    text-shadow: 0 0 9px rgba(37, 230, 160, .35);
+  }
+
+  .eqwrap{
+    width: 100%;
+    overflow: hidden;
+    margin-top: -.35em;
+  }
+
+  /* MathJax 微弱发光 */
+  mjx-container{
+    display: inline-block;
+    filter: drop-shadow(0 0 3px rgba(155, 92, 255, .6))
+            drop-shadow(0 0 10px rgba(130, 80, 255, .28));
+  }
+  mjx-container[jax="SVG"] > svg{ overflow: visible; }
+
+  .eqwrap.alt mjx-container{
+    filter: drop-shadow(0 0 3px rgba(37, 230, 160, .55))
+            drop-shadow(0 0 10px rgba(37, 230, 160, .24));
+  }
+
+  /* ===================== 右侧：Canvas 舞台 ===================== */
+  #right{
+    position: relative;
+    background: #000;
+    overflow: hidden;
+  }
+  #gl{
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+  /* 极轻微的暗角，让霓虹更聚焦 */
+  #right::after{
+    content:"";
+    position:absolute; inset:0;
+    pointer-events:none;
+    background: radial-gradient(120% 100% at 50% 50%,
+                transparent 45%, rgba(0,0,0,.72) 100%);
+  }
+</style>
+</head>
+
+<body>
+<div id="app">
+
+  <!-- ============ 左：1/6 ============ -->
+  <aside id="left">
+    <div class="panel">
+
+      <div class="kicker">Fluid Lattice</div>
+      <div class="rule"></div>
+
+      <div class="eqnote">波动方程</div>
+      <div class="eqwrap">
+        $$\partial_t^{2}u=c^{2}\nabla^{2}u-\gamma\,\partial_tu+\sum_{k}A_k\sin\!\big(\mathbf{k}_k\!\cdot\!\mathbf{x}-\omega_k t+\phi_k\big)$$
+      </div>
+
+      <div class="eqnote">周期量子化</div>
+      <div class="eqwrap alt">
+        $$\omega_k=\frac{2\pi n_k}{T},\quad n_k\in\mathbb{Z},\quad T=60\,\mathrm{s}$$
+      </div>
+
+      <div class="eqnote">时间重映射</div>
+      <div class="eqwrap">
+        $$\tau(t)=t+\frac{T}{2\pi}\,a\sin\!\Big(\frac{2\pi t}{T}\Big)$$
+      </div>
+
+      <div class="eqnote">霓虹色场</div>
+      <div class="eqwrap alt">
+        $$\mathbf{C}(u)=\mathrm{mix}\!\Big(\mathbf{e},\mathbf{v};\tfrac12\big[1+\tanh\kappa u\big]\Big)$$
+      </div>
+
+      <div class="rule"></div>
+      <div class="kicker green" id="timer">t = 0.0 s</div>
+
+    </div>
+  </aside>
+
+  <!-- ============ 右：5/6 ============ -->
+  <section id="right">
+    <canvas id="gl"></canvas>
+  </section>
+
+</div>
+
+<!-- ===================== 公式自适应缩放 ===================== -->
+<script>
+  function fitEquations(){
+    document.querySelectorAll('.eqwrap').forEach(function(wrap){
+      var mjx = wrap.querySelector('mjx-container');
+      if (!mjx) return;
+
+      mjx.style.transform = 'none';
+      mjx.style.transformOrigin = 'left top';
+      mjx.style.display = 'inline-block';
+      wrap.style.height = 'auto';
+
+      var avail = wrap.clientWidth;
+      if (avail <= 0) return;
+
+      var rect = mjx.getBoundingClientRect();
+      var w = rect.width, h = rect.height;
+      if (w > avail && w > 0){
+        var k = avail / w;
+        mjx.style.transform = 'scale(' + k + ')';
+        wrap.style.height = (h * k + 2) + 'px';
+      }
+    });
+  }
+
+  function bootFit(){
+    if (window.MathJax && MathJax.startup && MathJax.startup.promise){
+      MathJax.startup.promise.then(function(){
+        fitEquations();
+        setTimeout(fitEquations, 120);
+      });
+    } else {
+      window.addEventListener('load', function(){
+        fitEquations();
+        setTimeout(fitEquations, 400);
+      });
+    }
+  }
+  bootFit();
+  window.addEventListener('resize', function(){
+    clearTimeout(window.__fitT);
+    window.__fitT = setTimeout(fitEquations, 140);
+  });
+</script>
+
+<!-- ===================== Three.js 流体网格 ===================== -->
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+
+/* ============================================================
+   0. 全局参数
+   ============================================================ */
+const T      = 60;              // 动画周期：60 秒（60000 ms）
+const TAU    = Math.PI * 2;
+const WARP   = 0.55;            // 时间重映射幅度 → 速度在 0.45× ~ 1.55× 之间平滑起伏
+
+/* ============================================================
+   1. 渲染器 / 场景 / 相机
+   ============================================================ */
+const host   = document.getElementById('right');
+const canvas = document.getElementById('gl');
+
+const renderer = new THREE.WebGLRenderer({
+  canvas, antialias: true, powerPreference: 'high-performance'
+});
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.setClearColor(0x000000, 1);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x000000);
+scene.fog = new THREE.FogExp2(0x000000, 0.0092);
+
+const camera = new THREE.PerspectiveCamera(48, 1, 0.5, 520);
+
+const root = new THREE.Group();          // 承载整块网格布
+scene.add(root);
+
+/* ============================================================
+   2. 圆形辉光精灵贴图
+   ============================================================ */
+function makeDotTexture(){
+  const s = 64;
+  const c = document.createElement('canvas');
+  c.width = c.height = s;
+  const ctx = c.getContext('2d');
+  const g = ctx.createRadialGradient(s/2, s/2, 0, s/2, s/2, s/2);
+  g.addColorStop(0.00, 'rgba(255,255,255,1)');
+  g.addColorStop(0.16, 'rgba(255,255,255,0.88)');
+  g.addColorStop(0.40, 'rgba(255,255,255,0.30)');
+  g.addColorStop(0.70, 'rgba(255,255,255,0.07)');
+  g.addColorStop(1.00, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, s, s);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+const DOT = makeDotTexture();
+
+/* ============================================================
+   3. 背景星空（纯装饰，静止即无缝）
+   ============================================================ */
+(function buildStars(){
+  const n = 1100;
+  const pos = new Float32Array(n * 3);
+  const col = new Float32Array(n * 3);
+
+  for (let i = 0; i < n; i++){
+    const r  = 95 + Math.random() * 170;
+    const th = Math.random() * TAU;
+    const ph = Math.acos(2 * Math.random() - 1);
+
+    pos[i*3]     = r * Math.sin(ph) * Math.cos(th);
+    pos[i*3 + 1] = r * Math.cos(ph) * 0.78;
+    pos[i*3 + 2] = r * Math.sin(ph) * Math.sin(th);
+
+    const m = Math.random();
+    const b = 0.20 + Math.random() * 0.60;
+    col[i*3]     = (0.52 + 0.48 * m) * b;
+    col[i*3 + 1] = (0.30 + 0.62 * (1 - m)) * b;
+    col[i*3 + 2] = (1.00 - 0.22 * m) * b;
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('color',    new THREE.BufferAttribute(col, 3));
+
+  const mat = new THREE.PointsMaterial({
+    size: 1.15,
+    map: DOT,
+    vertexColors: true,
+    transparent: true,
+    opacity: 0.85,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    sizeAttenuation: true,
+    fog: false
+  });
+
+  const stars = new THREE.Points(geo, mat);
+  stars.frustumCulled = false;
+  scene.add(stars);
+})();
+
+/* ============================================================
+   4. 网格布几何体
+   ============================================================ */
+const N     = 64;                 // 每边节点数
+const SPAN  = 52;                 // 网格布边长（世界单位）
+const COUNT = N * N;
+
+const positions = new Float32Array(COUNT * 3);
+const colors    = new Float32Array(COUNT * 3);
+const BASE_X    = new Float32Array(COUNT);
+const BASE_Y    = new Float32Array(COUNT);
+
+(function initGrid(){
+  let k = 0;
+  for (let j = 0; j < N; j++){
+    for (let i = 0; i < N; i++, k++){
+      const x = (i / (N - 1) - 0.5) * SPAN;
+      const y = (j / (N - 1) - 0.5) * SPAN;
+      BASE_X[k] = x;
+      BASE_Y[k] = y;
+      positions[k*3]     = x;
+      positions[k*3 + 1] = y;
+      positions[k*3 + 2] = 0;
+    }
+  }
+})();
+
+/* ---- 共享顶点属性（Points 与 LineSegments 复用同一份 GPU buffer） ---- */
+const posAttr = new THREE.BufferAttribute(positions, 3);
+posAttr.setUsage(THREE.DynamicDrawUsage);
+
+const colAttr = new THREE.BufferAttribute(colors, 3);
+colAttr.setUsage(THREE.DynamicDrawUsage);
+
+/* ---- 点云几何 ---- */
+const pointsGeo = new THREE.BufferGeometry();
+pointsGeo.setAttribute('position', posAttr);
+pointsGeo.setAttribute('color',    colAttr);
+
+/* ---- 线框几何 ---- */
+const lineGeo = new THREE.BufferGeometry();
+lineGeo.setAttribute('position', posAttr);
+lineGeo.setAttribute('color',    colAttr);
+
+(function buildIndices(){
+  const idx = [];
+  for (let j = 0; j < N; j++){
+    for (let i = 0; i < N; i++){
+      const id = j * N + i;
+      if (i < N - 1) idx.push(id, id + 1);      // 横向连线
+      if (j < N - 1) idx.push(id, id + N);      // 纵向连线
+    }
+  }
+  lineGeo.setIndex(idx);
+})();
+
+/* ---- 材质 ---- */
+const pointsMat = new THREE.PointsMaterial({
+  size: 0.58,
+  map: DOT,
+  vertexColors: true,
+  transparent: true,
+  opacity: 1.0,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false,
+  depthTest: false,
+  sizeAttenuation: true,
+  fog: true
+});
+
+const lineMat = new THREE.LineBasicMaterial({
+  vertexColors: true,
+  transparent: true,
+  opacity: 0.26,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false,
+  depthTest: false,
+  fog: true
+});
+
+const points = new THREE.Points(pointsGeo, pointsMat);
+const lines  = new THREE.LineSegments(lineGeo, lineMat);
+points.frustumCulled = false;
+lines.frustumCulled  = false;
+root.add(lines, points);
+
+/* ============================================================
+   5. 波函数
+   —— ω_k = 2π·n_k / T，n_k 为整数
+      保证 t 从 0 → T 时相位正好推进 2π·n_k，严格无缝循环
+   ============================================================ */
+const WAVES = [
+  { kx:  0.090, ky:  0.140, n:  1, A: 4.00, ph: 0.00 },
+  { kx: -0.160, ky:  0.110, n:  2, A: 3.20, ph: 1.70 },
+  { kx:  0.210, ky: -0.130, n:  3, A: 2.40, ph: 3.10 },
+  { kx:  0.060, ky:  0.270, n:  5, A: 1.70, ph: 4.40 },
+  { kx: -0.290, ky: -0.190, n:  8, A: 1.20, ph: 2.20 },
+  { kx:  0.330, ky:  0.300, n: 11, A: 0.80, ph: 5.60 },
+  { kx: -0.400, ky:  0.250, n: 14, A: 0.60, ph: 0.90 },
+  { kx:  0.170, ky: -0.370, n: 19, A: 0.42, ph: 3.80 }
+];
+WAVES.forEach(w => { w.w = TAU * w.n / T; });
+
+/* ============================================================
+   6. 颜色常量（线性空间，用于加色混合）
+   ============================================================ */
+const VIOLET  = [0.62, 0.31, 1.00];   // 紫罗兰
+const EMERALD = [0.10, 0.96, 0.62];   // 翠绿
+
+/* ============================================================
+   7. 每帧更新
+   ============================================================ */
+const lookAt = new THREE.Vector3();
+const timerEl = document.getElementById('timer');
+
+function update(t){
+  const a   = TAU * t / T;                                       // 主相位
+  const tau = t + (T / TAU) * WARP * Math.sin(a);                // 平滑变速的时间重映射
+
+  /* ---------- 7.1 网格顶点 ---------- */
+  for (let i = 0; i < COUNT; i++){
+    const i3 = i * 3;
+    const x  = BASE_X[i];
+    const y  = BASE_Y[i];
+
+    let u = 0;   // 位移
+    let v = 0;   // 速度（用于能量色）
+    for (let k = 0; k < WAVES.length; k++){
+      const W = WAVES[k];
+      const p = W.kx * x + W.ky * y - W.w * tau + W.ph;
+      u += W.A * Math.sin(p);
+      v += W.A * W.w * Math.cos(p);
+    }
+
+    // 平面内的轻微游走，让布面像流体一样漂移（相位同样是 T 的整数倍周期）
+    positions[i3]     = x + 0.55 * Math.sin(0.21 * y + TAU * 3 * tau / T);
+    positions[i3 + 1] = y + 0.55 * Math.sin(0.19 * x - TAU * 2 * tau / T);
+    positions[i3 + 2] = u;
+
+    // ---- 霓虹色场 ----
+    const s = 0.5 + 0.5 * Math.tanh(u * 0.34);                   // 0 → 翠绿, 1 → 紫罗兰
+    const energy = Math.min(1, Math.abs(u) / 5.5) * 0.62
+                 + Math.min(1, Math.abs(v) / 7.0) * 0.38;
+    const glow = 0.22 + 0.92 * energy;
+
+    colors[i3]     = (EMERALD[0] + (VIOLET[0] - EMERALD[0]) * s) * glow;
+    colors[i3 + 1] = (EMERALD[1] + (VIOLET[1] - EMERALD[1]) * s) * glow;
+    colors[i3 + 2] = (EMERALD[2] + (VIOLET[2] - EMERALD[2]) * s) * glow;
+  }
+
+  posAttr.needsUpdate = true;
+  colAttr.needsUpdate = true;
+
+  /* ---------- 7.2 相机：60 秒内绕两圈 + ∞ 形横漂 ---------- */
+  const ca = 2 * a;
+  camera.position.set(
+    Math.sin(ca) * 42 + Math.sin(ca * 2 + 0.6) * 9,
+    22 + 13 * Math.sin(a + 0.9),
+    Math.cos(ca) * 42 + Math.cos(ca * 2 + 0.6) * 9
+  );
+  lookAt.set(
+    Math.sin(a * 3) * 4.0,
+    2.5 * Math.sin(a * 2),
+    Math.cos(a * 3) * 4.0
+  );
+  camera.lookAt(lookAt);
+
+  /* ---------- 7.3 布面整体姿态 ---------- */
+  root.rotation.z = 0.20 * Math.sin(a + 0.35);
+  root.rotation.x = 0.10 * Math.sin(2 * a);
+  root.rotation.y = 0.28 * Math.sin(a);
+
+  /* ---------- 7.4 计时器 ---------- */
+  timerEl.textContent = 't = ' + t.toFixed(1) + ' s';
+}
+
+/* ============================================================
+   8. 自适应尺寸
+   ============================================================ */
+function resize(){
+  const w = host.clientWidth  || 1;
+  const h = host.clientHeight || 1;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+if (window.ResizeObserver){
+  new ResizeObserver(resize).observe(host);
+}
+window.addEventListener('resize', resize);
+resize();
+
+/* ============================================================
+   9. 主循环 —— 严格 60 秒无缝循环
+   ============================================================ */
+const clock = new THREE.Clock();
+let t = 0;
+
+function frame(){
+  const dt = Math.min(clock.getDelta(), 0.1);
+  t += dt;
+  if (t >= T) t -= T;          // 到 60s 归零；因为所有函数都以 T 为周期，接缝处完全连续
+
+  update(t);
+  renderer.render(scene, camera);
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

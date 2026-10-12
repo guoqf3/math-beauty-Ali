@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>超立方体投影生命 · Tesseract Projection Entity</title>
+<style>
+  html, body {
+    margin: 0; padding: 0;
+    width: 100%; height: 100%;
+    background: #000;
+    overflow: hidden;
+  }
+  canvas { display: block; }
+  .hint {
+    position: fixed; left: 12px; bottom: 10px;
+    color: rgba(255, 120, 210, 0.32);
+    font: 12px/1.6 -apple-system, "PingFang SC", sans-serif;
+    letter-spacing: 1.5px;
+    user-select: none; pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hint">TESSERACT PROJECTION ENTITY · 4D 旋转 · 按 R 重组生命</div>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W, H, DPR, cx, cy, unit;
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width  = W * DPR;
+  canvas.height = H * DPR;
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  cx = W * 0.5;
+  cy = H * 0.5;
+  unit = Math.min(W, H);
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+}
+window.addEventListener('resize', resize);
+resize();
+
+const TAU = Math.PI * 2;
+
+// ================= 4D 超立方体几何 =================
+const V4 = [];
+for (let i = 0; i < 16; i++) {
+  V4.push([
+    (i & 1) ? 1 : -1,
+    (i & 2) ? 1 : -1,
+    (i & 4) ? 1 : -1,
+    (i & 8) ? 1 : -1
+  ]);
+}
+
+// 32 条棱，标记方向轴 (0=x,1=y,2=z,3=w)
+const EDGES = [];
+for (let i = 0; i < 16; i++) {
+  for (let j = i + 1; j < 16; j++) {
+    let diff = 0, axis = -1;
+    for (let k = 0; k < 4; k++) {
+      if (V4[i][k] !== V4[j][k]) { diff++; axis = k; }
+    }
+    if (diff === 1) EDGES.push({ a: i, b: j, axis });
+  }
+}
+
+// ================= 调色 =================
+// 霓虹粉 / 赛博黄 / 电光蓝 / 品红紫
+const AXIS_HUE = [330, 52, 190, 300];
+
+// ================= 参数 =================
+const DEPTH       = 8;      // 嵌套层数
+const SCALE_RATIO = 0.615;  // 每层缩小比例
+const D4          = 3.4;    // 四维透视距离
+const D3          = 5.2;    // 三维透视距离
+
+const LEVEL_ALPHA = [0.72, 0.34, 0.15];   // 近/中/远 亮度
+const LEVEL_WIDTH = [1.15, 0.85, 0.60];   // 近/中/远 线宽
+
+// ================= 状态 =================
+let seed  = Math.random() * 1000;
+let t     = 0;
+let theta = 0;
+let last  = performance.now();
+
+// 复用缓冲区（避免每帧分配）
+const PX = new Float32Array(16 * DEPTH);
+const PY = new Float32Array(16 * DEPTH);
+const PD = new Float32Array(16 * DEPTH);   // 组合深度（透视系数）
+
+// ================= 4D 旋转 =================
+// a[0]=XY  a[1]=XZ  a[2]=XW  a[3]=YZ  a[4]=YW  a[5]=ZW
+function rotate4(p, a) {
+  let x = p[0], y = p[1], z = p[2], w = p[3];
+  let c, s, n;
+
+  c = Math.cos(a[0]); s = Math.sin(a[0]);
+  n = x * c - y * s; y = x * s + y * c; x = n;
+
+  c = Math.cos(a[1]); s = Math.sin(a[1]);
+  n = x * c - z * s; z = x * s + z * c; x = n;
+
+  c = Math.cos(a[2]); s = Math.sin(a[2]);
+  n = x * c - w * s; w = x * s + w * c; x = n;
+
+  c = Math.cos(a[3]); s = Math.sin(a[3]);
+  n = y * c - z * s; z = y * s + z * c; y = n;
+
+  c = Math.cos(a[4]); s = Math.sin(a[4]);
+  n = y * c - w * s; w = y * s + w * c; y = n;
+
+  c = Math.cos(a[5]); s = Math.sin(a[5]);
+  n = z * c - w * s; w = z * s + w * c; z = n;
+
+  return [x, y, z, w];
+}
+
+// ================= 主循环 =================
+const angBuf = new Array(6);
+
+function frame(now) {
+  const dt = Math.min(0.05, Math.max(0.001, (now - last) / 1000));
+  last = now;
+  t += dt;
+
+  // ---------- 圆周漂浮：平滑速度脉冲 ----------
+  const spd = 0.30 + 0.24 * Math.sin(t * 0.51) + 0.13 * Math.sin(t * 1.27 + 1.3);
+  theta += spd * dt;
+
+  const orbR = unit * 0.088;
+  const ox = cx + Math.cos(theta) * orbR;
+  const oy = cy + Math.sin(theta) * orbR * 0.72;
+
+  // ---------- 清屏 ----------
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  const SCALE = unit * 0.118;
+
+  // ---------- 基础旋转角 ----------
+  const b0 = t * 0.31 + seed;
+  const b1 = t * 0.43 + seed * 1.3;
+  const b2 = t * 0.27 + seed * 0.7;
+  const b3 = t * 0.37 + seed * 1.7;
+  const b4 = t * 0.19 + seed * 2.1;
+  const b5 = t * 0.23 + seed * 0.5;
+
+  // ---------- 12 个绘制桶（4 轴 × 3 层级） ----------
+  const paths = new Array(12);
+  for (let i = 0; i < 12; i++) paths[i] = new Path2D();
+
+  // ---------- 逐层投影 ----------
+  for (let k = 0; k < DEPTH; k++) {
+    const sc = Math.pow(SCALE_RATIO, k);
+    const ph = k * 0.46;
+
+    angBuf[0] = b0 + ph;
+    angBuf[1] = b1 + ph * 0.82;
+    angBuf[2] = b2 + ph * 1.24;
+    angBuf[3] = b3 - ph * 0.61;
+    angBuf[4] = b4 + ph * 0.93;
+    angBuf[5] = b5 - ph * 1.12;
+
+    const base = k * 16;
+
+    for (let i = 0; i < 16; i++) {
+      const p = rotate4(V4[i], angBuf);
+
+      let x = p[0] * sc;
+      let y = p[1] * sc;
+      let z = p[2] * sc;
+      let w = p[3] * sc;
+
+      // 四维 → 三维 透视
+      const k4 = D4 / (D4 - w);
+      x *= k4; y *= k4; z *= k4;
+
+      // 三维 → 二维 透视
+      const k3 = D3 / (D3 - z);
+
+      PX[base + i] = ox + x * k3 * SCALE;
+      PY[base + i] = oy - y * k3 * SCALE;
+      PD[base + i] = k4 * k3;
+    }
+
+    // 该层的层级索引
+    const level = k < 3 ? 0 : (k < 6 ? 1 : 2);
+
+    // 铺设棱
+    for (let e = 0; e < EDGES.length; e++) {
+      const ed = EDGES[e];
+      const bi = level * 4 + ed.axis;
+      const P  = paths[bi];
+      const ia = base + ed.a;
+      const ib = base + ed.b;
+      P.moveTo(PX[ia], PY[ia]);
+      P.lineTo(PX[ib], PY[ib]);
+    }
+  }
+
+  // ---------- 描边：辉光层 ----------
+  for (let i = 0; i < 12; i++) {
+    const axis  = i % 4;
+    const level = (i / 4) | 0;
+    const hue   = AXIS_HUE[axis];
+    const a     = LEVEL_ALPHA[level];
+    ctx.strokeStyle = `hsla(${hue}, 100%, 62%, ${a * 0.10})`;
+    ctx.lineWidth = 4.4;
+    ctx.stroke(paths[i]);
+  }
+
+  // ---------- 描边：核心层 ----------
+  for (let i = 0; i < 12; i++) {
+    const axis  = i % 4;
+    const level = (i / 4) | 0;
+    const hue   = AXIS_HUE[axis];
+    const a     = LEVEL_ALPHA[level];
+    ctx.strokeStyle = `hsla(${hue}, 100%, 78%, ${a})`;
+    ctx.lineWidth = LEVEL_WIDTH[level];
+    ctx.stroke(paths[i]);
+  }
+
+  // ---------- 顶点光斑 ----------
+  for (let k = 0; k < DEPTH; k++) {
+    const level = k < 3 ? 0 : (k < 6 ? 1 : 2);
+    const a = LEVEL_ALPHA[level];
+    const base = k * 16;
+
+    for (let i = 0; i < 16; i++) {
+      const idx = base + i;
+      const x = PX[idx], y = PY[idx];
+      const d = PD[idx];
+      const r = (k === 0 ? 2.1 : 1.15) * (0.72 + 0.34 * d);
+
+      // 光晕
+      ctx.fillStyle = `hsla(52, 100%, 74%, ${a * 0.22})`;
+      ctx.beginPath(); ctx.arc(x, y, r * 3.4, 0, TAU); ctx.fill();
+
+      // 核心
+      ctx.fillStyle = k === 0
+        ? `hsla(48, 100%, 90%, ${a * 0.92})`
+        : `hsla(190, 100%, 82%, ${a * 0.55})`;
+      ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill();
+    }
+  }
+
+  // ---------- 中心氛围光 ----------
+  const amb = ctx.createRadialGradient(ox, oy, 0, ox, oy, unit * 0.46);
+  amb.addColorStop(0,    'rgba(255, 60, 190, 0.032)');
+  amb.addColorStop(0.45, 'rgba(60, 120, 255, 0.020)');
+  amb.addColorStop(1,    'rgba(0, 0, 0, 0)');
+  ctx.fillStyle = amb;
+  ctx.beginPath();
+  ctx.arc(ox, oy, unit * 0.46, 0, TAU);
+  ctx.fill();
+
+  requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
+
+// ================= 重组 =================
+window.addEventListener('keydown', e => {
+  if (e.key === 'r' || e.key === 'R') {
+    seed = Math.random() * 1000;
+  }
+});
+</script>
+</body>
+</html>

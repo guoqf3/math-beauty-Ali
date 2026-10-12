@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>逻辑门虫群 · Logic Gate Swarm</title>
+<style>
+  html, body {
+    margin: 0; padding: 0;
+    width: 100%; height: 100%;
+    background: #000;
+    overflow: hidden;
+  }
+  canvas { display: block; }
+  .hint {
+    position: fixed; left: 12px; bottom: 10px;
+    color: rgba(255,255,255,0.30);
+    font: 12px/1.6 -apple-system, "PingFang SC", sans-serif;
+    letter-spacing: 1px;
+    user-select: none; pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hint">LOGIC GATE SWARM · drag to stir · press R to reseed</div>
+<script>
+'use strict';
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const TAU = Math.PI * 2;
+
+let W = 0, H = 0, DPR = 1, SCALE = 1;
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width  = Math.round(W * DPR);
+  canvas.height = Math.round(H * DPR);
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  SCALE = Math.min(W, H) * 0.30 / 1.10;
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+}
+window.addEventListener('resize', resize);
+
+/* ============================================================
+   交互
+   ============================================================ */
+let mx = 0.5, my = 0.5, smx = 0.5, smy = 0.5;
+
+window.addEventListener('pointermove', e => {
+  mx = e.clientX / window.innerWidth;
+  my = e.clientY / window.innerHeight;
+}, { passive: true });
+
+window.addEventListener('keydown', e => {
+  if (e.key === 'r' || e.key === 'R') {
+    for (const n of ALL) {
+      n.ph1 = Math.random() * TAU;
+      n.ph2 = Math.random() * TAU;
+      n.fr  = 0.5 + Math.random() * 1.0;
+    }
+  }
+});
+
+/* ============================================================
+   结构定义
+   ============================================================ */
+const chains = [];
+let   NID = 0;
+const ALL  = [];
+
+function ch() { const c = []; chains.push(c); return c; }
+
+function N(x, y, type, hue, size, wing, wingDist, binU, hx, hy) {
+  const n = {
+    x, y, type, hue,
+    size: size || 1,
+    wing: wing || 0,
+    wingDist: wingDist || 0,
+    bin: (binU === undefined) ? -1 : binU,
+    hx: hx || 0, hy: hy || 0,
+    dirX: 0, dirY: 1,
+    id: NID++,
+    px: 0, py: 0,
+    ph1: Math.random() * TAU,
+    ph2: Math.random() * TAU,
+    fr: 0.5 + Math.random() * 1.0
+  };
+  ALL.push(n);
+  return n;
+}
+
+/* --- 身体轮廓宽度函数（三段椭圆叠加）--- */
+function bodyW(y) {
+  let w = 0, q;
+  q = 1 - Math.pow((y + 0.79) / 0.135, 2);
+  if (q > 0) w = Math.max(w, 0.105 * Math.sqrt(q));
+  q = 1 - Math.pow((y + 0.47) / 0.255, 2);
+  if (q > 0) w = Math.max(w, 0.145 * Math.sqrt(q));
+  q = 1 - Math.pow((y - 0.25) / 0.63, 2);
+  if (q > 0) w = Math.max(w, 0.215 * Math.sqrt(q));
+  return w;
+}
+
+/* --- 1. 身体轮廓（左 / 右）--- */
+(function buildBody() {
+  const cR = ch(), cL = ch();
+  const Y0 = -0.90, Y1 = 0.87, NY = 32;
+
+  for (let i = 0; i <= NY; i++) {
+    const y = Y0 + (Y1 - Y0) * i / NY;
+    const w = bodyW(y);
+    if (w < 0.008) continue;
+    const hue = 148 + (y + 0.90) * 27;
+    const sz  = 0.75 + w * 2.0;
+
+    cR.push(N( w, y, (i * 3) % 4,       hue,        sz));
+    cL.push(N(-w, y, (i * 5 + 2) % 4,   hue + 4,    sz));
+  }
+})();
+
+/* --- 2. 脊线 --- */
+(function buildSpine() {
+  const cS = ch();
+  for (let i = 0; i <= 13; i++) {
+    const y = -0.78 + 1.52 * i / 13;
+    const w = bodyW(y);
+    if (w < 0.012) continue;
+    cS.push(N(0, y, (i * 7 + 1) % 4, 155 + i * 2.6, 0.70 + w * 1.4));
+  }
+})();
+
+/* --- 3. 翅膀（二进制数据流节点）--- */
+function buildWing(side, hingeX, hingeY, angle, length, maxW, wingId, nSeg) {
+  const c  = ch();
+  const ca = Math.cos(angle), sa = Math.sin(angle);
+  const nx = -sa, ny = ca;
+  const pts = [];
+
+  for (let i = 0; i <= nSeg; i++) {
+    const s = i / nSeg;
+    const w = maxW * Math.sin(Math.PI * Math.pow(s, 0.70)) * (1 - 0.22 * s);
+    pts.push([hingeX + ca * length * s + nx * w,
+              hingeY + sa * length * s + ny * w, s]);
+  }
+  for (let i = nSeg; i >= 0; i--) {
+    const s = i / nSeg;
+    const w = maxW * Math.sin(Math.PI * Math.pow(s, 0.70)) * (1 - 0.22 * s);
+    pts.push([hingeX + ca * length * s - nx * w,
+              hingeY + sa * length * s - ny * w, s]);
+  }
+
+  const hx = hingeX * side;
+  for (const p of pts) {
+    c.push(N(p[0] * side, p[1], 0, 150 + 45 * p[2], 0.85,
+             wingId, p[2], p[2], hx, hingeY));
+  }
+  return c;
+}
+
+buildWing( 1, 0.12, -0.57, -0.55, 0.95, 0.22, 1, 14);   // 右前翅
+buildWing(-1, 0.12, -0.57, -0.55, 0.95, 0.22, 2, 14);   // 左前翅
+buildWing( 1, 0.14, -0.33, -0.08, 0.80, 0.19, 3, 12);   // 右后翅
+buildWing(-1, 0.14, -0.33, -0.08, 0.80, 0.19, 4, 12);   // 左后翅
+
+/* --- 4. 腿 --- */
+function buildLeg(side, x0, y0, x1, y1, x2, y2, nSeg) {
+  const c = ch();
+  for (let i = 0; i <= nSeg; i++) {
+    const s = i / nSeg;
+    const u = 1 - s;
+    const x = u * u * x0 + 2 * u * s * x1 + s * s * x2;
+    const y = u * u * y0 + 2 * u * s * y1 + s * s * y2;
+    c.push(N(x * side, y, (i * 3 + (side > 0 ? 0 : 1)) % 4,
+             152 + s * 40, 0.62 + s * 0.70));
+  }
+}
+
+buildLeg( 1, 0.11, -0.63, 0.45, -0.96, 0.70, -1.06, 9);
+buildLeg(-1, 0.11, -0.63, 0.45, -0.96, 0.70, -1.06, 9);
+buildLeg( 1, 0.15, -0.48, 0.55, -0.50, 0.88, -0.42, 9);
+buildLeg(-1, 0.15, -0.48, 0.55, -0.50, 0.88, -0.42, 9);
+buildLeg( 1, 0.16, -0.33, 0.55, -0.18, 0.80,  0.18, 9);
+buildLeg(-1, 0.16, -0.33, 0.55, -0.18, 0.80,  0.18, 9);
+
+/* --- 5. 触角 --- */
+function buildAntenna(side, x0, y0, x1, y1, x2, y2, nSeg) {
+  const c = ch();
+  for (let i = 0; i <= nSeg; i++) {
+    const s = i / nSeg;
+    const u = 1 - s;
+    const x = u * u * x0 + 2 * u * s * x1 + s * s * x2;
+    const y = u * u * y0 + 2 * u * s * y1 + s * s * y2;
+    c.push(N(x * side, y, (i * 2 + 1) % 4, 158 + s * 30, 0.60 + s * 0.55));
+  }
+}
+
+buildAntenna( 1, 0.05, -0.86, 0.20, -1.16, 0.42, -1.30, 9);
+buildAntenna(-1, 0.05, -0.86, 0.20, -1.16, 0.42, -1.30, 9);
+
+/* --- 计算链方向 --- */
+for (const c of chains) {
+  for (let i = 0; i < c.length; i++) {
+    const a = c[i];
+    const b = c[Math.min(i + 1, c.length - 1)];
+    const p = c[Math.max(i - 1, 0)];
+    let dx, dy;
+    if (i === c.length - 1) { dx = a.x - p.x; dy = a.y - p.y; }
+    else                    { dx = b.x - p.x; dy = b.y - p.y; }
+    const l = Math.hypot(dx, dy) || 1;
+    a.dirX = dx / l;
+    a.dirY = dy / l;
+  }
+}
+
+/* ============================================================
+   初始化屏幕位置
+   ============================================================ */
+for (const n of ALL) { n.px = W * 0.5 + n.x * SCALE; n.py = H * 0.5 + n.y * SCALE; }
+
+/* ============================================================
+   二进制数字精灵
+   ============================================================ */
+function makeDigit(ch) {
+  const S = 48;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = S;
+  const g = cv.getContext('2d');
+  g.font = 'bold 40px ui-monospace, Menlo, Consolas, monospace';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillStyle = '#ffffff';
+  g.fillText(ch, S / 2, S / 2 + 1);
+  return cv;
+}
+const D0 = makeDigit('0');
+const D1 = makeDigit('1');
+
+/* ============================================================
+   色相分桶 & 路径池
+   ============================================================ */
+const HB = 8;
+function hueBucket(h) {
+  let i = ((h - 145) / 8) | 0;
+  if (i < 0) i = 0;
+  if (i >= HB) i = HB - 1;
+  return i;
+}
+
+const gatePaths = new Array(4 * HB);
+const linkPaths = new Array(HB);
+
+/* ============================================================
+   几何变换辅助（避免闭包分配）
+   ============================================================ */
+let _cs = 1, _sn = 0, _SZ = 1, _px = 0, _py = 0, _o0 = 0, _o1 = 0;
+
+function pp(lx, ly) {
+  const x = lx * _SZ, y = ly * _SZ;
+  _o0 = _px + x * _cs - y * _sn;
+  _o1 = _py + x * _sn + y * _cs;
+}
+
+/* ============================================================
+   主循环
+   ============================================================ */
+let last = performance.now();
+let t = 0;
+
+function frame(now) {
+  let dt = (now - last) / 1000;
+  last = now;
+  if (dt > 0.05) dt = 0.05;
+  if (dt < 0) dt = 0;
+  t += dt;
+
+  /* ---------- 硬清屏 ---------- */
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap  = 'round';
+  ctx.lineJoin = 'round';
+
+  /* ---------- 鼠标平滑 ---------- */
+  smx += (mx - smx) * 0.045;
+  smy += (my - smy) * 0.045;
+
+  /* ---------- 圆周轨迹（平滑变速） ---------- */
+  const orbA = t * 0.46 + 0.34 * Math.sin(t * 0.23);
+  const orbR = Math.min(W, H) * 0.135;
+  const gx = W * 0.5 + Math.cos(orbA) * orbR + (smx - 0.5) * W * 0.10;
+  const gy = H * 0.5 + Math.sin(orbA) * orbR * 0.85 + (smy - 0.5) * H * 0.10;
+
+  /* ---------- 整体摆动 ---------- */
+  const gRot = 0.34 * Math.sin(t * 0.24);
+  const gCos = Math.cos(gRot), gSin = Math.sin(gRot);
+
+  /* ---------- 翅膀扑动 ---------- */
+  const flapF = Math.sin(t * 3.6) * 0.52;
+  const flapH = Math.sin(t * 3.6 + 0.75) * 0.44;
+
+  /* ---------- 清空路径 ---------- */
+  for (let i = 0; i < 4 * HB; i++) gatePaths[i] = new Path2D();
+  for (let i = 0; i < HB; i++)     linkPaths[i] = new Path2D();
+
+  const lerpK = 1 - Math.exp(-15 * dt);
+
+  /* ---------- 逐节点更新 + 绘制路径 ---------- */
+  for (let i = 0; i < ALL.length; i++) {
+    const n = ALL[i];
+
+    let lx = n.x, ly = n.y;
+
+    /* 翅膀扑动：绕铰链旋转 */
+    if (n.wing) {
+      const isFore = (n.wing <= 2);
+      const side   = (n.wing === 1 || n.wing === 3) ? 1 : -1;
+      const flap   = isFore ? flapF : flapH;
+      const rot    = flap * side;
+      const cr = Math.cos(rot), sr = Math.sin(rot);
+      const dx = lx - n.hx, dy = ly - n.hy;
+      lx = n.hx + dx * cr - dy * sr;
+      ly = n.hy + dx * sr + dy * cr;
+    }
+
+    /* 整体摆动 + 平移 */
+    const ox = lx, oy = ly + 0.18;
+    const rx = ox * gCos - oy * gSin;
+    const ry = ox * gSin + oy * gCos;
+
+    const jx = Math.sin(t * n.fr + n.ph1) * 1.1;
+    const jy = Math.cos(t * n.fr * 1.3 + n.ph2) * 1.1;
+
+    const tx = gx + rx * SCALE + jx;
+    const ty = gy + ry * SCALE + jy;
+
+    /* 弹簧平滑 */
+    n.px += (tx - n.px) * lerpK;
+    n.py += (ty - n.py) * lerpK;
+
+    /* --- 链式连接线 --- */
+    /* （在下面第二个循环统一处理） */
+  }
+
+  /* ---------- 链式连接线 ---------- */
+  for (const c of chains) {
+    for (let i = 0; i < c.length - 1; i++) {
+      const a = c[i], b = c[i + 1];
+      const hb = hueBucket(a.hue);
+      linkPaths[hb].moveTo(a.px, a.py);
+      linkPaths[hb].lineTo(b.px, b.py);
+    }
+  }
+
+  /* ---------- 绘制链式连接（三层辉光） ---------- */
+  for (let i = 0; i < HB; i++) {
+    const hue = 145 + i * 8 + 4;
+    ctx.strokeStyle = `hsla(${hue}, 100%, 55%, 0.055)`;
+    ctx.lineWidth = 9;
+    ctx.stroke(linkPaths[i]);
+  }
+  for (let i = 0; i < HB; i++) {
+    const hue = 145 + i * 8 + 4;
+    ctx.strokeStyle = `hsla(${hue}, 100%, 68%, 0.115)`;
+    ctx.lineWidth = 3.6;
+    ctx.stroke(linkPaths[i]);
+  }
+  for (let i = 0; i < HB; i++) {
+    const hue = 145 + i * 8 + 4;
+    ctx.strokeStyle = `hsla(${hue}, 90%, 88%, 0.55)`;
+    ctx.lineWidth = 0.85;
+    ctx.stroke(linkPaths[i]);
+  }
+
+  /* ---------- 逻辑门 / 二进制节点 ---------- */
+  const binNodes = [];
+
+  for (let i = 0; i < ALL.length; i++) {
+    const n = ALL[i];
+    const hb = hueBucket(n.hue);
+
+    /* --- 二进制节点：收集，稍后统一绘制 --- */
+    if (n.bin >= 0) {
+      binNodes.push(n);
+      continue;
+    }
+
+    /* --- 逻辑门 --- */
+    const dirSX = n.dirX * gCos - n.dirY * gSin;
+    const dirSY = n.dirX * gSin + n.dirY * gCos;
+    const ang   = Math.atan2(dirSY, dirSX);
+
+    _cs = Math.cos(ang);
+    _sn = Math.sin(ang);
+    _SZ = 0.030 * SCALE * n.size;
+    _px = n.px;
+    _py = n.py;
+
+    const path = gatePaths[n.type * HB + hb];
+
+    switch (n.type) {
+      case 0: { /* AND */
+        pp(-1, -1); const ax0 = _o0, ay0 = _o1;
+        pp(-1,  1); const ax1 = _o0, ay1 = _o1;
+        pp( 0, -1); const ax2 = _o0, ay2 = _o1;
+        pp( 0,  1); const ax3 = _o0, ay3 = _o1;
+        path.moveTo(ax0, ay0); path.lineTo(ax2, ay2);
+        path.moveTo(ax0, ay0); path.lineTo(ax1, ay1);
+        path.moveTo(ax2, ay2); path.lineTo(ax3, ay3);
+        /* 右弧 */
+        for (let k = 0; k <= 6; k++) {
+          const a = -Math.PI / 2 + Math.PI * k / 6;
+          pp(Math.cos(a), Math.sin(a));
+          if (k === 0) path.moveTo(_o0, _o1);
+          else         path.lineTo(_o0, _o1);
+        }
+        break;
+      }
+      case 1: { /* OR */
+        const segs = [
+          [-0.70, -1.00,  0.45, -0.95,  1.00,  0.00],
+          [ 1.00,  0.00,  0.45,  0.95, -0.70,  1.00],
+          [-0.70,  1.00, -0.15,  0.00, -0.70, -1.00]
+        ];
+        for (const s of segs) {
+          for (let k = 0; k <= 6; k++) {
+            const u = 1 - k / 6, v = k / 6;
+            const x = u * u * s[0] + 2 * u * v * s[2] + v * v * s[4];
+            const y = u * u * s[1] + 2 * u * v * s[3] + v * v * s[5];
+            pp(x, y);
+            if (k === 0) path.moveTo(_o0, _o1);
+            else         path.lineTo(_o0, _o1);
+          }
+        }
+        break;
+      }
+      case 2: { /* NOT */
+        pp(-1, -1); const nx0 = _o0, ny0 = _o1;
+        pp( 1,  0); const nx1 = _o0, ny1 = _o1;
+        pp(-1,  1); const nx2 = _o0, ny2 = _o1;
+        path.moveTo(nx0, ny0); path.lineTo(nx1, ny1);
+        path.lineTo(nx2, ny2); path.lineTo(nx0, ny0);
+        /* 小圆圈 */
+        for (let k = 0; k <= 8; k++) {
+          const a = TAU * k / 8;
+          pp(1.34 + Math.cos(a) * 0.34, Math.sin(a) * 0.34);
+          if (k === 0) path.moveTo(_o0, _o1);
+          else         path.lineTo(_o0, _o1);
+        }
+        break;
+      }
+      case 3: { /* XOR */
+        const segs = [
+          [-0.70, -1.00,  0.45, -0.95,  1.00,  0.00],
+          [ 1.00,  0.00,  0.45,  0.95, -0.70,  1.00],
+          [-0.70,  1.00, -0.15,  0.00, -0.70, -1.00],
+          [-0.98, -1.00, -0.50,  0.00, -0.98,  1.00]
+        ];
+        for (const s of segs) {
+          for (let k = 0; k <= 6; k++) {
+            const u = 1 - k / 6, v = k / 6;
+            const x = u * u * s[0] + 2 * u * v * s[2] + v * v * s[4];
+            const y = u * u * s[1] + 2 * u * v * s[3] + v * v * s[5];
+            pp(x, y);
+            if (k === 0) path.moveTo(_o0, _o1);
+            else         path.lineTo(_o0, _o1);
+          }
+        }
+        break;
+      }
+    }
+  }
+
+  /* ---------- 描边：三层辉光 ---------- */
+  for (let ty = 0; ty < 4; ty++) {
+    for (let hb = 0; hb < HB; hb++) {
+      const hue = 145 + hb * 8 + 4;
+      const p = gatePaths[ty * HB + hb];
+      ctx.strokeStyle = `hsla(${hue}, 100%, 55%, 0.070)`;
+      ctx.lineWidth = 7.5;
+      ctx.stroke(p);
+    }
+  }
+  for (let ty = 0; ty < 4; ty++) {
+    for (let hb = 0; hb < HB; hb++) {
+      const hue = 145 + hb * 8 + 4;
+      const p = gatePaths[ty * HB + hb];
+      ctx.strokeStyle = `hsla(${hue}, 100%, 70%, 0.20)`;
+      ctx.lineWidth = 2.4;
+      ctx.stroke(p);
+    }
+  }
+  for (let ty = 0; ty < 4; ty++) {
+    for (let hb = 0; hb < HB; hb++) {
+      const hue = 145 + hb * 8 + 4;
+      const p = gatePaths[ty * HB + hb];
+      ctx.strokeStyle = `hsla(${hue}, 85%, 94%, 0.90)`;
+      ctx.lineWidth = 0.85;
+      ctx.stroke(p);
+    }
+  }
+
+  /* ---------- 二进制数字流 ---------- */
+  for (let i = 0; i < binNodes.length; i++) {
+    const n = binNodes[i];
+
+    /* 数字随时间向外流动 */
+    const phase = n.bin * 13 - t * 3.2 + n.id * 0.37;
+    const bit   = ((Math.floor(phase) % 2) + 2) % 2;
+
+    /* 亮度：越靠翅尖越亮 */
+    const u     = n.bin;
+    const alpha = (0.30 + 0.55 * u) * (0.62 + 0.38 * Math.sin(phase * 4.1));
+
+    const size = (4.2 + 3.4 * u) * (SCALE / 218);
+
+    ctx.globalAlpha = alpha;
+    ctx.drawImage(bit ? D1 : D0, n.px - size, n.py - size, size * 2, size * 2);
+  }
+  ctx.globalAlpha = 1;
+
+  /* ---------- 中心光核 ---------- */
+  const cg = ctx.createRadialGradient(gx, gy, 0, gx, gy, SCALE * 0.42);
+  cg.addColorStop(0.00, 'hsla(155, 100%, 82%, 0.10)');
+  cg.addColorStop(0.35, 'hsla(178, 100%, 72%, 0.045)');
+  cg.addColorStop(0.70, 'hsla(198, 100%, 68%, 0.018)');
+  cg.addColorStop(1.00, 'hsla(198, 100%, 68%, 0)');
+  ctx.fillStyle = cg;
+  ctx.beginPath(); ctx.arc(gx, gy, SCALE * 0.42, 0, TAU); ctx.fill();
+
+  ctx.globalCompositeOperation = 'source-over';
+  requestAnimationFrame(frame);
+}
+
+resize();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

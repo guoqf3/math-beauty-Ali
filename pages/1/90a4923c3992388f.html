@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>数学生物 · Mathematical Creature</title>
+<style>
+  html, body {
+    margin: 0; padding: 0;
+    width: 100%; height: 100%;
+    background: #000;
+    overflow: hidden;
+  }
+  canvas { display: block; }
+  .hint {
+    position: fixed; left: 12px; bottom: 10px;
+    color: rgba(255,255,255,0.35);
+    font: 12px/1.6 -apple-system, "PingFang SC", sans-serif;
+    letter-spacing: 1px;
+    user-select: none; pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hint">PARAMETRIC CREATURE · drag to stir · press R to reseed</div>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W, H, DPR;
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width  = W * DPR;
+  canvas.height = H * DPR;
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  // 清空一次
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ---------- 可调参数 ----------
+let seed = Math.random() * 1000;
+const N_SPINE = 300;        // 脊椎采样点数
+const BRANCHES = 15;          // 每个脊椎点每侧画几根羽状分支
+let t = 0;
+
+// 鼠标扰动
+let mx = 0.5, my = 0.5, mxSmooth = 0.5, mySmooth = 0.5;
+window.addEventListener('pointermove', e => {
+  mx = e.clientX / W;
+  my = e.clientY / H;
+});
+window.addEventListener('keydown', e => {
+  if (e.key === 'r' || e.key === 'R') seed = Math.random() * 1000;
+});
+
+// ---------- 数学核心：脊椎上的点 ----------
+// s ∈ [0,1] 沿身体从头（0）到尾（1）
+function spine(s, t) {
+  // 多组正弦波叠加 → 蛇形 S 曲线
+  const p = seed;
+  const w1 = Math.sin(s * 5.5 + t * 0.6 + p);
+  const w2 = Math.sin(s * 11.0 - t * 0.9 + p * 1.3) * 0.45;
+  const w3 = Math.sin(s * 2.7 + t * 0.25 + p * 0.7) * 0.7;
+  const x = W * 0.5 + (w1 + w2 + w3) * W * 0.18
+            + (mxSmooth - 0.5) * W * 0.15 * Math.sin(t * 0.5);
+  const y = H * 0.06 + s * H * 0.88 + (mySmooth - 0.5) * H * 0.05;
+  return { x, y };
+}
+
+// 身体粗细包络：头尾尖、中间饱满
+function envelope(s) {
+  return Math.sin(Math.PI * s) ** 0.7;
+}
+
+// ---------- 渲染 ----------
+// 性能要点：
+//  1) 每帧硬清屏（无拖尾）
+//  2) 关闭 shadowBlur（最贵的 API），改用"粗半透明辉光层 + 细核心层"双层描边
+//  3) globalCompositeOperation = 'lighter' 让颜色叠加自发光
+//  4) 分支按 hue 分桶，同色线段合并到一条 Path 里一次性 stroke，把 stroke 调用从 ~1500 次降到 ~30 次
+const HUE_BUCKETS = 36; // 每 10° 一桶
+
+function frame() {
+  // 硬清屏 → 无拖尾
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+
+  mxSmooth += (mx - mxSmooth) * 0.04;
+  mySmooth += (my - mySmooth) * 0.04;
+
+  ctx.lineCap = 'round';
+  ctx.globalCompositeOperation = 'lighter';
+
+  // 1) 预算脊椎点
+  const pts = [];
+  for (let i = 0; i < N_SPINE; i++) {
+    pts.push(spine(i / (N_SPINE - 1), t));
+  }
+
+  // 2) 收集所有线段（辉光层 + 核心层），按 hue 分桶
+  const glow = new Array(HUE_BUCKETS);
+  const core = new Array(HUE_BUCKETS);
+  for (let i = 0; i < HUE_BUCKETS; i++) {
+    glow[i] = new Path2D();
+    core[i] = new Path2D();
+  }
+  const bucketOf = hue => ((hue | 0) % 360 + 360) % 360 / 10 | 0;
+
+  for (let i = 0; i < N_SPINE - 1; i++) {
+    const s = i / (N_SPINE - 1);
+    const p0 = pts[i];
+    const p1 = pts[i + 1];
+
+    let tx = p1.x - p0.x, ty = p1.y - p0.y;
+    const tl = Math.hypot(tx, ty) || 1;
+    tx /= tl; ty /= tl;
+    const nx = -ty, ny = tx;
+    const env = envelope(s);
+
+    const hue = (s * 280 + t * 30) % 360;
+    const b = bucketOf(hue);
+
+    // 主躯干
+    glow[b].moveTo(p0.x, p0.y); glow[b].lineTo(p1.x, p1.y);
+    core[b].moveTo(p0.x, p0.y);  core[b].lineTo(p1.x, p1.y);
+
+    // 羽状分支
+    for (let bb_i = 0; bb_i < BRANCHES; bb_i++) {
+      const bb = bb_i / (BRANCHES - 1);
+      const side = (bb_i % 2 === 0) ? 1 : -1;
+      const flick = 0.5 + 0.5 * Math.sin(s * 22 + t * 2.2 + bb * 6 + seed);
+      const len = (6 + env * 38) * flick * (0.4 + env);
+
+      const off = (bb - 0.5) * 6;
+      const sx = p0.x + tx * off;
+      const sy = p0.y + ty * off;
+      const bend = 0.35 * Math.sin(t * 1.5 + s * 18 + bb * 4);
+      const ex = sx + (nx * side + tx * bend) * len;
+      const ey = sy + (ny * side + ty * bend) * len;
+
+      const bhue = (hue + 40 + bb * 20) % 360;
+      const bb2 = bucketOf(bhue);
+      glow[bb2].moveTo(sx, sy); glow[bb2].lineTo(ex, ey);
+      core[bb2].moveTo(sx, sy); core[bb2].lineTo(ex, ey);
+    }
+  }
+
+  // 3) 统一描边：先粗辉光，后细核心
+  for (let i = 0; i < HUE_BUCKETS; i++) {
+    const hue = i * 10;
+    ctx.strokeStyle = `hsla(${hue}, 100%, 60%, 0.18)`;
+    ctx.lineWidth = 3.2;
+    ctx.stroke(glow[i]);
+  }
+  for (let i = 0; i < HUE_BUCKETS; i++) {
+    const hue = i * 10;
+    ctx.strokeStyle = `hsla(${hue}, 100%, 72%, 0.95)`;
+    ctx.lineWidth = 1.0;
+    ctx.stroke(core[i]);
+  }
+
+  // 头/尾光点（小弧，开销可忽略）
+  [0, N_SPINE - 1].forEach((idx, k) => {
+    const p = pts[idx];
+    const hue = (k === 0) ? (t * 30) % 360 : (280 + t * 30) % 360;
+    ctx.fillStyle = `hsla(${hue}, 100%, 85%, 0.95)`;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 2.2, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  t += 0.016;
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>小波变换 · 多尺度数字生物</title>
+<style>
+  *{ box-sizing:border-box; }
+  html,body{
+    margin:0; padding:0; height:100%; width:100%;
+    background:#000; overflow:hidden;
+    font-family:"SF Mono","JetBrains Mono","Consolas","Menlo",monospace;
+    color:#cfc8ff;
+    -webkit-font-smoothing:antialiased;
+  }
+  #app{ display:flex; width:100vw; height:100vh; }
+
+  /* ================= 左侧 1/5 公式面板 ================= */
+  #panel{
+    width:20%; min-width:186px; height:100%;
+    position:relative;
+    padding:3vh 1.05vw 2vh;
+    display:flex; flex-direction:column; gap:1.5vh;
+    background:
+      radial-gradient(120% 70% at 0% 0%, rgba(110,60,220,.20), transparent 62%),
+      radial-gradient(120% 80% at 20% 100%, rgba(255,40,90,.10), transparent 60%),
+      linear-gradient(165deg,#07060e 0%,#04050c 55%,#08040f 100%);
+    border-right:1px solid rgba(140,95,255,.22);
+    box-shadow: inset -22px 0 48px -34px rgba(150,100,255,.75);
+    overflow:hidden;
+  }
+  #panel::before{
+    content:""; position:absolute; inset:0; pointer-events:none;
+    background-image:
+      linear-gradient(rgba(130,90,240,.055) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(130,90,240,.055) 1px, transparent 1px);
+    background-size:26px 26px;
+    mask-image:radial-gradient(120% 90% at 40% 30%, #000 25%, transparent 85%);
+  }
+  #panel > *{ position:relative; z-index:1; }
+
+  .head .title{
+    font-size:clamp(14px,1.12vw,21px);
+    font-weight:700; letter-spacing:.16em;
+    background:linear-gradient(92deg,#b78cff 0%,#5aa2ff 52%,#ff3f76 100%);
+    -webkit-background-clip:text; background-clip:text; color:transparent;
+    filter:drop-shadow(0 0 10px rgba(150,100,255,.55));
+  }
+  .head .sub{
+    margin-top:.35em;
+    font-size:clamp(7px,.50vw,9.5px);
+    letter-spacing:.32em; color:#5c5a86;
+  }
+  .head .rule{
+    margin-top:.7em; height:1px; width:100%;
+    background:linear-gradient(90deg, rgba(150,100,255,.85), rgba(255,60,110,.35), transparent);
+  }
+
+  .card{
+    border:1px solid rgba(130,95,235,.20);
+    border-radius:7px;
+    background:linear-gradient(150deg, rgba(70,40,140,.16), rgba(20,14,40,.30));
+    padding:1.15vh .72vw;
+    box-shadow: inset 0 1px 0 rgba(180,150,255,.10), 0 0 22px -12px rgba(130,90,255,.9);
+  }
+  .card .cap{
+    font-size:clamp(7px,.48vw,9px);
+    letter-spacing:.22em; color:#6f6aa8; margin-bottom:.75em;
+  }
+
+  /* ---- 公式排版 ---- */
+  .eq{
+    display:flex; flex-wrap:wrap; align-items:center;
+    gap:.18em; line-height:1.55;
+    font-size:clamp(10.5px,.86vw,15.5px);
+    color:#e2dcff;
+  }
+  .eq .it{ font-style:italic; color:#cbb8ff; }
+  .eq .op{ opacity:.82; }
+  .eq sub,.eq sup{ font-size:.6em; opacity:.85; }
+  .frac{
+    display:inline-flex; flex-direction:column; align-items:center;
+    vertical-align:middle; margin:0 .14em; font-size:.88em; line-height:1.05;
+  }
+  .frac .num{ border-bottom:1px solid rgba(200,180,255,.72); padding:0 .28em .06em; }
+  .frac .den{ padding:.06em .28em 0; }
+  .intwrap{
+    display:inline-flex; flex-direction:column; align-items:center;
+    vertical-align:middle; line-height:1; margin:0 .06em;
+  }
+  .intwrap .lim{ font-size:.50em; color:#9a92cf; }
+  .intwrap .intsym{ font-size:1.42em; margin:-.10em 0; color:#b79cff; }
+  .eq .paren{ font-size:1.55em; line-height:.62; opacity:.75; }
+  .eq .big{ font-size:1.06em; }
+
+  /* ---- 小波函数曲线 ---- */
+  #wcv{ width:100%; flex:1 1 auto; min-height:56px; display:block; border-radius:6px; }
+
+  /* ---- 多尺度系数条 ---- */
+  .bars{ display:flex; flex-direction:column; gap:.52vh; }
+  .bar-row{ display:flex; align-items:center; gap:6px; }
+  .bar-row .jl{
+    width:2.1em; text-align:right;
+    font-size:clamp(7px,.50vw,9.5px); color:#8079b8; letter-spacing:.04em;
+  }
+  .bar-row .jl sup{ font-size:.7em; }
+  .bar{
+    flex:1; height:5px; border-radius:3px;
+    background:rgba(110,80,200,.14);
+    overflow:hidden;
+    box-shadow:inset 0 0 0 1px rgba(140,105,255,.13);
+  }
+  .bar i{
+    display:block; height:100%; width:0%; border-radius:3px;
+    background:linear-gradient(90deg,#7c3aed,#3b82f6 55%,#f43f5e);
+    box-shadow:0 0 9px rgba(140,95,255,.9);
+    transition:width .07s linear;
+  }
+  .note{
+    font-size:clamp(6.5px,.44vw,8.5px);
+    letter-spacing:.10em; color:#565282; line-height:1.75;
+  }
+  .note b{ color:#8f86d8; font-weight:600; }
+
+  /* ================= 右侧 4/5 画布 ================= */
+  #stage{ flex:1; position:relative; background:#000; overflow:hidden; }
+  #glcanvas{ position:absolute; inset:0; width:100%; height:100%; display:block; }
+  #stage::after{
+    content:""; position:absolute; inset:0; pointer-events:none;
+    background:radial-gradient(115% 85% at 50% 50%, transparent 55%, rgba(0,0,0,.62) 100%);
+  }
+
+  @media (max-width:760px){
+    #app{ flex-direction:column; }
+    #panel{ width:100%; height:34%; min-width:0;
+      border-right:none; border-bottom:1px solid rgba(140,95,255,.22); }
+    #stage{ height:66%; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- ================= 左：小波变换 ================= -->
+  <aside id="panel">
+    <div class="head">
+      <div class="title">小波变换</div>
+      <div class="sub">WAVELET TRANSFORM</div>
+      <div class="rule"></div>
+    </div>
+
+    <div class="card">
+      <div class="cap">连续小波变换 CWT</div>
+      <div class="eq">
+        <span class="it big">W</span><sub>ψ</sub>
+        <span class="op">(</span><span class="it">a</span>,<span class="it">b</span><span class="op">)</span>
+        <span class="op">=</span>
+        <span class="frac"><span class="num">1</span><span class="den">√<span class="it">a</span></span></span>
+        <span class="intwrap">
+          <span class="lim">∞</span>
+          <span class="intsym">∫</span>
+          <span class="lim">−∞</span>
+        </span>
+        <span class="it">f</span><span class="op">(</span><span class="it">t</span><span class="op">)</span>
+        <span class="it">ψ</span><sup>*</sup>
+        <span class="paren">(</span>
+        <span class="frac">
+          <span class="num"><span class="it">t</span> − <span class="it">b</span></span>
+          <span class="den"><span class="it">a</span></span>
+        </span>
+        <span class="paren">)</span>
+        d<span class="it">t</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="cap">MORLET 母小波</div>
+      <div class="eq">
+        <span class="it big">ψ</span><span class="op">(</span><span class="it">t</span><span class="op">)</span>
+        <span class="op">=</span>
+        π<sup>−1/4</sup>
+        e<sup>iω₀t</sup>
+        e<sup>−t²/2</sup>
+      </div>
+      <div class="eq" style="margin-top:.85em">
+        <span class="it">a</span> = 2<sup>j</sup>
+        <span class="op">,</span>
+        <span class="it">b</span> = <span class="it">k</span>·2<sup>j</sup>
+      </div>
+    </div>
+
+    <div class="card" style="flex:1 1 auto; display:flex; flex-direction:column; min-height:0;">
+      <div class="cap">ψ(t) · 尺度随时间的演化</div>
+      <canvas id="wcv"></canvas>
+    </div>
+
+    <div class="card">
+      <div class="cap">多尺度系数 |W(2ʲ,·)|</div>
+      <div class="bars" id="bars"></div>
+      <div class="note" style="margin-top:.9em">
+        <b>a ↑</b> 时间尺度扩张 → <b>频率 ↓</b><br>
+        宏观蠕动 · 微观闪烁 · 同一母小波
+      </div>
+    </div>
+  </aside>
+
+  <!-- ================= 右：WebGL 生物 ================= -->
+  <main id="stage">
+    <canvas id="glcanvas"></canvas>
+  </main>
+
+</div>
+
+<script>
+"use strict";
+
+/* =========================================================
+   1. WebGL 数字生物
+   ========================================================= */
+(function(){
+
+  const canvas = document.getElementById('glcanvas');
+  const gl = canvas.getContext('webgl', {
+    antialias: false,
+    alpha: false,
+    depth: false,
+    stencil: false,
+    powerPreference: 'high-performance'
+  });
+  if (!gl) { console.warn('WebGL 不可用'); return; }
+
+  const VERT = `
+    attribute vec2 aPos;
+    void main(){ gl_Position = vec4(aPos, 0.0, 1.0); }
+  `;
+
+  const FRAG = `
+    precision highp float;
+
+    uniform vec2  uRes;
+    uniform float uTime;
+
+    #define PI  3.141592653589793
+    #define TAU 6.283185307179586
+
+    float hash21(vec2 p){
+      vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+      p3 += dot(p3, p3.yzx + 33.33);
+      return fract((p3.x + p3.y) * p3.z);
+    }
+
+    /* Morlet 母小波实部 —— 多尺度时空的种子 */
+    float morlet(float x, float k){
+      return cos(k * x) * exp(-0.5 * x * x);
+    }
+
+    /* 霓虹紫 → 蓝 → 红 循环 */
+    vec3 palette(float h){
+      vec3 A = vec3(0.62, 0.16, 1.00);   // 霓虹紫
+      vec3 B = vec3(0.10, 0.52, 1.00);   // 电光蓝
+      vec3 C = vec3(1.00, 0.10, 0.34);   // 赤红
+      float s = fract(h) * 3.0;
+      if (s < 1.0){ float q = s;       return mix(A, B, q*q*(3.0-2.0*q)); }
+      if (s < 2.0){ float q = s - 1.0; return mix(B, C, q*q*(3.0-2.0*q)); }
+      float q = s - 2.0;               return mix(C, A, q*q*(3.0-2.0*q));
+    }
+
+    void main(){
+      vec2  res = uRes;
+      float mn  = min(res.x, res.y);
+      vec2  p   = (gl_FragCoord.xy - 0.5 * res) / mn;
+
+      float r  = length(p) + 1e-5;
+      float th = atan(p.y, p.x);
+      float u  = (th + PI) / TAU;          // 0..1  沿体轴参数
+
+      /* ---------- 多尺度空间结构：八度叠加 (a = 2^j) ---------- */
+      float disp = 0.0, wsum = 0.0;
+      float amp = 1.0, frq = 1.0;
+      for (int i = 0; i < 7; i++){
+        float fi = float(i);
+        disp += amp * sin(frq * th - uTime * (0.80 + fi * 0.62) + fi * 1.93);
+        wsum += amp;
+        amp  *= 0.62;
+        frq  *= 2.0;
+      }
+      disp /= wsum;
+
+      float R = 0.230 + 0.048 * disp;      // 体轴半径
+
+      /* ---------- 体宽：宏观轮廓 ---------- */
+      float prof = pow(max(sin(u * PI), 0.0), 0.55);
+      float w = 0.010 + 0.055 * prof;
+
+      /* ---------- 微观：沿体轴游走的 Morlet 小波包 ---------- */
+      float wp = 0.0;
+      for (int k = 0; k < 3; k++){
+        float fk = float(k);
+        float c  = fract(uTime * 0.07 + fk * 0.33);
+        float x  = (u - c) * (14.0 + fk * 16.0);
+        wp += morlet(x, 1.0) / (1.0 + fk * 0.8);
+      }
+      w *= 1.0 + 0.16 * wp + 0.10 * sin(u * 12.0 + uTime * 2.4);
+
+      /* ---------- 距离场 ---------- */
+      float d  = abs(r - R) - w;
+      float px = 1.6 / mn;
+
+      float body  = 1.0 - smoothstep(-px, px, d);
+      float halo  = exp(-max(d, 0.0) * 28.0);
+      float spine = exp(-pow((r - R) / max(w * 0.40, 1e-4), 2.0));
+      float edge  = exp(-pow(d / px * 0.85, 2.0));   // 紧致轮廓线
+
+      /* ---------- 颜色 ---------- */
+      float hue  = u * 0.9 + uTime * 0.045 + disp * 0.35;
+      vec3  base = mix(palette(hue), palette(hue + 0.33), 0.35);
+
+      float tex = 0.55 + 0.45 * sin(u * 54.0 - uTime * 4.5 + r * 60.0);
+
+      vec3 col = vec3(0.0);
+      col += base * body * (0.30 + 0.90 * spine) * (0.60 + 0.50 * tex);
+      col += base * halo * 0.30;
+      col += palette(hue + 0.5) * edge * 0.55;
+      col += base * wp * body * 0.35;
+
+      /* ---------- 微观粒子闪烁 ---------- */
+      vec2  gp   = p * 320.0 + vec2(uTime * 16.0, -uTime * 10.0);
+      vec2  cell = floor(gp);
+      float ph   = hash21(cell);
+      float tw   = pow(max(0.0, sin(uTime * 2.3 + ph * TAU)), 16.0);
+      float spark= tw * body * (0.45 + 0.55 * hash21(cell + 3.7));
+      col += vec3(1.0, 0.82, 1.0) * spark * 1.30;
+
+      /* ---------- 背景微光 / 暗角 ---------- */
+      col += base * 0.05 * exp(-r * 5.5);
+      col *= 1.0 - 0.50 * smoothstep(0.36, 0.98, r);
+
+      gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+    }
+  `;
+
+  function compile(type, src){
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)){
+      console.error(gl.getShaderInfoLog(s));
+      return null;
+    }
+    return s;
+  }
+
+  const vs = compile(gl.VERTEX_SHADER, VERT);
+  const fs = compile(gl.FRAGMENT_SHADER, FRAG);
+  if (!vs || !fs) return;
+
+  const prog = gl.createProgram();
+  gl.attachShader(prog, vs);
+  gl.attachShader(prog, fs);
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)){
+    console.error(gl.getProgramInfoLog(prog));
+    return;
+  }
+  gl.useProgram(prog);
+
+  // 覆盖全屏的大三角形
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER,
+    new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+
+  const aPos = gl.getAttribLocation(prog, 'aPos');
+  gl.enableVertexAttribArray(aPos);
+  gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+  const uResLoc  = gl.getUniformLocation(prog, 'uRes');
+  const uTimeLoc = gl.getUniformLocation(prog, 'uTime');
+
+  function resizeGL(){
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const w = Math.max(1, Math.floor(canvas.clientWidth  * dpr));
+    const h = Math.max(1, Math.floor(canvas.clientHeight * dpr));
+    if (canvas.width !== w || canvas.height !== h){
+      canvas.width  = w;
+      canvas.height = h;
+      gl.viewport(0, 0, w, h);
+    }
+  }
+  resizeGL();
+  window.addEventListener('resize', resizeGL);
+
+  window.__renderGL = function(t){
+    resizeGL();
+    gl.uniform1f(uTimeLoc, t);
+    gl.uniform2f(uResLoc, canvas.width, canvas.height);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  };
+
+})();
+
+
+/* =========================================================
+   2. 左侧面板：小波曲线 + 多尺度系数条
+   ========================================================= */
+(function(){
+
+  const wcv  = document.getElementById('wcv');
+  const wctx = wcv.getContext('2d');
+  let W = 0, H = 0, DPR = 1;
+
+  function resizeWavelet(){
+    const dpr  = Math.min(window.devicePixelRatio || 1, 2);
+    const rect = wcv.getBoundingClientRect();
+    const w = Math.max(1, Math.floor(rect.width  * dpr));
+    const h = Math.max(1, Math.floor(rect.height * dpr));
+    if (wcv.width !== w || wcv.height !== h){
+      wcv.width  = w;
+      wcv.height = h;
+    }
+    W = rect.width; H = rect.height; DPR = dpr;
+  }
+
+  function drawWavelet(t){
+    if (W < 4 || H < 4) return;
+    wctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    wctx.clearRect(0, 0, W, H);
+
+    const midY = H * 0.5;
+    const A    = H * 0.36;
+    const N    = 220;
+
+    // 中轴 & 竖向网格
+    wctx.strokeStyle = 'rgba(130,95,235,0.16)';
+    wctx.lineWidth = 1;
+    wctx.beginPath(); wctx.moveTo(0, midY); wctx.lineTo(W, midY); wctx.stroke();
+
+    wctx.strokeStyle = 'rgba(130,95,235,0.10)';
+    for (let i = 1; i < 4; i++){
+      const x = W * i / 4;
+      wctx.beginPath(); wctx.moveTo(x, 0); wctx.lineTo(x, H); wctx.stroke();
+    }
+
+    // 尺度 a 随时间震荡 → 载波频率变化
+    const k = 4.2 + 3.4 * Math.sin(t * 0.62);
+
+    // 高斯包络（虚线）
+    wctx.beginPath();
+    for (let i = 0; i <= N; i++){
+      const x = -4 + 8 * i / N;
+      const y = Math.exp(-x * x / 2);
+      const px = (i / N) * W;
+      const py = midY - y * A;
+      i ? wctx.lineTo(px, py) : wctx.moveTo(px, py);
+    }
+    wctx.setLineDash([3, 4]);
+    wctx.strokeStyle = 'rgba(160,125,255,0.34)';
+    wctx.lineWidth = 1;
+    wctx.stroke();
+    wctx.setLineDash([]);
+
+    // Morlet 实部
+    const grad = wctx.createLinearGradient(0, 0, W, 0);
+    grad.addColorStop(0.00, '#7c3aed');
+    grad.addColorStop(0.50, '#3b82f6');
+    grad.addColorStop(1.00, '#f43f5e');
+
+    wctx.beginPath();
+    for (let i = 0; i <= N; i++){
+      const x = -4 + 8 * i / N;
+      const y = Math.cos(k * x) * Math.exp(-x * x / 2);
+      const px = (i / N) * W;
+      const py = midY - y * A;
+      i ? wctx.lineTo(px, py) : wctx.moveTo(px, py);
+    }
+    wctx.lineJoin = 'round';
+    wctx.shadowBlur = 11;
+    wctx.shadowColor = 'rgba(145,95,255,0.95)';
+    wctx.strokeStyle = grad;
+    wctx.lineWidth = 1.7;
+    wctx.stroke();
+    wctx.shadowBlur = 0;
+
+    // 峰值光点
+    const peak = Math.cos(k * 0) * 1.0;
+    wctx.beginPath();
+    wctx.arc(W * 0.5, midY - peak * A, 2.1, 0, Math.PI * 2);
+    wctx.fillStyle = 'rgba(255,255,255,0.9)';
+    wctx.shadowBlur = 10;
+    wctx.shadowColor = '#a78bfa';
+    wctx.fill();
+    wctx.shadowBlur = 0;
+  }
+
+  /* ---- 系数条 ---- */
+  const barsEl = document.getElementById('bars');
+  const LEVELS = 6;
+  const bars = [];
+  for (let j = 0; j < LEVELS; j++){
+    const row = document.createElement('div');
+    row.className = 'bar-row';
+    row.innerHTML = '<span class="jl">2<sup>' + j + '</sup></span>' +
+                    '<span class="bar"><i></i></span>';
+    barsEl.appendChild(row);
+    bars.push(row.querySelector('i'));
+  }
+
+  function updateBars(t){
+    for (let j = 0; j < LEVELS; j++){
+      const v = 0.5 + 0.5 * Math.sin(t * (1.35 + j * 0.72) + j * 1.77);
+      const a = Math.pow(0.74, j) * (0.35 + 0.65 * v);
+      bars[j].style.width = (a * 100).toFixed(1) + '%';
+    }
+  }
+
+  window.__renderPanel = function(t){
+    resizeWavelet();
+    drawWavelet(t);
+    updateBars(t);
+  };
+
+  window.addEventListener('resize', resizeWavelet);
+  resizeWavelet();
+
+})();
+
+
+/* =========================================================
+   3. 主循环
+   ========================================================= */
+(function(){
+  const t0 = performance.now();
+
+  function frame(now){
+    const t = (now - t0) * 0.001;
+    if (window.__renderGL)    window.__renderGL(t);
+    if (window.__renderPanel) window.__renderPanel(t);
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+
+</script>
+</body>
+</html>

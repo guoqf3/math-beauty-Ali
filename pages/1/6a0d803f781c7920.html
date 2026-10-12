@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Aurora Nebula Jellyfish · 极光星云水母</title>
+<style>
+  html, body { margin:0; padding:0; height:100%; background:#02020a; overflow:hidden; }
+  canvas { display:block; }
+  #hud {
+    position:fixed; left:18px; bottom:16px;
+    font:11px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color:#6ea8ff; opacity:.5; letter-spacing:.18em;
+    pointer-events:none; user-select:none;
+  }
+</style>
+</head>
+<body>
+<div id="hud">AURORA NEBULA JELLYFISH<br>LOOP 60.000s · INFINITY PATH · HSL CYCLE</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+
+/* ============================================================
+   0. 常量
+   ============================================================ */
+const LOOP = 60000;            // 60 秒无缝循环
+const TAU  = Math.PI * 2;
+
+/* ============================================================
+   1. 渲染器 / 相机 / 场景
+   ============================================================ */
+const renderer = new THREE.WebGLRenderer({ antialias:false, powerPreference:'high-performance' });
+const DPR = Math.min(window.devicePixelRatio || 1, 1.5);
+let W = window.innerWidth, H = window.innerHeight;
+
+renderer.setPixelRatio(DPR);
+renderer.setSize(W, H);
+renderer.setClearColor(0x03030c, 1);
+document.body.appendChild(renderer.domElement);
+
+const camera = new THREE.PerspectiveCamera(50, W / H, 0.5, 4000);
+camera.position.set(0, 2, 70);
+camera.lookAt(0, 0, 0);
+
+const scene = new THREE.Scene();
+
+/* ============================================================
+   2. 水母几何体（全静态 attribute，形变在顶点着色器中完成）
+   ============================================================ */
+const R       = 7.5;
+const NBELL   = 900;
+const BELLSEG = 20;
+const NTENT   = 260;
+const TENTSEG = 32;
+
+const TOTAL = NBELL * BELLSEG * 2 + NTENT * TENTSEG * 2;
+
+const position = new Float32Array(TOTAL * 3);
+const aKind    = new Float32Array(TOTAL);
+const aT       = new Float32Array(TOTAL);
+const aAngle   = new Float32Array(TOTAL);
+const aPhase   = new Float32Array(TOTAL);
+const aLen     = new Float32Array(TOTAL);
+const aHue     = new Float32Array(TOTAL);
+
+let ptr = 0;
+function emit(kind, t, ang, ph, len, hue) {
+  aKind[ptr] = kind; aT[ptr] = t; aAngle[ptr] = ang;
+  aPhase[ptr] = ph;  aLen[ptr] = len; aHue[ptr] = hue;
+  ptr++;
+}
+
+// —— 伞盖经线 ——
+for (let j = 0; j < NBELL; j++) {
+  const ang = (j / NBELL) * TAU;
+  const ph  = Math.random() * TAU;
+  const hue = Math.random();
+  for (let k = 0; k < BELLSEG; k++) {
+    emit(0, k / BELLSEG, ang, ph, 0, hue);
+    emit(0, (k + 1) / BELLSEG, ang, ph, 0, hue);
+  }
+}
+
+// —— 触手 ——
+for (let j = 0; j < NTENT; j++) {
+  const ang = (j / NTENT) * TAU + (Math.random() - 0.5) * 0.09;
+  const ph  = Math.random() * TAU;
+  const hue = Math.random();
+  const len = 5 + Math.pow(Math.random(), 2.4) * 30;
+  for (let k = 0; k < TENTSEG; k++) {
+    emit(1, k / TENTSEG, ang, ph, len, hue);
+    emit(1, (k + 1) / TENTSEG, ang, ph, len, hue);
+  }
+}
+
+const jellyGeo = new THREE.BufferGeometry();
+jellyGeo.setAttribute('position', new THREE.BufferAttribute(position, 3));
+jellyGeo.setAttribute('aKind',    new THREE.BufferAttribute(aKind, 1));
+jellyGeo.setAttribute('aT',       new THREE.BufferAttribute(aT, 1));
+jellyGeo.setAttribute('aAngle',   new THREE.BufferAttribute(aAngle, 1));
+jellyGeo.setAttribute('aPhase',   new THREE.BufferAttribute(aPhase, 1));
+jellyGeo.setAttribute('aLen',     new THREE.BufferAttribute(aLen, 1));
+jellyGeo.setAttribute('aHue',     new THREE.BufferAttribute(aHue, 1));
+jellyGeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 5000);
+
+/* ============================================================
+   3. 水母着色器  —— 触手已改为「大幅度左右摆动」
+   ============================================================ */
+const JELLY_VS = /* glsl */`
+uniform float uTime;
+uniform float uR;
+
+attribute float aKind;
+attribute float aT;
+attribute float aAngle;
+attribute float aPhase;
+attribute float aLen;
+attribute float aHue;
+
+varying vec3  vColor;
+varying float vAlpha;
+
+#define TAU 6.283185307179586
+
+vec3 hsl2rgb(vec3 c) {
+  vec3 rgb = clamp(abs(mod(c.x * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0);
+  return c.z + c.y * (rgb - 0.5) * (1.0 - abs(2.0 * c.z - 1.0));
+}
+
+void main() {
+  float P = uTime / 60000.0;
+
+  /* 伞盖缓慢的呼吸式缩放（30 秒一次） */
+  float breathe = 1.0 + 0.055 * sin(TAU * 2.0 * P);
+
+  vec3  pos;
+  float alpha;
+  float hue;
+
+  if (aKind < 0.5) {
+    /* ================= 伞盖 ================= */
+    float th  = aT * 1.5707963268;
+    float rad = sin(th) * uR * breathe;
+    rad *= 1.0 + 0.06 * aT * aT * sin(aAngle * 6.0 + TAU * 3.0 * P + aPhase);
+
+    float y = cos(th) * uR * 0.72 * breathe;
+    pos = vec3(cos(aAngle) * rad, y, sin(aAngle) * rad);
+
+    float flow = sin(aT * 10.0 - TAU * 5.0 * P + aPhase);
+    float glow = 0.12 + 0.88 * pow(0.5 + 0.5 * flow, 2.6);
+
+    alpha = glow * (0.14 + 0.86 * smoothstep(0.0, 0.30, aT));
+    hue = 0.55 + 0.24 * sin(TAU * P + aHue * TAU) + aT * 0.06;
+
+  } else {
+    /* ================= 触手 ================= */
+    float s   = aT;
+    float rr  = uR * breathe * (1.0 + 0.50 * s * s);
+
+    /* —— 大幅度左右摆动 ——
+       沿触手的行波：慢速大扫 + 快速抖动叠加。
+       摆动方向取切向（垂直于径向），所以看起来是真正的“左右甩”。
+       振幅与 aLen 成正比、随 s^1.2 向尖端放大，长触手甩得最狠。   */
+    float swingEnv = pow(s, 1.2);
+
+    float swingSlow = sin(s * 1.8 - TAU * 2.0 * P + aPhase);              // 主摆动，周期 30s
+    float swingFast = sin(s * 5.0 - TAU * 4.0 * P + aPhase * 1.7) * 0.40; // 次摆动，周期 15s
+
+    float swing = aLen * 0.48 * swingEnv * (swingSlow + swingFast);
+
+    /* 切向 & 径向单位向量 */
+    vec3 radialDir = vec3(cos(aAngle), 0.0, sin(aAngle));
+    vec3 tangDir   = vec3(-sin(aAngle), 0.0, cos(aAngle));
+
+    /* 触手根部跟随角度轻微扭转（保持自然） */
+    float ang = aAngle + 0.20 * s * sin(s * 2.2 + TAU * 2.0 * P + aPhase);
+
+    /* 摆动方向沿“扭转后的切向” */
+    vec3 tDir = vec3(-sin(ang), 0.0, cos(ang));
+    vec3 rDir = vec3( cos(ang), 0.0, sin(ang));
+
+    /* 径向也做一点呼吸式扩张，避免纯切向摆动显得平板 */
+    float radialSwing = aLen * 0.18 * swingEnv * cos(s * 2.4 - TAU * 2.0 * P + aPhase * 1.3);
+    rr += radialSwing;
+
+    /* 垂直方向的细微波纹 */
+    float lift = 0.30 * sin(s * 8.0 - TAU * 5.0 * P + aPhase);
+
+    pos = rDir * rr + tDir * swing;
+    pos.y = -aLen * s + lift;
+
+    /* —— 流光 —— */
+    float flow    = sin(s * 13.0 - TAU * 6.0 * P + aPhase);
+    float glow    = 0.10 + 0.90 * pow(0.5 + 0.5 * flow, 3.0);
+    float twinkle = 0.62 + 0.38 * sin(TAU * 9.0 * P + aPhase * 5.0);
+
+    alpha = glow * twinkle
+          * (0.30 + 0.70 * smoothstep(0.0, 0.10, s))
+          * pow(1.0 - s, 0.55);
+
+    hue = 0.55 + 0.24 * sin(TAU * P + aHue * TAU) + s * 0.14;
+  }
+
+  hue = fract(hue);
+  float sat = 0.95;
+  float lum = 0.26 + 0.40 * alpha;
+
+  vColor = hsl2rgb(vec3(hue, sat, lum));
+  vAlpha = alpha;
+
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+}
+`;
+
+const JELLY_FS = /* glsl */`
+varying vec3  vColor;
+varying float vAlpha;
+
+void main() {
+  if (vAlpha < 0.002) discard;
+  gl_FragColor = vec4(vColor, vAlpha);
+}
+`;
+
+const jellyMat = new THREE.ShaderMaterial({
+  uniforms: { uTime: { value: 0 }, uR: { value: R } },
+  vertexShader:   JELLY_VS,
+  fragmentShader: JELLY_FS,
+  transparent: true,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false,
+  depthTest: false
+});
+
+const jellyMesh  = new THREE.LineSegments(jellyGeo, jellyMat);
+jellyMesh.frustumCulled = false;
+jellyMesh.position.y = 14;
+
+const jellyGroup = new THREE.Group();
+jellyGroup.add(jellyMesh);
+scene.add(jellyGroup);
+
+/* ============================================================
+   4. 深邃星空
+   ============================================================ */
+const STAR_COUNT = 9000;
+const sPos   = new Float32Array(STAR_COUNT * 3);
+const sCol   = new Float32Array(STAR_COUNT * 3);
+const sSize  = new Float32Array(STAR_COUNT);
+const sPhase = new Float32Array(STAR_COUNT);
+
+const tmpColor = new THREE.Color();
+for (let i = 0; i < STAR_COUNT; i++) {
+  const r  = 200 + Math.random() * 900;
+  const u  = Math.random() * 2 - 1;
+  const th = Math.random() * TAU;
+  const sq = Math.sqrt(1 - u * u);
+
+  sPos[i * 3]     = r * sq * Math.cos(th);
+  sPos[i * 3 + 1] = r * u * 0.75;
+  sPos[i * 3 + 2] = r * sq * Math.sin(th);
+
+  tmpColor.setHSL(0.52 + Math.random() * 0.18, 0.45 + Math.random() * 0.5, 0.62 + Math.random() * 0.33);
+  sCol[i * 3]     = tmpColor.r;
+  sCol[i * 3 + 1] = tmpColor.g;
+  sCol[i * 3 + 2] = tmpColor.b;
+
+  sSize[i]  = 1.0 + Math.pow(Math.random(), 3.0) * 5.0;
+  sPhase[i] = Math.random() * TAU;
+}
+
+const starGeo = new THREE.BufferGeometry();
+starGeo.setAttribute('position', new THREE.BufferAttribute(sPos, 3));
+starGeo.setAttribute('aColor',   new THREE.BufferAttribute(sCol, 3));
+starGeo.setAttribute('aSize',    new THREE.BufferAttribute(sSize, 1));
+starGeo.setAttribute('aPhase',   new THREE.BufferAttribute(sPhase, 1));
+
+const starMat = new THREE.ShaderMaterial({
+  uniforms: {
+    uTime: { value: 0 },
+    uDpr:  { value: DPR }
+  },
+  vertexShader: /* glsl */`
+    uniform float uTime;
+    uniform float uDpr;
+    attribute float aSize;
+    attribute float aPhase;
+    attribute vec3  aColor;
+
+    varying vec3  vColor;
+    varying float vTw;
+
+    void main() {
+      vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      gl_Position = projectionMatrix * mv;
+
+      float P = uTime / 60000.0;
+      vTw = 0.45 + 0.55 * (0.5 + 0.5 * sin(6.283185307 * 2.0 * P + aPhase));
+      vColor = aColor;
+
+      float sz = aSize * uDpr * (300.0 / max(-mv.z, 1.0));
+      gl_PointSize = clamp(sz, 1.0, 14.0);
+    }
+  `,
+  fragmentShader: /* glsl */`
+    varying vec3  vColor;
+    varying float vTw;
+
+    void main() {
+      vec2 d = gl_PointCoord - 0.5;
+      float r2 = dot(d, d);
+      if (r2 > 0.25) discard;
+      float a = exp(-r2 * 14.0) * vTw;
+      gl_FragColor = vec4(vColor * a * 1.7, a);
+    }
+  `,
+  transparent: true,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false
+});
+
+const stars = new THREE.Points(starGeo, starMat);
+stars.frustumCulled = false;
+scene.add(stars);
+
+/* ============================================================
+   5. 后处理：拖尾累积 + 色调映射 + 暗角
+   ============================================================ */
+const rtOpts = {
+  minFilter: THREE.LinearFilter,
+  magFilter: THREE.LinearFilter,
+  format: THREE.RGBAFormat,
+  type: THREE.HalfFloatType,
+  depthBuffer: false,
+  stencilBuffer: false
+};
+
+let rtScene  = new THREE.WebGLRenderTarget(W * DPR, H * DPR, rtOpts);
+let accumA   = new THREE.WebGLRenderTarget(W * DPR, H * DPR, rtOpts);
+let accumB   = new THREE.WebGLRenderTarget(W * DPR, H * DPR, rtOpts);
+let accumPrev = accumA;
+let accumCur  = accumB;
+
+renderer.setRenderTarget(accumA); renderer.clear();
+renderer.setRenderTarget(accumB); renderer.clear();
+renderer.setRenderTarget(null);
+
+const quadGeo = new THREE.PlaneGeometry(2, 2);
+const quadCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+const quadScene = new THREE.Scene();
+const quadMesh = new THREE.Mesh(quadGeo, null);
+quadMesh.frustumCulled = false;
+quadScene.add(quadMesh);
+
+const QUAD_VS = /* glsl */`
+  varying vec2 vUv;
+  void main() {
+    vUv = uv;
+    gl_Position = vec4(position.xy, 0.0, 1.0);
+  }
+`;
+
+const mixMat = new THREE.ShaderMaterial({
+  uniforms: {
+    tScene: { value: null },
+    tPrev:  { value: null },
+    uDecay: { value: 0.80 }
+  },
+  vertexShader: QUAD_VS,
+  fragmentShader: /* glsl */`
+    uniform sampler2D tScene;
+    uniform sampler2D tPrev;
+    uniform float uDecay;
+    varying vec2 vUv;
+
+    void main() {
+      vec3 s = texture2D(tScene, vUv).rgb;
+      vec3 p = texture2D(tPrev,  vUv).rgb * uDecay;
+      gl_FragColor = vec4(s + p, 1.0);
+    }
+  `,
+  depthTest: false,
+  depthWrite: false
+});
+
+const outMat = new THREE.ShaderMaterial({
+  uniforms: { tDiffuse: { value: null } },
+  vertexShader: QUAD_VS,
+  fragmentShader: /* glsl */`
+    uniform sampler2D tDiffuse;
+    varying vec2 vUv;
+
+    void main() {
+      vec3 c = texture2D(tDiffuse, vUv).rgb;
+      c = vec3(1.0) - exp(-c * 1.25);
+      c *= vec3(0.92, 0.98, 1.08);
+
+      vec2 q = vUv - 0.5;
+      float vig = smoothstep(0.95, 0.28, length(q) * 1.35);
+      c *= mix(0.50, 1.0, vig);
+
+      float n = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
+      c += (n - 0.5) * 0.012;
+
+      gl_FragColor = vec4(c, 1.0);
+    }
+  `,
+  depthTest: false,
+  depthWrite: false
+});
+
+/* ============================================================
+   6. 运动：∞ 形轨迹 + 正弦速度调制
+   ============================================================ */
+function updateMotion(P) {
+  const phi = TAU * P + 0.55 * Math.sin(TAU * P);
+
+  jellyGroup.position.x = 30.0 * Math.sin(phi);
+  jellyGroup.position.z = 18.0 * Math.sin(2.0 * phi);
+  jellyGroup.position.y =  3.5 * Math.sin(TAU * 2.0 * P);
+
+  jellyGroup.rotation.y = phi;
+  jellyGroup.rotation.x = 0.10 * Math.sin(phi);
+  jellyGroup.rotation.z = 0.14 * Math.sin(2.0 * phi);
+}
+
+/* ============================================================
+   7. 主循环
+   ============================================================ */
+function animate() {
+  requestAnimationFrame(animate);
+
+  const t = performance.now() % LOOP;
+  const P = t / LOOP;
+
+  jellyMat.uniforms.uTime.value = t;
+  starMat.uniforms.uTime.value  = t;
+
+  updateMotion(P);
+
+  renderer.setRenderTarget(rtScene);
+  renderer.clear();
+  renderer.render(scene, camera);
+
+  mixMat.uniforms.tScene.value = rtScene.texture;
+  mixMat.uniforms.tPrev.value  = accumPrev.texture;
+  quadMesh.material = mixMat;
+  renderer.setRenderTarget(accumCur);
+  renderer.clear();
+  renderer.render(quadScene, quadCam);
+
+  outMat.uniforms.tDiffuse.value = accumCur.texture;
+  quadMesh.material = outMat;
+  renderer.setRenderTarget(null);
+  renderer.clear();
+  renderer.render(quadScene, quadCam);
+
+  const tmp = accumPrev;
+  accumPrev = accumCur;
+  accumCur  = tmp;
+}
+
+/* ============================================================
+   8. 自适应
+   ============================================================ */
+function onResize() {
+  W = window.innerWidth;
+  H = window.innerHeight;
+
+  camera.aspect = W / H;
+  camera.updateProjectionMatrix();
+
+  renderer.setSize(W, H);
+
+  const w = Math.floor(W * DPR);
+  const h = Math.floor(H * DPR);
+  rtScene.setSize(w, h);
+  accumA.setSize(w, h);
+  accumB.setSize(w, h);
+
+  starMat.uniforms.uDpr.value = DPR;
+}
+window.addEventListener('resize', onResize);
+
+/* ============================================================
+   9. 启动
+   ============================================================ */
+animate();
+</script>
+</body>
+</html>

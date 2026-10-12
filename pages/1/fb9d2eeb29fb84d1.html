@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>硅基机械游龙 · Silicon Mechanical Dragon</title>
+<style>
+  html, body {
+    margin: 0; padding: 0;
+    width: 100%; height: 100%;
+    background: #000;
+    overflow: hidden;
+  }
+  canvas { display: block; }
+  .hint {
+    position: fixed; left: 12px; bottom: 10px;
+    color: rgba(150, 205, 255, 0.35);
+    font: 12px/1.6 -apple-system, "PingFang SC", sans-serif;
+    letter-spacing: 1.5px;
+    user-select: none; pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hint">SILICON MECHANICAL DRAGON · 拖拽扰动 · 按 R 重组</div>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W, H, DPR, cx, cy, R;
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width  = W * DPR;
+  canvas.height = H * DPR;
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  cx = W * 0.5;
+  cy = H * 0.5;
+  R  = Math.min(W, H) * 0.33;
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ---------- 全局状态 ----------
+let seed    = Math.random() * 1000;
+let t       = 0;
+let headAng = -Math.PI * 0.5;
+let curCx = 0, curCy = 0;
+let last = performance.now();
+
+// ---------- 可调参数 ----------
+const N_SPINE  = 160;   // 脊椎采样点
+const PER_SEG  = 4;     // 每个采样点的碎片数
+const ARC      = 3.2;   // 身体在圆周上跨越的弧度
+const ELL      = 0.76;  // 轨道椭圆压扁系数
+
+// 鼠标扰动
+let mx = 0.5, my = 0.5, mxs = 0.5, mys = 0.5;
+window.addEventListener('pointermove', e => {
+  mx = e.clientX / W;
+  my = e.clientY / H;
+});
+window.addEventListener('keydown', e => {
+  if (e.key === 'r' || e.key === 'R') { seed = Math.random() * 1000; buildRand(); }
+});
+
+// ---------- 每个碎片的稳定随机表 ----------
+const RAND = [];
+function buildRand() {
+  RAND.length = 0;
+  for (let i = 0; i < N_SPINE; i++) {
+    const row = [];
+    for (let j = 0; j < PER_SEG; j++) {
+      row.push([Math.random(), Math.random(), Math.random(), Math.random()]);
+    }
+    RAND.push(row);
+  }
+}
+buildRand();
+
+// ---------- 脊椎：沿椭圆轨道 + 蛇形摆动 ----------
+function spineRaw(s) {
+  const ang = headAng - s * ARC;
+  const wob = Math.sin(s * 5.0 - t * 2.3 + seed * 0.6) * 0.14 * (0.25 + 0.75 * s);
+  const a   = ang + wob;
+  const rr  = R * (1 + 0.06 * Math.sin(s * 6.5 - t * 1.8 + seed));
+  return {
+    x: curCx + Math.cos(a) * rr,
+    y: curCy + Math.sin(a) * rr * ELL,
+    a: a
+  };
+}
+
+// 身体粗细包络：头部饱满 → 中段最盛 → 尾部收尖
+function envelope(s) {
+  const u = Math.min(1, s * 0.88 + 0.12);
+  return Math.pow(Math.sin(Math.PI * u), 0.72);
+}
+
+// ---------- 碎片形状（单位尺寸线段表） ----------
+function polyPts(n, r, phase) {
+  const out = [];
+  for (let k = 0; k < n; k++) {
+    const a = phase + k / n * Math.PI * 2;
+    out.push([Math.cos(a) * r, Math.sin(a) * r]);
+  }
+  return out;
+}
+
+const SHAPES = [];
+
+// 0) 齿轮：五边形 + 辐条
+(function () {
+  const p = polyPts(5, 1, 0.3), L = [];
+  for (let k = 0; k < 5; k++) L.push([p[k][0], p[k][1], p[(k + 1) % 5][0], p[(k + 1) % 5][1]]);
+  L.push([0, 0, p[0][0] * 0.8, p[0][1] * 0.8]);
+  L.push([0, 0, p[2][0] * 0.8, p[2][1] * 0.8]);
+  SHAPES.push(L);
+})();
+
+// 1) 多面体：六边形 + 内三角
+(function () {
+  const p = polyPts(6, 1, 0), L = [];
+  for (let k = 0; k < 6; k++) L.push([p[k][0], p[k][1], p[(k + 1) % 6][0], p[(k + 1) % 6][1]]);
+  L.push([p[0][0], p[0][1], p[2][0], p[2][1]]);
+  L.push([p[2][0], p[2][1], p[4][0], p[4][1]]);
+  SHAPES.push(L);
+})();
+
+// 2) 电路板：矩形 + 走线
+(function () {
+  const w = 1, h = 0.6;
+  SHAPES.push([
+    [-w, -h,  w, -h], [ w, -h,  w,  h], [ w,  h, -w,  h], [-w,  h, -w, -h],
+    [-w * 0.7, 0, w * 0.2, 0],
+    [ w * 0.2, 0, w * 0.2, -h * 0.8]
+  ]);
+})();
+
+// 3) 三角碎片
+(function () {
+  const p = polyPts(3, 1, 0.5), L = [];
+  for (let k = 0; k < 3; k++) L.push([p[k][0], p[k][1], p[(k + 1) % 3][0], p[(k + 1) % 3][1]]);
+  L.push([p[0][0] * 0.5, p[0][1] * 0.5, p[1][0] * 0.5, p[1][1] * 0.5]);
+  SHAPES.push(L);
+})();
+
+function emitShape(path, lines, px, py, size, rot) {
+  const c = Math.cos(rot), sn = Math.sin(rot);
+  for (let k = 0; k < lines.length; k++) {
+    const L = lines[k];
+    const x1 = L[0] * size, y1 = L[1] * size;
+    const x2 = L[2] * size, y2 = L[3] * size;
+    path.moveTo(px + x1 * c - y1 * sn, py + x1 * sn + y1 * c);
+    path.lineTo(px + x2 * c - y2 * sn, py + x2 * sn + y2 * c);
+  }
+}
+
+// ---------- 颜色桶：冰蓝核心 / 暗金外骨骼 / 红色能量缝隙 ----------
+const NB = 6;
+const BUCKETS = [
+  { h: 190, s: 100, l: 72, a: 0.95 },  // 冰蓝核心
+  { h: 208, s: 95,  l: 62, a: 0.80 },  // 冰蓝深
+  { h: 45,  s: 85,  l: 58, a: 0.85 },  // 暗金
+  { h: 32,  s: 75,  l: 48, a: 0.70 },  // 暗金深
+  { h: 352, s: 100, l: 60, a: 0.95 },  // 红色能量缝隙
+  { h: 8,   s: 100, l: 52, a: 0.80 }   // 深红
+];
+
+// ---------- 主循环 ----------
+function frame(now) {
+  const dt = Math.min(0.05, Math.max(0.001, (now - last) / 1000));
+  last = now;
+  t += dt;
+
+  // 速度脉冲：两个不同频率正弦叠加，形成平滑的"呼吸式"推进
+  const pulse = 1 + 0.62 * Math.sin(t * 1.15) + 0.28 * Math.sin(t * 2.53 + 1.1);
+  headAng += 0.55 * pulse * dt;
+
+  // 鼠标平滑
+  mxs += (mx - mxs) * 0.05;
+  mys += (my - mys) * 0.05;
+  curCx = cx + (mxs - 0.5) * W * 0.06;
+  curCy = cy + (mys - 0.5) * H * 0.06;
+
+  // 硬清屏（无拖尾）
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+
+  const MINWH = Math.min(W, H);
+
+  // ---- 1. 采样脊椎 ----
+  const pts = new Array(N_SPINE);
+  for (let i = 0; i < N_SPINE; i++) pts[i] = spineRaw(i / (N_SPINE - 1));
+
+  const tanv = new Array(N_SPINE), nrmv = new Array(N_SPINE);
+  for (let i = 0; i < N_SPINE; i++) {
+    const a = pts[i > 0 ? i - 1 : 0];
+    const b = pts[i < N_SPINE - 1 ? i + 1 : N_SPINE - 1];
+    let tx = b.x - a.x, ty = b.y - a.y;
+    const tl = Math.hypot(tx, ty) || 1;
+    tanv[i] = { x: tx / tl, y: ty / tl };
+
+    let nx = pts[i].x - curCx, ny = pts[i].y - curCy;
+    const nl = Math.hypot(nx, ny) || 1;
+    nrmv[i] = { x: nx / nl, y: ny / nl };
+  }
+
+  // ---- 2. 路径容器 ----
+  const paths = new Array(NB);
+  for (let i = 0; i < NB; i++) paths[i] = new Path2D();
+
+  // ---- 3. 碎片铺设 ----
+  for (let i = 0; i < N_SPINE; i++) {
+    const s   = i / (N_SPINE - 1);
+    const P   = pts[i], N = nrmv[i], T = tanv[i];
+    const env = envelope(s);
+    const halfW = env * MINWH * 0.038;
+
+    for (let j = 0; j < PER_SEG; j++) {
+      const R4 = RAND[i][j];
+      const r1 = R4[0], r2 = R4[1], r3 = R4[2], r4 = R4[3];
+
+      let u = ((j + 0.5) / PER_SEG) * 2 - 1;
+      u += (r1 - 0.5) * 0.7;
+
+      // 鳞片翻转：同一采样点的碎片相位错开 → 分离 / 重组
+      const breath = Math.sin(s * 8.0 - t * 2.6 + j * 2.4 + seed * 0.7);
+      const lat = u * halfW * (1 + 0.9 * breath);
+      const lon = (r2 - 0.5) * 6 * env;
+
+      const fx = P.x + N.x * lat + T.x * lon;
+      const fy = P.y + N.y * lat + T.y * lon;
+
+      const size = (1.4 + env * 3.6) * (0.6 + 0.7 * r3);
+      const rot  = s * 13 + t * (1.1 + r4 * 1.6) + j * 1.9 + seed;
+
+      const sidx = r4 < 0.34 ? 0 : (r4 < 0.62 ? 1 : (r4 < 0.85 ? 2 : 3));
+
+      // 由横向位置决定材质：内层核心 → 中层外骨骼 → 外层能量缝隙
+      const au = Math.abs(u);
+      let bi;
+      if (au < 0.4)      bi = r2 < 0.55 ? 0 : 1;
+      else if (au < 0.8) bi = r2 < 0.60 ? 2 : 3;
+      else               bi = r2 < 0.60 ? 4 : 5;
+
+      emitShape(paths[bi], SHAPES[sidx], fx, fy, size, rot);
+    }
+  }
+
+  // ---- 4. 能量光束骨架 ----
+  const beam = new Path2D();
+  beam.moveTo(pts[0].x, pts[0].y);
+  for (let i = 1; i < N_SPINE; i++) beam.lineTo(pts[i].x, pts[i].y);
+
+  // 脊椎骨节：每 10 点一道横向光束
+  for (let i = 0; i < N_SPINE; i += 10) {
+    const P = pts[i], N = nrmv[i];
+    const L = MINWH * 0.014 * envelope(i / (N_SPINE - 1));
+    beam.moveTo(P.x - N.x * L, P.y - N.y * L);
+    beam.lineTo(P.x + N.x * L, P.y + N.y * L);
+  }
+
+  // ---- 5. 统一描边 ----
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.globalCompositeOperation = 'lighter';
+
+  // 光束：粗辉光 + 细核心
+  ctx.strokeStyle = 'hsla(195, 100%, 60%, 0.09)';
+  ctx.lineWidth = 7;
+  ctx.stroke(beam);
+
+  ctx.strokeStyle = 'hsla(190, 100%, 80%, 0.32)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke(beam);
+
+  // 碎片辉光层
+  for (let i = 0; i < NB; i++) {
+    const B = BUCKETS[i];
+    ctx.strokeStyle = `hsla(${B.h}, ${B.s}%, ${B.l}%, 0.11)`;
+    ctx.lineWidth = 4.0;
+    ctx.stroke(paths[i]);
+  }
+  // 碎片核心层
+  for (let i = 0; i < NB; i++) {
+    const B = BUCKETS[i];
+    const l = Math.min(96, B.l + 15);
+    ctx.strokeStyle = `hsla(${B.h}, ${B.s}%, ${l}%, ${B.a})`;
+    ctx.lineWidth = 1.0;
+    ctx.stroke(paths[i]);
+  }
+
+  // ---- 6. 龙首 ----
+  const hp = pts[0], hT = tanv[0], hN = nrmv[0];
+  const hs = Math.max(12, envelope(0) * MINWH * 0.038 * 1.6);
+
+  // 头部光晕
+  const hg = ctx.createRadialGradient(hp.x, hp.y, 0, hp.x, hp.y, hs * 7);
+  hg.addColorStop(0,   'hsla(190, 100%, 85%, 0.45)');
+  hg.addColorStop(0.4, 'hsla(195, 100%, 65%, 0.16)');
+  hg.addColorStop(1,   'hsla(200, 100%, 60%, 0)');
+  ctx.fillStyle = hg;
+  ctx.beginPath();
+  ctx.arc(hp.x, hp.y, hs * 7, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 龙须（红色能量缝隙）
+  ctx.beginPath();
+  for (let side = -1; side <= 1; side += 2) {
+    const bx = hp.x + hN.x * side * hs * 0.7;
+    const by = hp.y + hN.y * side * hs * 0.7;
+    const sw = Math.sin(t * 2.2 + side * 1.6) * 0.9;
+    const c1x = bx - hT.x * hs * 1.6 + hN.x * side * hs * 1.6 + hN.x * sw * hs * 0.8;
+    const c1y = by - hT.y * hs * 1.6 + hN.y * side * hs * 1.6 + hN.y * sw * hs * 0.8;
+    const ex  = bx - hT.x * hs * 3.2 + hN.x * side * hs * 0.4 + hN.x * sw * hs * 2.2;
+    const ey  = by - hT.y * hs * 3.2 + hN.y * side * hs * 0.4 + hN.y * sw * hs * 2.2;
+    ctx.moveTo(bx, by);
+    ctx.quadraticCurveTo(c1x, c1y, ex, ey);
+  }
+  ctx.strokeStyle = 'hsla(352, 100%, 65%, 0.62)';
+  ctx.lineWidth = 1.3;
+  ctx.stroke();
+
+  // 龙目（冰蓝光点）
+  for (let side = -1; side <= 1; side += 2) {
+    const ex = hp.x + hN.x * side * hs * 0.45 - hT.x * hs * 0.25;
+    const ey = hp.y + hN.y * side * hs * 0.45 - hT.y * hs * 0.25;
+    ctx.fillStyle = 'hsla(185, 100%, 78%, 0.95)';
+    ctx.beginPath();
+    ctx.arc(ex, ey, 2.4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

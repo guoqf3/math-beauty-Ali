@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>磁流体刺猬 · Ferrofluid Hedgehog</title>
+<style>
+  html, body {
+    margin: 0; padding: 0;
+    width: 100%; height: 100%;
+    background: #000;
+    overflow: hidden;
+  }
+  canvas { display: block; }
+  .hint {
+    position: fixed; left: 12px; bottom: 10px;
+    color: rgba(255,255,255,0.32);
+    font: 12px/1.6 -apple-system, "PingFang SC", sans-serif;
+    letter-spacing: 1px;
+    user-select: none; pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hint">FERROFLUID HEDGEHOG · drag to stir · press R to reseed</div>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const TAU = Math.PI * 2;
+
+let W = 0, H = 0, DPR = 1;
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width  = Math.round(W * DPR);
+  canvas.height = Math.round(H * DPR);
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+}
+window.addEventListener('resize', resize);
+resize();
+
+/* ============================================================
+   可调参数
+   ============================================================ */
+const N_SPIKES  = 190;   // 尖刺数量（球面均匀分布）
+const PARTICLES = 7;     // 每根尖刺上的粒子数
+let   t         = 0;
+
+/* ============================================================
+   色相循环：暗紫(280) → 深红(350) → 炽金(405≡45) → 暗紫
+   ============================================================ */
+function triHue(u) {
+  u = u - Math.floor(u);
+  const x = u * 3;
+  let h;
+  if (x < 1)      h = 280 + (350 - 280) * x;
+  else if (x < 2) h = 350 + (405 - 350) * (x - 1);
+  else            h = 405 + (280 + 360 - 405) * (x - 2);
+  return h % 360;
+}
+
+/* ============================================================
+   尖刺分布：Fibonacci 球面 + 轻微抖动
+   ============================================================ */
+const dirs = [];
+
+function buildSpikes() {
+  dirs.length = 0;
+  const GA = Math.PI * (3 - Math.sqrt(5));   // 黄金角
+  const s  = Math.random() * TAU;
+
+  for (let i = 0; i < N_SPIKES; i++) {
+    const y  = 1 - (i + 0.5 + (Math.random() - 0.5) * 0.6) / N_SPIKES * 2;
+    const yy = Math.max(-1, Math.min(1, y));
+    const r  = Math.sqrt(Math.max(0, 1 - yy * yy));
+    const th = i * GA + s + (Math.random() - 0.5) * 0.28;
+
+    const dx = Math.cos(th) * r;
+    const dy = yy;
+    const dz = Math.sin(th) * r;
+
+    // 构造一个与 d 垂直的单位向量 q（用于尖刺弯曲）
+    let ax = 0, ay = 1, az = 0;
+    if (Math.abs(dy) > 0.94) { ax = 1; ay = 0; az = 0; }
+    let qx = dy * az - dz * ay;
+    let qy = dz * ax - dx * az;
+    let qz = dx * ay - dy * ax;
+    const ql = Math.hypot(qx, qy, qz) || 1;
+    qx /= ql; qy /= ql; qz /= ql;
+
+    dirs.push({
+      x: dx, y: dy, z: dz,
+      qx, qy, qz,
+      ph:   Math.random() * TAU,              // 波动相位
+      sp:   0.55 + Math.random() * 0.95,      // 粒子流速
+      off:  Math.random(),                    // 粒子相位偏移
+      hoff: Math.random() * 0.5               // 色相偏移
+    });
+  }
+}
+buildSpikes();
+
+/* ============================================================
+   交互
+   ============================================================ */
+let mx = 0.5, my = 0.5, smx = 0.5, smy = 0.5;
+
+window.addEventListener('pointermove', e => {
+  mx = e.clientX / window.innerWidth;
+  my = e.clientY / window.innerHeight;
+}, { passive: true });
+
+window.addEventListener('keydown', e => {
+  if (e.key === 'r' || e.key === 'R') buildSpikes();
+});
+
+/* ============================================================
+   主循环
+   ============================================================ */
+const HUE_BUCKETS = 36;   // 每 10° 一桶
+let last = 0;
+
+function frame(now) {
+  if (!last) last = now;
+  let dt = (now - last) / 1000;
+  last = now;
+  if (dt > 0.05) dt = 0.05;
+  if (dt < 0) dt = 0;
+  t += dt;
+
+  /* ---------- 硬清屏（无拖尾） ---------- */
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap  = 'round';
+  ctx.lineJoin = 'round';
+
+  /* ---------- 鼠标平滑 ---------- */
+  smx += (mx - smx) * 0.045;
+  smy += (my - smy) * 0.045;
+
+  /* ---------- 几何尺度 ---------- */
+  const S  = Math.min(W, H);
+  const R0 = S * 0.135;                 // 磁流体球半径
+  const MAXSPIKE = R0 * 1.30;           // 尖刺最大长度
+
+  /* ---------- 圆周运动（平滑漂移） ---------- */
+  const cx = W * 0.5 + Math.cos(t * 0.42) * S * 0.085 + (smx - 0.5) * S * 0.10;
+  const cy = H * 0.5 + Math.sin(t * 0.42) * S * 0.075 + (smy - 0.5) * S * 0.10;
+
+  /* ---------- 三维旋转 ---------- */
+  const yaw   = t * 0.32 + (smx - 0.5) * 2.2;
+  const pitch = 0.28 * Math.sin(t * 0.21) + (smy - 0.5) * 1.4;
+  const cY = Math.cos(yaw),   sY = Math.sin(yaw);
+  const cP = Math.cos(pitch), sP = Math.sin(pitch);
+
+  /* ---------- 背景辉光 ---------- */
+  const glowR = R0 * 2.9;
+  const bg = ctx.createRadialGradient(cx, cy, 0, cx, cy, glowR);
+  bg.addColorStop(0.00, 'hsla(45,100%,72%,0.26)');
+  bg.addColorStop(0.20, 'hsla(30,100%,58%,0.15)');
+  bg.addColorStop(0.48, 'hsla(350,100%,50%,0.085)');
+  bg.addColorStop(0.76, 'hsla(288,100%,48%,0.042)');
+  bg.addColorStop(1.00, 'hsla(285,100%,50%,0)');
+  ctx.fillStyle = bg;
+  ctx.beginPath(); ctx.arc(cx, cy, glowR, 0, TAU); ctx.fill();
+
+  /* ---------- 磁流体核心 ---------- */
+  const coreG = ctx.createRadialGradient(cx, cy, 0, cx, cy, R0 * 1.05);
+  coreG.addColorStop(0.00, 'hsla(50,100%,88%,0.62)');
+  coreG.addColorStop(0.28, 'hsla(38,100%,66%,0.38)');
+  coreG.addColorStop(0.62, 'hsla(346,100%,52%,0.19)');
+  coreG.addColorStop(1.00, 'hsla(285,100%,50%,0)');
+  ctx.fillStyle = coreG;
+  ctx.beginPath(); ctx.arc(cx, cy, R0 * 1.05, 0, TAU); ctx.fill();
+
+  /* ---------- 按色相分桶收集粒子 ---------- */
+  const glowP = new Array(HUE_BUCKETS);
+  const coreP = new Array(HUE_BUCKETS);
+  for (let i = 0; i < HUE_BUCKETS; i++) {
+    glowP[i] = new Path2D();
+    coreP[i] = new Path2D();
+  }
+
+  const camZ   = R0 * 3.6;         // 摄像机距离
+  const innerR = R0 * 0.50;        // 粒子起点（球体内部）
+
+  for (let i = 0; i < N_SPIKES; i++) {
+    const d = dirs[i];
+
+    /* --- 尖刺长度：多层正弦叠加 → 规律脉动 --- */
+    const wave =
+      Math.sin(t * 1.65 + d.ph)                       * 0.34 +
+      Math.sin(t * 2.85 + d.ph * 1.7 + d.y * 3.1)     * 0.26 +
+      Math.sin(t * 1.05 - d.x * 2.6 + d.z * 2.2)      * 0.24 +
+      Math.sin(t * 4.40 + d.ph * 2.7)                 * 0.16;
+
+    let f = 0.5 + 0.5 * wave;                 // 0 … 1
+    f = f * f * (3 - 2 * f);                  // 平滑曲线
+    const spikeLen = MAXSPIKE * (0.10 + 0.90 * f);
+    const tipR = R0 * 0.90 + spikeLen;
+
+    /* --- 弯曲量 --- */
+    const bendBase = 0.17 * R0 * Math.sin(t * 1.25 + d.ph * 3.7);
+
+    /* --- 沿尖刺流动的粒子 --- */
+    const flow = d.sp * 0.42;
+
+    for (let j = 0; j < PARTICLES; j++) {
+      let u = (j + t * flow * 3.0 + d.off * PARTICLES) / PARTICLES;
+      u = u - Math.floor(u);
+
+      const rr = innerR + (tipR - innerR) * u;
+      const wob = bendBase * u * u;
+
+      const px = d.x * rr + d.qx * wob;
+      const py = d.y * rr + d.qy * wob;
+      const pz = d.z * rr + d.qz * wob;
+
+      /* --- 三维旋转：Y 轴 yaw，再 X 轴 pitch --- */
+      const X1 =  px * cY + pz * sY;
+      const Z1 = -px * sY + pz * cY;
+      const Y1 =  py;
+      const Y2 = Y1 * cP - Z1 * sP;
+      const Z2 = Y1 * sP + Z1 * cP;
+
+      /* --- 透视投影 --- */
+      const persp = camZ / (camZ - Z2);
+      const sx = cx + X1 * persp;
+      const sy = cy + Y2 * persp;
+
+      /* --- 深度 → 色相 / 亮度 --- */
+      let depth01 = 0.5 + 0.5 * (Z2 / (R0 * 1.6));
+      if (depth01 < 0) depth01 = 0;
+      else if (depth01 > 1) depth01 = 1;
+
+      const hu = triHue(depth01 * 0.62 + d.hoff);
+      let bi = (hu / 10) | 0;
+      if (bi > 35) bi = 35;
+      else if (bi < 0) bi = 0;
+
+      /* --- 绘制：用极短线 + round cap 形成发光圆点 --- */
+      glowP[bi].moveTo(sx, sy);
+      glowP[bi].lineTo(sx + 0.01, sy);
+
+      coreP[bi].moveTo(sx, sy);
+      coreP[bi].lineTo(sx + 0.01, sy);
+    }
+  }
+
+  /* ---------- 统一描边：先粗辉光，后细核心 ---------- */
+  for (let i = 0; i < HUE_BUCKETS; i++) {
+    ctx.strokeStyle = `hsla(${i * 10 + 5}, 100%, 56%, 0.075)`;
+    ctx.lineWidth = 5.4;
+    ctx.stroke(glowP[i]);
+  }
+  for (let i = 0; i < HUE_BUCKETS; i++) {
+    ctx.strokeStyle = `hsla(${i * 10 + 5}, 100%, 76%, 0.88)`;
+    ctx.lineWidth = 1.25;
+    ctx.stroke(coreP[i]);
+  }
+
+  ctx.globalCompositeOperation = 'source-over';
+  requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>粒子流形曲面 · Particle Manifold</title>
+
+<!-- ===================== MathJax 配置 ===================== -->
+<script>
+  window.MathJax = {
+    tex: {
+      inlineMath: [['$', '$'], ['\\(', '\\)']],
+      displayMath: [['$$', '$$'], ['\\[', '\\]']],
+      tags: 'none'
+    },
+    svg: { fontCache: 'global', scale: 1.0 },
+    options: { enableMenu: false }
+  };
+</script>
+<script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
+
+<style>
+  :root{
+    --c1: #ff5cb8;   /* 品红 */
+    --c2: #5ce1ff;   /* 青蓝 */
+  }
+
+  *{ box-sizing: border-box; }
+
+  html, body{
+    margin:0; padding:0;
+    height:100%;
+    background:#000;
+    overflow:hidden;
+    color:#eae8ff;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+                 "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ===================== 主布局：CSS Grid ===================== */
+  #app{
+    display: grid;
+    grid-template-columns: 1fr 5fr;   /* 左 1/6 · 右 5/6 */
+    height: 100vh;
+    width: 100vw;
+  }
+
+  /* ===================== 左侧：纯黑 · 公式面板 ===================== */
+  #left{
+    position: relative;
+    background:#000;
+    border-right: 1px solid rgba(92, 225, 255, .20);
+    box-shadow: inset -22px 0 48px -34px rgba(255, 92, 184, .85);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    padding: 2.4vh clamp(6px, .72vw, 18px);
+    font-size: clamp(5.5px, .63vw, 11.5px);
+    contain: strict;
+  }
+
+  #left::after{
+    content:"";
+    position:absolute; inset:0;
+    background:
+      radial-gradient(130% 55% at 50% 16%, rgba(255,92,184,.07), transparent 70%),
+      radial-gradient(130% 55% at 50% 84%, rgba(92,225,255,.08), transparent 70%);
+    pointer-events:none;
+  }
+
+  .panel{
+    position: relative;
+    z-index: 1;
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: .95em;
+  }
+
+  .kicker{
+    font-size: 1.12em;
+    letter-spacing: .30em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    color: var(--c1);
+    text-shadow: 0 0 6px rgba(255,92,184,.85);
+  }
+  .kicker.blue{
+    color: var(--c2);
+    text-shadow: 0 0 6px rgba(92,225,255,.85);
+  }
+  .kicker.timer{
+    font-variant-numeric: tabular-nums;
+    letter-spacing: .20em;
+    color: var(--c1);
+  }
+
+  .rule{
+    height: 1px;
+    width: 100%;
+    background: linear-gradient(90deg,
+                rgba(255,92,184,.85),
+                rgba(92,225,255,.50),
+                transparent);
+  }
+
+  .eqnote{
+    font-size: .87em;
+    letter-spacing: .20em;
+    text-transform: uppercase;
+    color: rgba(92,225,255,.82);
+    margin-bottom: -.30em;
+  }
+  .eqnote.warm{ color: rgba(255,92,184,.82); }
+
+  .eqwrap{ width: 100%; overflow: hidden; }
+
+  /* MathJax 微弱发光 */
+  mjx-container{
+    display: inline-block;
+    filter: drop-shadow(0 0 4px rgba(255,92,184,.55));
+  }
+  .eqwrap.alt mjx-container{
+    filter: drop-shadow(0 0 4px rgba(92,225,255,.55));
+  }
+  mjx-container[jax="SVG"] > svg{ overflow: visible; }
+
+  /* ===================== 右侧：粒子舞台 ===================== */
+  #right{
+    position: relative;
+    background: #000;
+    overflow: hidden;
+  }
+  #gl{
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+  #right::after{
+    content:"";
+    position:absolute; inset:0;
+    pointer-events:none;
+    background: radial-gradient(120% 100% at 50% 50%,
+                transparent 48%, rgba(0,0,0,.68) 100%);
+  }
+</style>
+</head>
+
+<body>
+<div id="app">
+
+  <!-- ============ 左：1/6 ============ -->
+  <aside id="left">
+    <div class="panel">
+
+      <div class="kicker">Particle Manifold</div>
+      <div class="rule"></div>
+
+      <div class="eqnote warm">参数曲面</div>
+      <div class="eqwrap">
+        $$\mathbf{S}(u,v)=\big(R(u,v)\,\mathbf{e}_{b},\; r(u,v)\sin a\big)$$
+      </div>
+
+      <div class="eqnote">相位调制</div>
+      <div class="eqwrap alt">
+        $$a=v+\tfrac{1}{2}\sin(3u+\psi)+\tfrac{1}{4}\sin(5v-2\psi)$$
+      </div>
+
+      <div class="eqnote">管半径</div>
+      <div class="eqwrap">
+        $$r=1.15+\tfrac{1}{3}\sin(4b+\psi)+\tfrac{1}{5}\cos(3a-2\psi)$$
+      </div>
+
+      <div class="eqnote">粒子流线</div>
+      <div class="eqwrap alt">
+        $$u(t)=u_{0}+k_{u}\psi,\qquad v(t)=v_{0}+k_{v}\psi$$
+      </div>
+
+      <div class="eqnote warm">速度 → 色相</div>
+      <div class="eqwrap">
+        $$h=\Big\|\tfrac{d\mathbf{S}}{d\psi}\Big\|,\qquad \gamma=\mathrm{HSV}\!\big(\mathrm{fract}(\alpha h),1,1\big)$$
+      </div>
+
+      <div class="eqnote">相位重映射</div>
+      <div class="eqwrap alt">
+        $$\psi(t)=\frac{2\pi t}{T}+a\sin\!\left(\frac{2\pi t}{T}\right)$$
+      </div>
+
+      <div class="rule"></div>
+      <div class="kicker timer" id="timer">t = 0.0 s</div>
+
+    </div>
+  </aside>
+
+  <!-- ============ 右：5/6 ============ -->
+  <section id="right">
+    <canvas id="gl"></canvas>
+  </section>
+
+</div>
+
+<!-- ===================== 公式自适应缩放 ===================== -->
+<script>
+  function fitEquations(){
+    document.querySelectorAll('.eqwrap').forEach(function(wrap){
+      var mjx = wrap.querySelector('mjx-container');
+      if (!mjx) return;
+
+      mjx.style.transform = 'none';
+      mjx.style.transformOrigin = 'left top';
+      mjx.style.display = 'inline-block';
+      wrap.style.height = 'auto';
+
+      var avail = wrap.clientWidth;
+      if (avail <= 0) return;
+
+      var rect = mjx.getBoundingClientRect();
+      var w = rect.width, h = rect.height;
+      if (w > avail && w > 0){
+        var k = avail / w;
+        mjx.style.transform = 'scale(' + k + ')';
+        wrap.style.height = (h * k + 2) + 'px';
+      }
+    });
+  }
+
+  function bootFit(){
+    if (window.MathJax && MathJax.startup && MathJax.startup.promise){
+      MathJax.startup.promise.then(function(){
+        fitEquations();
+        setTimeout(fitEquations, 120);
+      });
+    } else {
+      window.addEventListener('load', function(){
+        fitEquations();
+        setTimeout(fitEquations, 400);
+      });
+    }
+  }
+  bootFit();
+
+  window.addEventListener('resize', function(){
+    clearTimeout(window.__fitT);
+    window.__fitT = setTimeout(fitEquations, 200);
+  });
+</script>
+
+<!-- ===================== Three.js 粒子流形 ===================== -->
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+
+/* ============================================================
+   0. 全局参数
+   ============================================================ */
+const TAU  = Math.PI * 2;
+const T    = 60.0;          // 动画周期：60 秒（60000 ms）
+const WARP = 0.55;          // 时间重映射幅度 → 速度在 0.45× ~ 1.55× 间平滑起伏
+
+/* 粒子数量（移动端自动降档） */
+const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+const COUNT    = isMobile ? 45000 : 130000;
+
+/* ============================================================
+   1. 渲染器 / 场景 / 相机
+   ============================================================ */
+const host   = document.getElementById('right');
+const canvas = document.getElementById('gl');
+
+const renderer = new THREE.WebGLRenderer({
+  canvas,
+  antialias: false,
+  alpha: false,
+  powerPreference: 'high-performance',
+  depth: false,
+  stencil: false
+});
+renderer.setClearColor(0x000000, 1);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+const scene = new THREE.Scene();
+
+const camera = new THREE.PerspectiveCamera(50, 1, 0.5, 300);
+camera.position.set(0, 6, 15);
+
+/* ============================================================
+   2. 粒子属性
+   ------------------------------------------------------------
+   aUV   : (u0, v0) 初始参数坐标
+   aK    : (ku, kv) 流动方向 —— 必须为整数
+           保证 ψ 推进 2π 后 u,v 回到等价点，从而无缝循环
+   aSeed : 随机种子，用于色相微扰
+   ============================================================ */
+const aUV      = new Float32Array(COUNT * 2);
+const aK       = new Float32Array(COUNT * 2);
+const aSeed    = new Float32Array(COUNT);
+const dummyPos = new Float32Array(COUNT * 3);   // 占位（着色器不使用）
+
+const KU_CHOICES = [1, 2, 3, 4];   // 整数流速 → 严格周期
+
+for (let i = 0; i < COUNT; i++){
+  aUV[i * 2]     = Math.random() * TAU;
+  aUV[i * 2 + 1] = Math.random() * TAU;
+
+  aK[i * 2]     = KU_CHOICES[(Math.random() * KU_CHOICES.length) | 0];
+  aK[i * 2 + 1] = ((Math.random() * 3) | 0) - 1;      // -1 / 0 / 1
+
+  aSeed[i] = Math.random();
+}
+
+const geometry = new THREE.BufferGeometry();
+geometry.setAttribute('position', new THREE.BufferAttribute(dummyPos, 3));
+geometry.setAttribute('aUV',      new THREE.BufferAttribute(aUV, 2));
+geometry.setAttribute('aK',       new THREE.BufferAttribute(aK, 2));
+geometry.setAttribute('aSeed',    new THREE.BufferAttribute(aSeed, 1));
+
+/* ============================================================
+   3. 着色器
+   ------------------------------------------------------------
+   顶点着色器：
+     · 用解析式曲面 S(u, v, ψ) 计算粒子位置
+     · 用有限差分求 dS/dψ 得到速度
+     · 速度 → 彩虹色相
+     · 所有含 ψ 的项均为 sin/cos(整数倍 ψ)，故 ψ→ψ+2π 完全复原
+   ============================================================ */
+const vertexShader = /* glsl */`
+  attribute vec2  aUV;
+  attribute vec2  aK;
+  attribute float aSeed;
+
+  uniform float uPsi;
+  uniform float uPixelRatio;
+  uniform float uSize;
+
+  varying vec3 vColor;
+
+  const float PI2 = 6.28318530718;
+
+  /* ---------- 动态参数曲面 ---------- */
+  vec3 surface(float u, float v, float psi){
+    // 相位调制（含 u、v 与 ψ 的耦合扭曲）
+    float a = v + 0.42 * sin(3.0 * u + psi)
+                + 0.22 * sin(5.0 * v - 2.0 * psi);
+
+    float b = u + 0.28 * sin(2.0 * v - psi);
+
+    // 变化的管半径
+    float r = 1.15
+            + 0.32 * sin(4.0 * b + psi)
+            + 0.22 * cos(3.0 * a - 2.0 * psi);
+
+    // 变化的环半径
+    float R = 3.00 + 0.25 * cos(3.0 * b + 2.0 * psi);
+
+    float ca = cos(a), sa = sin(a);
+    float cb = cos(b), sb = sin(b);
+
+    float rad = R + r * ca;
+
+    return vec3(
+      rad * cb,
+      rad * sb * 0.85,
+      r * sa
+        + 0.55 * sin(2.0 * b + psi)
+        + 0.20 * sin(5.0 * u - psi)
+    );
+  }
+
+  /* ---------- 彩虹调色板 ---------- */
+  vec3 rainbow(float h){
+    return 0.5 + 0.5 * cos(PI2 * (h + vec3(0.0, 0.33, 0.67)));
+  }
+
+  void main(){
+    /* ---- 粒子沿流线推进 ---- */
+    float u = aUV.x + aK.x * uPsi;
+    float v = aUV.y + aK.y * uPsi;
+
+    vec3 p = surface(u, v, uPsi);
+
+    /* ---- 数值求 dS/dψ ---- */
+    float eps = 0.002;
+    vec3  p2  = surface(u + aK.x * eps, v + aK.y * eps, uPsi + eps);
+    vec3  vel = (p2 - p) / eps;
+
+    float spd = length(vel);
+
+    /* ---- 速度 → 彩虹色相 ---- */
+    float hn  = clamp(spd / 55.0, 0.0, 1.0);
+    float hue = fract(hn * 0.95 + aSeed * 0.06);
+    vec3  col = rainbow(hue);
+
+    // 速度越快越亮
+    vColor = col * (0.38 + 0.95 * hn);
+
+    /* ---- 投影与点尺寸 ---- */
+    vec4 mv = modelViewMatrix * vec4(p, 1.0);
+    gl_Position = projectionMatrix * mv;
+
+    float dist = max(-mv.z, 0.6);
+    float sz   = uSize * 10.0 / dist * uPixelRatio;
+    gl_PointSize = clamp(sz, 1.2, 11.0);
+  }
+`;
+
+const fragmentShader = /* glsl */`
+  varying vec3 vColor;
+
+  void main(){
+    vec2  c  = gl_PointCoord - 0.5;
+    float d2 = dot(c, c);
+    if (d2 > 0.26) discard;
+
+    // 高斯衰减的柔和光点
+    float alpha = exp(-d2 * 9.0);
+    gl_FragColor = vec4(vColor, alpha);
+  }
+`;
+
+const uniforms = {
+  uPsi:        { value: 0.0 },
+  uPixelRatio: { value: 1.0 },
+  uSize:       { value: 3.0 }
+};
+
+const material = new THREE.ShaderMaterial({
+  uniforms,
+  vertexShader,
+  fragmentShader,
+  transparent: true,
+  blending: THREE.AdditiveBlending,
+  depthTest: false,
+  depthWrite: false
+});
+
+const points = new THREE.Points(geometry, material);
+points.frustumCulled = false;
+scene.add(points);
+
+/* ============================================================
+   4. 自适应分辨率
+   ============================================================ */
+const PIXEL_BUDGET = 1_600_000;
+
+function applySize(){
+  const w = host.clientWidth  || 1;
+  const h = host.clientHeight || 1;
+
+  let pr = Math.min(window.devicePixelRatio || 1, 2);
+
+  // 按像素预算压缩
+  if (w * h * pr * pr > PIXEL_BUDGET){
+    pr = Math.sqrt(PIXEL_BUDGET / (w * h));
+  }
+  pr = Math.max(0.5, Math.min(pr, 2.0));
+
+  renderer.setPixelRatio(pr);
+  renderer.setSize(w, h, false);
+  canvas.style.width  = '100%';
+  canvas.style.height = '100%';
+
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+
+  uniforms.uPixelRatio.value = pr;
+}
+
+if (window.ResizeObserver) new ResizeObserver(applySize).observe(host);
+window.addEventListener('resize', applySize);
+applySize();
+
+/* ============================================================
+   5. 相机：60 秒内绕行一圈 + 倍频摆动 → ∞ / 圆周复合运动
+   ============================================================ */
+function updateCamera(psi){
+  const camX = 13.0 * Math.sin(psi);
+  const camY = 5.0 + 4.5 * Math.sin(2.0 * psi + 0.8);
+  const camZ = 13.0 * Math.cos(psi) + 3.0 * Math.cos(3.0 * psi);
+
+  camera.position.set(camX, camY, camZ);
+
+  // 目标点轻微游移，让视角更“随意”
+  camera.lookAt(
+    1.5 * Math.sin(2.0 * psi),
+    0.8 * Math.sin(3.0 * psi + 1.0),
+    1.5 * Math.cos(2.0 * psi)
+  );
+}
+
+/* ============================================================
+   6. 主循环 —— 严格 60 秒无缝循环
+   ============================================================ */
+const timerEl = document.getElementById('timer');
+const clock   = new THREE.Clock();
+
+let t = 0;
+
+function frame(){
+  const dt = Math.min(clock.getDelta(), 0.05);
+
+  t += dt;
+  if (t >= T) t -= T;              // 回卷；因为所有函数以 T 为周期，接缝完全连续
+
+  const tau = TAU * t / T;
+
+  /* 相位重映射：
+       ψ(t) = 2π·t/T + a·sin(2π·t/T)
+     ψ(t+T) = ψ(t) + 2π
+     dψ/dt = 2π/T·(1 + a·cos(2πt/T))  → 速度在 0.45× ~ 1.55× 间平滑起伏
+     且 sin/cos 的系数均为整数 → 严格无缝 */
+  const psi = tau + WARP * Math.sin(tau);
+
+  uniforms.uPsi.value = psi;
+
+  updateCamera(psi);
+
+  timerEl.textContent = 't = ' + t.toFixed(1) + ' s';
+
+  renderer.render(scene, camera);
+  requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
