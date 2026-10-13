@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>琼斯多项式 · 拓扑水母</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; position: absolute; inset: 0; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+"use strict";
+
+const cv  = document.getElementById('c');
+const ctx = cv.getContext('2d');
+
+let W = 0, H = 0, DPR = 1;
+let leftW = 0, rightW = 0, jcx = 0, jcy = 0, S = 1;
+
+const TAU  = Math.PI * 2;
+const RD   = 220;            // 伞盖半径（局部单位）
+const VIEW = 0.72;           // 相机俯角
+const SA   = Math.sin(VIEW), CA = Math.cos(VIEW);
+const MONO = '"SF Mono","Menlo","Consolas","DejaVu Sans Mono",monospace';
+
+/* ---------------- 尺寸 ---------------- */
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  cv.width  = Math.round(W * DPR);
+  cv.height = Math.round(H * DPR);
+  cv.style.width  = W + 'px';
+  cv.style.height = H + 'px';
+
+  leftW  = Math.max(100, W * 0.2);       // 左侧 1/5
+  rightW = W - leftW;
+  jcx    = leftW + rightW * 0.5;
+  jcy    = H * 0.40;
+  S      = Math.max(0.2, Math.min(rightW / 680, H / 620) * 0.95);
+}
+window.addEventListener('resize', resize);
+resize();
+
+/* ---------------- 伞盖曲面参数方程 ----------------
+   u: 0 = 顶部极点  →  1 = 伞缘
+   theta: 环绕方位角
+   返回已投影到屏幕的局部坐标 (x, y)                      */
+function domePt(u, theta, pulse) {
+  const ang = u * Math.PI * 0.5;
+  const s   = Math.sin(ang);
+  const rr  = RD * Math.pow(s, 0.86) * (1 - 0.05 * pulse);
+  const h   = RD * Math.cos(ang)     * (1 + 0.07 * pulse);
+  const X   = rr * Math.cos(theta);
+  const Z   = rr * Math.sin(theta);
+  return { x: X, y: Z * SA - h * CA, z: Z };
+}
+
+/* ---------------- 伞盖：经线 + 螺旋编织线 ---------------- */
+function drawDome(t, pulse) {
+  const NA = 34;                       // 每条线的采样数
+
+  // 两条共享的纵向渐变（粉族 / 青族）
+  const gTop = RD * CA * 1.02;
+  const gBot = RD * SA * 1.05;
+
+  const gPink = ctx.createLinearGradient(0, -gTop, 0, gBot);
+  gPink.addColorStop(0.00, 'hsla(325,100%,74%,0.85)');
+  gPink.addColorStop(0.45, 'hsla(300,100%,64%,0.42)');
+  gPink.addColorStop(1.00, 'hsla(268,100%,66%,0.38)');
+
+  const gCyan = ctx.createLinearGradient(0, -gTop, 0, gBot);
+  gCyan.addColorStop(0.00, 'hsla(198,100%,72%,0.70)');
+  gCyan.addColorStop(0.45, 'hsla(186,100%,60%,0.42)');
+  gCyan.addColorStop(1.00, 'hsla(170,100%,62%,0.46)');
+
+  /* --- 1. 经线：从极点铺向伞缘，带相位相反的编织摆动 --- */
+  const NM = 80;
+  for (let i = 0; i < NM; i++) {
+    const base = i * TAU / NM;
+    ctx.beginPath();
+    for (let k = 0; k <= NA; k++) {
+      const u = k / NA;
+      // 相邻经线相位差 π —— 相互穿越，形成编织感
+      const weave = 0.26 * u * Math.sin(u * Math.PI * 3 + i * Math.PI + t * 0.75);
+      const p = domePt(u, base + weave, pulse);
+      k ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y);
+    }
+    ctx.strokeStyle = (i & 1) ? gCyan : gPink;
+    ctx.lineWidth = 1.0;
+    ctx.stroke();
+  }
+
+  /* --- 2. 螺旋线：斜向缠绕，与经线交错成结 --- */
+  const NS = 36;
+  for (let i = 0; i < NS; i++) {
+    const base = i * TAU / NS;
+    ctx.beginPath();
+    for (let k = 0; k <= NA; k++) {
+      const u  = 0.06 + 0.94 * (k / NA);
+      const th = base
+               + u * TAU * 1.35
+               + 0.30 * Math.sin(u * Math.PI * 2.5 + i * 1.3 - t * 0.9);
+      const p = domePt(u, th, pulse);
+      k ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y);
+    }
+    ctx.strokeStyle = (i & 1) ? gPink : gCyan;
+    ctx.lineWidth = 0.85;
+    ctx.stroke();
+  }
+
+  /* --- 3. 伞缘：双层波动的闭合环 --- */
+  for (let layer = 0; layer < 2; layer++) {
+    const NR = 190;
+    ctx.beginPath();
+    for (let k = 0; k <= NR; k++) {
+      const th = k / NR * TAU;
+      const wob = 0.055 * Math.sin(th * 9 + t * 1.6)
+                + 0.030 * Math.sin(th * 17 - t * 2.1);
+      const p = domePt(1, th + wob, pulse);
+      const r = 1 + layer * 0.035;
+      const x = p.x * r, y = p.y * r;
+      k ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+    }
+    ctx.closePath();
+    ctx.strokeStyle = layer
+      ? 'hsla(186,100%,68%,0.30)'
+      : 'hsla(325,100%,70%,0.32)';
+    ctx.lineWidth = layer ? 0.8 : 1.5;
+    ctx.stroke();
+  }
+
+  /* --- 4. 伞缘光珠 --- */
+  const NB = 42;
+  for (let i = 0; i < NB; i++) {
+    const th = i / NB * TAU + t * 0.05;
+    const p  = domePt(1, th, pulse);
+    const hue = (i & 1) ? 186 : 325;
+    const sz  = 0.9 + 0.7 * Math.sin(t * 3 + i * 1.4);
+    ctx.fillStyle = `hsla(${hue},100%,72%,${0.16 + 0.10 * sz})`;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 1.1 + sz * 0.5, 0, TAU);
+    ctx.fill();
+  }
+}
+
+/* ---------------- 触手：相互编织的拓扑丝带 ---------------- */
+function drawTentacles(t, pulse) {
+  const NT = 28;
+
+  for (let i = 0; i < NT; i++) {
+    const a0  = i * TAU / NT + 0.03 * Math.sin(t * 0.6 + i);
+    const len = RD * (1.35 + 0.55 * Math.sin(i * 2.399))
+              * (1 + 0.06 * Math.sin(t * 1.6 + i * 0.9));
+    const hue = (i & 1) ? 186 : 325;
+
+    const NSEG = 44;
+    const pts = [];
+    for (let k = 0; k <= NSEG; k++) {
+      const v  = k / NSEG;
+      // 沿体长的螺旋扭转 —— 触手彼此穿插编织
+      const twist = 0.95 * v * v;
+      const wob   = 0.22 * Math.sin(v * 6.2 - t * 2.2 + i * 1.9) * (0.2 + 0.8 * v);
+      const a     = a0 + twist + wob;
+      const rho   = RD * (0.95 + 0.55 * v * v);
+      const X     = Math.cos(a) * rho;
+      const Z     = Math.sin(a) * rho;
+      const Y     = -len * v;
+      pts.push([X, Z * SA - Y * CA]);
+    }
+
+    // 外层柔光
+    ctx.beginPath();
+    for (let k = 0; k < pts.length; k++)
+      k ? ctx.lineTo(pts[k][0], pts[k][1]) : ctx.moveTo(pts[k][0], pts[k][1]);
+    ctx.strokeStyle = `hsla(${hue},100%,58%,0.085)`;
+    ctx.lineWidth = 3.6;
+    ctx.stroke();
+
+    // 内层亮芯
+    ctx.strokeStyle = `hsla(${hue},100%,76%,0.26)`;
+    ctx.lineWidth = 0.9;
+    ctx.stroke();
+
+    // 末端光点
+    const e = pts[pts.length - 1];
+    ctx.fillStyle = `hsla(${hue},100%,78%,${0.25 + 0.20 * Math.sin(t * 4 + i)})`;
+    ctx.beginPath();
+    ctx.arc(e[0], e[1], 1.6, 0, TAU);
+    ctx.fill();
+  }
+
+  // 次级细丝（更短，填补间隙）
+  const NF = 40;
+  for (let i = 0; i < NF; i++) {
+    const a0  = i * TAU / NF + 0.09;
+    const len = RD * (0.55 + 0.45 * Math.sin(i * 1.77)) * (1 + 0.08 * Math.sin(t * 2.1 + i));
+    const hue = (i % 3 === 0) ? 186 : 325;
+    const NSEG = 26;
+
+    ctx.beginPath();
+    for (let k = 0; k <= NSEG; k++) {
+      const v  = k / NSEG;
+      const a  = a0 + 1.15 * v + 0.16 * Math.sin(v * 7 - t * 2.6 + i * 2.1);
+      const rho = RD * (0.98 + 0.30 * v * v);
+      const X = Math.cos(a) * rho;
+      const Z = Math.sin(a) * rho;
+      const Y = -len * v;
+      const px = X, py = Z * SA - Y * CA;
+      k ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+    }
+    ctx.strokeStyle = `hsla(${hue},100%,70%,0.13)`;
+    ctx.lineWidth = 0.7;
+    ctx.stroke();
+  }
+}
+
+/* ---------------- 水母总绘制 ---------------- */
+function drawJelly(t) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(leftW, 0, rightW, H);
+  ctx.clip();
+
+  // 背景辉光
+  ctx.globalCompositeOperation = 'lighter';
+  const bg = ctx.createRadialGradient(jcx, jcy, 0, jcx, jcy, Math.min(rightW, H) * 0.65);
+  bg.addColorStop(0, 'rgba(48,0,64,0.42)');
+  bg.addColorStop(0.45, 'rgba(0,40,58,0.18)');
+  bg.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = bg;
+  ctx.fillRect(leftW, 0, rightW, H);
+
+  // 进入水母局部坐标
+  ctx.save();
+  ctx.translate(jcx, jcy);
+  ctx.scale(S, S);
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  // 心跳脉动
+  const pulse = Math.sin(t * 1.25) * 0.6 + Math.sin(t * 2.7) * 0.4;
+
+  drawDome(t, pulse);
+  drawTentacles(t, pulse);
+
+  ctx.restore();  // 水母局部
+  ctx.restore();  // 裁剪
+}
+
+/* ---------------- 左侧：琼斯多项式 ---------------- */
+function drawLeftPanel(t) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, 0, leftW, H);
+  ctx.clip();
+
+  ctx.textBaseline = 'top';
+  ctx.textAlign = 'left';
+
+  // 背景微光
+  const bgGrad = ctx.createRadialGradient(leftW * 0.5, H * 0.34, 0, leftW * 0.5, H * 0.34, leftW * 1.7);
+  bgGrad.addColorStop(0, 'rgba(64,0,74,0.60)');
+  bgGrad.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = bgGrad;
+  ctx.fillRect(0, 0, leftW, H);
+
+  // 浮动粒子
+  for (let i = 0; i < 16; i++) {
+    const px = ((i * 97.3 + t * 13) % (leftW + 40)) - 20;
+    const py = ((i * 61.7) % H) + Math.sin(t * 0.5 + i) * 30;
+    const hue = (i & 1) ? 186 : 325;
+    ctx.fillStyle = `hsla(${hue},100%,66%,0.10)`;
+    ctx.beginPath();
+    ctx.arc(px, py, 1.2, 0, TAU);
+    ctx.fill();
+  }
+
+  const fs = Math.max(7, Math.min(leftW * 0.054, H * 0.024));
+  const x0 = leftW * 0.10;
+  let y = H * 0.075;
+
+  const PINK = (l, a) => `hsla(325,100%,${l || 72}%,${a == null ? 1 : a})`;
+  const CYAN = (l, a) => `hsla(186,100%,${l || 68}%,${a == null ? 1 : a})`;
+
+  function put(str, o) {
+    o = o || {};
+    const size = o.size || fs;
+    ctx.font = `${o.weight || 500} ${size}px ${MONO}`;
+    ctx.fillStyle = o.color || '#c8d6ff';
+    ctx.globalAlpha = (o.a == null) ? 1 : o.a;
+    if (o.glow) {
+      ctx.shadowColor = o.glow;
+      ctx.shadowBlur = size * 0.9;
+    } else {
+      ctx.shadowBlur = 0;
+    }
+    ctx.fillText(str, x0 + (o.dx || 0), y);
+    ctx.shadowBlur = 0;
+    ctx.globalAlpha = 1;
+    y += size * (o.lh || 1.8);
+  }
+
+  // 标题
+  put('琼斯多项式', { size: fs * 1.55, weight: 700, color: PINK(76), glow: PINK(70, 0.9), lh: 1.7 });
+  put('JONES POLYNOMIAL', { size: fs * 0.80, weight: 600, color: CYAN(66, 0.9), lh: 2.3 });
+
+  // 分隔线
+  ctx.strokeStyle = 'hsla(300,100%,74%,0.32)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(x0, y - fs * 0.5);
+  ctx.lineTo(leftW - x0, y - fs * 0.5);
+  ctx.stroke();
+
+  put('V(L) ∈ ℤ[t^±1/2]', { color: '#e8f1ff', a: 0.92, lh: 2.2 });
+
+  const knots = [
+    ['三叶结 (右)', 'V = −t⁻⁴+t⁻³+t⁻¹', PINK],
+    ['三叶结 (左)', 'V = −t⁴+t³+t',      CYAN],
+    ['八字结',      'V = t⁻²−t⁻¹+1−t+t²', PINK]
+  ];
+  for (let i = 0; i < knots.length; i++) {
+    const k = knots[i];
+    put(k[0], { size: fs * 0.92, color: '#8fa6c8', lh: 1.45 });
+    put(k[1], { size: fs * 1.0, color: k[2](72), glow: k[2](70, 0.5), lh: 2.3 });
+  }
+
+  put('绞索关系 SKEIN', { size: fs * 0.85, color: CYAN(64, 0.85), lh: 1.9 });
+  put('t⁻¹V(L₊) − tV(L₋)', { color: '#e8f1ff', a: 0.9, lh: 1.75 });
+  put('= (t^½ − t^−½)·V(L₀)', { color: PINK(74, 0.95), glow: PINK(70, 0.4), lh: 1.8 });
+
+  // 闪烁光标
+  if (Math.floor(t * 2) % 2 === 0) {
+    ctx.fillStyle = PINK(74, 0.85);
+    ctx.fillRect(x0, y + fs * 0.15, fs * 0.55, fs * 0.85);
+  }
+
+  ctx.restore();
+}
+
+/* ---------------- 主循环 ---------------- */
+let T = 0, last = performance.now();
+
+function render(t) {
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.globalCompositeOperation = 'source-over';
+
+  // 右侧拖尾淡出
+  ctx.fillStyle = 'rgba(0,0,0,0.34)';
+  ctx.fillRect(leftW, 0, rightW, H);
+
+  // 左侧完全清屏
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, leftW, H);
+
+  drawLeftPanel(t);
+  drawJelly(t);
+
+  // 中缝霓虹分隔线
+  const gd = ctx.createLinearGradient(0, 0, 0, H);
+  gd.addColorStop(0.00, 'rgba(255,60,200,0)');
+  gd.addColorStop(0.28, 'rgba(255,60,200,0.55)');
+  gd.addColorStop(0.72, 'rgba(0,230,255,0.55)');
+  gd.addColorStop(1.00, 'rgba(0,230,255,0)');
+  ctx.fillStyle = gd;
+  ctx.fillRect(leftW - 1, 0, 2, H);
+}
+
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  T += dt;
+  render(T);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
