@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>玻色-爱因斯坦分布 · 凝聚态软体动物</title>
+<style>
+  html, body { margin:0; padding:0; height:100%; background:#000; overflow:hidden; }
+  canvas { position:absolute; display:block; }
+  #gl { z-index:1; }
+  #ui { z-index:2; pointer-events:none; }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<canvas id="ui"></canvas>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+"use strict";
+
+/* =========================================================
+   0. 基础 / 尺寸
+   ========================================================= */
+const glc = document.getElementById('gl');
+const uic = document.getElementById('ui');
+const uctx = uic.getContext('2d');
+
+let W = 1, H = 1, PANEL = 1, DPR = 1;
+
+const renderer = new THREE.WebGLRenderer({ canvas: glc, antialias: true });
+renderer.setClearColor(0x000000, 1);
+
+const scene  = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(48, 1, 1, 4000);
+camera.position.set(0, 0, 200);
+
+const world = new THREE.Group();
+scene.add(world);
+
+/* =========================================================
+   1. 身体几何（线框管）
+   ========================================================= */
+const NS = 150;               // 沿体轴采样
+const NR = 18;                // 环绕采样
+const NPT = NS * NR;
+
+const posBuf = new Float32Array(NPT * 3);
+const colBuf = new Float32Array(NPT * 3);
+
+const bodyGeo = new THREE.BufferGeometry();
+bodyGeo.setAttribute('position', new THREE.BufferAttribute(posBuf, 3));
+bodyGeo.setAttribute('color',    new THREE.BufferAttribute(colBuf, 3));
+
+/* 索引：环向 + 纵向 */
+(function buildIndex() {
+  const idx = [];
+  for (let i = 0; i < NS; i++) {
+    for (let j = 0; j < NR; j++) {
+      const a = i * NR + j;
+      const b = i * NR + ((j + 1) % NR);
+      idx.push(a, b);                        // 环向
+      if (i < NS - 1) idx.push(a, a + NR);   // 纵向
+    }
+  }
+  bodyGeo.setIndex(idx);
+})();
+
+const bodyMat = new THREE.LineBasicMaterial({
+  vertexColors: true,
+  blending: THREE.AdditiveBlending,
+  transparent: true,
+  depthWrite: false,
+  depthTest: false,
+  opacity: 1.0
+});
+
+const bodyMesh = new THREE.LineSegments(bodyGeo, bodyMat);
+bodyMesh.frustumCulled = false;
+world.add(bodyMesh);
+
+/* =========================================================
+   2. 体内光核（脊柱）
+   ========================================================= */
+const NCORE = 80;
+const corePos = new Float32Array(NCORE * 3);
+const coreGeo = new THREE.BufferGeometry();
+coreGeo.setAttribute('position', new THREE.BufferAttribute(corePos, 3));
+
+const coreMat = new THREE.LineBasicMaterial({
+  color: 0x9ffaff,
+  blending: THREE.AdditiveBlending,
+  transparent: true,
+  opacity: 0.55,
+  depthWrite: false,
+  depthTest: false
+});
+const coreLine = new THREE.Line(coreGeo, coreMat);
+coreLine.frustumCulled = false;
+world.add(coreLine);
+
+/* =========================================================
+   3. 幽灵粒子
+   ========================================================= */
+const NPART = 420;
+const pPos = new Float32Array(NPART * 3);
+const pCol = new Float32Array(NPART * 3);
+const pPhase = new Float32Array(NPART);
+const pRad   = new Float32Array(NPART);
+const pSpin  = new Float32Array(NPART);
+const pZoff  = new Float32Array(NPART);
+
+for (let k = 0; k < NPART; k++) {
+  pPhase[k] = Math.random() * Math.PI * 2;
+  pRad[k]   = 25 + Math.random() * 80;
+  pSpin[k]  = 0.25 + Math.random() * 0.85;
+  pZoff[k]  = (Math.random() - 0.5) * 230;
+}
+
+const partGeo = new THREE.BufferGeometry();
+partGeo.setAttribute('position', new THREE.BufferAttribute(pPos, 3));
+partGeo.setAttribute('color',    new THREE.BufferAttribute(pCol, 3));
+
+function makeSprite() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const g = c.getContext('2d');
+  const rg = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  rg.addColorStop(0.00, 'rgba(255,255,255,1)');
+  rg.addColorStop(0.35, 'rgba(170,245,255,0.55)');
+  rg.addColorStop(1.00, 'rgba(0,0,0,0)');
+  g.fillStyle = rg;
+  g.fillRect(0, 0, 64, 64);
+  return new THREE.CanvasTexture(c);
+}
+
+const partMat = new THREE.PointsMaterial({
+  size: 2.4,
+  map: makeSprite(),
+  vertexColors: true,
+  blending: THREE.AdditiveBlending,
+  transparent: true,
+  depthWrite: false,
+  depthTest: false,
+  sizeAttenuation: true
+});
+
+const points = new THREE.Points(partGeo, partMat);
+points.frustumCulled = false;
+world.add(points);
+
+/* =========================================================
+   4. 体形函数
+   ========================================================= */
+/* 分裂间隙：三个位置、不同相位 —— 持续融合 / 分裂 */
+const SPLITS = [
+  { c: 0.30, w: 0.078, ph: 0.0, sp: 1.35 },
+  { c: 0.55, w: 0.072, ph: 2.1, sp: 1.55 },
+  { c: 0.78, w: 0.062, ph: 4.0, sp: 1.20 }
+];
+
+const _bp = new THREE.Vector3();
+
+function bodyPoint(s, t, out) {
+  const u = Math.max(0, Math.min(1, s));
+  const x = (u - 0.5) * 165;
+  const env = Math.sin(Math.PI * Math.pow(u, 0.85));
+  const ph = u * 6.5 - t * 2.4;
+  const y = Math.sin(ph) * 26 * env + Math.sin(t * 0.8 + 1.1) * 5;
+  const z = Math.cos(ph * 0.8 + 1.5) * 20 * env;
+  out.set(x, y, z);
+  return out;
+}
+
+function bodyRadius(s, t) {
+  let base = 4.5 + 16 * Math.sin(Math.PI * Math.pow(s, 0.85));
+  // 头部隆起
+  base += 6.5 * Math.exp(-Math.pow((s - 0.87) / 0.075, 2));
+  // 整体脉动
+  base *= 1 + 0.10 * Math.sin(t * 3.2 - s * 12.0);
+
+  // 分裂间隙
+  let g = 1;
+  for (let k = 0; k < SPLITS.length; k++) {
+    const sp = SPLITS[k];
+    const d = (s - sp.c) / sp.w;
+    const e = Math.exp(-d * d);
+    const amt = 0.5 + 0.5 * Math.sin(t * sp.sp + sp.ph);
+    g *= (1 - e * amt);
+  }
+  if (g < 0) g = 0;
+  return base * g;
+}
+
+/* =========================================================
+   5. 每帧更新
+   ========================================================= */
+const _T = new THREE.Vector3();
+const _N = new THREE.Vector3();
+const _B = new THREE.Vector3();
+const _UP = new THREE.Vector3(0, 0, 1);
+const _pa = new THREE.Vector3();
+const _pb = new THREE.Vector3();
+const _pc = new THREE.Vector3();
+
+function updateBody(t) {
+  const ds = 1 / (NS - 1);
+  let p = 0;
+
+  for (let i = 0; i < NS; i++) {
+    const s = i * ds;
+
+    bodyPoint(s, t, _pa);
+    bodyPoint(Math.min(1, s + ds), t, _pb);
+    bodyPoint(Math.max(0, s - ds), t, _pc);
+
+    _T.subVectors(_pb, _pc).normalize();
+
+    _N.crossVectors(_T, _UP);
+    if (_N.lengthSq() < 1e-8) _N.set(0, 1, 0);
+    _N.normalize();
+
+    _B.crossVectors(_T, _N).normalize();
+
+    const r = bodyRadius(s, t);
+    const edge = Math.min(1, r / 13);
+
+    for (let j = 0; j < NR; j++) {
+      const th = j / NR * Math.PI * 2;
+      const wob = 1
+        + 0.10 * Math.sin(th * 3 + s * 14 - t * 3.6)
+        + 0.07 * Math.sin(th * 5 - s * 9  + t * 2.8);
+      const rr = r * wob;
+
+      const ct = Math.cos(th), st = Math.sin(th);
+
+      posBuf[p]     = _pa.x + (_N.x * ct + _B.x * st) * rr;
+      posBuf[p + 1] = _pa.y + (_N.y * ct + _B.y * st) * rr;
+      posBuf[p + 2] = _pa.z + (_N.z * ct + _B.z * st) * rr;
+
+      const mix = 0.5 + 0.5 * Math.sin(th * 2 + s * 11 - t * 3.4);
+      const bright = (0.22 + 0.42 * edge) * (0.45 + 0.55 * mix) * 0.85;
+
+      colBuf[p]     = (0.06 + 0.16 * mix) * bright;
+      colBuf[p + 1] = (0.35 + 0.65 * mix) * bright;
+      colBuf[p + 2] = (0.85 + 0.15 * mix) * bright;
+
+      p += 3;
+    }
+  }
+
+  bodyGeo.attributes.position.needsUpdate = true;
+  bodyGeo.attributes.color.needsUpdate = true;
+}
+
+function updateCore(t) {
+  for (let i = 0; i < NCORE; i++) {
+    const s = i / (NCORE - 1);
+    bodyPoint(s, t, _bp);
+    corePos[i * 3]     = _bp.x;
+    corePos[i * 3 + 1] = _bp.y;
+    corePos[i * 3 + 2] = _bp.z;
+  }
+  coreGeo.attributes.position.needsUpdate = true;
+}
+
+function updateParticles(t) {
+  for (let k = 0; k < NPART; k++) {
+    const a  = pPhase[k] + t * pSpin[k] * 0.6;
+    const rr = pRad[k] * (1 + 0.18 * Math.sin(t * 0.9 + pPhase[k] * 2));
+
+    pPos[k * 3]     = Math.cos(a) * rr * 1.7 + Math.sin(t * 0.4 + k) * 8;
+    pPos[k * 3 + 1] = Math.sin(a) * rr * 0.72;
+    pPos[k * 3 + 2] = pZoff[k] + Math.sin(a * 0.8 + t * 0.7) * 20;
+
+    const m  = 0.5 + 0.5 * Math.sin(t * 2 + k * 0.7);
+    const br = 0.30 + 0.42 * m;
+
+    pCol[k * 3]     = 0.14 * br;
+    pCol[k * 3 + 1] = (0.50 + 0.50 * m) * br;
+    pCol[k * 3 + 2] = br;
+  }
+  partGeo.attributes.position.needsUpdate = true;
+  partGeo.attributes.color.needsUpdate = true;
+}
+
+/* =========================================================
+   6. 视口 / 尺寸
+   ========================================================= */
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = Math.max(2, innerWidth);
+  H = Math.max(2, innerHeight);
+  PANEL = W * 0.2;
+
+  const RW = W - PANEL;
+
+  renderer.setPixelRatio(DPR);
+  renderer.setSize(W, H, true);
+
+  uic.width  = Math.floor(W * DPR);
+  uic.height = Math.floor(H * DPR);
+  uic.style.width  = W + 'px';
+  uic.style.height = H + 'px';
+  uic.style.left = '0px';
+  uic.style.top  = '0px';
+  uctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  glc.style.left = '0px';
+  glc.style.top  = '0px';
+
+  /* 相机适配右侧区域 */
+  camera.aspect = RW / H;
+  const vFov = camera.fov * Math.PI / 180;
+  const dH = (170 * 0.5) / Math.tan(vFov * 0.5);
+  const dW = (250 * 0.5) / (Math.tan(vFov * 0.5) * camera.aspect);
+  camera.position.set(0, 0, Math.max(dH, dW) * 1.05);
+  camera.lookAt(0, 0, 0);
+  camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize);
+
+/* =========================================================
+   7. 左侧 1/5：玻色-爱因斯坦分布面板
+   ========================================================= */
+function fitText(c, str, maxW, size, family, italic) {
+  const pre = italic ? 'italic ' : '';
+  c.font = `${pre}${size}px ${family}`;
+  const w = c.measureText(str).width;
+  if (w > maxW) {
+    size *= maxW / w;
+    c.font = `${pre}${size}px ${family}`;
+  }
+  return size;
+}
+
+function drawPanel(t) {
+  const c = uctx;
+  c.clearRect(0, 0, W, H);
+
+  const cx = PANEL * 0.5;
+  const pulse = 0.78 + 0.22 * Math.sin(t * 1.7);
+
+  c.textAlign = 'center';
+  c.textBaseline = 'middle';
+
+  const SERIF = '"Times New Roman", Georgia, "Songti SC", serif';
+  const SANS  = '"Microsoft YaHei", "PingFang SC", "Heiti SC", sans-serif';
+
+  /* ---- 主公式 ---- */
+  const mainStr = 'n(ε) = 1 / (e^{(ε−μ)/k_BT} − 1)';
+  const fs1 = fitText(c, mainStr, PANEL * 0.90,
+                      Math.min(PANEL * 0.130, H * 0.044), SERIF, true);
+  const my = H * 0.27;
+
+  c.shadowColor = `rgba(0,190,255,${0.90 * pulse})`;
+  c.shadowBlur = 26;
+  c.fillStyle = `rgba(160,242,255,${0.96 * pulse})`;
+  c.fillText(mainStr, cx, my);
+  c.shadowBlur = 0;
+
+  /* ---- 中文标题 ---- */
+  const fs2 = Math.min(PANEL * 0.064, H * 0.023);
+  c.font = `${fs2}px ${SANS}`;
+  c.fillStyle = 'rgba(90,255,235,0.72)';
+  c.fillText('玻 色 - 爱 因 斯 坦 分 布', cx, my + fs1 * 1.38);
+
+  /* ---- 分隔光带 ---- */
+  const ly = my + fs1 * 2.10;
+  const lg = c.createLinearGradient(PANEL * 0.10, 0, PANEL * 0.90, 0);
+  lg.addColorStop(0.0, 'rgba(0,0,0,0)');
+  lg.addColorStop(0.5, 'rgba(0,205,255,0.50)');
+  lg.addColorStop(1.0, 'rgba(0,0,0,0)');
+  c.fillStyle = lg;
+  c.fillRect(PANEL * 0.10, ly, PANEL * 0.80, Math.max(1, H * 0.0016));
+
+  /* ---- 附属公式 ---- */
+  const lines = [
+    'nᵢ = 1/(e^((εᵢ−μ)/k_BT) − 1)',
+    'μ < ε ,   T → T_c',
+    'N₀/N → 1   当  T → 0',
+    'T_c ∝ n^(2/3) / m'
+  ];
+
+  let y = H * 0.50;
+  const step = Math.min(H * 0.078, H * 0.026 * 3.0);
+
+  for (let i = 0; i < lines.length; i++) {
+    const sz = fitText(c, lines[i], PANEL * 0.90,
+                       Math.min(PANEL * 0.076, H * 0.026), SERIF, true);
+    const a = (0.52 + 0.26 * Math.sin(t * 1.4 + i * 0.9)) * (i === 0 ? 1.0 : 0.80);
+    c.font = `italic ${sz}px ${SERIF}`;
+    c.fillStyle = (i % 2 === 0)
+      ? `rgba(120,235,255,${a})`
+      : `rgba(90,255,222,${a})`;
+    c.fillText(lines[i], cx, y);
+    y += step;
+  }
+
+  /* ---- 底部注记 ---- */
+  const fs4 = Math.min(PANEL * 0.044, H * 0.017);
+  c.font = `${fs4}px ${SANS}`;
+  c.fillStyle = `rgba(120,215,255,${0.26 + 0.12 * Math.sin(t * 2.0)})`;
+  c.fillText('BOSE  ·  CONDENSATE', cx, H * 0.89);
+
+  /* ---- 右边界光带 ---- */
+  const dg = c.createLinearGradient(0, 0, 0, H);
+  dg.addColorStop(0.00, 'rgba(0,0,0,0)');
+  dg.addColorStop(0.28, 'rgba(0,165,255,0.32)');
+  dg.addColorStop(0.52, 'rgba(60,255,240,0.26)');
+  dg.addColorStop(0.78, 'rgba(0,165,255,0.32)');
+  dg.addColorStop(1.00, 'rgba(0,0,0,0)');
+  c.fillStyle = dg;
+  c.fillRect(PANEL - Math.max(1, W * 0.0008), 0, Math.max(2, W * 0.0020), H);
+}
+
+/* =========================================================
+   8. 主循环
+   ========================================================= */
+let T = 0, lastMs = 0;
+
+function frame(now) {
+  if (!lastMs) lastMs = now;
+  let dt = (now - lastMs) / 1000;
+  lastMs = now;
+  if (dt > 0.05) dt = 0.05;
+  if (dt < 0) dt = 0;
+  T += dt;
+
+  const RW = W - PANEL;
+
+  /* ---- 全屏清黑 ---- */
+  renderer.setScissorTest(false);
+  renderer.setViewport(0, 0, W, H);
+  renderer.clear();
+
+  /* ---- 只在右侧渲染 ---- */
+  renderer.setScissorTest(true);
+  renderer.setViewport(PANEL, 0, RW, H);
+  renderer.setScissor(PANEL, 0, RW, H);
+
+  /* ---- 更新 ---- */
+  updateBody(T);
+  updateCore(T);
+  updateParticles(T);
+
+  world.rotation.y = Math.sin(T * 0.23) * 0.32;
+  world.rotation.x = Math.sin(T * 0.17) * 0.16;
+  world.rotation.z = Math.sin(T * 0.11) * 0.10;
+
+  renderer.render(scene, camera);
+
+  /* ---- 2D 面板 ---- */
+  drawPanel(T);
+
+  requestAnimationFrame(frame);
+}
+
+resize();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

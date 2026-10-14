@@ -1,0 +1,711 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>泡利不相容原理 · 量子蟹</title>
+<style>
+  html, body { margin:0; padding:0; height:100%; background:#000; overflow:hidden; }
+  canvas { position:absolute; inset:0; width:100%; height:100%; display:block; }
+  #gl { z-index:1; }
+  #ui { z-index:2; pointer-events:none; }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<canvas id="ui"></canvas>
+<script>
+"use strict";
+
+/* =========================================================
+   0. 画布 / WebGL 初始化
+   ========================================================= */
+const glc = document.getElementById('gl');
+const uic = document.getElementById('ui');
+const uctx = uic.getContext('2d');
+
+const gl = glc.getContext('webgl', {
+  alpha: false,
+  antialias: true,
+  premultipliedAlpha: false,
+  depth: false,
+  stencil: false
+});
+
+let W = 1, H = 1, PANEL = 1, RW = 1, RX = 0, RY = 0, S = 1;
+
+/* ---------- 着色器 ---------- */
+const VS = `
+attribute vec2 a_pos;
+attribute vec4 a_col;
+uniform vec2 u_res;
+varying vec4 v_col;
+void main(){
+  vec2 c = vec2(a_pos.x / u_res.x * 2.0 - 1.0,
+                1.0 - a_pos.y / u_res.y * 2.0);
+  gl_Position = vec4(c, 0.0, 1.0);
+  v_col = a_col;
+}`;
+
+const FS = `
+precision mediump float;
+varying vec4 v_col;
+void main(){
+  gl_FragColor = vec4(v_col.rgb * v_col.a, v_col.a);
+}`;
+
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog);
+gl.useProgram(prog);
+
+const a_pos = gl.getAttribLocation(prog, 'a_pos');
+const a_col = gl.getAttribLocation(prog, 'a_col');
+const u_res = gl.getUniformLocation(prog, 'u_res');
+
+/* ---------- 顶点缓冲 ---------- */
+const MAXV = 300000;                     // 最大顶点数
+const vdata = new Float32Array(MAXV * 6);
+let vcount = 0;
+
+const vbo = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+gl.bufferData(gl.ARRAY_BUFFER, vdata.byteLength, gl.DYNAMIC_DRAW);
+
+gl.enable(gl.BLEND);
+gl.blendFunc(gl.ONE, gl.ONE);            // 纯加法混色
+gl.disable(gl.DEPTH_TEST);
+
+/* =========================================================
+   1. 尺寸 / 视口
+   ========================================================= */
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = Math.max(2, Math.floor(innerWidth  * dpr));
+  H = Math.max(2, Math.floor(innerHeight * dpr));
+
+  glc.width = W; glc.height = H;
+  glc.style.width  = innerWidth  + 'px';
+  glc.style.height = innerHeight + 'px';
+
+  uic.width = W; uic.height = H;
+  uic.style.width  = innerWidth  + 'px';
+  uic.style.height = innerHeight + 'px';
+
+  PANEL = W * 0.2;                       // 左侧 1/5
+  RW    = W - PANEL;                     // 右侧 4/5
+  RX    = PANEL + RW * 0.5;
+  RY    = H * 0.5;
+
+  // 局部单位 → 像素的缩放
+  S = Math.min(RW * 0.185, H * 0.235);
+
+  gl.viewport(Math.round(PANEL), 0, Math.round(RW), H);
+  gl.uniform2f(u_res, W, H);
+}
+addEventListener('resize', resize);
+resize();
+
+/* =========================================================
+   2. 顶点写入工具
+   ========================================================= */
+function vtx(x, y, r, g, b, a) {
+  if (vcount >= MAXV) return;
+  const i = vcount * 6;
+  vdata[i]     = x;
+  vdata[i + 1] = y;
+  vdata[i + 2] = r;
+  vdata[i + 3] = g;
+  vdata[i + 4] = b;
+  vdata[i + 5] = a;
+  vcount++;
+}
+
+/* 局部坐标 → 屏幕像素（含整体旋转 / 缩放 / 平移） */
+let CX = 0, CY = 0, SC = 1, CT = 1, ST = 0;
+function tx2(x, y) { return CX + (x * CT - y * ST) * SC; }
+function ty2(x, y) { return CY - (x * ST + y * CT) * SC; }
+
+/* 局部线段 → 顶点 */
+function segL(x1, y1, x2, y2, r, g, b, a) {
+  vtx(tx2(x1, y1), ty2(x1, y1), r, g, b, a);
+  vtx(tx2(x2, y2), ty2(x2, y2), r, g, b, a);
+}
+/* 带镜像的局部线段 */
+function segLS(x1, y1, x2, y2, side, r, g, b, a) {
+  const X1 = x1 * side, X2 = x2 * side;
+  vtx(tx2(X1, y1), ty2(X1, y1), r, g, b, a);
+  vtx(tx2(X2, y2), ty2(X2, y2), r, g, b, a);
+}
+
+/* 确定性伪随机 */
+function hash(n) {
+  const x = Math.sin(n) * 43758.5453;
+  return x - Math.floor(x);
+}
+
+/* =========================================================
+   3. 配色
+   ========================================================= */
+const MAG = [1.00, 0.16, 0.86];   // 霓虹品红
+const CYA = [0.18, 0.92, 1.00];   // 青
+const WHT = [1.00, 1.00, 1.00];   // 白
+
+/* =========================================================
+   4. 蟹壳几何
+   ========================================================= */
+const SHELL_RX = 1.00;
+const SHELL_RY = 0.66;
+const TAU = Math.PI * 2;
+
+const _pa = [0, 0], _pb = [0, 0];
+
+function shellPt(th, f, t, out) {
+  const wob = 1
+    + 0.022 * Math.sin(th * 5.0 + t * 1.6)
+    + 0.013 * Math.sin(th * 9.0 - t * 2.2);
+  const nar = 1 - 0.09 * Math.max(0, Math.sin(th));   // 前部略收窄
+  out[0] = Math.cos(th) * SHELL_RX * f * wob * nar;
+  out[1] = Math.sin(th) * SHELL_RY * f * wob;
+  return out;
+}
+
+/* ---------- 壳网格 ---------- */
+function drawShell(t) {
+  const RINGS = 20;
+  for (let k = 1; k <= RINGS; k++) {
+    const f = k / RINGS;
+    const NTH = 88;
+    for (let i = 0; i < NTH; i++) {
+      const th0 = i / NTH * TAU, th1 = (i + 1) / NTH * TAU;
+      shellPt(th0, f, t, _pa);
+      shellPt(th1, f, t, _pb);
+
+      const m = 0.5 + 0.5 * Math.sin(th0 * 2.0 + f * 5.0 + t * 1.2);
+      const r = MAG[0] + (CYA[0] - MAG[0]) * m;
+      const g = MAG[1] + (CYA[1] - MAG[1]) * m;
+      const b = MAG[2] + (CYA[2] - MAG[2]) * m;
+
+      let a = (0.055 + 0.145 * (1 - f) * (1 - f))
+            * (0.55 + 0.45 * Math.sin(th0 * 4 - t * 2.2 + f * 7));
+      if (a < 0.014) a = 0.014;
+
+      segL(_pa[0], _pa[1], _pb[0], _pb[1], r, g, b, a);
+    }
+  }
+
+  /* 放射状肋纹 */
+  const NRIB = 44;
+  for (let i = 0; i < NRIB; i++) {
+    const th = i / NRIB * TAU + 0.04 * Math.sin(t * 1.1 + i);
+    for (let m = 0; m < 9; m++) {
+      const f0 = 0.12 + m * 0.098;
+      const f1 = f0 + 0.098;
+      shellPt(th, f0, t, _pa);
+      shellPt(th, f1, t, _pb);
+      const a = 0.030 + 0.045 * Math.sin(m * 1.15 + t * 2.0 + i * 0.7);
+      if (a < 0.012) continue;
+      const k2 = 0.55 + 0.45 * Math.sin(th * 3 + t);
+      segL(_pa[0], _pa[1], _pb[0], _pb[1],
+           CYA[0] * k2, CYA[1] * k2, CYA[2] * k2, a);
+    }
+  }
+
+  /* 外缘高光 */
+  const NTH2 = 110;
+  for (let i = 0; i < NTH2; i++) {
+    const th0 = i / NTH2 * TAU, th1 = (i + 1) / NTH2 * TAU;
+    shellPt(th0, 1.0, t, _pa);
+    shellPt(th1, 1.0, t, _pb);
+    const a = 0.16 + 0.16 * Math.sin(th0 * 3.0 + t * 2.4);
+    segL(_pa[0], _pa[1], _pb[0], _pb[1], 1, 1, 1, Math.max(0.04, a));
+  }
+}
+
+/* ---------- 壳内量子比特 ---------- */
+const QUBITS = [
+  { x: -0.40, y:  0.10, r: 0.170, ph: 0.0 },
+  { x:  0.00, y: -0.16, r: 0.150, ph: 2.2 },
+  { x:  0.40, y:  0.10, r: 0.170, ph: 4.4 }
+];
+
+function drawQubits(t) {
+  for (let qi = 0; qi < QUBITS.length; qi++) {
+    const q = QUBITS[qi];
+    const rr = q.r * (1 + 0.055 * Math.sin(t * 3.0 + q.ph));
+
+    /* 环 */
+    const N = 34;
+    for (let i = 0; i < N; i++) {
+      const a0 = i / N * TAU, a1 = (i + 1) / N * TAU;
+      const m = 0.5 + 0.5 * Math.sin(i * 0.7 + t * 4.0 + q.ph);
+      const r = MAG[0] + (CYA[0] - MAG[0]) * m;
+      const g = MAG[1] + (CYA[1] - MAG[1]) * m;
+      const b = MAG[2] + (CYA[2] - MAG[2]) * m;
+      segL(q.x + Math.cos(a0) * rr, q.y + Math.sin(a0) * rr,
+           q.x + Math.cos(a1) * rr, q.y + Math.sin(a1) * rr,
+           r, g, b, 0.30);
+    }
+
+    /* 布洛赫球内部经线 */
+    for (let i = 0; i < 14; i++) {
+      const a0 = i / 14 * TAU;
+      const s = Math.sin(t * 1.3 + q.ph) * 0.85;
+      segL(q.x + Math.cos(a0) * rr * 0.78,
+           q.y + Math.sin(a0) * rr * 0.78 * Math.abs(s) + rr * 0.12 * s,
+           q.x + Math.cos(a0) * rr * 0.78,
+           q.y - Math.sin(a0) * rr * 0.78 * Math.abs(s) + rr * 0.12 * s,
+           WHT[0], WHT[1], WHT[2], 0.055);
+    }
+
+    /* 自旋轴 */
+    const sa = t * 1.8 + q.ph;
+    const ex = q.x + Math.cos(sa) * rr * 0.90;
+    const ey = q.y + Math.sin(sa) * rr * 0.90;
+    segL(q.x, q.y, ex, ey, 1, 1, 1, 0.55);
+    segL(q.x - Math.cos(sa) * rr * 0.55, q.y - Math.sin(sa) * rr * 0.55,
+         q.x, q.y, CYA[0], CYA[1], CYA[2], 0.30);
+
+    /* 自旋端点光斑 */
+    for (let i = 0; i < 8; i++) {
+      const a = i / 8 * TAU + t * 3;
+      const rl = rr * (0.06 + 0.05 * Math.sin(i * 2.1 + t * 5));
+      segL(ex, ey, ex + Math.cos(a) * rl, ey + Math.sin(a) * rl,
+           1, 1, 1, 0.28);
+    }
+
+    /* 中心核 */
+    for (let i = 0; i < 6; i++) {
+      const a = i / 6 * TAU + t * 2;
+      segL(q.x, q.y, q.x + Math.cos(a) * rr * 0.18,
+           q.y + Math.sin(a) * rr * 0.18, MAG[0], MAG[1], MAG[2], 0.45);
+    }
+  }
+}
+
+/* =========================================================
+   5. 蟹腿
+   ========================================================= */
+const LEG_ANG = [-1.35, -0.88, -0.40, 0.10];
+
+function legPath(ba, t, i, side) {
+  const wob = Math.sin(t * 5.4 + i * 1.35 + (side > 0 ? 0 : 1.7)) * 0.10;
+
+  let px = Math.cos(ba) * SHELL_RX * 0.90;
+  let py = Math.sin(ba) * SHELL_RY * 0.90;
+
+  const pts = [[px, py]];
+  let ang = ba;
+  const lens = [0.50, 0.44, 0.30];
+  const turn = [0.10, -0.42, -0.55];
+
+  for (let j = 0; j < 3; j++) {
+    ang += turn[j] + wob * (0.35 + j * 0.18);
+    const len = lens[j] * (1 + 0.06 * Math.sin(t * 7 + i * 2 + j));
+    px += Math.cos(ang) * len;
+    py += Math.sin(ang) * len;
+    pts.push([px, py]);
+  }
+  return pts;
+}
+
+function drawLegs(t) {
+  const NL = 4;
+  for (const side of [-1, 1]) {
+    for (let i = 0; i < 4; i++) {
+      const ba = LEG_ANG[i];
+      const pts = legPath(ba, t, i, side);
+
+      for (let li = 0; li < NL; li++) {
+        const off = (li / (NL - 1) - 0.5) * 0.062;
+
+        let prevX = null, prevY = null;
+        for (let j = 0; j < pts.length; j++) {
+          const a = pts[Math.max(0, j - 1)];
+          const b = pts[Math.min(pts.length - 1, j + 1)];
+          let dx = b[0] - a[0], dy = b[1] - a[1];
+          const mm = Math.hypot(dx, dy) || 1;
+          const nx = -dy / mm, ny = dx / mm;
+
+          const qx = pts[j][0] + nx * off;
+          const qy = pts[j][1] + ny * off;
+
+          if (prevX !== null) {
+            const f = j / pts.length;
+            const m = 0.35 + 0.65 * f;
+            const r = CYA[0] * (1 - m) + MAG[0] * m;
+            const g = CYA[1] * (1 - m) + MAG[1] * m;
+            const b2 = CYA[2] * (1 - m) + MAG[2] * m;
+            segLS(prevX, prevY, qx, qy, side, r, g, b2, 0.16 + 0.10 * f);
+          }
+          prevX = qx; prevY = qy;
+        }
+      }
+
+      /* 关节光点 */
+      for (let j = 1; j < pts.length; j++) {
+        for (let k = 0; k < 4; k++) {
+          const a = k / 4 * TAU + t * 4 + j;
+          segLS(pts[j][0], pts[j][1],
+                pts[j][0] + Math.cos(a) * 0.035,
+                pts[j][1] + Math.sin(a) * 0.035,
+                side, 1, 1, 1, 0.32);
+        }
+      }
+
+      /* 腿尖 */
+      const tp = pts[pts.length - 1];
+      for (let k = 0; k < 6; k++) {
+        const a = k / 6 * TAU + t * 5;
+        segLS(tp[0], tp[1],
+              tp[0] + Math.cos(a) * 0.06,
+              tp[1] + Math.sin(a) * 0.06,
+              side, MAG[0], MAG[1], MAG[2], 0.25);
+      }
+    }
+  }
+}
+
+/* =========================================================
+   6. 钳子 —— 叠加态：现实 / 虚无 闪烁
+   ========================================================= */
+function qbez(p0, p1, p2, n) {
+  const out = [];
+  for (let i = 0; i <= n; i++) {
+    const u = i / n;
+    const a = (1 - u) * (1 - u), b = 2 * (1 - u) * u, c = u * u;
+    out.push([
+      a * p0[0] + b * p1[0] + c * p2[0],
+      a * p0[1] + b * p1[1] + c * p2[1]
+    ]);
+  }
+  return out;
+}
+
+/* 把一串点画成线段（可加抖动 / 断裂，用于"虚无态"） */
+function strokePath(pts, side, r, g, b, alpha, jitter, seed) {
+  for (let i = 0; i < pts.length - 1; i++) {
+    if (jitter > 0) {
+      if (hash(seed + i * 5.31) < 0.42) continue;      // 断裂
+    }
+    let x0 = pts[i][0], y0 = pts[i][1];
+    let x1 = pts[i + 1][0], y1 = pts[i + 1][1];
+
+    if (jitter > 0) {
+      x0 += (hash(seed + i * 3.71) - 0.5) * jitter;
+      y0 += (hash(seed + i * 9.13) - 0.5) * jitter;
+      x1 += (hash(seed + (i + 1) * 3.71) - 0.5) * jitter;
+      y1 += (hash(seed + (i + 1) * 9.13) - 0.5) * jitter;
+    }
+    segLS(x0, y0, x1, y1, side, r, g, b, alpha);
+  }
+}
+
+function drawClaw(t, side, ph) {
+  const osc = Math.sin(t * 1.75 + ph);
+  const wReal  = Math.max(0, osc);
+  const wGhost = Math.max(0, -osc);
+  const flick  = 0.72 + 0.28 * Math.sin(t * 26.0 + ph * 7.0);
+
+  if (wReal < 0.005 && wGhost < 0.005) return;
+
+  /* ---- 上臂：肩 → 肘 → 腕 ---- */
+  const A = [0.26, 0.48], B = [0.68, 0.86], C = [0.94, 1.30];
+  const arm = [];
+  for (let i = 0; i <= 16; i++) {
+    const u = i / 16;
+    const a = (1 - u) * (1 - u), b = 2 * (1 - u) * u, c = u * u;
+    arm.push([
+      a * A[0] + b * B[0] + c * C[0],
+      a * A[1] + b * B[1] + c * C[1]
+    ]);
+  }
+
+  /* ---- 钳掌椭圆 ---- */
+  const hand = [];
+  const HC = [1.02, 1.53], HRX = 0.125, HRY = 0.155;
+  for (let i = 0; i <= 20; i++) {
+    const th = i / 20 * TAU;
+    hand.push([
+      HC[0] + Math.cos(th) * HRX,
+      HC[1] + Math.sin(th) * HRY
+    ]);
+  }
+
+  /* ---- 双钳指 ---- */
+  const fingerA = qbez([1.00, 1.66], [1.26, 1.78], [1.38, 1.56], 14);
+  const fingerB = qbez([1.00, 1.40], [1.26, 1.28], [1.38, 1.48], 14);
+
+  const seed = Math.floor(t * 14) * 13.37 + side * 71.3;
+
+  /* ========== 现实态 ========== */
+  if (wReal > 0.01) {
+    const aR = wReal * flick;
+    const cR = MAG;
+
+    /* 上臂多股平行线 */
+    for (let li = 0; li < 5; li++) {
+      const off = (li / 4 - 0.5) * 0.085;
+      let prev = null;
+      for (let j = 0; j < arm.length; j++) {
+        const a0 = arm[Math.max(0, j - 1)];
+        const b0 = arm[Math.min(arm.length - 1, j + 1)];
+        let dx = b0[0] - a0[0], dy = b0[1] - a0[1];
+        const mm = Math.hypot(dx, dy) || 1;
+        const nx = -dy / mm, ny = dx / mm;
+        const qx = arm[j][0] + nx * off;
+        const qy = arm[j][1] + ny * off;
+        if (prev) {
+          segLS(prev[0], prev[1], qx, qy, side,
+                cR[0], cR[1], cR[2], aR * (0.14 + 0.10 * (li === 2 ? 1 : 0)));
+        }
+        prev = [qx, qy];
+      }
+    }
+
+    /* 钳掌 */
+    for (let li = 0; li < 3; li++) {
+      const s = 0.62 + li * 0.19;
+      let prev = null;
+      for (const p of hand) {
+        const qx = HC[0] + (p[0] - HC[0]) * s;
+        const qy = HC[1] + (p[1] - HC[1]) * s;
+        if (prev) segLS(prev[0], prev[1], qx, qy, side,
+                        cR[0], cR[1], cR[2], aR * 0.20);
+        prev = [qx, qy];
+      }
+    }
+
+    /* 钳指 */
+    strokePath(fingerA, side, 1, 1, 1, aR * 0.55, 0, 0);
+    strokePath(fingerB, side, 1, 1, 1, aR * 0.55, 0, 0);
+    strokePath(fingerA, side, cR[0], cR[1], cR[2], aR * 0.32, 0, 0);
+    strokePath(fingerB, side, cR[0], cR[1], cR[2], aR * 0.32, 0, 0);
+
+    /* 钳指尖端光点 */
+    const ta = fingerA[fingerA.length - 1];
+    const tb = fingerB[fingerB.length - 1];
+    for (const tip of [ta, tb]) {
+      for (let k = 0; k < 7; k++) {
+        const ang = k / 7 * TAU + t * 4;
+        segLS(tip[0], tip[1],
+              tip[0] + Math.cos(ang) * 0.05,
+              tip[1] + Math.sin(ang) * 0.05,
+              side, 1, 1, 1, aR * 0.42);
+      }
+    }
+  }
+
+  /* ========== 虚无态（量子泡沫） ========== */
+  if (wGhost > 0.01) {
+    const aG = wGhost * (0.55 + 0.45 * Math.sin(t * 17.0 + ph));
+    const cG = CYA;
+
+    strokePath(arm, side, cG[0], cG[1], cG[2], aG * 0.28, 0.16, seed);
+    strokePath(hand, side, cG[0], cG[1], cG[2], aG * 0.26, 0.16, seed + 3.7);
+    strokePath(fingerA, side, 1, 1, 1, aG * 0.42, 0.16, seed + 11.1);
+    strokePath(fingerB, side, 1, 1, 1, aG * 0.42, 0.16, seed + 19.3);
+
+    /* 虚无态的离散概率云点 */
+    for (let k = 0; k < 22; k++) {
+      const u = hash(seed * 0.7 + k * 4.13);
+      const v = hash(seed * 1.3 + k * 8.71);
+      const px = 0.30 + u * 1.15;
+      const py = 0.40 + v * 1.45;
+      const jx = (hash(seed + k * 2.9) - 0.5) * 0.30;
+      const jy = (hash(seed + k * 6.1) - 0.5) * 0.30;
+      const s2 = 0.02 + 0.035 * hash(seed + k * 3.3);
+      segLS(px + jx, py + jy, px + jx + s2, py + jy + s2 * 0.6, side,
+            1, 1, 1, aG * 0.35);
+    }
+  }
+}
+
+/* =========================================================
+   7. 量子涟漪
+   ========================================================= */
+function drawRipples(t) {
+  for (let k = 0; k < 3; k++) {
+    const age = ((t * 0.26 + k / 3) % 1);
+    const a = Math.pow(1 - age, 2.2) * 0.20;
+    if (a < 0.008) continue;
+
+    const f = 1.05 + age * 1.85;
+    const N = 60;
+    const c = (k % 2) ? MAG : CYA;
+
+    for (let i = 0; i < N; i++) {
+      const th0 = i / N * TAU, th1 = (i + 1) / N * TAU;
+      shellPt(th0, f, t, _pa);
+      shellPt(th1, f, t, _pb);
+      segL(_pa[0], _pa[1], _pb[0], _pb[1], c[0], c[1], c[2], a);
+    }
+  }
+}
+
+/* =========================================================
+   8. 场景构建
+   ========================================================= */
+function buildScene(t) {
+  vcount = 0;
+
+  /* 漂浮轨迹 */
+  CX = RX + Math.sin(t * 0.43) * RW * 0.085 + Math.sin(t * 0.79 + 1.2) * RW * 0.032;
+  CY = RY + Math.cos(t * 0.35) * H * 0.085 + Math.sin(t * 0.63 + 0.7) * H * 0.028;
+  SC = S;
+
+  const tilt = Math.sin(t * 0.62) * 0.09;
+  CT = Math.cos(tilt);
+  ST = Math.sin(tilt);
+
+  drawRipples(t);
+  drawShell(t);
+  drawQubits(t);
+  drawLegs(t);
+  drawClaw(t,  1, 0.00);
+  drawClaw(t, -1, 2.35);
+}
+
+/* =========================================================
+   9. 上传 & 绘制
+   ========================================================= */
+function flush() {
+  if (vcount < 2) return;
+  gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+  gl.bufferSubData(gl.ARRAY_BUFFER, 0, vdata.subarray(0, vcount * 6));
+
+  gl.enableVertexAttribArray(a_pos);
+  gl.vertexAttribPointer(a_pos, 2, gl.FLOAT, false, 24, 0);
+  gl.enableVertexAttribArray(a_col);
+  gl.vertexAttribPointer(a_col, 4, gl.FLOAT, false, 24, 8);
+
+  gl.drawArrays(gl.LINES, 0, vcount);
+}
+
+/* =========================================================
+   10. 左侧 1/5：泡利不相容原理面板
+   ========================================================= */
+function fitFont(c, str, maxW, size, family, italic) {
+  const pre = italic ? 'italic ' : '';
+  c.font = `${pre}${size}px ${family}`;
+  const w = c.measureText(str).width;
+  if (w > maxW) {
+    size *= maxW / w;
+    c.font = `${pre}${size}px ${family}`;
+  }
+  return size;
+}
+
+function drawPanel(t) {
+  const c = uctx;
+  c.clearRect(0, 0, W, H);
+
+  const cx = PANEL * 0.5;
+  const pulse = 0.78 + 0.22 * Math.sin(t * 1.6);
+
+  const SERIF = '"Times New Roman", Georgia, "Songti SC", serif';
+  const SANS  = '"Microsoft YaHei", "PingFang SC", "Heiti SC", sans-serif';
+
+  c.textAlign = 'center';
+  c.textBaseline = 'middle';
+
+  /* ---- 主公式 ---- */
+  const mainStr = 'Ψ(1,2) = −Ψ(2,1)';
+  const fs1 = fitFont(c, mainStr, PANEL * 0.88, Math.min(PANEL * 0.125, H * 0.046), SERIF, true);
+  const mainY = H * 0.27;
+
+  c.shadowColor = `rgba(255,40,210,${0.9 * pulse})`;
+  c.shadowBlur = 24;
+  c.fillStyle = `rgba(255,150,240,${0.95 * pulse})`;
+  c.fillText(mainStr, cx, mainY);
+  c.shadowBlur = 0;
+
+  /* ---- 中文标题 ---- */
+  const fs2 = Math.min(PANEL * 0.066, H * 0.024);
+  c.font = `${fs2}px ${SANS}`;
+  c.fillStyle = 'rgba(90,235,255,0.72)';
+  c.fillText('泡 利 不 相 容 原 理', cx, mainY + fs1 * 1.30);
+
+  /* ---- 分隔光带 ---- */
+  const ly = mainY + fs1 * 2.05;
+  const lg = c.createLinearGradient(PANEL * 0.10, 0, PANEL * 0.90, 0);
+  lg.addColorStop(0.0, 'rgba(0,0,0,0)');
+  lg.addColorStop(0.5, 'rgba(255,80,220,0.45)');
+  lg.addColorStop(1.0, 'rgba(0,0,0,0)');
+  c.fillStyle = lg;
+  c.fillRect(PANEL * 0.10, ly, PANEL * 0.80, Math.max(1, H * 0.0016));
+
+  /* ---- 附属公式 ---- */
+  const lines = [
+    'n, l, mₗ, mₛ',
+    'ψ_A(1)ψ_B(2) − ψ_B(1)ψ_A(2)',
+    '|ψ(1,2)|² = 0',
+    'N(E) = 1 / (e^((E−μ)/kT) + 1)'
+  ];
+  let y = H * 0.50;
+  const step = Math.min(H * 0.078, H * 0.024 * 3.0);
+
+  for (let i = 0; i < lines.length; i++) {
+    const sz = fitFont(c, lines[i], PANEL * 0.88,
+                       Math.min(PANEL * 0.082, H * 0.028), SERIF, true);
+    const a = (0.52 + 0.26 * Math.sin(t * 1.4 + i * 0.9)) * (i === 0 ? 1.0 : 0.80);
+    c.font = `italic ${sz}px ${SERIF}`;
+    c.fillStyle = (i % 2 === 0)
+      ? `rgba(255,120,235,${a})`
+      : `rgba(90,235,255,${a})`;
+    c.fillText(lines[i], cx, y);
+    y += step;
+  }
+
+  /* ---- 底部注记 ---- */
+  const fs4 = Math.min(PANEL * 0.044, H * 0.017);
+  c.font = `${fs4}px ${SANS}`;
+  c.fillStyle = `rgba(120,210,255,${0.28 + 0.12 * Math.sin(t * 2.0)})`;
+  c.fillText('FERMI  ·  ANTISYMMETRY', cx, H * 0.89);
+
+  /* ---- 右边界光带 ---- */
+  const dg = c.createLinearGradient(0, 0, 0, H);
+  dg.addColorStop(0.00, 'rgba(0,0,0,0)');
+  dg.addColorStop(0.28, 'rgba(255,60,220,0.30)');
+  dg.addColorStop(0.52, 'rgba(60,225,255,0.24)');
+  dg.addColorStop(0.78, 'rgba(255,60,220,0.30)');
+  dg.addColorStop(1.00, 'rgba(0,0,0,0)');
+  c.fillStyle = dg;
+  c.fillRect(PANEL - Math.max(1, W * 0.0008), 0, Math.max(2, W * 0.0020), H);
+}
+
+/* =========================================================
+   11. 主循环
+   ========================================================= */
+let T = 0, lastMs = 0;
+
+function frame(now) {
+  if (!lastMs) lastMs = now;
+  let dt = (now - lastMs) / 1000;
+  lastMs = now;
+  if (dt > 0.05) dt = 0.05;
+  if (dt < 0) dt = 0;
+  T += dt;
+
+  gl.viewport(Math.round(PANEL), 0, Math.round(RW), H);
+  gl.clearColor(0, 0, 0, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+
+  buildScene(T);
+  flush();
+
+  drawPanel(T);
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

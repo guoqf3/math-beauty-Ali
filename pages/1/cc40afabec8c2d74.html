@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>拉普拉斯变换与全息凤凰</title>
+    <style>
+        html, body {
+            margin: 0; padding: 0; height: 100%;
+            background: #000; overflow: hidden;
+            font-family: 'Courier New', monospace;
+        }
+        .container {
+            display: flex; width: 100%; height: 100%;
+        }
+        /* 左侧 1/5 公式区域 */
+        .formula-panel {
+            width: 20%; height: 100%;
+            display: flex; flex-direction: column;
+            justify-content: center; align-items: center;
+            border-right: 1px solid rgba(0, 255, 255, 0.15);
+            background: radial-gradient(circle at center, rgba(20, 0, 40, 0.9) 0%, #000 100%);
+            position: relative; overflow: hidden;
+        }
+        .formula-panel::before {
+            content: ''; position: absolute;
+            width: 80%; height: 80%; border-radius: 50%;
+            background: repeating-radial-gradient(
+                circle, transparent, transparent 15px,
+                rgba(0, 255, 255, 0.05) 15px, rgba(0, 255, 255, 0.05) 16px
+            );
+            animation: rotate 30s linear infinite;
+            pointer-events: none;
+        }
+        @keyframes rotate { 100% { transform: rotate(360deg); } }
+        .formula {
+            font-size: 1.5vw; color: #e0ffff;
+            text-shadow: 0 0 10px #00ffff, 0 0 20px #00ffff;
+            text-align: center; z-index: 1; line-height: 2.2;
+            animation: pulse 3s ease-in-out infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 0.7; text-shadow: 0 0 10px #00ffff, 0 0 20px #00ffff; }
+            50% { opacity: 1; text-shadow: 0 0 15px #ffffff, 0 0 30px #00ffff, 0 0 40px #0088ff; }
+        }
+        .formula .sub { font-size: 0.7em; vertical-align: sub; }
+        .formula .int { font-size: 2em; vertical-align: middle; }
+        /* 右侧 4/5 动画区域 */
+        .canvas-container {
+            width: 80%; height: 100%; position: relative;
+        }
+        canvas { display: block; width: 100%; height: 100%; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="formula-panel">
+            <div class="formula">
+                F(s) = <span class="int">∫</span><span class="sub">0</span><sup>∞</sup> f(t) e<sup>-st</sup> dt
+            </div>
+        </div>
+        <div class="canvas-container">
+            <canvas id="c"></canvas>
+        </div>
+    </div>
+
+    <!-- 引入 Three.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+    <script>
+        "use strict";
+        const cv = document.getElementById('c');
+
+        // ---------------- 初始化 Three.js 场景 ----------------
+        const scene = new THREE.Scene();
+        let W = cv.parentElement.clientWidth;
+        let H = cv.parentElement.clientHeight;
+        const aspect = W / H;
+        const frustumSize = 800;
+        
+        const camera = new THREE.OrthographicCamera(
+            frustumSize * aspect / -2, frustumSize * aspect / 2,
+            frustumSize / 2, frustumSize / -2,
+            1, 1000
+        );
+        camera.position.z = 500;
+
+        const renderer = new THREE.WebGLRenderer({ 
+            canvas: cv, 
+            antialias: true, 
+            alpha: false 
+        });
+        renderer.setSize(W, H);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x000000, 1);
+
+        // ---------------- 颜色定义 ----------------
+        const COLORS = {
+            red: new THREE.Color(0xff0033),
+            gold: new THREE.Color(0xffd700),
+            cyan: new THREE.Color(0x00ffff)
+        };
+
+        // ---------------- 全息凤凰线条生成器 ----------------
+        const LINE_COUNT = 400;      
+        const SEGMENT_COUNT = 15;    
+
+        const linePositions = new Float32Array(LINE_COUNT * (SEGMENT_COUNT - 1) * 2 * 3);
+        const lineColors = new Float32Array(LINE_COUNT * (SEGMENT_COUNT - 1) * 2 * 3);
+        
+        const lineGeometrySegments = new THREE.BufferGeometry();
+        lineGeometrySegments.setAttribute('position', new THREE.BufferAttribute(linePositions, 3));
+        lineGeometrySegments.setAttribute('color', new THREE.BufferAttribute(lineColors, 3));
+
+        const lineMaterial = new THREE.LineBasicMaterial({
+            vertexColors: true,
+            transparent: true,
+            opacity: 0.6,
+            blending: THREE.AdditiveBlending,
+            linewidth: 1 
+        });
+
+        const laserLines = new THREE.LineSegments(lineGeometrySegments, lineMaterial);
+        scene.add(laserLines);
+
+        // ---------------- 粒子系统（燃烧与重生） ----------------
+        const PARTICLE_COUNT = 3000;
+        const particleGeometry = new THREE.BufferGeometry();
+        const particlePositions = new Float32Array(PARTICLE_COUNT * 3);
+        const particleColors = new Float32Array(PARTICLE_COUNT * 3);
+        const particleSizes = new Float32Array(PARTICLE_COUNT);
+        
+        const particleStates = [];
+        const particleLife = new Float32Array(PARTICLE_COUNT);
+        
+        for (let i = 0; i < PARTICLE_COUNT; i++) {
+            particlePositions[i*3] = 0;
+            particlePositions[i*3+1] = 0;
+            particlePositions[i*3+2] = 0;
+            
+            particleColors[i*3] = 1;
+            particleColors[i*3+1] = 0;
+            particleColors[i*3+2] = 0.2;
+            
+            particleSizes[i] = Math.random() * 3 + 1;
+            
+            particleStates.push({
+                vx: 0, vy: 0, vz: 0,
+                phase: Math.random() * Math.PI * 2,
+                speed: 0.5 + Math.random() * 1.5
+            });
+        }
+
+        particleGeometry.setAttribute('position', new THREE.BufferAttribute(particlePositions, 3));
+        particleGeometry.setAttribute('color', new THREE.BufferAttribute(particleColors, 3));
+        particleGeometry.setAttribute('size', new THREE.BufferAttribute(particleSizes, 1));
+
+        const particleMaterial = new THREE.PointsMaterial({
+            size: 3,
+            vertexColors: true,
+            transparent: true,
+            opacity: 0.8,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false
+        });
+
+        const particles = new THREE.Points(particleGeometry, particleMaterial);
+        scene.add(particles);
+
+        // ---------------- 核心数学与动画逻辑 ----------------
+        let T = 0;
+
+        function updatePhoenixLines(t) {
+            const posAttr = lineGeometrySegments.attributes.position;
+            const colAttr = lineGeometrySegments.attributes.color;
+            const posArray = posAttr.array;
+            const colArray = colAttr.array;
+            
+            const breath = Math.sin(t * 1.5) * 0.5 + 0.5;
+            
+            for (let i = 0; i < LINE_COUNT; i++) {
+                const isWing = i % 3 === 0;
+                const isTail = i % 3 === 1;
+                const isBody = i % 3 === 2;
+                
+                const lineRatio = i / LINE_COUNT;
+                const angleOffset = lineRatio * Math.PI * 2;
+                
+                // 为了让线条不叠成一根白线，给每组线条加一个微小的随机偏移
+                const jitterX = ((i % 10) - 5) * 1.5; 
+                const jitterZ = ((i % 7) - 3) * 2;
+                
+                for (let j = 0; j < SEGMENT_COUNT - 1; j++) {
+                    for (let k = 0; k <= 1; k++) {
+                        const segIndex = j + k;
+                        const f = segIndex / (SEGMENT_COUNT - 1); 
+                        
+                        let x, y, z;
+                        
+                        if (isWing) {
+                            const wingAngle = angleOffset * 0.5 + Math.sin(t * 1.2) * 0.2;
+                            const wingLength = 300 * breath;
+                            const spread = f * wingLength;
+                            
+                            // 翅膀：加入横向散开
+                            x = Math.cos(wingAngle) * spread * (i % 2 === 0 ? 1 : -1) + jitterX;
+                            y = Math.sin(wingAngle) * spread * 0.6 + 50;
+                            z = Math.sin(f * 10 + t * 5 + angleOffset) * 20 * f + jitterZ;
+                            
+                            y += Math.sin(f * Math.PI) * 50;
+                            x += Math.sin(f * 15 + t * 8) * 15 * (i % 2 === 0 ? 1 : -1);
+                        } else if (isTail) {
+                            const tailLength = 400;
+                            x = Math.sin(angleOffset * 2) * 80 * (1 - f) + Math.sin(f * 8 + t * 3 + angleOffset) * 20 + jitterX;
+                            y = -f * tailLength + 100;
+                            z = Math.cos(f * 6 + t * 2) * 30 * (1 - f) + jitterZ;
+                            
+                            x += Math.sin(f * 20 + t * 10) * 10;
+                        } else {
+                            // 身体：加入横向散开，避免重叠成白线
+                            const bodyLength = 300;
+                            x = jitterX * 2 + Math.sin(f * 4 + t * 2) * 20 * (1 - f * 0.5);
+                            y = (0.5 - f) * bodyLength + 50;
+                            z = jitterZ + Math.cos(f * 5 + t * 3) * 15;
+                            
+                            if (f < 0.2) {
+                                y += Math.sin(f * Math.PI * 5) * 30;
+                            }
+                        }
+                        
+                        const vIdx = (i * (SEGMENT_COUNT - 1) + j) * 2 + k;
+                        const idx3 = vIdx * 3;
+                        
+                        posArray[idx3] = x * 1.5;
+                        posArray[idx3 + 1] = y * 1.5;
+                        posArray[idx3 + 2] = z * 1.5;
+                        
+                        // 颜色计算（已移除强制加白逻辑）
+                        let r, g, b;
+                        
+                        if (isWing) {
+                            const mix = f;
+                            r = COLORS.cyan.r * (1 - mix) + COLORS.gold.r * mix;
+                            g = COLORS.cyan.g * (1 - mix) + COLORS.gold.g * mix;
+                            b = COLORS.cyan.b * (1 - mix) + COLORS.gold.b * mix;
+                            
+                            if (Math.sin(t * 10 + i) > 0.7) {
+                                r = COLORS.red.r; g = COLORS.red.g; b = COLORS.red.b;
+                            }
+                        } else if (isTail) {
+                            const mix = f;
+                            r = COLORS.gold.r * (1 - mix) + COLORS.cyan.r * mix;
+                            g = COLORS.gold.g * (1 - mix) + COLORS.cyan.g * mix;
+                            b = COLORS.gold.b * (1 - mix) + COLORS.cyan.b * mix;
+                        } else {
+                            // 身体：自然红到金渐变，不再强制变白
+                            const mix = f;
+                            r = COLORS.red.r * (1 - mix) + COLORS.gold.r * mix;
+                            g = COLORS.red.g * (1 - mix) + COLORS.gold.g * mix;
+                            b = COLORS.red.b * (1 - mix) + COLORS.gold.b * mix;
+                        }
+                        
+                        // 柔和脉冲，避免过曝
+                        const pulse = 0.4 + 0.6 * Math.sin(t * 5 + f * 10 + i);
+                        
+                        colArray[idx3] = r * pulse;
+                        colArray[idx3 + 1] = g * pulse;
+                        colArray[idx3 + 2] = b * pulse;
+                    }
+                }
+            }
+            
+            posAttr.needsUpdate = true;
+            colAttr.needsUpdate = true;
+        }
+
+        // 粒子系统更新
+        function updateParticles(t) {
+            const posAttr = particles.geometry.attributes.position;
+            const colAttr = particles.geometry.attributes.color;
+            const posArray = posAttr.array;
+            const colArray = colAttr.array;
+            
+            const linePosArray = lineGeometrySegments.attributes.position.array;
+            const lineCount = linePosArray.length / 3;
+            
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                particleLife[i] -= 0.005 + Math.random() * 0.01;
+                
+                if (particleLife[i] <= 0) {
+                    const randomVertex = Math.floor(Math.random() * lineCount) * 3;
+                    posArray[i*3] = linePosArray[randomVertex];
+                    posArray[i*3+1] = linePosArray[randomVertex + 1];
+                    posArray[i*3+2] = linePosArray[randomVertex + 2];
+                    
+                    const speed = 1 + Math.random() * 3;
+                    const angle = Math.random() * Math.PI * 2;
+                    particleStates[i].vx = Math.cos(angle) * speed;
+                    particleStates[i].vy = Math.sin(angle) * speed;
+                    particleStates[i].vz = (Math.random() - 0.5) * speed;
+                    
+                    particleLife[i] = 1.0;
+                }
+                
+                posArray[i*3] += particleStates[i].vx;
+                posArray[i*3+1] += particleStates[i].vy;
+                posArray[i*3+2] += particleStates[i].vz;
+                
+                particleStates[i].vx *= 0.98;
+                particleStates[i].vy *= 0.98;
+                particleStates[i].vz *= 0.98;
+                
+                const life = particleLife[i];
+                let r, g, b;
+                
+                if (life > 0.7) {
+                    r = COLORS.red.r; g = COLORS.red.g; b = COLORS.red.b;
+                } else if (life > 0.3) {
+                    const mix = (0.7 - life) / 0.4;
+                    r = COLORS.red.r * (1 - mix) + COLORS.gold.r * mix;
+                    g = COLORS.red.g * (1 - mix) + COLORS.gold.g * mix;
+                    b = COLORS.red.b * (1 - mix) + COLORS.gold.b * mix;
+                } else {
+                    const mix = life / 0.3;
+                    r = COLORS.gold.r * mix + COLORS.cyan.r * (1 - mix);
+                    g = COLORS.gold.g * mix + COLORS.cyan.g * (1 - mix);
+                    b = COLORS.gold.b * mix + COLORS.cyan.b * (1 - mix);
+                }
+                
+                const alpha = Math.max(0, life);
+                colArray[i*3] = r * alpha;
+                colArray[i*3+1] = g * alpha;
+                colArray[i*3+2] = b * alpha;
+            }
+            
+            posAttr.needsUpdate = true;
+            colAttr.needsUpdate = true;
+        }
+
+        let lastTime = performance.now();
+        
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            const now = performance.now();
+            const dt = (now - lastTime) / 1000;
+            lastTime = now;
+            
+            T += dt;
+            
+            updatePhoenixLines(T);
+            updateParticles(T);
+            
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            W = cv.parentElement.clientWidth;
+            H = cv.parentElement.clientHeight;
+            const aspect = W / H;
+            
+            camera.left = frustumSize * aspect / -2;
+            camera.right = frustumSize * aspect / 2;
+            camera.top = frustumSize / 2;
+            camera.bottom = frustumSize / -2;
+            camera.updateProjectionMatrix();
+            
+            renderer.setSize(W, H);
+        });
+
+        animate();
+    </script>
+</body>
+</html>

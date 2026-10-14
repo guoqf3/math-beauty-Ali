@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>坡印廷矢量 · 电磁蜻蜓</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; position: absolute; inset: 0; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+"use strict";
+
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+
+let W, H, S, PANEL_W, RW, RH, RX, RY;
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = cv.width  = Math.floor(innerWidth  * dpr);
+  H = cv.height = Math.floor(innerHeight * dpr);
+  cv.style.width  = innerWidth  + 'px';
+  cv.style.height = innerHeight + 'px';
+
+  PANEL_W = W * 0.2;
+  RW = W - PANEL_W;
+  RH = H;
+  RX = PANEL_W + RW * 0.5;
+  RY = H * 0.5;
+  S = Math.min(RW, H) / 620;
+}
+addEventListener('resize', resize);
+resize();
+
+const TAU = Math.PI * 2;
+
+/* ---------- 霓虹配色 ---------- */
+const BLUE   = [190, 100, 62];   // 霓虹蓝
+const YELLOW = [52,  100, 62];   // 亮黄
+function col(c, a) { return `hsla(${c[0]},${c[1]}%,${c[2]}%,${a})`; }
+
+/* ---------- 蜻蜓形体参数（局部单位） ---------- */
+const BODY_LEN = 200;
+
+function bodyRadius(s) {
+  const g = (x, c, w) => Math.exp(-Math.pow((x - c) / w, 2));
+  const r = 2.2 + 13 * g(s, 0.16, 0.13) + 6 * g(s, 0.44, 0.20);
+  return r * (1 - 0.72 * Math.pow(s, 3.2));
+}
+
+function chordProfile(v) {
+  return (0.35 + 0.65 * Math.min(1, v * 4)) * Math.pow(Math.max(0, 1 - v), 0.4);
+}
+
+/* ---------- 飞行轨迹 ---------- */
+function posX(t) { return RX + Math.cos(t * 0.248) * RW * 0.22 + Math.cos(t * 0.17 + 1.1) * RW * 0.08; }
+function posY(t) { return RY + Math.sin(t * 0.310) * RH * 0.20 + Math.sin(t * 0.23 + 2.3) * RH * 0.07; }
+
+/* =========================================================
+   电磁脉冲涟漪
+   ========================================================= */
+function drawPulses(t, cx, cy) {
+  const N = 4;
+  for (let k = 0; k < N; k++) {
+    const age = ((t * 0.42 + k / N) % 1);
+    const a = Math.pow(1 - age, 2.0) * 0.55;
+    if (a < 0.012) continue;
+
+    const r = Math.pow(age, 0.72) * 430 * S;
+    const seg = 72;
+    ctx.beginPath();
+    for (let i = 0; i <= seg; i++) {
+      const th = i / seg * TAU;
+      const wob = 1
+        + 0.045 * Math.sin(th * 6 + t * 2.4 + k * 1.7)
+        + 0.030 * Math.sin(th * 11 - t * 3.1);
+      const rr = r * wob;
+      const x = cx + Math.cos(th) * rr;
+      const y = cy + Math.sin(th) * rr;
+      i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+    }
+    ctx.closePath();
+    ctx.strokeStyle = (k % 2)
+      ? `rgba(255,230,77,${a})`
+      : `rgba(34,211,255,${a})`;
+    ctx.lineWidth = 1.6 * S * (1 - age * 0.7);
+    ctx.stroke();
+  }
+}
+
+/* =========================================================
+   翅膀：由电磁场线构成
+   ========================================================= */
+function drawWing(t, axis, NB, w) {
+  const root = axis[Math.round(w.sRoot * NB)];
+
+  // 扇翅：以展向长度的投影模拟上下拍动
+  const flap = Math.sin(t * 12 + w.phase);
+  const spanScale = 0.38 + 0.62 * Math.abs(Math.cos(flap * 0.85));
+
+  const aw  = w.side * (Math.PI / 2 + w.sweep);
+  const dxu = Math.cos(aw), dyu = Math.sin(aw);   // 展向
+  const cxu = -dyu,        cyu = dxu;             // 弦向
+  const L   = w.len * spanScale;
+
+  // --- 1. 密集场线（沿展向的电场线） ---
+  const NW = 26;
+  for (let k = 0; k < NW; k++) {
+    const u = (k / (NW - 1)) * 2 - 1;            // 弦向比例 -1..1
+    const c = (k % 2) ? YELLOW : BLUE;
+    const M = 14;
+    ctx.beginPath();
+    for (let m = 0; m <= M; m++) {
+      const v = m / M;
+      const cw = w.chord * chordProfile(v);
+      const lateral = u * cw;
+      const bend = 0.22 * w.chord * Math.sin(Math.PI * v);
+      const wob  = 1.8 * Math.sin(v * 7 - t * 9 + k * 0.45) * v;
+      const off  = lateral + bend + wob;
+      const X = root.x + dxu * (v * L) + cxu * off;
+      const Y = root.y + dyu * (v * L) + cyu * off;
+      m ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y);
+    }
+    ctx.strokeStyle = col(c, 0.13 + 0.10 * Math.abs(Math.cos(flap)));
+    ctx.lineWidth = 0.42;
+    ctx.stroke();
+  }
+
+  // --- 2. 横向肋纹（场线的正交网格） ---
+  for (let m = 1; m < 7; m++) {
+    const v = m / 7;
+    const cw = w.chord * chordProfile(v);
+    const bend = 0.22 * w.chord * Math.sin(Math.PI * v);
+    ctx.beginPath();
+    for (let k = 0; k <= 10; k++) {
+      const u = -1 + 2 * k / 10;
+      const off = u * cw + bend;
+      const X = root.x + dxu * (v * L) + cxu * off;
+      const Y = root.y + dyu * (v * L) + cyu * off;
+      k ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y);
+    }
+    ctx.strokeStyle = 'rgba(120,230,255,0.075)';
+    ctx.lineWidth = 0.35;
+    ctx.stroke();
+  }
+
+  // --- 3. 前缘亮线 ---
+  ctx.beginPath();
+  for (let m = 0; m <= 16; m++) {
+    const v = m / 16;
+    const cw = w.chord * chordProfile(v);
+    const off = -cw + 0.22 * w.chord * Math.sin(Math.PI * v);
+    const X = root.x + dxu * (v * L) + cxu * off;
+    const Y = root.y + dyu * (v * L) + cyu * off;
+    m ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y);
+  }
+  ctx.strokeStyle = 'rgba(150,240,255,0.38)';
+  ctx.lineWidth = 0.75;
+  ctx.stroke();
+
+  // --- 4. 翼尖光点 ---
+  const tx = root.x + dxu * L + cxu * (0.22 * w.chord);
+  const ty = root.y + dyu * L + cyu * (0.22 * w.chord);
+  const g = ctx.createRadialGradient(tx, ty, 0, tx, ty, 7);
+  g.addColorStop(0, 'rgba(200,250,255,0.55)');
+  g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.arc(tx, ty, 7, 0, TAU); ctx.fill();
+}
+
+/* =========================================================
+   蜻蜓主体
+   ========================================================= */
+function drawDragonfly(t) {
+  const px = posX(t), py = posY(t);
+  const e  = 0.01;
+  const ang = Math.atan2(posY(t + e) - py, posX(t + e) - px);
+
+  // 脉冲涟漪（世界坐标）
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  drawPulses(t, px, py);
+  ctx.restore();
+
+  ctx.save();
+  ctx.translate(px, py);
+  ctx.rotate(ang);
+  ctx.scale(S, S);
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  /* ---------- 体轴采样 ---------- */
+  const NB = 90;
+  const axis = [];
+  for (let i = 0; i <= NB; i++) {
+    const s = i / NB;
+    const x = (0.5 - s) * BODY_LEN;
+    const amp = 1.0 + 15 * s * s;
+    const y = amp * Math.sin(s * 6.0 - t * 5.0);
+    axis.push({ s, x, y, r: bodyRadius(s) });
+  }
+  for (let i = 0; i <= NB; i++) {
+    const a = axis[Math.max(0, i - 1)];
+    const b = axis[Math.min(NB, i + 1)];
+    let tx = b.x - a.x, ty = b.y - a.y;
+    const m = Math.hypot(tx, ty) || 1;
+    axis[i].nx = -ty / m;
+    axis[i].ny =  tx / m;
+  }
+
+  /* ---------- 四翼 ---------- */
+  const wingDefs = [
+    { side:  1, sRoot: 0.24, sweep: 0.30, len: 175, chord: 20, phase: 0.0 },
+    { side: -1, sRoot: 0.24, sweep: 0.30, len: 175, chord: 20, phase: 0.0 },
+    { side:  1, sRoot: 0.40, sweep: 0.55, len: 165, chord: 18, phase: 1.7 },
+    { side: -1, sRoot: 0.40, sweep: 0.55, len: 165, chord: 18, phase: 1.7 }
+  ];
+  for (const w of wingDefs) drawWing(t, axis, NB, w);
+
+  /* ---------- 躯干轮廓 ---------- */
+  ctx.beginPath();
+  for (let i = 0; i <= NB; i++) {
+    const p = axis[i];
+    const X = p.x + p.nx * p.r, Y = p.y + p.ny * p.r;
+    i ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y);
+  }
+  for (let i = NB; i >= 0; i--) {
+    const p = axis[i];
+    ctx.lineTo(p.x - p.nx * p.r, p.y - p.ny * p.r);
+  }
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(4,20,38,0.55)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(60,200,255,0.45)';
+  ctx.lineWidth = 0.9;
+  ctx.stroke();
+
+  /* ---------- 电容器极板 ---------- */
+  const NP = 46;
+  for (let k = 0; k <= NP; k++) {
+    const s = k / NP;
+    const p = axis[Math.round(s * NB)];
+    if (p.r < 1.0) continue;
+    const c = (k % 2) ? YELLOW : BLUE;
+    const len = p.r * (0.45 + 0.55 * (1 - s));
+    const a = 0.14 + 0.30 * Math.pow(1 - s, 0.7) + 0.10 * Math.sin(t * 6 - s * 10);
+    ctx.strokeStyle = col(c, Math.max(0.04, a));
+    ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    ctx.moveTo(p.x + p.nx * len, p.y + p.ny * len);
+    ctx.lineTo(p.x - p.nx * len, p.y - p.ny * len);
+    ctx.stroke();
+  }
+
+  /* ---------- 体轴核心光脉 ---------- */
+  ctx.beginPath();
+  for (let i = 0; i <= NB; i++) {
+    const p = axis[i];
+    i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y);
+  }
+  ctx.strokeStyle = 'rgba(255,240,150,0.35)';
+  ctx.lineWidth = 3.6;
+  ctx.stroke();
+  ctx.strokeStyle = 'rgba(190,245,255,0.95)';
+  ctx.lineWidth = 1.2;
+  ctx.stroke();
+
+  /* ---------- 尾须 ---------- */
+  const tail = axis[NB];
+  for (let k = 0; k < 7; k++) {
+    const f = k / 6 - 0.5;
+    const a0 = Math.PI + f * 0.55;
+    const len = 34 + 18 * Math.sin(t * 5 + k);
+    ctx.strokeStyle = (k % 2) ? 'rgba(255,230,77,0.28)' : 'rgba(34,211,255,0.28)';
+    ctx.lineWidth = 0.5;
+    ctx.beginPath();
+    ctx.moveTo(tail.x, tail.y);
+    ctx.quadraticCurveTo(
+      tail.x + Math.cos(a0) * len * 0.6,
+      tail.y + Math.sin(a0) * len * 0.6 + f * 8,
+      tail.x + Math.cos(a0) * len,
+      tail.y + Math.sin(a0) * len
+    );
+    ctx.stroke();
+  }
+
+  /* ---------- 头部光核 + 复眼 ---------- */
+  const head = axis[0];
+  const hg = ctx.createRadialGradient(head.x, head.y, 0, head.x, head.y, 18);
+  hg.addColorStop(0.0, 'rgba(210,252,255,0.85)');
+  hg.addColorStop(0.4, 'rgba(34,211,255,0.30)');
+  hg.addColorStop(1.0, 'rgba(0,0,0,0)');
+  ctx.fillStyle = hg;
+  ctx.beginPath(); ctx.arc(head.x, head.y, 18, 0, TAU); ctx.fill();
+
+  for (const sgn of [1, -1]) {
+    const ex = head.x + 1.5, ey = head.y + sgn * 4.6;
+    const eg = ctx.createRadialGradient(ex, ey, 0, ex, ey, 4.5);
+    eg.addColorStop(0, 'rgba(255,240,140,0.95)');
+    eg.addColorStop(1, 'rgba(255,240,140,0)');
+    ctx.fillStyle = eg;
+    ctx.beginPath(); ctx.arc(ex, ey, 4.5, 0, TAU); ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+/* =========================================================
+   左侧：坡印廷矢量公式面板
+   ========================================================= */
+function fitFont(str, maxW, size, family, italic) {
+  const pre = italic ? 'italic ' : '';
+  ctx.font = `${pre}${size}px ${family}`;
+  const w = ctx.measureText(str).width;
+  if (w > maxW) {
+    size *= maxW / w;
+    ctx.font = `${pre}${size}px ${family}`;
+  }
+  return size;
+}
+
+function drawPanel(t) {
+  const cx = PANEL_W * 0.5;
+  const glow = 0.82 + 0.18 * Math.sin(t * 1.6);
+
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  const SERIF = '"Times New Roman", Georgia, "Songti SC", serif';
+  const SANS  = '"Microsoft YaHei", "PingFang SC", "Heiti SC", sans-serif';
+
+  /* --- 主公式 --- */
+  const F1 = Math.min(PANEL_W * 0.145, H * 0.055);
+  fitFont('S = E × H', PANEL_W * 0.86, F1, SERIF, true);
+  const g1 = ctx.createLinearGradient(0, H * 0.26, PANEL_W, H * 0.34);
+  g1.addColorStop(0, `rgba(60,220,255,${glow})`);
+  g1.addColorStop(1, `rgba(255,235,90,${glow})`);
+  ctx.fillStyle = g1;
+  ctx.fillText('S = E × H', cx, H * 0.30);
+
+  /* --- 中文标题 --- */
+  const F2 = Math.min(PANEL_W * 0.070, H * 0.026);
+  ctx.font = `${F2}px ${SANS}`;
+  ctx.fillStyle = 'rgba(150,225,255,0.62)';
+  ctx.fillText('坡 印 廷 矢 量', cx, H * 0.30 + F1 * 1.35);
+
+  /* --- 横向细线 --- */
+  const ly = H * 0.30 + F1 * 2.05;
+  const lg = ctx.createLinearGradient(PANEL_W * 0.08, 0, PANEL_W * 0.92, 0);
+  lg.addColorStop(0,   'rgba(0,0,0,0)');
+  lg.addColorStop(0.5, 'rgba(80,210,255,0.45)');
+  lg.addColorStop(1,   'rgba(0,0,0,0)');
+  ctx.fillStyle = lg;
+  ctx.fillRect(PANEL_W * 0.08, ly, PANEL_W * 0.84, Math.max(1, H * 0.0015));
+
+  /* --- 附属公式 --- */
+  const F3 = Math.min(PANEL_W * 0.085, H * 0.030);
+  const lines = [
+    '∇·S + ∂u/∂t = − J·E',
+    'u = ½ ( ε₀E² + μ₀H² )',
+    '|S| = |E||H| sin θ',
+    'S = μ₀⁻¹ ( E × B )'
+  ];
+  let y = H * 0.50;
+  const step = Math.min(H * 0.075, F3 * 2.6);
+
+  for (let i = 0; i < lines.length; i++) {
+    const sz = fitFont(lines[i], PANEL_W * 0.86, F3, SERIF, true);
+    ctx.font = `italic ${sz}px ${SERIF}`;
+    const a = (0.55 + 0.25 * Math.sin(t * 1.4 + i * 0.9)) * (i === 0 ? 1 : 0.78);
+    ctx.fillStyle = (i % 2 === 0)
+      ? `rgba(90,225,255,${a})`
+      : `rgba(255,232,110,${a})`;
+    ctx.fillText(lines[i], cx, y);
+    y += step;
+  }
+
+  /* --- 底部小注 --- */
+  const F4 = Math.min(PANEL_W * 0.048, H * 0.019);
+  ctx.font = `${F4}px ${SANS}`;
+  ctx.fillStyle = `rgba(120,200,255,${0.30 + 0.12 * Math.sin(t * 2.0)})`;
+  ctx.fillText('ENERGY FLUX  ·  E × H', cx, H * 0.885);
+
+  /* --- 分隔光带 --- */
+  const dg = ctx.createLinearGradient(0, 0, 0, H);
+  dg.addColorStop(0.00, 'rgba(0,0,0,0)');
+  dg.addColorStop(0.30, 'rgba(60,210,255,0.30)');
+  dg.addColorStop(0.55, 'rgba(255,235,90,0.22)');
+  dg.addColorStop(0.80, 'rgba(60,210,255,0.30)');
+  dg.addColorStop(1.00, 'rgba(0,0,0,0)');
+  ctx.fillStyle = dg;
+  ctx.fillRect(PANEL_W - Math.max(1, W * 0.0012), 0, Math.max(2, W * 0.0024), H);
+}
+
+/* =========================================================
+   主循环
+   ========================================================= */
+let T = 0;
+function frame() {
+  T += 1 / 60;
+
+  // 全屏拖尾
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = 'rgba(0,0,0,0.30)';
+  ctx.fillRect(0, 0, W, H);
+
+  // 左面板保持纯黑，避免公式被残影糊白
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, PANEL_W, H);
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  drawPanel(T);
+  ctx.restore();
+
+  drawDragonfly(T);
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

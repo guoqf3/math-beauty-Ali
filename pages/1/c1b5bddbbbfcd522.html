@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>拉格朗日方程 · 机械独角兽</title>
+<style>
+  html, body { margin:0; padding:0; height:100%; background:#000; overflow:hidden; }
+  canvas { position:absolute; display:block; }
+  #gl { z-index:1; }
+  #ui { z-index:2; pointer-events:none; }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<canvas id="ui"></canvas>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+"use strict";
+
+/* =========================================================
+   0. 常量 / 画布
+   ========================================================= */
+const TAU = Math.PI * 2;
+
+const glc = document.getElementById('gl');
+const uic = document.getElementById('ui');
+const uctx = uic.getContext('2d');
+
+let W = 1, H = 1, DPR = 1, PANEL = 1;
+
+/* =========================================================
+   1. Three.js 初始化
+   ========================================================= */
+const renderer = new THREE.WebGLRenderer({
+  canvas: glc,
+  antialias: true,
+  alpha: false
+});
+renderer.setClearColor(0x000000, 1);
+renderer.autoClear = false;
+
+const scene  = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100);
+camera.position.set(4.4, 1.5, 0);
+
+/* =========================================================
+   2. 线段几何缓冲区
+   ========================================================= */
+const MAX_SEG = 6000;
+const posArr = new Float32Array(MAX_SEG * 6);
+const colArr = new Float32Array(MAX_SEG * 6);
+let segCount = 0;
+
+const geo = new THREE.BufferGeometry();
+geo.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
+geo.setAttribute('color',    new THREE.BufferAttribute(colArr, 3));
+
+const mat = new THREE.LineBasicMaterial({
+  vertexColors: true,
+  blending: THREE.AdditiveBlending,
+  transparent: true,
+  opacity: 1.0,
+  depthWrite: false,
+  depthTest: false
+});
+
+const lineMesh = new THREE.LineSegments(geo, mat);
+lineMesh.frustumCulled = false;
+scene.add(lineMesh);
+
+/* =========================================================
+   3. 写入工具
+   ========================================================= */
+function pushSeg(ax, ay, az, bx, by, bz, c, a) {
+  if (segCount >= MAX_SEG) return;
+  const i = segCount * 6;
+  posArr[i]     = ax; posArr[i + 1] = ay; posArr[i + 2] = az;
+  posArr[i + 3] = bx; posArr[i + 4] = by; posArr[i + 5] = bz;
+
+  const cr = c[0] * a, cg = c[1] * a, cb = c[2] * a;
+  colArr[i]     = cr; colArr[i + 1] = cg; colArr[i + 2] = cb;
+  colArr[i + 3] = cr; colArr[i + 4] = cg; colArr[i + 5] = cb;
+
+  segCount++;
+}
+
+/* =========================================================
+   4. 配色
+   ========================================================= */
+const GOLD  = [1.00, 0.82, 0.18];
+const CYAN  = [0.18, 0.95, 1.00];
+const MAG   = [1.00, 0.20, 0.90];
+const WHITE = [1.00, 1.00, 1.00];
+
+function lerpCol(a, b, u) {
+  return [
+    a[0] + (b[0] - a[0]) * u,
+    a[1] + (b[1] - a[1]) * u,
+    a[2] + (b[2] - a[2]) * u
+  ];
+}
+
+/* =========================================================
+   5. 环 / 关节
+   ========================================================= */
+const RING_N = 10;
+
+function addRing(cx, cy, cz, r, plane, col, alpha) {
+  for (let i = 0; i < RING_N; i++) {
+    const a0 = i / RING_N * TAU;
+    const a1 = (i + 1) / RING_N * TAU;
+    const c0 = Math.cos(a0), s0 = Math.sin(a0);
+    const c1 = Math.cos(a1), s1 = Math.sin(a1);
+
+    let ax, ay, az, bx, by, bz;
+    if (plane === 0) {
+      ax = cx + c0 * r; ay = cy + s0 * r; az = cz;
+      bx = cx + c1 * r; by = cy + s1 * r; bz = cz;
+    } else if (plane === 1) {
+      ax = cx + c0 * r; ay = cy; az = cz + s0 * r;
+      bx = cx + c1 * r; by = cy; bz = cz + s1 * r;
+    } else {
+      ax = cx; ay = cy + c0 * r; az = cz + s0 * r;
+      bx = cx; by = cy + c1 * r; bz = cz + s1 * r;
+    }
+    pushSeg(ax, ay, az, bx, by, bz, col, alpha);
+  }
+}
+
+function addJoint(x, y, z, r, col, alpha) {
+  addRing(x, y, z, r, 0, col, alpha);
+  addRing(x, y, z, r, 1, col, alpha);
+  addRing(x, y, z, r, 2, col, alpha);
+}
+
+/* =========================================================
+   6. 行走参数 / IK
+   ========================================================= */
+const WALK_RATE = 0.85;      // 每秒步数
+const STRIDE    = 0.20;
+const GROUND_Y  = 0.02;
+const LIFT      = 0.18;
+const L1        = 0.36;
+const L2        = 0.32;
+
+function legIK(hipX, hipY, hipZ, t, phase, front) {
+  const p = ((t * WALK_RATE + phase) % 1 + 1) % 1;
+
+  let footX, footY;
+  if (p < 0.5) {
+    // 支撑相：脚向后滑
+    const u = p / 0.5;
+    footX = hipX + STRIDE * (1 - 2 * u);
+    footY = GROUND_Y;
+  } else {
+    // 摆动相：脚抬起前摆
+    const u = (p - 0.5) / 0.5;
+    footX = hipX + STRIDE * (-1 + 2 * u);
+    footY = GROUND_Y + LIFT * Math.sin(Math.PI * u);
+  }
+
+  const dx = footX - hipX;
+  const dy = footY - hipY;
+  const d  = Math.hypot(dx, dy);
+  const dc = Math.min(d, (L1 + L2) * 0.998);
+
+  const baseAng = Math.atan2(dy, dx);
+  let cosA = (L1 * L1 + dc * dc - L2 * L2) / (2 * L1 * dc);
+  cosA = Math.max(-1, Math.min(1, cosA));
+  const ang = Math.acos(cosA);
+
+  const dir  = front ? -1 : 1;
+  const kAng = baseAng + dir * ang;
+
+  return {
+    hipX, hipY, hipZ,
+    kneeX: hipX + Math.cos(kAng) * L1,
+    kneeY: hipY + Math.sin(kAng) * L1,
+    footX, footY,
+    p
+  };
+}
+
+/* =========================================================
+   7. 角（激光谐振腔）
+   ========================================================= */
+function buildHorn(t, base, tip) {
+  const dx = tip[0] - base[0];
+  const dy = tip[1] - base[1];
+  const dz = tip[2] - base[2];
+  const len = Math.hypot(dx, dy, dz) || 1;
+  const dir = [dx / len, dy / len, dz / len];
+
+  let up = [0, 0, 1];
+  if (Math.abs(dir[2]) > 0.9) up = [1, 0, 0];
+
+  let t1 = [
+    dir[1] * up[2] - dir[2] * up[1],
+    dir[2] * up[0] - dir[0] * up[2],
+    dir[0] * up[1] - dir[1] * up[0]
+  ];
+  const t1l = Math.hypot(t1[0], t1[1], t1[2]) || 1;
+  t1 = [t1[0] / t1l, t1[1] / t1l, t1[2] / t1l];
+
+  const t2 = [
+    dir[1] * t1[2] - dir[2] * t1[1],
+    dir[2] * t1[0] - dir[0] * t1[2],
+    dir[0] * t1[1] - dir[1] * t1[0]
+  ];
+
+  const axisAt = (u) => [base[0] + dx * u, base[1] + dy * u, base[2] + dz * u];
+  const radAt  = (u) => 0.055 * (1 - u) + 0.004;
+
+  const ptAt = (u, a) => {
+    const p  = axisAt(u);
+    const r  = radAt(u);
+    const ca = Math.cos(a) * r;
+    const sa = Math.sin(a) * r;
+    return [
+      p[0] + t1[0] * ca + t2[0] * sa,
+      p[1] + t1[1] * ca + t2[1] * sa,
+      p[2] + t1[2] * ca + t2[2] * sa
+    ];
+  };
+
+  /* ---- 螺旋缠绕 ---- */
+  const N = 52;
+  const TURNS = 4.5;
+  for (let i = 0; i < N; i++) {
+    const u0 = i / N, u1 = (i + 1) / N;
+    const a0 = u0 * TAU * TURNS + t * 1.3;
+    const a1 = u1 * TAU * TURNS + t * 1.3;
+    const p0 = ptAt(u0, a0);
+    const p1 = ptAt(u1, a1);
+    const c  = lerpCol(GOLD, WHITE, u0 * 0.7);
+    pushSeg(p0[0], p0[1], p0[2], p1[0], p1[1], p1[2], c, 0.85);
+  }
+
+  /* ---- 中轴 ---- */
+  for (let i = 0; i < 8; i++) {
+    const u0 = i / 8, u1 = (i + 1) / 8;
+    const p0 = axisAt(u0);
+    const p1 = axisAt(u1);
+    pushSeg(p0[0], p0[1], p0[2], p1[0], p1[1], p1[2], GOLD, 0.32);
+  }
+
+  /* ---- 上行脉冲环 ---- */
+  const NR = 3;
+  for (let k = 0; k < NR; k++) {
+    const u = ((t * 0.75 + k / NR) % 1);
+    if (u < 0.06) continue;
+    const fade = Math.sin(Math.PI * u) * 0.9;
+    const r = radAt(u) * 2.4;
+    const c = axisAt(u);
+
+    const SEG = 12;
+    for (let i = 0; i < SEG; i++) {
+      const a0 = i / SEG * TAU;
+      const a1 = (i + 1) / SEG * TAU;
+      const p0 = [
+        c[0] + (t1[0] * Math.cos(a0) + t2[0] * Math.sin(a0)) * r,
+        c[1] + (t1[1] * Math.cos(a0) + t2[1] * Math.sin(a0)) * r,
+        c[2] + (t1[2] * Math.cos(a0) + t2[2] * Math.sin(a0)) * r
+      ];
+      const p1 = [
+        c[0] + (t1[0] * Math.cos(a1) + t2[0] * Math.sin(a1)) * r,
+        c[1] + (t1[1] * Math.cos(a1) + t2[1] * Math.sin(a1)) * r,
+        c[2] + (t1[2] * Math.cos(a1) + t2[2] * Math.sin(a1)) * r
+      ];
+      pushSeg(p0[0], p0[1], p0[2], p1[0], p1[1], p1[2], WHITE, fade);
+    }
+  }
+
+  /* ---- 尖端光核 ---- */
+  const tipGlow = 0.6 + 0.4 * Math.sin(t * 5);
+  addJoint(tip[0], tip[1], tip[2], 0.030, WHITE, tipGlow * 0.85);
+  addJoint(tip[0], tip[1], tip[2], 0.062, GOLD,  tipGlow * 0.30);
+
+  /* ---- 尖端放射丝 ---- */
+  for (let i = 0; i < 6; i++) {
+    const a  = i / 6 * TAU + t * 2.2;
+    const r0 = 0.030;
+    const r1 = 0.075 + 0.040 * Math.sin(t * 4 + i);
+    const p0 = [
+      tip[0] + t1[0] * Math.cos(a) * r0 + t2[0] * Math.sin(a) * r0,
+      tip[1] + t1[1] * Math.cos(a) * r0 + t2[1] * Math.sin(a) * r0,
+      tip[2] + t1[2] * Math.cos(a) * r0 + t2[2] * Math.sin(a) * r0
+    ];
+    const p1 = [
+      tip[0] + t1[0] * Math.cos(a) * r1 + t2[0] * Math.sin(a) * r1,
+      tip[1] + t1[1] * Math.cos(a) * r1 + t2[1] * Math.sin(a) * r1,
+      tip[2] + t1[2] * Math.cos(a) * r1 + t2[2] * Math.sin(a) * r1
+    ];
+    pushSeg(p0[0], p0[1], p0[2], p1[0], p1[1], p1[2], GOLD, tipGlow * 0.6);
+  }
+}
+
+/* =========================================================
+   8. 骨架数据
+   ========================================================= */
+const SPINE_PTS = [
+  [-0.95, 0.58], [-0.75, 0.62], [-0.52, 0.65], [-0.28, 0.67],
+  [-0.02, 0.68], [ 0.24, 0.67], [ 0.48, 0.64], [ 0.68, 0.58]
+];
+const NECK_PTS = [
+  [0.78, 0.66], [0.86, 0.82], [0.92, 1.02], [0.97, 1.22], [1.00, 1.42]
+];
+const TAIL_PTS = [
+  [-0.95, 0.58], [-1.12, 0.63], [-1.26, 0.72], [-1.35, 0.86], [-1.38, 1.00]
+];
+
+const LEG_DEFS = [
+  { hipX:  0.50, hipY: 0.52, hipZ:  0.22, front: true,  phase: 0.0 },  // 左前
+  { hipX:  0.50, hipY: 0.52, hipZ: -0.22, front: true,  phase: 0.5 },  // 右前
+  { hipX: -0.50, hipY: 0.52, hipZ:  0.22, front: false, phase: 0.5 },  // 左后
+  { hipX: -0.50, hipY: 0.52, hipZ: -0.22, front: false, phase: 0.0 }   // 右后
+];
+
+/* =========================================================
+   9. 构建整只独角兽
+   ========================================================= */
+function buildUnicorn(t) {
+  segCount = 0;
+
+  const bob  = Math.sin(t * WALK_RATE * Math.PI * 4) * 0.022;
+  const sway = Math.sin(t * WALK_RATE * Math.PI * 2) * 0.015;
+
+  /* ---------- 脊柱 ---------- */
+  const spine = SPINE_PTS.map((p, i) => {
+    const u = i / (SPINE_PTS.length - 1);
+    const wave = Math.sin(t * 1.2 - u * 2.5) * 0.012;
+    return [p[0], p[1] + bob + wave, sway * u * 0.5];
+  });
+
+  for (let i = 0; i < spine.length; i++) {
+    const p = spine[i];
+    const u = i / (spine.length - 1);
+    const col = lerpCol(GOLD, CYAN, u * 0.35);
+    const rad = 0.045 + 0.020 * Math.sin(Math.PI * u);
+    addJoint(p[0], p[1], p[2], rad, col, 0.72);
+
+    if (i > 0) {
+      const q = spine[i - 1];
+      pushSeg(q[0], q[1], q[2], p[0], p[1], p[2], col, 0.50);
+      pushSeg(q[0], q[1] + 0.020, q[2], p[0], p[1] + 0.020, p[2], col, 0.22);
+      pushSeg(q[0], q[1] - 0.020, q[2], p[0], p[1] - 0.020, p[2], col, 0.22);
+    }
+  }
+
+  /* ---------- 颈部 ---------- */
+  const neck = NECK_PTS.map((p, i) => {
+    const u = i / (NECK_PTS.length - 1);
+    const wave = Math.sin(t * 1.4 - u * 2.0) * 0.015;
+    return [p[0], p[1] + bob + wave, 0];
+  });
+
+  const lastSpine  = spine[spine.length - 1];
+  const firstNeck  = neck[0];
+  pushSeg(lastSpine[0], lastSpine[1], lastSpine[2],
+          firstNeck[0], firstNeck[1], firstNeck[2], GOLD, 0.50);
+
+  for (let i = 0; i < neck.length; i++) {
+    const p = neck[i];
+    const u = i / (neck.length - 1);
+    const col = lerpCol(GOLD, CYAN, 0.35 + u * 0.65);
+    const rad = 0.038 + 0.012 * Math.sin(Math.PI * u);
+    addJoint(p[0], p[1], p[2], rad, col, 0.72);
+
+    if (i > 0) {
+      const q = neck[i - 1];
+      pushSeg(q[0], q[1], q[2], p[0], p[1], p[2], col, 0.55);
+      pushSeg(q[0], q[1] + 0.018, q[2], p[0], p[1] + 0.018, p[2], col, 0.22);
+      pushSeg(q[0], q[1] - 0.018, q[2], p[0], p[1] - 0.018, p[2], col, 0.22);
+    }
+  }
+
+  /* ---------- 头部 ---------- */
+  const headBob  = Math.sin(t * WALK_RATE * Math.PI * 4 + 0.8) * 0.018;
+  const headSway = Math.sin(t * 1.6) * 0.030;
+
+  const headX = 1.06 + headSway * 0.5;
+  const headY = 1.55 + bob + headBob;
+  const headZ = 0;
+
+  const lastNeck = neck[neck.length - 1];
+  pushSeg(lastNeck[0], lastNeck[1], lastNeck[2],
+          headX, headY, headZ, CYAN, 0.60);
+
+  const hw = 0.16, hh = 0.13, hd = 0.11;
+  const corners = [
+    [headX - hw, headY - hh, headZ - hd],
+    [headX + hw, headY - hh, headZ - hd],
+    [headX + hw, headY + hh, headZ - hd],
+    [headX - hw, headY + hh, headZ - hd],
+    [headX - hw, headY - hh, headZ + hd],
+    [headX + hw, headY - hh, headZ + hd],
+    [headX + hw, headY + hh, headZ + hd],
+    [headX - hw, headY + hh, headZ + hd]
+  ];
+  const edges = [
+    [0,1],[1,2],[2,3],[3,0],
+    [4,5],[5,6],[6,7],[7,4],
+    [0,4],[1,5],[2,6],[3,7]
+  ];
+  for (const [a, b] of edges) {
+    pushSeg(corners[a][0], corners[a][1], corners[a][2],
+            corners[b][0], corners[b][1], corners[b][2], CYAN, 0.65);
+  }
+
+  /* ---------- 双眼 ---------- */
+  for (const sz of [-1, 1]) {
+    const ex = headX + 0.10;
+    const ey = headY + 0.02;
+    const ez = sz * 0.10;
+    addRing(ex, ey, ez, 0.025, 0, MAG, 0.90);
+    addRing(ex, ey, ez, 0.025, 2, MAG, 0.90);
+    addRing(ex, ey, ez, 0.015, 1, WHITE, 0.80);
+  }
+
+  /* ---------- 角（激光谐振腔） ---------- */
+  buildHorn(t,
+    [headX + 0.02, headY + 0.12, headZ],
+    [headX + 0.38, headY + 0.80, headZ]);
+
+  /* ---------- 四腿 ---------- */
+  for (const def of LEG_DEFS) {
+    const hipY = def.hipY + bob;
+    const leg  = legIK(def.hipX, hipY, def.hipZ, t, def.phase, def.front);
+
+    const colHip = lerpCol(GOLD, MAG, 0.30);
+
+    addJoint(leg.hipX, leg.hipY, leg.hipZ, 0.050, colHip, 0.75);
+
+    pushSeg(leg.hipX, leg.hipY, leg.hipZ,
+            leg.kneeX, leg.kneeY, leg.hipZ, MAG, 0.60);
+    pushSeg(leg.hipX + 0.020, leg.hipY, leg.hipZ,
+            leg.kneeX + 0.020, leg.kneeY, leg.hipZ, MAG, 0.26);
+    pushSeg(leg.hipX - 0.020, leg.hipY, leg.hipZ,
+            leg.kneeX - 0.020, leg.kneeY, leg.hipZ, MAG, 0.26);
+
+    addJoint(leg.kneeX, leg.kneeY, leg.hipZ, 0.042, MAG, 0.80);
+
+    pushSeg(leg.kneeX, leg.kneeY, leg.hipZ,
+            leg.footX, leg.footY, leg.hipZ, MAG, 0.60);
+    pushSeg(leg.kneeX + 0.018, leg.kneeY, leg.hipZ,
+            leg.footX + 0.018, leg.footY, leg.hipZ, MAG, 0.26);
+    pushSeg(leg.kneeX - 0.018, leg.kneeY, leg.hipZ,
+            leg.footX - 0.018, leg.footY, leg.hipZ, MAG, 0.26);
+
+    /* 蹄 */
+    addRing(leg.footX, leg.footY, leg.hipZ, 0.035, 1, CYAN, 0.90);
+    addRing(leg.footX, leg.footY, leg.hipZ, 0.035, 2, CYAN, 0.70);
+
+    const hoofGlow = 0.5 + 0.5 * Math.sin(t * 4 + def.phase * TAU);
+    addJoint(leg.footX, leg.footY, leg.hipZ, 0.020, WHITE, 0.35 * hoofGlow);
+  }
+
+  /* ---------- 尾巴 ---------- */
+  const tailSway = Math.sin(t * 1.8) * 0.06;
+  const tail = TAIL_PTS.map((p, i) => {
+    const u = i / (TAIL_PTS.length - 1);
+    return [
+      p[0] + Math.sin(t * 1.5 - u * 2.0) * 0.020 * u,
+      p[1] + bob + Math.sin(t * 2.2 - u * 3.0) * 0.030 * u,
+      tailSway * u
+    ];
+  });
+
+  for (let i = 0; i < tail.length; i++) {
+    const p = tail[i];
+    const u = i / (tail.length - 1);
+    const col = lerpCol(MAG, GOLD, u);
+    const rad = 0.035 * (1 - u * 0.5);
+    addJoint(p[0], p[1], p[2], rad, col, 0.70);
+
+    if (i > 0) {
+      const q = tail[i - 1];
+      pushSeg(q[0], q[1], q[2], p[0], p[1], p[2], col, 0.50);
+    }
+  }
+}
+
+/* =========================================================
+   10. 尺寸 / 视口
+   ========================================================= */
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = Math.max(2, innerWidth);
+  H = Math.max(2, innerHeight);
+  PANEL = W * 0.2;
+
+  renderer.setPixelRatio(DPR);
+  renderer.setSize(W, H, true);
+
+  uic.width  = Math.floor(W * DPR);
+  uic.height = Math.floor(H * DPR);
+  uic.style.width  = W + 'px';
+  uic.style.height = H + 'px';
+  uctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  camera.aspect = (W - PANEL) / H;
+  camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize);
+
+/* =========================================================
+   11. 左侧 1/5：拉格朗日方程面板
+   ========================================================= */
+function fitText(str, maxW, size, family, italic) {
+  const pre = italic ? 'italic ' : '';
+  uctx.font = `${pre}${size}px ${family}`;
+  const w = uctx.measureText(str).width;
+  if (w > maxW) {
+    size *= maxW / w;
+    uctx.font = `${pre}${size}px ${family}`;
+  }
+  return size;
+}
+
+function drawPanel(t) {
+  const c = uctx;
+  c.clearRect(0, 0, W, H);
+
+  // 左侧纯黑背景
+  c.fillStyle = '#000';
+  c.fillRect(0, 0, PANEL, H);
+
+  c.save();
+  c.globalCompositeOperation = 'lighter';
+  c.textAlign = 'center';
+  c.textBaseline = 'middle';
+
+  const cx = PANEL * 0.5;
+  const pulse = 0.80 + 0.20 * Math.sin(t * 1.7);
+
+  const SERIF = '"Times New Roman", Georgia, "Songti SC", serif';
+  const SANS  = '"Microsoft YaHei", "PingFang SC", "Heiti SC", sans-serif';
+
+  /* ---- 主公式 ---- */
+  const mainStr = 'd/dt(∂L/∂q̇) − ∂L/∂q = 0';
+  const fs1 = fitText(mainStr, PANEL * 0.92,
+                      Math.min(PANEL * 0.132, H * 0.046), SERIF, true);
+  const my = H * 0.27;
+
+  c.shadowColor = `rgba(255,205,60,${0.85 * pulse})`;
+  c.shadowBlur = 26;
+  c.fillStyle = `rgba(255,232,150,${0.96 * pulse})`;
+  c.fillText(mainStr, cx, my);
+  c.shadowBlur = 0;
+
+  /* ---- 中文标题 ---- */
+  const fs2 = Math.min(PANEL * 0.066, H * 0.024);
+  c.font = `${fs2}px ${SANS}`;
+  c.fillStyle = 'rgba(90,240,255,0.72)';
+  c.fillText('拉 格 朗 日 方 程', cx, my + fs1 * 1.38);
+
+  /* ---- 分隔光带 ---- */
+  const ly = my + fs1 * 2.10;
+  const lg = c.createLinearGradient(PANEL * 0.10, 0, PANEL * 0.90, 0);
+  lg.addColorStop(0.0, 'rgba(0,0,0,0)');
+  lg.addColorStop(0.5, 'rgba(255,205,70,0.50)');
+  lg.addColorStop(1.0, 'rgba(0,0,0,0)');
+  c.fillStyle = lg;
+  c.fillRect(PANEL * 0.10, ly, PANEL * 0.80, Math.max(1, H * 0.0016));
+
+  /* ---- 附属公式 ---- */
+  const lines = [
+    'L = T − V',
+    'δ∫ L dt = 0',
+    'pᵢ = ∂L/∂q̇ᵢ',
+    'H = Σ pᵢq̇ᵢ − L'
+  ];
+
+  let y = H * 0.50;
+  const step = Math.min(H * 0.078, H * 0.026 * 3.0);
+
+  for (let i = 0; i < lines.length; i++) {
+    const sz = fitText(lines[i], PANEL * 0.90,
+                       Math.min(PANEL * 0.078, H * 0.026), SERIF, true);
+    const a = (0.52 + 0.26 * Math.sin(t * 1.4 + i * 0.9)) * (i === 0 ? 1.0 : 0.80);
+    c.font = `italic ${sz}px ${SERIF}`;
+    c.fillStyle = (i % 2 === 0)
+      ? `rgba(255,220,120,${a})`
+      : `rgba(90,235,255,${a})`;
+    c.fillText(lines[i], cx, y);
+    y += step;
+  }
+
+  /* ---- 底部注记 ---- */
+  const fs4 = Math.min(PANEL * 0.044, H * 0.017);
+  c.font = `${fs4}px ${SANS}`;
+  c.fillStyle = `rgba(255,180,255,${0.26 + 0.12 * Math.sin(t * 2.0)})`;
+  c.fillText('LAGRANGE · MECHANICS', cx, H * 0.89);
+
+  /* ---- 右边界光带 ---- */
+  const dg = c.createLinearGradient(0, 0, 0, H);
+  dg.addColorStop(0.00, 'rgba(0,0,0,0)');
+  dg.addColorStop(0.28, 'rgba(255,200,60,0.30)');
+  dg.addColorStop(0.52, 'rgba(80,235,255,0.26)');
+  dg.addColorStop(0.78, 'rgba(255,80,220,0.30)');
+  dg.addColorStop(1.00, 'rgba(0,0,0,0)');
+  c.fillStyle = dg;
+  c.fillRect(PANEL - Math.max(1, W * 0.0008), 0,
+             Math.max(2, W * 0.0020), H);
+
+  c.restore();
+}
+
+/* =========================================================
+   12. 主循环
+   ========================================================= */
+let T = 0, lastMs = 0;
+
+function frame(now) {
+  if (!lastMs) lastMs = now;
+  let dt = (now - lastMs) / 1000;
+  lastMs = now;
+  if (dt > 0.05) dt = 0.05;
+  if (dt < 0) dt = 0;
+  T += dt;
+
+  /* ---- 构建几何 ---- */
+  buildUnicorn(T);
+
+  geo.setDrawRange(0, segCount * 2);
+  geo.attributes.position.needsUpdate = true;
+  geo.attributes.color.needsUpdate = true;
+
+  /* ---- 相机环绕 ---- */
+  const camR = 4.4;
+  const camA = T * 0.22;
+  camera.position.set(
+    Math.cos(camA) * camR,
+    1.5 + Math.sin(T * 0.40) * 0.45,
+    Math.sin(camA) * camR
+  );
+  camera.lookAt(0, 0.85, 0);
+
+  /* ---- 渲染 ---- */
+  renderer.setScissorTest(false);
+  renderer.setViewport(0, 0, W, H);
+  renderer.setScissor(0, 0, W, H);
+  renderer.clear();
+
+  renderer.setScissorTest(true);
+  renderer.setViewport(PANEL, 0, W - PANEL, H);
+  renderer.setScissor(PANEL, 0, W - PANEL, H);
+  renderer.render(scene, camera);
+
+  /* ---- 2D 面板 ---- */
+  drawPanel(T);
+
+  requestAnimationFrame(frame);
+}
+
+resize();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

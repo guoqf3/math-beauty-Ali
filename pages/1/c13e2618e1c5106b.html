@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>朱利亚集合 · 分形翼龙</title>
+<style>
+  html, body { margin:0; padding:0; height:100%; background:#000; overflow:hidden; }
+  canvas { display:block; position:absolute; inset:0; width:100%; height:100%; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+"use strict";
+
+/* =========================================================
+   0. 画布 / 尺寸
+   ========================================================= */
+const cv  = document.getElementById('c');
+const ctx = cv.getContext('2d', { alpha: false });
+
+let W = 1, H = 1, CX = 0, CY = 0, S = 1, PANEL = 1, DPR = 1;
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = Math.max(2, innerWidth);
+  H = Math.max(2, innerHeight);
+
+  cv.width  = Math.floor(W * DPR);
+  cv.height = Math.floor(H * DPR);
+  cv.style.width  = W + 'px';
+  cv.style.height = H + 'px';
+
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  PANEL = W * 0.2;                       // 左侧 1/5
+  CX = PANEL + (W - PANEL) * 0.5;
+  CY = H * 0.5;
+  S  = Math.min((W - PANEL) / 3.05, H / 2.95);
+
+  buildWingTables();
+}
+addEventListener('resize', resize);
+
+/* =========================================================
+   1. 翅膀骨架预计算（只与 u 有关）
+   ========================================================= */
+const NU = 52, NV = 34;
+const GN = (NU + 1) * (NV + 1);
+
+const SPN_X = new Float32Array(NU + 1);
+const SPN_Y = new Float32Array(NU + 1);
+const NRM_X = new Float32Array(NU + 1);
+const NRM_Y = new Float32Array(NU + 1);
+const CHORD = new Float32Array(NU + 1);
+
+const gpx = new Float32Array(GN);
+const gpy = new Float32Array(GN);
+const fieldBuf = new Float32Array(GN);
+
+const SHOULDER_X = 0.02;
+const SHOULDER_Y = 0.10;
+
+function spineAt(u) {
+  const x = SHOULDER_X - 0.62 * Math.pow(u, 1.55);
+  const y = SHOULDER_Y + 1.05 * u;
+  return [x, y];
+}
+
+function buildWingTables() {
+  for (let i = 0; i <= NU; i++) {
+    const u = i / NU;
+    const [sx, sy] = spineAt(u);
+    SPN_X[i] = sx; SPN_Y[i] = sy;
+
+    const du = 0.01;
+    const [ax, ay] = spineAt(Math.max(0, u - du));
+    const [bx, by] = spineAt(Math.min(1, u + du));
+    let tx = bx - ax, ty = by - ay;
+    const m = Math.hypot(tx, ty) || 1;
+    tx /= m; ty /= m;
+
+    NRM_X[i] = -ty;      // 指向后方
+    NRM_Y[i] =  tx;
+
+    CHORD[i] = 0.70 * (1 - 0.60 * Math.pow(u, 1.30)) + 0.05;
+  }
+}
+
+/* =========================================================
+   2. 朱利亚集合场（等势线）
+   ========================================================= */
+const MAXIT = 24;
+const BANDS = 2.4;
+
+function updateField(t) {
+  const ang = t * 0.22;                        // 参数 c 沿圆缓慢旋转
+  const ccx = 0.7885 * Math.cos(ang);
+  const ccy = 0.7885 * Math.sin(ang);
+
+  let k = 0;
+  for (let j = 0; j <= NV; j++) {
+    const v = j / NV;
+    const zy0 = (v - 0.5) * 2.35;
+    for (let i = 0; i <= NU; i++) {
+      const u = i / NU;
+      const zx0 = (u - 0.5) * 2.65;
+
+      let zx = zx0, zy = zy0;
+      let n = 0;
+      let m2 = zx * zx + zy * zy;
+
+      while (n < MAXIT && m2 < 4) {
+        const nx = zx * zx - zy * zy + ccx;
+        zy = 2 * zx * zy + ccy;
+        zx = nx;
+        m2 = zx * zx + zy * zy;
+        n++;
+      }
+
+      let nu;
+      if (n >= MAXIT) {
+        nu = MAXIT;
+      } else {
+        const lm = 0.5 * Math.log(m2 + 1e-12);
+        nu = n + 1 - Math.log(lm + 1e-12) / Math.LN2;
+        if (!(nu > 0)) nu = 0;
+        else if (nu > MAXIT) nu = MAXIT;
+      }
+      fieldBuf[k++] = nu;
+    }
+  }
+}
+
+/* =========================================================
+   3. 分形翅膀绘制
+   ========================================================= */
+const BUCKETS = 8;
+const bktData = [];
+const bktStyle = [];
+
+for (let b = 0; b < BUCKETS; b++) {
+  bktData.push([]);
+  const f = b / (BUCKETS - 1);
+  const hue   = 282 - 140 * f;      // 霓虹紫 → 霓虹绿
+  const light = 58 + 14 * f;
+  const alp   = 0.13 + 0.24 * f;
+  bktStyle.push(`hsla(${hue},100%,${light}%,${alp})`);
+}
+
+/* 把 nu 映射到色桶 */
+function nuBucket(nu) {
+  const f = Math.sqrt(Math.min(1, nu / MAXIT));
+  let b = (f * BUCKETS) | 0;
+  if (b < 0) b = 0;
+  if (b >= BUCKETS) b = BUCKETS - 1;
+  return b;
+}
+
+function drawWingField(t, side, lw) {
+  /* ---- 网格点 ---- */
+  const flap = 0.20 * Math.sin(t * 3.1 + (side > 0 ? 0 : 0.85));
+  const ca = Math.cos(flap), sa = Math.sin(flap);
+
+  let k = 0;
+  for (let j = 0; j <= NV; j++) {
+    const v = j / NV;
+    for (let i = 0; i <= NU; i++) {
+      const nx = NRM_X[i], ny = NRM_Y[i];
+      const ch = CHORD[i];
+      let px = SPN_X[i] + nx * (v - 0.5) * ch;
+      let py = SPN_Y[i] + ny * (v - 0.5) * ch;
+
+      /* 绕肩部拍动 */
+      const dx = px - SHOULDER_X, dy = py - SHOULDER_Y;
+      px = SHOULDER_X + dx * ca - dy * sa;
+      py = SHOULDER_Y + dx * sa + dy * ca;
+
+      gpx[k] = px;
+      gpy[k] = py * side;
+      k++;
+    }
+  }
+
+  /* ---- 等势线提取 ---- */
+  for (let b = 0; b < BUCKETS; b++) bktData[b].length = 0;
+
+  for (let j = 0; j <= NV; j++) {
+    const row = j * (NU + 1);
+    for (let i = 0; i <= NU; i++) {
+      const idx = row + i;
+      const nu = fieldBuf[idx];
+      const bb = nuBucket(nu);
+
+      if (i < NU) {
+        const idx2 = idx + 1;
+        if (nuBucket(fieldBuf[idx2]) !== bb) {
+          bktData[bb].push(gpx[idx], gpy[idx], gpx[idx2], gpy[idx2]);
+        }
+      }
+      if (j < NV) {
+        const idx2 = idx + NU + 1;
+        if (nuBucket(fieldBuf[idx2]) !== bb) {
+          bktData[bb].push(gpx[idx], gpy[idx], gpx[idx2], gpy[idx2]);
+        }
+      }
+    }
+  }
+
+  /* ---- 批量描边 ---- */
+  for (let b = 0; b < BUCKETS; b++) {
+    const arr = bktData[b];
+    if (arr.length === 0) continue;
+    ctx.beginPath();
+    for (let q = 0; q < arr.length; q += 4) {
+      ctx.moveTo(arr[q], arr[q + 1]);
+      ctx.lineTo(arr[q + 2], arr[q + 3]);
+    }
+    ctx.strokeStyle = bktStyle[b];
+    ctx.lineWidth = lw;
+    ctx.stroke();
+  }
+
+  /* ---- 前缘骨脊 ---- */
+  ctx.beginPath();
+  for (let i = 0; i <= NU; i++) {
+    const idx = 0 * (NU + 1) + i;
+    i ? ctx.lineTo(gpx[idx], gpy[idx]) : ctx.moveTo(gpx[idx], gpy[idx]);
+  }
+  ctx.strokeStyle = 'rgba(200,120,255,0.72)';
+  ctx.lineWidth = lw * 1.9;
+  ctx.stroke();
+
+  /* ---- 后缘细线 ---- */
+  ctx.beginPath();
+  for (let i = 0; i <= NU; i++) {
+    const idx = NV * (NU + 1) + i;
+    i ? ctx.lineTo(gpx[idx], gpy[idx]) : ctx.moveTo(gpx[idx], gpy[idx]);
+  }
+  ctx.strokeStyle = 'rgba(90,255,180,0.30)';
+  ctx.lineWidth = lw * 0.9;
+  ctx.stroke();
+
+  /* ---- 翼膜指骨 ---- */
+  const ribs = [0.10, 0.32, 0.55, 0.78];
+  for (let r = 0; r < ribs.length; r++) {
+    const i = Math.round(ribs[r] * NU);
+    ctx.beginPath();
+    for (let j = 0; j <= NV; j++) {
+      const idx = j * (NU + 1) + i;
+      j ? ctx.lineTo(gpx[idx], gpy[idx]) : ctx.moveTo(gpx[idx], gpy[idx]);
+    }
+    ctx.strokeStyle = 'rgba(130,255,195,0.20)';
+    ctx.lineWidth = lw * 0.95;
+    ctx.stroke();
+  }
+
+  /* ---- 翼尖爪 ---- */
+  const tipIdx = 0 * (NU + 1) + NU;
+  const tx = gpx[tipIdx], ty = gpy[tipIdx];
+  for (let q = 0; q < 8; q++) {
+    const a = q / 8 * Math.PI * 2 + t * 3.0;
+    const r = 0.02 + 0.018 * Math.sin(q * 1.9 + t * 5);
+    ctx.beginPath();
+    ctx.moveTo(tx, ty);
+    ctx.lineTo(tx + Math.cos(a) * r, ty + Math.sin(a) * r);
+    ctx.strokeStyle = 'rgba(255,180,255,0.45)';
+    ctx.lineWidth = lw * 0.9;
+    ctx.stroke();
+  }
+}
+
+/* =========================================================
+   4. 身体
+   ========================================================= */
+function bodyR(s) {
+  const g = (x, c, w) => {
+    const d = (x - c) / w;
+    return Math.exp(-d * d);
+  };
+  return 0.022
+       + 0.115 * g(s, 0.36, 0.16)     // 胸腔
+       + 0.040 * g(s, 0.62, 0.07)     // 颈部
+       + 0.058 * g(s, 0.85, 0.05);    // 头
+}
+
+function bodyPoint(s, t) {
+  const x = -0.70 + 1.55 * s;
+  const y = 0.045 * Math.sin(s * 4.4 + t * 1.35)
+          + 0.022 * Math.sin(t * 2.1) * s;
+  return [x, y];
+}
+
+function drawBody(t, lw) {
+  const N = 64;
+  const bx = [], by = [], br = [];
+  for (let i = 0; i <= N; i++) {
+    const s = i / N;
+    const [x, y] = bodyPoint(s, t);
+    bx.push(x); by.push(y); br.push(bodyR(s));
+  }
+
+  /* 轮廓 */
+  ctx.beginPath();
+  for (let i = 0; i <= N; i++) {
+    const x = bx[i], y = by[i] - br[i];
+    i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+  }
+  for (let i = N; i >= 0; i--) {
+    ctx.lineTo(bx[i], by[i] + br[i]);
+  }
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(38,0,58,0.50)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(190,95,255,0.55)';
+  ctx.lineWidth = lw * 1.1;
+  ctx.stroke();
+
+  /* 内部肋纹 */
+  for (let i = 3; i < N - 2; i += 2) {
+    if (br[i] < 0.024) continue;
+    const ph = Math.sin(i * 0.72 - t * 3.2);
+    const a  = 0.09 + 0.11 * Math.abs(ph);
+    const hue = 168 + 70 * Math.abs(ph);
+    ctx.strokeStyle = `hsla(${hue},100%,66%,${a})`;
+    ctx.lineWidth = lw * 0.75;
+    ctx.beginPath();
+    ctx.moveTo(bx[i], by[i] - br[i] * 0.90);
+    ctx.lineTo(bx[i], by[i] + br[i] * 0.90);
+    ctx.stroke();
+  }
+
+  /* 脊柱光脉 */
+  ctx.beginPath();
+  for (let i = 0; i <= N; i++) {
+    i ? ctx.lineTo(bx[i], by[i]) : ctx.moveTo(bx[i], by[i]);
+  }
+  ctx.strokeStyle = 'rgba(225,150,255,0.42)';
+  ctx.lineWidth = lw * 1.7;
+  ctx.stroke();
+  ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+  ctx.lineWidth = lw * 0.6;
+  ctx.stroke();
+}
+
+/* =========================================================
+   5. 头部 & 冠饰
+   ========================================================= */
+function drawHead(t, lw) {
+  const [hx, hy] = bodyPoint(0.85, t);
+
+  /* 头骨 */
+  ctx.beginPath();
+  ctx.moveTo(hx - 0.08, hy - 0.055);
+  ctx.quadraticCurveTo(hx + 0.06, hy - 0.075, hx + 0.16, hy - 0.035);
+  ctx.quadraticCurveTo(hx + 0.30, hy - 0.020, hx + 0.42, hy + 0.005);
+  ctx.quadraticCurveTo(hx + 0.30, hy + 0.028, hx + 0.16, hy + 0.038);
+  ctx.quadraticCurveTo(hx + 0.06, hy + 0.062, hx - 0.08, hy + 0.055);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(45,0,70,0.55)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(205,120,255,0.62)';
+  ctx.lineWidth = lw * 1.0;
+  ctx.stroke();
+
+  /* 头冠（向后扫） */
+  const cr = 0.16 + 0.025 * Math.sin(t * 2.4);
+  ctx.beginPath();
+  ctx.moveTo(hx - 0.04, hy - 0.050);
+  ctx.quadraticCurveTo(hx - 0.16, hy - 0.10, hx - 0.30, hy - cr);
+  ctx.quadraticCurveTo(hx - 0.18, hy - 0.035, hx - 0.04, hy - 0.012);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(120,20,160,0.35)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(160,255,200,0.45)';
+  ctx.lineWidth = lw * 0.9;
+  ctx.stroke();
+
+  /* 眼睛 */
+  const ex = hx + 0.06, ey = hy - 0.028;
+  const eg = ctx.createRadialGradient(ex, ey, 0, ex, ey, 0.032);
+  eg.addColorStop(0, 'rgba(220,255,230,0.95)');
+  eg.addColorStop(0.4, 'rgba(80,255,170,0.55)');
+  eg.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = eg;
+  ctx.beginPath(); ctx.arc(ex, ey, 0.032, 0, Math.PI * 2); ctx.fill();
+
+  /* 头颈辉光 */
+  const hg = ctx.createRadialGradient(hx, hy, 0, hx, hy, 0.22);
+  hg.addColorStop(0, 'rgba(200,90,255,0.20)');
+  hg.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = hg;
+  ctx.beginPath(); ctx.arc(hx, hy, 0.22, 0, Math.PI * 2); ctx.fill();
+}
+
+/* =========================================================
+   6. 尾部
+   ========================================================= */
+function drawTail(t, lw) {
+  const N = 44;
+  const [x0, y0] = bodyPoint(0, t);
+
+  ctx.beginPath();
+  for (let i = 0; i <= N; i++) {
+    const s = i / N;
+    const x = x0 - 0.70 * s;
+    const y = y0 + 0.11 * Math.sin(s * 2.3 + t * 1.6) * s
+                 + 0.02 * Math.sin(t * 2.6);
+    i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+  }
+  ctx.strokeStyle = 'rgba(175,85,255,0.55)';
+  ctx.lineWidth = lw * 2.2;
+  ctx.lineCap = 'round';
+  ctx.stroke();
+  ctx.strokeStyle = 'rgba(120,255,190,0.35)';
+  ctx.lineWidth = lw * 0.8;
+  ctx.stroke();
+
+  /* 尾端光点 */
+  const ex = x0 - 0.70, ey = y0 + 0.11 * Math.sin(2.3 + t * 1.6) + 0.02 * Math.sin(t * 2.6);
+  for (let k = 0; k < 7; k++) {
+    const a = k / 7 * Math.PI * 2 + t * 3;
+    ctx.beginPath();
+    ctx.moveTo(ex, ey);
+    ctx.lineTo(ex + Math.cos(a) * 0.035, ey + Math.sin(a) * 0.035);
+    ctx.strokeStyle = 'rgba(255,170,255,0.35)';
+    ctx.lineWidth = lw * 0.8;
+    ctx.stroke();
+  }
+}
+
+/* =========================================================
+   7. 环境粒子（分形尘埃）
+   ========================================================= */
+function drawDust(t, lw) {
+  for (let k = 0; k < 40; k++) {
+    const a = k / 40 * Math.PI * 2 + t * 0.25;
+    const r = 1.35 + 0.55 * Math.sin(k * 2.17 + t * 1.1);
+    const x = Math.cos(a) * r;
+    const y = Math.sin(a) * r * 0.85;
+
+    const f = 0.5 + 0.5 * Math.sin(k * 3.1 + t * 2.3);
+    const hue = 150 + 130 * f;
+
+    ctx.beginPath();
+    ctx.arc(x, y, 0.006 + 0.006 * f, 0, Math.PI * 2);
+    ctx.fillStyle = `hsla(${hue},100%,70%,${0.10 + 0.20 * f})`;
+    ctx.fill();
+  }
+}
+
+/* =========================================================
+   8. 左侧面板：朱利亚集合公式
+   ========================================================= */
+function fitText(str, maxW, size, family, italic) {
+  const pre = italic ? 'italic ' : '';
+  ctx.font = `${pre}${size}px ${family}`;
+  const w = ctx.measureText(str).width;
+  if (w > maxW) {
+    size *= maxW / w;
+    ctx.font = `${pre}${size}px ${family}`;
+  }
+  return size;
+}
+
+function drawPanel(t) {
+  const cx = PANEL * 0.5;
+  const pulse = 0.80 + 0.20 * Math.sin(t * 1.7);
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  const SERIF = '"Times New Roman", Georgia, "Songti SC", serif';
+  const SANS  = '"Microsoft YaHei", "PingFang SC", "Heiti SC", sans-serif';
+
+  /* ---- 主公式 ---- */
+  const mainStr = 'zₙ₊₁ = zₙ² + c';
+  const fs1 = fitText(mainStr, PANEL * 0.88,
+                      Math.min(PANEL * 0.150, H * 0.052), SERIF, true);
+  const my = H * 0.27;
+
+  ctx.shadowColor = `rgba(190,60,255,${0.85 * pulse})`;
+  ctx.shadowBlur = 26;
+  ctx.fillStyle = `rgba(228,158,255,${0.96 * pulse})`;
+  ctx.fillText(mainStr, cx, my);
+  ctx.shadowBlur = 0;
+
+  /* ---- 中文标题 ---- */
+  const fs2 = Math.min(PANEL * 0.068, H * 0.024);
+  ctx.font = `${fs2}px ${SANS}`;
+  ctx.fillStyle = 'rgba(95,255,180,0.72)';
+  ctx.fillText('朱 利 亚 集 合', cx, my + fs1 * 1.32);
+
+  /* ---- 分隔光带 ---- */
+  const ly = my + fs1 * 2.05;
+  const lg = ctx.createLinearGradient(PANEL * 0.10, 0, PANEL * 0.90, 0);
+  lg.addColorStop(0.0, 'rgba(0,0,0,0)');
+  lg.addColorStop(0.5, 'rgba(190,70,255,0.48)');
+  lg.addColorStop(1.0, 'rgba(0,0,0,0)');
+  ctx.fillStyle = lg;
+  ctx.fillRect(PANEL * 0.10, ly, PANEL * 0.80, Math.max(1, H * 0.0016));
+
+  /* ---- 附属公式 ---- */
+  const lines = [
+    'J_c = { z ∈ ℂ | f_cⁿ(z) 有界 }',
+    '|z| > 2  ⟹  f_cⁿ(z) → ∞',
+    'c = 0.7885 · e^{iθ}',
+    'dim_H  J_c  ≈  2'
+  ];
+  let y = H * 0.50;
+  const step = Math.min(H * 0.078, H * 0.026 * 3.0);
+
+  for (let i = 0; i < lines.length; i++) {
+    const sz = fitText(lines[i], PANEL * 0.88,
+                       Math.min(PANEL * 0.078, H * 0.027), SERIF, true);
+    const a = (0.52 + 0.26 * Math.sin(t * 1.4 + i * 0.9)) * (i === 0 ? 1.0 : 0.80);
+    ctx.font = `italic ${sz}px ${SERIF}`;
+    ctx.fillStyle = (i % 2 === 0)
+      ? `rgba(205,120,255,${a})`
+      : `rgba(95,255,185,${a})`;
+    ctx.fillText(lines[i], cx, y);
+    y += step;
+  }
+
+  /* ---- 底部注记 ---- */
+  const fs4 = Math.min(PANEL * 0.044, H * 0.017);
+  ctx.font = `${fs4}px ${SANS}`;
+  ctx.fillStyle = `rgba(130,215,255,${0.26 + 0.12 * Math.sin(t * 2.0)})`;
+  ctx.fillText('FRACTAL  ·  CHAOS', cx, H * 0.89);
+
+  /* ---- 右边界光带 ---- */
+  const dg = ctx.createLinearGradient(0, 0, 0, H);
+  dg.addColorStop(0.00, 'rgba(0,0,0,0)');
+  dg.addColorStop(0.28, 'rgba(185,60,255,0.30)');
+  dg.addColorStop(0.52, 'rgba(70,255,175,0.24)');
+  dg.addColorStop(0.78, 'rgba(185,60,255,0.30)');
+  dg.addColorStop(1.00, 'rgba(0,0,0,0)');
+  ctx.fillStyle = dg;
+  ctx.fillRect(PANEL - Math.max(1, W * 0.0008), 0, Math.max(2, W * 0.0020), H);
+}
+
+/* =========================================================
+   9. 主循环
+   ========================================================= */
+let T = 0, lastMs = 0;
+
+function frame(now) {
+  if (!lastMs) lastMs = now;
+  let dt = (now - lastMs) / 1000;
+  lastMs = now;
+  if (dt > 0.05) dt = 0.05;
+  if (dt < 0) dt = 0;
+  T += dt;
+
+  /* ---- 拖尾衰减 ---- */
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = 'rgba(0,0,0,0.26)';
+  ctx.fillRect(0, 0, W, H);
+
+  /* ---- 左侧面板保持纯黑 ---- */
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, PANEL, H);
+
+  /* ---- 公式面板 ---- */
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  drawPanel(T);
+  ctx.restore();
+
+  /* ---- 翼龙 ---- */
+  const bobX = Math.cos(T * 1.30) * W * 0.010;
+  const bobY = Math.sin(T * 1.70) * H * 0.014;
+
+  ctx.save();
+  ctx.translate(CX + bobX, CY + bobY);
+  ctx.rotate(Math.sin(T * 0.80) * 0.10);
+  ctx.scale(S, S);
+
+  const lw = 1 / S;                  // 约 1 CSS 像素
+
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  /* 分形场（两翼共用） */
+  updateField(T);
+
+  drawDust(T, lw);
+  drawWingField(T,  1, lw);
+  drawWingField(T, -1, lw);
+
+  ctx.globalCompositeOperation = 'source-over';
+  drawBody(T, lw);
+  drawHead(T, lw);
+  drawTail(T, lw);
+
+  ctx.restore();
+
+  requestAnimationFrame(frame);
+}
+
+resize();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
